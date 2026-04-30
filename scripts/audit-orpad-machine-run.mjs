@@ -89,6 +89,74 @@ function auditRunState(runState, projectedRunState) {
   return diagnostics;
 }
 
+function nodeLifecycleKey(event) {
+  return event.payload?.nodeExecutionId
+    || `${event.nodePath || ''}:attempt-${event.payload?.attempt || 1}`;
+}
+
+function auditNodeLifecycle(events) {
+  const diagnostics = [];
+  const byExecutionId = new Map();
+  for (const event of events) {
+    if (!String(event.eventType || '').startsWith('node.')) continue;
+    const key = nodeLifecycleKey(event);
+    if (!key) continue;
+    if (!byExecutionId.has(key)) byExecutionId.set(key, []);
+    byExecutionId.get(key).push(event);
+  }
+
+  for (const [nodeExecutionId, lifecycleEvents] of byExecutionId.entries()) {
+    const byType = new Map(lifecycleEvents.map(event => [event.eventType, event]));
+    const terminalEvents = lifecycleEvents.filter(event => ['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(event.eventType));
+    const started = byType.get('node.started');
+    const scheduled = byType.get('node.scheduled');
+
+    if (started && !scheduled) {
+      diagnostics.push(diagnostic('MACHINE_NODE_STARTED_WITHOUT_SCHEDULED', 'Node lifecycle must schedule before start.', {
+        nodeExecutionId,
+        nodePath: started.nodePath,
+        startedSequence: started.sequence,
+      }));
+    }
+    for (const terminal of terminalEvents) {
+      if (!started) {
+        diagnostics.push(diagnostic('MACHINE_NODE_TERMINAL_WITHOUT_STARTED', 'Node lifecycle terminal events require a prior started event.', {
+          nodeExecutionId,
+          nodePath: terminal.nodePath,
+          eventType: terminal.eventType,
+          terminalSequence: terminal.sequence,
+        }));
+      } else if (started.sequence >= terminal.sequence) {
+        diagnostics.push(diagnostic('MACHINE_NODE_TERMINAL_BEFORE_STARTED', 'Node lifecycle terminal event must occur after started.', {
+          nodeExecutionId,
+          nodePath: terminal.nodePath,
+          eventType: terminal.eventType,
+          startedSequence: started.sequence,
+          terminalSequence: terminal.sequence,
+        }));
+      }
+      if (scheduled && scheduled.sequence >= terminal.sequence) {
+        diagnostics.push(diagnostic('MACHINE_NODE_TERMINAL_BEFORE_SCHEDULED', 'Node lifecycle terminal event must occur after scheduled.', {
+          nodeExecutionId,
+          nodePath: terminal.nodePath,
+          eventType: terminal.eventType,
+          scheduledSequence: scheduled.sequence,
+          terminalSequence: terminal.sequence,
+        }));
+      }
+    }
+    if (terminalEvents.length > 1) {
+      diagnostics.push(diagnostic('MACHINE_NODE_MULTIPLE_TERMINAL_EVENTS', 'Node lifecycle must not record multiple terminal events for one execution id.', {
+        nodeExecutionId,
+        nodePath: terminalEvents[0].nodePath,
+        terminalEventTypes: terminalEvents.map(event => event.eventType),
+        terminalSequences: terminalEvents.map(event => event.sequence),
+      }));
+    }
+  }
+  return diagnostics;
+}
+
 async function auditArtifactManifest(runRoot) {
   const diagnostics = [];
   const manifestPath = artifactManifestPath(runRoot);
@@ -343,6 +411,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   const projectedRunState = projectRunStateFromEvents(events);
   const runState = await readRunState(resolvedRunRoot);
   diagnostics.push(...auditRunState(runState, projectedRunState));
+  diagnostics.push(...auditNodeLifecycle(events));
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);

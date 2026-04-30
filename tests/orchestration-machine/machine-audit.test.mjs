@@ -9,6 +9,7 @@ import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const {
+  appendMachineEvent,
   createMachineRun,
   exportLatestRun,
   ingestCandidateProposal,
@@ -75,6 +76,18 @@ async function makeAuditableRun() {
     runId: run.runId,
     nodePath: 'main/probe',
     nodeType: 'orpad.probe',
+    status: 'scheduled',
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    status: 'started',
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
     status: 'completed',
     payload: { proposalCount: 1 },
   });
@@ -117,7 +130,7 @@ test('audit-orpad-machine-run passes on a durable Machine run and export', async
 
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
   assert.equal(result.json.ok, true);
-  assert.equal(result.json.eventCount, 6);
+  assert.equal(result.json.eventCount, 8);
   assert.equal(result.json.artifactCount, 2);
   assert.equal(result.json.candidateInventoryCount, 1);
   assert.equal(result.json.candidateInventoryItemCount, 1);
@@ -199,4 +212,42 @@ test('audit-orpad-machine-run fails when candidate inventory names a probe that 
 
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_PROBE_NOT_COMPLETED'), true);
+});
+
+test('audit-orpad-machine-run fails when node lifecycle terminal events skip started', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-lifecycle-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_bad_lifecycle',
+    now: fixedNow,
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/probe',
+    eventType: 'node.completed',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/probe:attempt-1`,
+      nodeType: 'orpad.probe',
+      status: 'completed',
+      attempt: 1,
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_NODE_TERMINAL_WITHOUT_STARTED'), true);
 });
