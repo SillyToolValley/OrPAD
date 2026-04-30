@@ -180,6 +180,15 @@ test('dispatcher pauses on approval-required queued item without claiming it', a
   assert.equal((await findQueueItem(run.runRoot, 'approval-work')).state, 'queued');
   assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'approval-required');
+
+  const repeated = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:21.000Z',
+  });
+  assert.equal(repeated.claimed, false);
+  assert.equal(repeated.stopReason, 'approval-required');
+  assert.equal(repeated.approval.duplicate, true);
+  assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'approval.requested').length, 1);
 });
 
 test('dispatcher refuses terminal runs before claiming queued work', async () => {

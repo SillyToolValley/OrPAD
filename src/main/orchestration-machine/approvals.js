@@ -5,6 +5,7 @@ const {
   appendRunSummaryStatus,
   assertRunLifecycleCanTransition,
 } = require('./lifecycle');
+const { readRunState } = require('./run-store');
 
 function approvalIdForItem(itemId) {
   return `approval-${String(itemId || '')
@@ -27,6 +28,30 @@ async function requestApprovalForItem(runRoot, options = {}) {
   if (!runId) throw new Error('runId is required.');
   if (!item?.id) throw new Error('item is required.');
   const approvalId = options.approvalId || approvalIdForItem(item.id);
+  const events = await readMachineEvents(runRoot);
+  const existingApproval = summarizeApprovalsFromEvents(events)
+    .all
+    .find(approval => approval.approvalId === approvalId);
+  if (existingApproval?.status === 'requested') {
+    return {
+      approvalId,
+      request: null,
+      artifact: null,
+      event: events.find(event => (
+        event.eventType === 'approval.requested'
+        && event.payload?.approvalId === approvalId
+      )) || null,
+      runState: await readRunState(runRoot),
+      duplicate: true,
+    };
+  }
+  if (existingApproval) {
+    const err = new Error(`Approval has already been decided: ${approvalId}`);
+    err.code = 'MACHINE_APPROVAL_ALREADY_DECIDED';
+    err.approvalId = approvalId;
+    err.status = existingApproval.status;
+    throw err;
+  }
   const request = {
     schemaVersion: 'orpad.approvalRequest.v1',
     approvalId,
