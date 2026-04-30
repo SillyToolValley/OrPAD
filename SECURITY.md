@@ -354,9 +354,10 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
   this MVP. Main process loads the pipeline graph, expands inline nested graph containers, selects
   reachable Probe/Triage/Dispatcher/WorkerLoop nodes, executes Machine-owned support nodes such as
   WorkQueue/Gate/Barrier/ArtifactContract lifecycle markers, ingests deterministic harness
-  candidates, claims via the dispatcher, runs one WorkerLoop step, finalizes run status from
-  Machine queue inventory, and constructs the exact CLI overlay command itself. The renderer cannot
-  pass an arbitrary command, args, cwd, or dangerous Codex bypass flag through this channel.
+  candidates, registers a Machine-owned candidate inventory artifact for triage input, claims via
+  the dispatcher, runs one WorkerLoop step, finalizes run status from Machine queue inventory, and
+  constructs the exact CLI overlay command itself. The renderer cannot pass an arbitrary command,
+  args, cwd, or dangerous Codex bypass flag through this channel.
 - `machine-export-latest-run` copies a trusted snapshot to the legacy latest-run export directory
   for compatibility. It does not apply patches, edit source files, or call external tools.
 

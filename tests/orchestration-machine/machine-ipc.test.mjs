@@ -246,6 +246,11 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   assert.equal(executed.worker.event.payload.status, 'done');
   assert.deepEqual(executed.selectedProbeNodes, ['main/probe']);
   assert.deepEqual(executed.supportNodes.map(node => node.nodePath), ['main/queue']);
+  assert.deepEqual(executed.candidateInventory, {
+    artifactPath: 'artifacts/discovery/candidate-inventory.json',
+    candidateCount: 1,
+    emptyPassCount: 0,
+  });
   assert.equal(executed.finalization.summaryStatus, 'done');
   assert.equal(executed.runState.lifecycleStatus, 'completed');
   assert.equal(executed.events.some(item => item.eventType === 'adapter.requested'), true);

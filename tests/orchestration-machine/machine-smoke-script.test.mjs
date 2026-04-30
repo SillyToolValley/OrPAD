@@ -25,6 +25,11 @@ test('smoke script runs a real .or-pipeline through Machine queue, worker, expor
     'main/queue',
     'main/artifact',
   ]);
+  assert.deepEqual(result.candidateInventory, {
+    artifactPath: 'artifacts/discovery/candidate-inventory.json',
+    candidateCount: 1,
+    emptyPassCount: 0,
+  });
   assert.equal(result.workerStatus, 'done');
   assert.equal(result.queueState, 'done');
   assert.equal(result.finalization.summaryStatus, 'done');

@@ -4,7 +4,7 @@ const path = require('path');
 
 const { createCliAgentAdapter, cliOverlayRoot } = require('./adapters/cli-agent');
 const { createAdapterRequest } = require('./adapters/proposal-adapter');
-const { writeArtifactManifest } = require('./artifacts');
+const { registerArtifact, writeArtifactManifest } = require('./artifacts');
 const { claimNextQueuedItem } = require('./dispatcher');
 const { createCommandGrant } = require('./command-grants');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
@@ -20,6 +20,7 @@ const { runWorkerLoopOnce } = require('./worker-loop');
 const { normalizeWriteSetPath } = require('./write-sets');
 
 const fsp = fs.promises;
+const MACHINE_CANDIDATE_INVENTORY_SCHEMA = 'orpad.machineCandidateInventory.v1';
 const SUPPORT_NODE_TYPES = new Set([
   'orpad.context',
   'orpad.workQueue',
@@ -54,6 +55,14 @@ function nodeExecutableForHarness() {
     || process.env.npm_node_execpath
     || process.env.NODE
     || process.execPath;
+}
+
+function idSegment(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 96) || 'item';
 }
 
 function assertPlainObject(value, label) {
@@ -282,6 +291,70 @@ function candidatesForProbeNode(probeNode, probeNodes, candidates) {
   return [];
 }
 
+function candidateInventoryRowForProposal(probeEntry, candidateProposal) {
+  return {
+    id: candidateProposal.proposalId || candidateProposal.suggestedWorkItemId,
+    status: 'candidate',
+    nodePath: probeEntry.nodePath,
+    proposalId: candidateProposal.proposalId || '',
+    suggestedWorkItemId: candidateProposal.suggestedWorkItemId || '',
+    fingerprint: candidateProposal.fingerprint || '',
+    title: candidateProposal.title || '',
+    severity: candidateProposal.severity || '',
+    confidence: candidateProposal.confidence ?? null,
+    evidence: candidateProposal.evidence || [],
+    sourceOfTruthTargets: candidateProposal.sourceOfTruthTargets || [],
+  };
+}
+
+function emptyPassInventoryRow(probeEntry) {
+  return {
+    id: `empty-pass-${idSegment(probeEntry.nodePath)}`,
+    status: 'empty-pass',
+    nodePath: probeEntry.nodePath,
+    reason: 'No deterministic harness candidate was assigned to this probe node.',
+    evidence: [`node:${probeEntry.nodePath}`],
+  };
+}
+
+async function registerCandidateInventoryArtifact(runRoot, options = {}) {
+  const {
+    runId,
+    probes = [],
+    artifactPath = 'artifacts/discovery/candidate-inventory.json',
+  } = options;
+  const rows = [];
+  for (const probeEntry of probes) {
+    const proposals = probeEntry.candidateProposals || [];
+    if (proposals.length) {
+      rows.push(...proposals.map(candidateProposal => candidateInventoryRowForProposal(probeEntry, candidateProposal)));
+    } else {
+      rows.push(emptyPassInventoryRow(probeEntry));
+    }
+  }
+  const events = await readMachineEvents(runRoot);
+  const sourceEventSequence = events.length ? events[events.length - 1].sequence : 0;
+  const inventory = {
+    schemaVersion: MACHINE_CANDIDATE_INVENTORY_SCHEMA,
+    runId,
+    createdAt: new Date().toISOString(),
+    sourceEventSequence,
+    selectedProbeNodes: probes.map(probeEntry => probeEntry.nodePath),
+    candidateCount: rows.filter(row => row.status === 'candidate').length,
+    emptyPassCount: rows.filter(row => row.status === 'empty-pass').length,
+    items: rows,
+  };
+  const artifact = await registerArtifact(runRoot, {
+    runId,
+    artifactPath,
+    content: `${JSON.stringify(inventory, null, 2)}\n`,
+    producedBy: 'orpad.machine.candidate-inventory',
+    registeredBy: 'machine',
+    schemaVersion: MACHINE_CANDIDATE_INVENTORY_SCHEMA,
+  });
+  return { artifact, inventory };
+}
+
 async function executeMachineRunStep(options = {}) {
   const {
     workspaceRoot,
@@ -351,6 +424,7 @@ async function executeMachineRunStep(options = {}) {
   let triage = null;
   let claim = null;
   let worker = null;
+  let candidateInventory = null;
   const support = [];
 
   for (const node of orderedNodes) {
@@ -382,9 +456,17 @@ async function executeMachineRunStep(options = {}) {
           }),
         }),
       }));
-      probes.push({ nodePath: currentProbeNode.nodePath, result: probeResult });
+      probes.push({
+        nodePath: currentProbeNode.nodePath,
+        candidateProposals: probeCandidates,
+        result: probeResult,
+      });
       if (!probe) probe = probeResult;
     } else if (node.nodePath === triageNode.nodePath) {
+      candidateInventory = await registerCandidateInventoryArtifact(runRoot, {
+        runId,
+        probes,
+      });
       triage = await withNodeLifecycle(runRoot, triageNode, {
         runId,
         completedPayload: result => ({
@@ -396,8 +478,10 @@ async function executeMachineRunStep(options = {}) {
         runId,
         nodePath: triageNode.nodePath,
         workspaceRoot,
+        inputArtifacts: [candidateInventory.artifact.file.path],
         fixtureResult: request => proposalResultForRequest(request, {
           summary: 'Machine graph triage accepted harness candidate.',
+          artifacts: [candidateInventory.artifact.file.path],
           triageTransitions: candidates.map(candidateProposal => ({
             itemId: candidateProposal.suggestedWorkItemId,
             toState: 'queued',
@@ -529,6 +613,11 @@ async function executeMachineRunStep(options = {}) {
     })),
     probe,
     probes,
+    candidateInventory: candidateInventory ? {
+      artifactPath: candidateInventory.artifact.file.path,
+      candidateCount: candidateInventory.inventory.candidateCount,
+      emptyPassCount: candidateInventory.inventory.emptyPassCount,
+    } : null,
     triage,
     claim,
     worker,
@@ -543,6 +632,7 @@ module.exports = {
   executeMachineRunStep,
   flattenTraversalNodes,
   harnessFromPipeline,
+  registerCandidateInventoryArtifact,
   nodeCliPatchCommandSpec,
   nodeExecutableForHarness,
   proposalResultForRequest,

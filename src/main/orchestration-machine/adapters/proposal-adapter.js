@@ -110,6 +110,7 @@ async function recordAdapterRequest(runRoot, request) {
       idempotencyKey: request.idempotencyKey,
       taskKind: request.taskKind,
       workspaceMode: request.workspaceMode,
+      inputArtifacts: request.inputArtifacts || [],
       outputContract: request.outputContract,
       adapterResultPath: request.adapterResultPath,
     },

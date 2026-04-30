@@ -323,6 +323,7 @@ async function runMachineSmoke(input = {}) {
       selectedNodes: executed.selectedNodes,
       selectedProbeNodes: executed.selectedProbeNodes,
       supportNodes: executed.supportNodes,
+      candidateInventory: executed.candidateInventory,
       finalization: {
         summaryStatus: executed.finalization?.summaryStatus || '',
         lifecycleStatus: executed.finalization?.runState?.lifecycleStatus || '',

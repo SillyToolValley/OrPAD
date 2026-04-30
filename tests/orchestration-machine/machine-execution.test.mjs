@@ -237,6 +237,18 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
     'main/artifact',
   ]);
   assert.equal(executed.worker.result.event.payload.status, 'done');
+  assert.deepEqual(executed.candidateInventory, {
+    artifactPath: 'artifacts/discovery/candidate-inventory.json',
+    candidateCount: 1,
+    emptyPassCount: 0,
+  });
+  const inventory = JSON.parse(await fs.readFile(
+    path.join(run.runRoot, ...executed.candidateInventory.artifactPath.split('/')),
+    'utf8',
+  ));
+  assert.equal(inventory.schemaVersion, 'orpad.machineCandidateInventory.v1');
+  assert.equal(inventory.items[0].suggestedWorkItemId, 'graph-harness-target');
+  assert.deepEqual(inventory.selectedProbeNodes, ['main/probe']);
   assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'done');
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/target.md'), 'utf8'), 'before\n');
   assert.equal((await fs.stat(path.join(pipelineDir, 'harness/generated/latest-run/run-metadata.json'))).isFile(), true);
@@ -249,6 +261,8 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
   assert.equal(eventTypes.filter(type => type === 'node.completed').length, 9);
   const adapterRequest = executed.events.find(event => event.eventType === 'adapter.requested' && event.payload?.taskKind === 'workerLoop');
   assert.equal(adapterRequest.nodePath, 'main/worker');
+  const triageRequest = executed.events.find(event => event.eventType === 'adapter.requested' && event.payload?.taskKind === 'triage');
+  assert.deepEqual(triageRequest.payload.inputArtifacts, ['artifacts/discovery/candidate-inventory.json']);
 });
 
 test('graph-driven execute step rejects pipelines without a deterministic MVP harness', async () => {
@@ -301,6 +315,17 @@ test('graph-driven execute step expands inline nested graphs and runs every reac
   ]);
   assert.equal(executed.probes.length, 2);
   assert.equal(executed.probes[1].result.proposals.length, 0);
+  assert.deepEqual(executed.candidateInventory, {
+    artifactPath: 'artifacts/discovery/candidate-inventory.json',
+    candidateCount: 1,
+    emptyPassCount: 1,
+  });
+  const inventory = JSON.parse(await fs.readFile(
+    path.join(run.runRoot, ...executed.candidateInventory.artifactPath.split('/')),
+    'utf8',
+  ));
+  assert.deepEqual(inventory.items.map(item => item.status), ['candidate', 'empty-pass']);
+  assert.deepEqual(inventory.selectedProbeNodes, ['discovery/probe-a', 'discovery/probe-b']);
   assert.equal(executed.finalization.summaryStatus, 'done');
   assert.equal((await findQueueItem(run.runRoot, 'nested-graph-target')).state, 'done');
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/nested-target.md'), 'utf8'), 'before nested\n');
