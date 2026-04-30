@@ -14,6 +14,7 @@ const {
   readMachineEvents,
   readQueueItems,
   readRunState,
+  runProposalOnlyAdapter,
   runProposalProbe,
   runProposalTriage,
 } = require('../../src/main/orchestration-machine');
@@ -177,6 +178,35 @@ test('proposal-only adapter result idempotency prevents duplicate mutation on re
   assert.equal(second.duplicate, true);
   assert.equal((await readQueueItems(run.runRoot)).length, 1);
   assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'adapter.result').length, 1);
+});
+
+test('proposal-only adapter retry does not duplicate adapter request events', async () => {
+  const run = await makeRun();
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/retry-request-probe',
+    taskKind: 'probe',
+  });
+  const result = adapterResult(request);
+
+  const first = await runProposalOnlyAdapter({
+    runRoot: run.runRoot,
+    request,
+    fixtureResult: result,
+  });
+  const second = await runProposalOnlyAdapter({
+    runRoot: run.runRoot,
+    request,
+    fixtureResult: () => {
+      throw new Error('duplicate result should not invoke adapter');
+    },
+  });
+  const events = await readMachineEvents(run.runRoot);
+
+  assert.equal(first.duplicate, undefined);
+  assert.equal(second.duplicate, true);
+  assert.equal(events.filter(event => event.eventType === 'adapter.requested').length, 1);
+  assert.equal(events.filter(event => event.eventType === 'adapter.result').length, 1);
 });
 
 test('candidate proposal missing proof is rejected by the adapter result contract', async () => {

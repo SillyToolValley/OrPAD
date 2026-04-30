@@ -96,8 +96,31 @@ async function findAdapterResultEvent(runRoot, idempotencyKey) {
   return events.find(event => event.eventType === 'adapter.result' && event.payload?.idempotencyKey === idempotencyKey) || null;
 }
 
+async function findAdapterRequestEvent(runRoot, idempotencyKey) {
+  const events = await readMachineEvents(runRoot);
+  return events.find(event => event.eventType === 'adapter.requested' && event.payload?.idempotencyKey === idempotencyKey) || null;
+}
+
+async function duplicateAdapterResultResponse(runRoot, event) {
+  return {
+    duplicate: true,
+    event,
+    summaryStatus: event.payload?.summaryStatus || 'partial',
+    proposals: [],
+    triage: [],
+    runState: await repairRunStateFromEvents(runRoot),
+  };
+}
+
 async function recordAdapterRequest(runRoot, request) {
   validator.assertValid('adapterRequest', request);
+  const duplicate = await findAdapterRequestEvent(runRoot, request.idempotencyKey);
+  if (duplicate) {
+    return {
+      duplicate: true,
+      event: duplicate,
+    };
+  }
   return appendMachineEvent(runRoot, {
     runId: request.runId,
     actor: 'machine',
@@ -123,14 +146,7 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
 
   const duplicate = await findAdapterResultEvent(runRoot, request.idempotencyKey);
   if (duplicate) {
-    return {
-      duplicate: true,
-      event: duplicate,
-      summaryStatus: duplicate.payload?.summaryStatus || 'partial',
-      proposals: [],
-      triage: [],
-      runState: await repairRunStateFromEvents(runRoot),
-    };
+    return duplicateAdapterResultResponse(runRoot, duplicate);
   }
 
   const proposals = [];
@@ -202,6 +218,8 @@ async function runProposalOnlyAdapter(options = {}) {
   const { runRoot, request, adapter, fixtureResult } = options;
   if (!runRoot) throw new Error('runRoot is required.');
   if (!request) throw new Error('adapter request is required.');
+  const duplicate = await findAdapterResultEvent(runRoot, request.idempotencyKey);
+  if (duplicate) return duplicateAdapterResultResponse(runRoot, duplicate);
   await recordAdapterRequest(runRoot, request);
   const result = adapter?.invoke
     ? await adapter.invoke(request)
