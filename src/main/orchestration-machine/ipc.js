@@ -3,7 +3,11 @@ const path = require('path');
 
 const { isInsidePath } = require('../authority');
 const { validateRunbookFile } = require('../runbooks/validator');
-const { summarizeApprovalsFromEvents } = require('./approvals');
+const {
+  approvalGrantForItem,
+  recordApprovalDecision,
+  summarizeApprovalsFromEvents,
+} = require('./approvals');
 const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
 const { executeMachineRunStep } = require('./machine');
@@ -19,6 +23,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   getRun: 'machine-get-run',
   listRuns: 'machine-list-runs',
   executeRunStep: 'machine-execute-run-step',
+  decideApproval: 'machine-decide-approval',
   exportLatestRun: 'machine-export-latest-run',
 });
 
@@ -112,6 +117,13 @@ function assertRunId(value) {
 function assertOptionalRunId(value) {
   if (value == null || value === '') return '';
   return assertRunId(value);
+}
+
+function assertApprovalDecision(value) {
+  if (value !== 'approved' && value !== 'denied') {
+    throw machineError('MACHINE_IPC_SCHEMA_INVALID', 'decision must be approved or denied.');
+  }
+  return value;
 }
 
 function assertMutatingCapability(request, featureGate) {
@@ -348,6 +360,56 @@ async function exportLatestRunHandler(event, authority, request) {
   };
 }
 
+async function decideApprovalHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const approvalId = requiredString(request.approvalId, 'approvalId').trim();
+  const decision = assertApprovalDecision(request.decision);
+  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  const pendingApproval = snapshot.approvals.pending.find(item => item.approvalId === approvalId);
+  if (!pendingApproval) {
+    throw machineError('MACHINE_APPROVAL_NOT_PENDING', 'Machine approval is not pending for this run.');
+  }
+  const grants = decision === 'approved'
+    ? [approvalGrantForItem(pendingApproval.itemId, approvalId)]
+    : [];
+  const result = await recordApprovalDecision(runRoot, {
+    runId,
+    approvalId,
+    decision,
+    itemId: pendingApproval.itemId,
+    grants,
+    decidedBy: 'renderer',
+    reason: `machine-ui.approval.${decision}`,
+  });
+  const updated = await readRunSnapshot(runRoot);
+  const exported = request.exportLatestRun === false
+    ? null
+    : await exportLatestRun({
+      runRoot,
+      pipelineDir: context.pipelineDir,
+      allowOverwrite: true,
+    });
+  return {
+    success: true,
+    ok: true,
+    runId,
+    decision,
+    decisionEvent: result.event,
+    grants,
+    runState: updated.runState,
+    events: updated.events,
+    candidateInventory: updated.candidateInventory,
+    worker: updated.worker,
+    approvals: updated.approvals,
+    exported,
+  };
+}
+
 async function executeRunStepWithHarnessHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
@@ -433,6 +495,7 @@ function registerMachineHandlers({ ipcMain, authority, featureGate = featureGate
   handle(MACHINE_IPC_CHANNELS.getRun, getRunHandler);
   handle(MACHINE_IPC_CHANNELS.listRuns, listRunsHandler);
   handle(MACHINE_IPC_CHANNELS.executeRunStep, executeRunStepWithHarnessHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.exportLatestRun, exportLatestRunHandler, { mutating: true });
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };

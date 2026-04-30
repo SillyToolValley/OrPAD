@@ -217,6 +217,18 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-approve-approval"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-deny-approval"]')).toBeEnabled();
+
+  await win.locator('button[data-runbook-action="machine-approve-approval"]').click();
+  await expect(win.locator('#runbooks-content')).toContainText('approval.decided');
+  await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: approved');
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
+
+  await win.locator('button[data-runbook-action="machine-execute-step"]').click();
+  await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
+  await expect(win.locator('#runbooks-content')).toContainText('done');
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

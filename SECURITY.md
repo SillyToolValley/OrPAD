@@ -47,7 +47,7 @@ process is fully sandboxed with no direct Node.js access.
 | `searchFiles(dirPath, query, options)` | workspace search | MEDIUM |
 | `buildLinkIndex` / `resolveWikiLink` / `getBacklinks` / `getFileNames` | wiki-link graph | MEDIUM |
 | `pipelines.*` / `runbooks.*` validation, scan, run-record, and local-run APIs | `.or-pipeline`, `.or-graph`, `.or-tree`, and legacy `.orch-*` validation plus local MVP run evidence | HIGH (future execution substrate) |
-| `machine.*` validation, run-store, readback, listing, execute-step harness, and latest-run export APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic MVP harness execution | HIGH (execution substrate) |
+| `machine.*` validation, run-store, readback, listing, approval decision, execute-step harness, and latest-run export APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic MVP harness execution | HIGH (execution substrate) |
 | `revealInExplorer(targetPath)` | `shell.showItemInFolder` | LOW |
 | `saveBinary` / `saveText` | save-dialog before write | LOW |
 | `svgToPng(svg, w, h, bg)` | offscreen BrowserWindow render | LOW |
@@ -336,7 +336,7 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
   renderer frame before doing any path or filesystem work.
 - The feature gate is off by default. Handlers reject until `ORPAD_MACHINE_IPC=1` is present
   when handlers are registered.
-- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-export-latest-run`) require
+- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-decide-approval`, `machine-export-latest-run`) require
   `ORPAD_MACHINE_IPC_TOKEN` and a matching `capabilityToken` in the request. Read-only validate,
   list, and get-run actions still require the feature gate and sender/path/schema checks.
 - The renderer Machine run UI remains hidden unless `localStorage.orpad-machine-ui-enabled` is
@@ -360,6 +360,10 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
   args, cwd, or dangerous Codex bypass flag through this channel.
 - Runtime node failures return the refreshed durable run snapshot, including post-failure
   `node.failed` events, rather than trusting a renderer-supplied status or stale pre-run snapshot.
+- `machine-decide-approval` can only decide an approval that is currently pending in Machine
+  events for the requested run. Approved decisions record Machine-owned grants; denied decisions
+  cancel the run through lifecycle guards. The renderer cannot mint arbitrary grants for a
+  non-pending approval.
 - `machine-export-latest-run` copies a trusted snapshot to the legacy latest-run export directory
   for compatibility. It does not apply patches, edit source files, or call external tools.
 
@@ -491,6 +495,7 @@ features that intentionally launch configured/user-requested child processes.
 | `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
 | `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/` only |
 | `machine-execute-run-step` | handle | Run one deterministic MVP harness step: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled CLI overlay adapter, optional latest-run export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, overlay-only process cwd |
+| `machine-decide-approval` | handle | Record a Machine-owned approval decision for a pending approval, optionally exporting latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, pending approval event only |
 | `machine-export-latest-run` | handle | Export durable Machine run artifacts/queue metadata to `harness/generated/latest-run` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / pipeline latest-run export only |
 | `save-binary` | handle | Save dialog then binary write | reads `event.sender` | Dialog enforces |
 | `svg-to-png` | handle | Offscreen BrowserWindow render | reads `event.sender` | Validates dimensions |
@@ -528,10 +533,11 @@ pipeline/runbook write or execution surface must treat path authority tests as r
 
 **Machine IPC update:** Orchestration Machine handlers also route through the authority manager
 and add `senderFrame`, feature-gate, typed request, `runId`, and mutating capability-token
-checks before touching storage. `machine-execute-run-step` reaches the CLI adapter only through
-a deterministic main-process harness command and overlay cwd containment. Arbitrary adapter
-execution, provider calls, terminal commands, MCP tools, and source workspace writes remain out
-of scope for renderer IPC.
+checks before touching storage. `machine-decide-approval` projects pending approvals from Machine
+events before recording a decision and grant. `machine-execute-run-step` reaches the CLI adapter
+only through a deterministic main-process harness command and overlay cwd containment. Arbitrary
+adapter execution, provider calls, terminal commands, MCP tools, and source workspace writes
+remain out of scope for renderer IPC.
 
 **Command execution boundaries:** General filesystem/editor IPC still does not expose arbitrary
 shell execution. P1-3 MCP uses the official SDK `StdioClientTransport`, which spawns the

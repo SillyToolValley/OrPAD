@@ -7720,11 +7720,21 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
   const exported = record.exported || null;
   const exportedFiles = exported?.metadata?.artifactManifest?.files || [];
   const runComplete = isMachineRunComplete(runState);
+  const pendingApprovals = record.approvals?.pending || [];
   const approvalPending = (record.approvals?.pendingCount || 0) > 0;
   const candidateDetails = machineCandidateInventoryDetails(record);
   const workerProofDetails = machineWorkerProofDetails(record);
   const nodeCompletionDetails = machineNodeCompletionDetails(record);
   const approvalDetails = machineApprovalDetails(record);
+  const runId = runState.runId || record.runId || '';
+  const approvalActions = pendingApprovals.length ? `
+        <div class="runbook-action-row">
+          ${pendingApprovals.slice(0, 3).map(approval => `
+            <button data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Approval')}">Approve</button>
+            <button data-runbook-action="machine-deny-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Approval')}">Deny</button>
+          `).join('')}
+        </div>
+      ` : '';
   return `
     <section class="runbook-panel-section">
       <h3>Machine Run</h3>
@@ -7735,8 +7745,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
       </div>
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
-        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'} ${runComplete || approvalPending ? 'disabled' : ''}>Execute Step</button>
-        <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Export Latest</button>
+        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runComplete || approvalPending ? 'disabled' : ''}>Execute Step</button>
+        <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
       </div>
       <div class="runbook-replay-events">
         ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No Machine events recorded.</div>'}
@@ -7769,6 +7779,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
           <strong>Approval</strong>
           <span>${escapeHtml(approvalDetails)}</span>
+          ${approvalActions}
         </div>
       </div>
     </section>
@@ -8191,6 +8202,37 @@ async function exportSelectedMachineRun(runbookPath, runId) {
   renderRunbooksPanel();
 }
 
+async function decideSelectedMachineApproval(runbookPath, runId, approvalId, decision) {
+  if (!workspacePath || !runbookPath || !runId || !approvalId || !window.orpad?.machine?.decideApproval) return;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const decided = await window.orpad.machine.decideApproval({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    approvalId,
+    decision,
+    capabilityToken: token,
+    exportLatestRun: true,
+  });
+  if (!decided?.success) {
+    if (decided?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
+      machineCapabilityToken = '';
+      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
+    }
+    alert(decided?.error || 'Machine approval decision failed.');
+    return;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = {
+    ...decided,
+    exported: decided.exported || decided.export,
+  };
+  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+}
+
 function openWorkspaceDashboardNote() {
   const summary = workspaceRunbookSummary || buildWorkspaceRunbookSummary();
   const body = [
@@ -8520,6 +8562,8 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'start-local') await startSelectedLocalRun(targetPath);
     else if (action === 'run-machine') await startSelectedMachineRun(targetPath);
     else if (action === 'machine-execute-step') await executeSelectedMachineRunStep(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    else if (action === 'machine-approve-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved');
+    else if (action === 'machine-deny-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'denied');
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
   } catch (err) {
     notifyFormatError('Runbooks', err);

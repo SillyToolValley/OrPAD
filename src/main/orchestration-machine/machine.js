@@ -4,6 +4,7 @@ const path = require('path');
 
 const { createCliAgentAdapter, cliOverlayRoot } = require('./adapters/cli-agent');
 const { createAdapterRequest } = require('./adapters/proposal-adapter');
+const { summarizeApprovalsFromEvents } = require('./approvals');
 const { registerArtifact, writeArtifactManifest } = require('./artifacts');
 const { claimNextQueuedItem } = require('./dispatcher');
 const { createCommandGrant } = require('./command-grants');
@@ -653,6 +654,10 @@ async function executeMachineRunStep(options = {}) {
   let worker = null;
   let candidateInventory = null;
   const support = [];
+  const approvalGrants = summarizeApprovalsFromEvents(await readMachineEvents(runRoot))
+    .all
+    .filter(approval => approval.status === 'approved')
+    .flatMap(approval => approval.grants || []);
 
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
@@ -727,6 +732,7 @@ async function executeMachineRunStep(options = {}) {
       }, () => claimNextQueuedItem(runRoot, {
         runId,
         claimId: options.claimId || `claim-${candidate.suggestedWorkItemId}`,
+        approvalGrants,
       }));
       if (claim?.stopReason === 'approval-required') break;
     } else if (node.nodePath === workerNode.nodePath) {

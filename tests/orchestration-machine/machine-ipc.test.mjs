@@ -132,6 +132,7 @@ test('Machine IPC registers only typed channels and preload exposes no generic m
 
   assert.deepEqual([...handlers.keys()].sort(), Object.values(MACHINE_IPC_CHANNELS).sort());
   assert.equal(preloadSource.includes('machine-validate-pipeline'), true);
+  assert.equal(preloadSource.includes('machine-decide-approval'), true);
   assert.equal(preloadSource.includes('machine.invoke'), false);
   assert.equal(preloadSource.includes("ipcRenderer.invoke(channel"), false);
 });
@@ -375,4 +376,38 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
 
   const listed = await handlers.get(MACHINE_IPC_CHANNELS.listRuns)(event, baseRequest);
   assert.equal(listed.runs.find(run => run.runId === created.runId).pendingApprovalCount, 1);
+
+  const missingDecision = await handlers.get(MACHINE_IPC_CHANNELS.decideApproval)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    approvalId: 'approval-missing',
+    decision: 'approved',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(missingDecision.success, false);
+  assert.equal(missingDecision.code, 'MACHINE_APPROVAL_NOT_PENDING');
+
+  const approved = await handlers.get(MACHINE_IPC_CHANNELS.decideApproval)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    approvalId: 'approval-ipc-harness-smoke',
+    decision: 'approved',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(approved.success, true);
+  assert.equal(approved.approvals.pendingCount, 0);
+  assert.equal(approved.approvals.all[0].status, 'approved');
+  assert.equal(approved.grants[0].itemId, 'ipc-harness-smoke');
+  assert.equal(approved.runState.lifecycleStatus, 'waiting');
+  assert.equal(approved.runState.summaryStatus, 'partial');
+
+  const resumed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(resumed.success, true);
+  assert.equal(resumed.worker.event.payload.status, 'done');
+  assert.equal(resumed.runState.lifecycleStatus, 'completed');
+  assert.equal(resumed.runState.summaryStatus, 'done');
 });

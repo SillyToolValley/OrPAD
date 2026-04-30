@@ -119,6 +119,7 @@ contextBridge.exposeInMainWorld('orpad', {
     getRun: (request) => ipcRenderer.invoke('machine-get-run', request),
     listRuns: (request) => ipcRenderer.invoke('machine-list-runs', request),
     executeRunStep: (request) => ipcRenderer.invoke('machine-execute-run-step', request),
+    decideApproval: (request) => ipcRenderer.invoke('machine-decide-approval', request),
     exportLatestRun: (request) => ipcRenderer.invoke('machine-export-latest-run', request),
   },
   userSnippets: {
