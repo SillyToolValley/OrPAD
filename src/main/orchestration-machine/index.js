@@ -1,4 +1,5 @@
 const contracts = require('./contracts');
+const apiAgentAdapter = require('./adapters/api-agent');
 const cliAgentAdapter = require('./adapters/cli-agent');
 const commandGrants = require('./command-grants');
 const proposalAdapter = require('./adapters/proposal-adapter');
@@ -16,6 +17,7 @@ const patches = require('./patches');
 const pathResolver = require('./path-resolver');
 const processRunner = require('./adapters/process-runner');
 const probeRunner = require('./probe-runner');
+const providerPolicy = require('./providers/policy');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
 const triageRunner = require('./triage-runner');
@@ -26,6 +28,7 @@ const writeSets = require('./write-sets');
 
 module.exports = {
   ...contracts,
+  ...apiAgentAdapter,
   ...cliAgentAdapter,
   ...commandGrants,
   ...proposalAdapter,
@@ -43,6 +46,7 @@ module.exports = {
   ...pathResolver,
   ...processRunner,
   ...probeRunner,
+  ...providerPolicy,
   ...queueStore,
   ...runStore,
   ...triageRunner,

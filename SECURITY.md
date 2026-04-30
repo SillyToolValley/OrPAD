@@ -377,6 +377,15 @@ path still creates durable run metadata only.
   Out-of-write-set changes and duplicate/base-mismatched patch application are rejected.
 - Worker results that claim `changedFiles` outside the claim write set are rejected before
   `worker.result` and queue close events are recorded.
+- The API adapter kernel is provider-neutral and disabled by default. A provider response is
+  parsed as a structured adapter result only; it cannot write queue, run, or artifact state
+  directly.
+- API provider keys are policy-checked before use. Desktop access must route through the
+  safeStorage-backed key path (or explicit in-memory tests), web access requires an IndexedDB
+  risk-consent source, and `localStorage` key reads are always rejected.
+- API tracing and telemetry export are off unless exact capability grants include
+  `use.tracing` or `export.telemetry`. Trace IDs and provider session IDs are non-authoritative
+  adapter metadata, never canonical Machine state.
 
 ## URL handling
 
