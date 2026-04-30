@@ -33,7 +33,7 @@ async function makeGraphHarnessWorkspace(runId = 'run_20260430_graph_harness') {
         { id: 'triage', type: 'orpad.triage', config: { queueRef: 'queue' } },
         { id: 'dispatch', type: 'orpad.dispatcher', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', config: { queueRef: 'queue' } },
-        { id: 'verification-gate', type: 'orpad.gate', config: { criteria: ['worker proof accepted'] } },
+        { id: 'verification-gate', type: 'orpad.gate', config: { criteria: ['worker proof accepted', 'queue empty'] } },
         {
           id: 'artifact',
           type: 'orpad.artifactContract',
@@ -171,7 +171,7 @@ async function makeNestedGraphHarnessWorkspace(runId = 'run_20260430_nested_grap
       nodes: [
         { id: 'dispatch', type: 'orpad.dispatcher', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', config: { queueRef: 'queue' } },
-        { id: 'gate', type: 'orpad.gate', config: { criteria: ['worker proof accepted'] } },
+        { id: 'gate', type: 'orpad.gate', config: { criteria: ['worker proof accepted', 'queue empty'] } },
       ],
       transitions: [
         { from: 'dispatch', to: 'worker' },
@@ -229,9 +229,13 @@ async function makeNestedGraphHarnessWorkspace(runId = 'run_20260430_nested_grap
 }
 
 async function updateMainArtifactContract(pipelineDir, config) {
+  await updateMainNodeConfig(pipelineDir, 'artifact', config);
+}
+
+async function updateMainNodeConfig(pipelineDir, nodeId, config) {
   const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
   const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
-  const node = graph.graph.nodes.find(entry => entry.id === 'artifact');
+  const node = graph.graph.nodes.find(entry => entry.id === nodeId);
   node.config = {
     ...(node.config || {}),
     ...config,
@@ -291,6 +295,12 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
   assert.equal(adapterRequest.nodePath, 'main/worker');
   const triageRequest = executed.events.find(event => event.eventType === 'adapter.requested' && event.payload?.taskKind === 'triage');
   assert.deepEqual(triageRequest.payload.inputArtifacts, ['artifacts/discovery/candidate-inventory.json']);
+  const barrierEvent = executed.events.find(event => event.eventType === 'node.completed' && event.nodePath === 'main/barrier');
+  assert.equal(barrierEvent.payload.valid, true);
+  assert.equal(barrierEvent.payload.dependencies[0].completed, true);
+  const gateEvent = executed.events.find(event => event.eventType === 'node.completed' && event.nodePath === 'main/verification-gate');
+  assert.equal(gateEvent.payload.valid, true);
+  assert.deepEqual(gateEvent.payload.evaluations.map(entry => entry.passed), [true, true]);
 });
 
 test('graph-driven execute step rejects pipelines without a deterministic MVP harness', async () => {
@@ -336,6 +346,56 @@ test('ArtifactContract fail-run blocks completion when required artifacts are mi
   const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/artifact');
   assert.equal(failed.payload.code, 'MACHINE_ARTIFACT_CONTRACT_MISSING');
   assert.equal(events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
+});
+
+test('Barrier fail policy rejects when declared dependencies have not completed', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_barrier_wait_fail');
+  await updateMainNodeConfig(pipelineDir, 'barrier', {
+    waitFor: ['missing-probe'],
+    onPartialFailure: 'fail',
+  });
+
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      nodeExecutable: process.execPath,
+    }),
+    error => error?.code === 'MACHINE_BARRIER_WAIT_INCOMPLETE',
+  );
+
+  const events = await readMachineEvents(run.runRoot);
+  const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/barrier');
+  assert.equal(failed.payload.code, 'MACHINE_BARRIER_WAIT_INCOMPLETE');
+  assert.equal(events.some(event => event.nodePath === 'main/triage'), false);
+});
+
+test('Gate rejects unsupported or unmet criteria instead of passing by prompt text', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_gate_criteria_fail');
+  await updateMainNodeConfig(pipelineDir, 'verification-gate', {
+    criteria: ['worker proof accepted', 'unsupported product decision'],
+    onFail: 'block',
+  });
+
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      nodeExecutable: process.execPath,
+    }),
+    error => error?.code === 'MACHINE_GATE_CRITERIA_UNMET',
+  );
+
+  const events = await readMachineEvents(run.runRoot);
+  const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/verification-gate');
+  assert.equal(failed.payload.code, 'MACHINE_GATE_CRITERIA_UNMET');
+  assert.equal(events.some(event => event.nodePath === 'main/artifact'), false);
 });
 
 test('ArtifactContract mark-partial keeps done queue work from becoming a completed run', async () => {

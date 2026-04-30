@@ -230,10 +230,10 @@ function inputRefs(config = {}) {
   return Array.isArray(config.inputs) ? config.inputs : [];
 }
 
-function arrayConfig(value, label) {
+function arrayConfig(value, label, code = 'MACHINE_CONFIG_INVALID') {
   if (value === undefined) return [];
   if (Array.isArray(value)) return value;
-  throw machineExecutionError('MACHINE_ARTIFACT_CONTRACT_INVALID', `${label} must be an array.`);
+  throw machineExecutionError(code, `${label} must be an array.`);
 }
 
 function artifactContractOnMissing(value) {
@@ -276,13 +276,17 @@ async function validateArtifactContract(runRoot, config = {}) {
   const inventory = await summarizeQueueInventory(runRoot);
   const manifestPaths = new Set(manifest.files.map(file => file.path));
   const onMissing = artifactContractOnMissing(config.onMissing);
-  const requiredArtifacts = arrayConfig(config.required, 'ArtifactContract.required').map(required => ({
+  const requiredArtifacts = arrayConfig(
+    config.required,
+    'ArtifactContract.required',
+    'MACHINE_ARTIFACT_CONTRACT_INVALID',
+  ).map(required => ({
     declared: required,
     path: contractExpectedPath(config.artifactRoot, required, 'artifacts'),
   })).filter(entry => entry.path);
   const requiredQueue = [
-    ...arrayConfig(config.requiredQueue, 'ArtifactContract.requiredQueue'),
-    ...arrayConfig(config.requiredQueueArtifacts, 'ArtifactContract.requiredQueueArtifacts'),
+    ...arrayConfig(config.requiredQueue, 'ArtifactContract.requiredQueue', 'MACHINE_ARTIFACT_CONTRACT_INVALID'),
+    ...arrayConfig(config.requiredQueueArtifacts, 'ArtifactContract.requiredQueueArtifacts', 'MACHINE_ARTIFACT_CONTRACT_INVALID'),
   ].map(required => ({
     declared: required,
     path: contractExpectedPath(config.queueRoot, required, 'queue'),
@@ -320,6 +324,134 @@ async function validateArtifactContract(runRoot, config = {}) {
   return result;
 }
 
+function resolveNodeRefFromConfig(node, ref) {
+  const value = String(ref || '').trim();
+  if (!value) return '';
+  if (value.includes('/')) return value;
+  return `${node.graphKey}/${value}`;
+}
+
+function latestNodeCompletedEvent(events, nodePath) {
+  return [...events].reverse().find(event => (
+    event.eventType === 'node.completed'
+    && event.nodePath === nodePath
+  )) || null;
+}
+
+async function validateBarrierNode(runRoot, node, config = {}) {
+  const waitFor = arrayConfig(config.waitFor, 'Barrier.waitFor');
+  const onPartialFailure = config.onPartialFailure || 'continue-with-warning';
+  if (!['fail', 'continue-with-warning', 'block'].includes(onPartialFailure)) {
+    throw machineExecutionError('MACHINE_BARRIER_CONFIG_INVALID', `Unsupported Barrier onPartialFailure policy: ${onPartialFailure}`);
+  }
+  const events = await readMachineEvents(runRoot);
+  const dependencies = waitFor.map(ref => {
+    const nodePath = resolveNodeRefFromConfig(node, ref);
+    const completedEvent = latestNodeCompletedEvent(events, nodePath);
+    return {
+      ref,
+      nodePath,
+      completed: Boolean(completedEvent),
+      eventSequence: completedEvent?.sequence ?? null,
+    };
+  });
+  const missing = dependencies.filter(entry => !entry.completed);
+  const result = {
+    valid: missing.length === 0,
+    waitForCount: waitFor.length,
+    mergePolicy: config.mergePolicy || '',
+    onPartialFailure,
+    outputCount: outputRefs(config).length,
+    dependencies,
+    missing,
+  };
+  if (!result.valid && ['fail', 'block'].includes(onPartialFailure)) {
+    const err = machineExecutionError(
+      'MACHINE_BARRIER_WAIT_INCOMPLETE',
+      'Barrier waitFor nodes must complete before the barrier can continue.',
+    );
+    err.barrier = result;
+    throw err;
+  }
+  return result;
+}
+
+function acceptedWorkerProof(events) {
+  return events.find(event => (
+    event.eventType === 'worker.result'
+    && event.payload?.status === 'done'
+    && (
+      (event.artifactRefs || []).length > 0
+      || Boolean(event.payload?.patchArtifact)
+    )
+    && (event.payload?.verification || []).length > 0
+  )) || null;
+}
+
+function normalizeCriterion(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function evaluateGateCriterion(criterion, input = {}) {
+  const normalized = normalizeCriterion(criterion);
+  if (!normalized) {
+    return { criterion, supported: false, passed: false, reason: 'empty-criterion' };
+  }
+  if (normalized.includes('worker proof accepted')) {
+    const event = acceptedWorkerProof(input.events);
+    return {
+      criterion,
+      supported: true,
+      passed: Boolean(event),
+      reason: event ? 'worker-proof-accepted' : 'worker-proof-missing',
+      eventSequence: event?.sequence ?? null,
+    };
+  }
+  if (normalized.includes('queue empty') || normalized.includes('active queue empty')) {
+    return {
+      criterion,
+      supported: true,
+      passed: input.inventory.activeCount === 0,
+      reason: input.inventory.activeCount === 0 ? 'queue-empty' : 'queue-active',
+      activeCount: input.inventory.activeCount,
+    };
+  }
+  return {
+    criterion,
+    supported: false,
+    passed: false,
+    reason: 'unsupported-criterion',
+  };
+}
+
+async function validateGateNode(runRoot, config = {}) {
+  const criteria = arrayConfig(config.criteria, 'Gate.criteria');
+  const onFail = config.onFail || 'block';
+  const events = await readMachineEvents(runRoot);
+  const inventory = await summarizeQueueInventory(runRoot);
+  const evaluations = criteria.map(criterion => evaluateGateCriterion(criterion, { events, inventory }));
+  const failed = evaluations.filter(entry => !entry.passed);
+  const result = {
+    valid: failed.length === 0,
+    onFail,
+    criteriaCount: criteria.length,
+    inputCount: inputRefs(config).length,
+    outputCount: outputRefs(config).length,
+    evaluations,
+    failed,
+    inventory,
+  };
+  if (!result.valid && !['warn', 'continue', 'continue-with-warning'].includes(onFail)) {
+    const err = machineExecutionError(
+      'MACHINE_GATE_CRITERIA_UNMET',
+      'Gate criteria are not satisfied by Machine-owned run evidence.',
+    );
+    err.gate = result;
+    throw err;
+  }
+  return result;
+}
+
 async function executeSupportNode(runRoot, node, options = {}) {
   const { runId } = options;
   return withNodeLifecycle(runRoot, node, {
@@ -342,20 +474,10 @@ async function executeSupportNode(runRoot, node, options = {}) {
       };
     }
     if (node.nodeType === 'orpad.barrier') {
-      return {
-        waitForCount: Array.isArray(config.waitFor) ? config.waitFor.length : 0,
-        mergePolicy: config.mergePolicy || '',
-        outputCount: outputRefs(config).length,
-      };
+      return validateBarrierNode(runRoot, node, config);
     }
     if (node.nodeType === 'orpad.gate') {
-      const inventory = await summarizeQueueInventory(runRoot);
-      return {
-        criteriaCount: Array.isArray(config.criteria) ? config.criteria.length : 0,
-        inputCount: inputRefs(config).length,
-        outputCount: outputRefs(config).length,
-        inventory,
-      };
+      return validateGateNode(runRoot, config);
     }
     if (node.nodeType === 'orpad.artifactContract') {
       return validateArtifactContract(runRoot, config);
@@ -762,7 +884,9 @@ module.exports = {
   flattenTraversalNodes,
   harnessFromPipeline,
   registerCandidateInventoryArtifact,
+  validateBarrierNode,
   validateArtifactContract,
+  validateGateNode,
   nodeCliPatchCommandSpec,
   nodeExecutableForHarness,
   proposalResultForRequest,
