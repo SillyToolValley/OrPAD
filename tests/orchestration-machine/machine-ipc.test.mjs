@@ -115,6 +115,17 @@ async function makeHarnessWorkspace() {
   return { workspaceRoot, pipelineDir, pipelinePath };
 }
 
+async function appendHarnessArtifactContract(pipelineDir, config) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  graph.graph.nodes.push({
+    id: 'artifact',
+    type: 'orpad.artifactContract',
+    config,
+  });
+  await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
+}
+
 test('Machine IPC registers only typed channels and preload exposes no generic machine invoke', async () => {
   const { handlers } = createIpcHarness();
   const preloadSource = await fs.readFile(path.join(repoRoot, 'src/main/preload.js'), 'utf8');
@@ -258,4 +269,36 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   assert.equal(executed.events.some(item => item.eventType === 'queue.transition' && item.toState === 'done'), true);
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'before\n');
   assert.equal((await fs.stat(path.join(pipelineDir, 'harness/generated/latest-run/run-metadata.json'))).isFile(), true);
+});
+
+test('Machine IPC execute step returns refreshed run evidence when a runtime node fails', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
+  await appendHarnessArtifactContract(pipelineDir, {
+    required: ['missing-proof.md'],
+    onMissing: 'fail-run',
+  });
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_harness_failure',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+
+  assert.equal(executed.success, false);
+  assert.equal(executed.code, 'MACHINE_ARTIFACT_CONTRACT_MISSING');
+  assert.equal(executed.failure.contract.missingArtifactCount, 1);
+  assert.equal(executed.events.some(item => item.eventType === 'node.failed' && item.nodePath === 'main/artifact'), true);
+  assert.equal(executed.events.some(item => item.eventType === 'worker.result'), true);
+  assert.equal(executed.runState.eventSequence, executed.events.at(-1).sequence);
 });

@@ -334,15 +334,22 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
       exported: executed.exported,
     };
   } catch (err) {
-    if (String(err?.code || '').startsWith('MACHINE_EXECUTION_')) {
+    const code = String(err?.code || '');
+    if (code) {
+      const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
       return {
         success: false,
         ok: false,
-        code: err.code,
+        code,
         error: err.message,
         runId,
-        runState: snapshot.runState,
-        events: snapshot.events,
+        runState: failureSnapshot.runState,
+        events: failureSnapshot.events,
+        failure: {
+          contract: err.contract || null,
+          barrier: err.barrier || null,
+          gate: err.gate || null,
+        },
       };
     }
     throw err;

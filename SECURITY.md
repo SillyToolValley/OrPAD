@@ -358,6 +358,8 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
   the dispatcher, runs one WorkerLoop step, finalizes run status from Machine queue inventory, and
   constructs the exact CLI overlay command itself. The renderer cannot pass an arbitrary command,
   args, cwd, or dangerous Codex bypass flag through this channel.
+- Runtime node failures return the refreshed durable run snapshot, including post-failure
+  `node.failed` events, rather than trusting a renderer-supplied status or stale pre-run snapshot.
 - `machine-export-latest-run` copies a trusted snapshot to the legacy latest-run export directory
   for compatibility. It does not apply patches, edit source files, or call external tools.
 
