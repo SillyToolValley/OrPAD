@@ -319,8 +319,9 @@ test('serial worker loop processes queued items one at a time until queue-empty'
     runId: run.runId,
     maxItems: 5,
     now: '2026-04-30T00:00:20.000Z',
-    fixtureResult: ({ request }) => workerResult(request, {
+    fixtureResult: ({ request, item }) => workerResult(request, {
       artifacts: [`artifacts/work-items/${request.adapterCallId}/proof.md`],
+      changedFiles: item.sourceOfTruthTargets,
     }),
   });
 

@@ -1,5 +1,6 @@
 const contracts = require('./contracts');
 const cliAgentAdapter = require('./adapters/cli-agent');
+const commandGrants = require('./command-grants');
 const proposalAdapter = require('./adapters/proposal-adapter');
 const claims = require('./claims');
 const dispatcher = require('./dispatcher');
@@ -11,7 +12,9 @@ const graphLoader = require('./graph-loader');
 const ipc = require('./ipc');
 const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
+const patches = require('./patches');
 const pathResolver = require('./path-resolver');
+const processRunner = require('./adapters/process-runner');
 const probeRunner = require('./probe-runner');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
@@ -24,6 +27,7 @@ const writeSets = require('./write-sets');
 module.exports = {
   ...contracts,
   ...cliAgentAdapter,
+  ...commandGrants,
   ...proposalAdapter,
   ...claims,
   ...dispatcher,
@@ -35,7 +39,9 @@ module.exports = {
   ...ipc,
   ...metadataStore,
   ...nodeLifecycle,
+  ...patches,
   ...pathResolver,
+  ...processRunner,
   ...probeRunner,
   ...queueStore,
   ...runStore,

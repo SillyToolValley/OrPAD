@@ -8,6 +8,7 @@ const {
   readClaimLease,
 } = require('./claims');
 const { createContractValidator } = require('./contracts');
+const { isPathAllowedByWriteSet } = require('./patches');
 const { findQueueItem, transitionQueueItem } = require('./queue-store');
 const { releaseWriteSetLock } = require('./write-sets');
 
@@ -32,6 +33,16 @@ function assertDoneResultHasProof(result) {
 
   const err = new Error('Worker done result requires artifact evidence and verification proof.');
   err.code = 'WORKER_DONE_RESULT_MISSING_PROOF';
+  throw err;
+}
+
+function assertWorkerResultWithinWriteSet(result, lease) {
+  const allowed = lease.writeSetPaths || [];
+  const violation = (result.changedFiles || []).find(file => !isPathAllowedByWriteSet(file, allowed));
+  if (!violation) return;
+  const err = new Error(`Worker result changed a path outside the active write set: ${violation}`);
+  err.code = 'WORKER_RESULT_WRITE_SET_VIOLATION';
+  err.path = violation;
   throw err;
 }
 
@@ -129,6 +140,7 @@ async function applyWorkerResult(runRoot, options = {}) {
   }
 
   const { lease } = await assertClaimCanAcceptResult(runRoot, { claimId, itemId, now });
+  assertWorkerResultWithinWriteSet(result, lease);
   const toState = options.toState || targetQueueStateForWorkerResult(result);
   const workerEvent = await appendMachineEvent(runRoot, {
     runId,
@@ -335,6 +347,7 @@ module.exports = {
   applyWorkerResult,
   assertClaimCanAcceptResult,
   assertDoneResultHasProof,
+  assertWorkerResultWithinWriteSet,
   cancelClaimedItem,
   findWorkerResultEvent,
   runSerialWorkerLoop,

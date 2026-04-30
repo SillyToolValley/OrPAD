@@ -353,6 +353,31 @@ workspace edits outside Machine run-store/latest-run export paths.
 - `machine-export-latest-run` copies a trusted snapshot to the legacy latest-run export directory
   for compatibility. It does not apply patches, edit source files, or call external tools.
 
+## OrPAD Orchestration Machine adapter security model
+
+The first CLI adapter kernel is intentionally not exposed through renderer IPC and remains
+disabled unless a main-process caller constructs it with `enabled: true`. The default Machine UI
+path still creates durable run metadata only.
+
+- CLI adapter execution uses `read-only-plus-overlay` workspaces. Allowed files are copied to an
+  adapter-local overlay under the durable run root (or an explicit temp overlay in tests).
+- The child process cwd is the overlay, not the canonical workspace. Direct writes to canonical
+  queue/state/run files are therefore impossible through the adapter process.
+- Commands are represented as `{ command, args[] }` and launched with `spawn(shell:false)`. Shell
+  operators are rejected by the command grant layer.
+- Each process launch must match an exact command grant, including command, args, and cwd. A
+  mismatched or expired grant blocks before process launch.
+- The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
+  and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
+- Stdout/stderr are captured with output limits and written only as Machine artifacts when a
+  run root is supplied.
+- Overlay diffs become Machine patch artifacts. The adapter does not apply them to the canonical
+  workspace.
+- Machine patch application checks the active write set and the pre-image hash before writing.
+  Out-of-write-set changes and duplicate/base-mismatched patch application are rejected.
+- Worker results that claim `changedFiles` outside the claim write set are rejected before
+  `worker.result` and queue close events are recorded.
+
 ## URL handling
 
 **Implemented protections:**
