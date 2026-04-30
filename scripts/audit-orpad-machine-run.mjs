@@ -68,6 +68,15 @@ function auditEventSequence(events) {
       firstEventType: events[0]?.eventType,
     }));
   }
+  const runId = events[0]?.runId || '';
+  for (const event of events) {
+    if (!runId || event.runId === runId) continue;
+    diagnostics.push(diagnostic('MACHINE_EVENT_RUN_ID_MISMATCH', 'Machine events must all belong to the same durable runId.', {
+      sequence: event.sequence,
+      expected: runId,
+      actual: event.runId,
+    }));
+  }
   return diagnostics;
 }
 

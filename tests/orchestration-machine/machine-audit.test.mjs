@@ -151,6 +151,23 @@ test('audit-orpad-machine-run fails when artifact content no longer matches mani
   assert.equal(codes.has('MACHINE_ARTIFACT_SIZE_MISMATCH'), true);
 });
 
+test('audit-orpad-machine-run fails when an event belongs to another run id', async () => {
+  const run = await makeAuditableRun();
+  const eventsPath = path.join(run.runRoot, 'events.jsonl');
+  const events = (await fs.readFile(eventsPath, 'utf8'))
+    .trim()
+    .split(/\r?\n/)
+    .map(line => JSON.parse(line));
+  events[1].runId = 'run_20260430_other';
+  await fs.writeFile(eventsPath, `${events.map(event => JSON.stringify(event)).join('\n')}\n`, 'utf8');
+
+  const result = runAudit(run.runRoot, run.latestRunExportRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_EVENT_RUN_ID_MISMATCH'), true);
+});
+
 test('audit-orpad-machine-run fails when artifact manifest violates schema', async () => {
   const run = await makeAuditableRun();
   const manifestPath = path.join(run.runRoot, 'artifacts/manifest.json');
