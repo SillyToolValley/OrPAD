@@ -4,6 +4,7 @@ const artifacts = require('./artifacts');
 const latestRunExporter = require('./exporters/latest-run-exporter');
 const legacyJournalExporter = require('./exporters/legacy-journal-exporter');
 const graphLoader = require('./graph-loader');
+const ipc = require('./ipc');
 const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
 const pathResolver = require('./path-resolver');
@@ -19,6 +20,7 @@ module.exports = {
   ...latestRunExporter,
   ...legacyJournalExporter,
   ...graphLoader,
+  ...ipc,
   ...metadataStore,
   ...nodeLifecycle,
   ...pathResolver,

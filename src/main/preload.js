@@ -113,6 +113,13 @@ contextBridge.exposeInMainWorld('orpad', {
     readRunRecord: (workspacePath, runDir) => ipcRenderer.invoke('pipeline-read-run-record', workspacePath, runDir),
     auditRunEvidence: (workspacePath, pipelinePath) => ipcRenderer.invoke('pipeline-audit-run-evidence', workspacePath, pipelinePath),
   },
+  machine: {
+    validatePipeline: (request) => ipcRenderer.invoke('machine-validate-pipeline', request),
+    createRun: (request) => ipcRenderer.invoke('machine-create-run', request),
+    getRun: (request) => ipcRenderer.invoke('machine-get-run', request),
+    listRuns: (request) => ipcRenderer.invoke('machine-list-runs', request),
+    exportLatestRun: (request) => ipcRenderer.invoke('machine-export-latest-run', request),
+  },
   userSnippets: {
     read: () => ipcRenderer.invoke('snippets-read'),
     ensure: () => ipcRenderer.invoke('snippets-ensure'),

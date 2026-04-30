@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { registerAiKeyHandlers } = require('./ai-keys');
 const { registerAiConversationHandlers } = require('./ai-conversations');
 const { registerMcpHandlers } = require('./mcp/ipc');
+const { registerMachineHandlers } = require('./orchestration-machine/ipc');
 const { registerRunbookHandlers } = require('./runbooks/ipc');
 const { registerTerminalHandlers } = require('./terminal/ipc');
 const { createAuthorityManager, isInsidePath } = require('./authority');
@@ -464,6 +465,7 @@ ipcMain.handle('get-app-info', () => ({
 registerAiKeyHandlers({ ipcMain, app, safeStorage });
 registerAiConversationHandlers({ ipcMain, authority });
 registerMcpHandlers({ ipcMain, app, authority });
+registerMachineHandlers({ ipcMain, authority });
 registerRunbookHandlers({ ipcMain, app, authority });
 registerTerminalHandlers({ ipcMain, app, authority });
 

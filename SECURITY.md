@@ -47,6 +47,7 @@ process is fully sandboxed with no direct Node.js access.
 | `searchFiles(dirPath, query, options)` | workspace search | MEDIUM |
 | `buildLinkIndex` / `resolveWikiLink` / `getBacklinks` / `getFileNames` | wiki-link graph | MEDIUM |
 | `pipelines.*` / `runbooks.*` validation, scan, run-record, and local-run APIs | `.or-pipeline`, `.or-graph`, `.or-tree`, and legacy `.orch-*` validation plus local MVP run evidence | HIGH (future execution substrate) |
+| `machine.*` validation, run-store, readback, listing, and latest-run export APIs | Feature-gated Orchestration Machine IPC for durable run metadata only | HIGH (future execution substrate) |
 | `revealInExplorer(targetPath)` | `shell.showItemInFolder` | LOW |
 | `saveBinary` / `saveText` | save-dialog before write | LOW |
 | `svgToPng(svg, w, h, bg)` | offscreen BrowserWindow render | LOW |
@@ -323,6 +324,32 @@ MCP, URL, or file-write pipeline steps.
   run evidence, context manifests, or artifacts.
 - AI-suggested commands still cannot run automatically.
 
+## OrPAD Orchestration Machine IPC security model
+
+The initial Orchestration Machine IPC surface is a typed, feature-gated bridge for durable run
+metadata only. It does not execute adapters, terminal commands, MCP tools, provider calls, or
+workspace edits outside Machine run-store/latest-run export paths.
+
+- The preload surface exposes one method per action under `window.orpad.machine`; there is no
+  generic Machine `invoke(channel, args)` wrapper.
+- Main process handlers require `event.sender`, `event.senderFrame.url`, and a `file://`
+  renderer frame before doing any path or filesystem work.
+- The feature gate is off by default. Handlers reject until `ORPAD_MACHINE_IPC=1` is present
+  when handlers are registered.
+- Mutating actions (`machine-create-run`, `machine-export-latest-run`) require
+  `ORPAD_MACHINE_IPC_TOKEN` and a matching `capabilityToken` in the request. Read-only validate,
+  list, and get-run actions still require the feature gate and sender/path/schema checks.
+- Requests are typed objects; missing or incorrectly typed fields fail before calling Machine
+  storage helpers.
+- `workspacePath` and `pipelinePath` must stay inside the renderer's approved workspace authority,
+  and Machine execution is limited to `.or-pipeline` files.
+- `runId` is an opaque identifier, not a path. It rejects path separators and resolves only under
+  `<pipelineDir>/runs/<runId>`.
+- `machine-create-run` validates `canMachineExecute` first and writes only the durable Machine run
+  layout under the pipeline's `runs/` directory.
+- `machine-export-latest-run` copies a trusted snapshot to the legacy latest-run export directory
+  for compatibility. It does not apply patches, edit source files, or call external tools.
+
 ## URL handling
 
 **Implemented protections:**
@@ -393,6 +420,11 @@ features that intentionally launch configured/user-requested child processes.
 | `pipeline-create-run-record` / `runbook-create-run-record` | handle | Create minimal run evidence under `.orpad/pipelines/<pipeline>/runs/{runId}` or legacy `.orch-runs/{runId}` | — | Authority guard / workspace only |
 | `pipeline-start-local-run` / `runbook-start-local-run` | handle | Create a local MVP run record, context manifest, approval events, and claim artifact under the target run directory | — | Authority guard / workspace only |
 | `pipeline-read-run-record` / `runbook-read-run-record` | handle | Read `run.or-run` or legacy `run.json` plus `events.jsonl` from allowed run directories | — | Authority guard / `.orpad/pipelines/*/runs`, recorded workspace-local `.or-pipeline` sibling `runs`, or `.orch-runs` only |
+| `machine-validate-pipeline` | handle | Validate an `.or-pipeline` and report Machine execution compatibility | Yes, requires `event.senderFrame.url` `file://` | Authority guard / workspace `.or-pipeline` only |
+| `machine-create-run` | handle | Create a durable Machine run root after `canMachineExecute` validation | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
+| `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
+| `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/` only |
+| `machine-export-latest-run` | handle | Export durable Machine run artifacts/queue metadata to `harness/generated/latest-run` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / pipeline latest-run export only |
 | `save-binary` | handle | Save dialog then binary write | reads `event.sender` | Dialog enforces |
 | `svg-to-png` | handle | Offscreen BrowserWindow render | reads `event.sender` | Validates dimensions |
 | `save-text` | handle | Save dialog then text write | reads `event.sender` | Dialog enforces |
@@ -426,6 +458,11 @@ allowed outside the workspace because the dialog is the user approval surface.
 
 Residual risk: newly added IPC handlers must keep using the authority manager. Any future
 pipeline/runbook write or execution surface must treat path authority tests as release-blocking.
+
+**Machine IPC update:** Orchestration Machine handlers also route through the authority manager
+and add `senderFrame`, feature-gate, typed request, `runId`, and mutating capability-token
+checks before touching storage. PR 8 exposes durable run metadata only; adapter execution,
+provider calls, terminal commands, MCP tools, and source workspace writes remain out of scope.
 
 **Command execution boundaries:** General filesystem/editor IPC still does not expose arbitrary
 shell execution. P1-3 MCP uses the official SDK `StdioClientTransport`, which spawns the
