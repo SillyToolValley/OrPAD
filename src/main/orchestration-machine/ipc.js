@@ -3,6 +3,7 @@ const path = require('path');
 
 const { isInsidePath } = require('../authority');
 const { validateRunbookFile } = require('../runbooks/validator');
+const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
 const { executeMachineRunStep } = require('./machine');
 const { latestRunExportRoot, durableRunRoot } = require('./path-resolver');
@@ -138,6 +139,45 @@ function normalizeTrustLevel(options = {}) {
   return typeof options.trustLevel === 'string' ? options.trustLevel : 'local-authored';
 }
 
+function latestEvent(events, eventType, predicate = () => true) {
+  return [...(events || [])].reverse().find(event => (
+    event?.eventType === eventType
+    && predicate(event)
+  )) || null;
+}
+
+function runRelativeArtifactPath(runRoot, artifactPath) {
+  const portable = String(artifactPath || '').replace(/\\/g, '/');
+  if (!portable || portable.startsWith('/') || portable.includes('../') || portable === '..') return '';
+  const absolutePath = path.resolve(runRoot, ...portable.split('/'));
+  return isInsidePath(absolutePath, path.resolve(runRoot)) ? absolutePath : '';
+}
+
+async function readCandidateInventorySummary(runRoot, events) {
+  const event = latestEvent(events, 'artifact.registered', item => (
+    item.payload?.file?.schemaVersion === SCHEMA_VERSIONS.candidateInventory
+    || item.payload?.file?.producedBy === 'orpad.machine.candidate-inventory'
+  ));
+  const artifactPath = event?.payload?.file?.path || '';
+  const absolutePath = runRelativeArtifactPath(runRoot, artifactPath);
+  if (!absolutePath) return null;
+  try {
+    const inventory = JSON.parse(await fsp.readFile(absolutePath, 'utf8'));
+    return {
+      artifactPath,
+      candidateCount: Number(inventory?.candidateCount) || 0,
+      emptyPassCount: Number(inventory?.emptyPassCount) || 0,
+    };
+  } catch {
+    return { artifactPath, candidateCount: 0, emptyPassCount: 0, unreadable: true };
+  }
+}
+
+function latestWorkerResult(events) {
+  const event = latestEvent(events, 'worker.result');
+  return event ? { event } : null;
+}
+
 async function resolveMachinePipelineContext(event, authority, request) {
   const workspacePath = optionalString(request.workspacePath, 'workspacePath');
   const requestedWorkspaceRoot = workspacePath || authority.getWorkspaceRoot(event.sender);
@@ -167,6 +207,8 @@ async function readRunSnapshot(runRoot) {
   return {
     runState,
     events,
+    candidateInventory: await readCandidateInventorySummary(runRoot, events),
+    worker: latestWorkerResult(events),
   };
 }
 
@@ -265,6 +307,8 @@ async function getRunHandler(event, authority, request) {
     runRoot,
     runState: snapshot.runState,
     events: snapshot.events,
+    candidateInventory: snapshot.candidateInventory,
+    worker: snapshot.worker,
   };
 }
 
@@ -345,6 +389,8 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
         runId,
         runState: failureSnapshot.runState,
         events: failureSnapshot.events,
+        candidateInventory: failureSnapshot.candidateInventory,
+        worker: failureSnapshot.worker,
         failure: {
           contract: err.contract || null,
           barrier: err.barrier || null,

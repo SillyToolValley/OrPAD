@@ -234,6 +234,10 @@ function assertSmoke(condition, message, details = {}) {
   throw err;
 }
 
+function normalizeSmokeNewlines(value) {
+  return String(value || '').replace(/\r\n/g, '\n');
+}
+
 async function runMachineSmoke(input = {}) {
   const options = {
     ...parseArgs([]),
@@ -297,9 +301,12 @@ async function runMachineSmoke(input = {}) {
     assertSmoke((patch?.violations || []).length === 0, 'Patch artifact contains write-set violations.', {
       violations: patch?.violations || [],
     });
-    assertSmoke(patch.changes[0]?.afterContent === `${options.marker}\n`, 'Patch artifact content did not match the smoke marker.', {
+    const expectedPatchContent = `${options.marker}\n`;
+    const actualPatchContent = normalizeSmokeNewlines(patch.changes[0]?.afterContent);
+    assertSmoke(actualPatchContent === expectedPatchContent, 'Patch artifact content did not match the smoke marker.', {
       afterContent: patch.changes[0]?.afterContent,
-      expected: `${options.marker}\n`,
+      normalizedAfterContent: actualPatchContent,
+      expected: expectedPatchContent,
     });
 
     const queueItem = await findQueueItem(run.runRoot, candidate.suggestedWorkItemId);

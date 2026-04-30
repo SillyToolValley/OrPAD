@@ -269,6 +269,18 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   assert.equal(executed.events.some(item => item.eventType === 'queue.transition' && item.toState === 'done'), true);
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'before\n');
   assert.equal((await fs.stat(path.join(pipelineDir, 'harness/generated/latest-run/run-metadata.json'))).isFile(), true);
+
+  const snapshot = await handlers.get(MACHINE_IPC_CHANNELS.getRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+  });
+  assert.deepEqual(snapshot.candidateInventory, {
+    artifactPath: 'artifacts/discovery/candidate-inventory.json',
+    candidateCount: 1,
+    emptyPassCount: 0,
+  });
+  assert.equal(snapshot.worker.event.payload.status, 'done');
+  assert.equal(snapshot.worker.event.artifactRefs.length, 2);
 });
 
 test('Machine IPC execute step returns refreshed run evidence when a runtime node fails', async () => {
