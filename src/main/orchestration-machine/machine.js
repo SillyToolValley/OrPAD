@@ -11,7 +11,12 @@ const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { buildTraversalPlan } = require('./traversal');
 const { loadPipelineGraphSet } = require('./graph-loader');
-const { finalizeRunFromInventory, summarizeQueueInventory } = require('./lifecycle');
+const {
+  appendRunLifecycleStatus,
+  appendRunSummaryStatus,
+  finalizeRunFromInventory,
+  summarizeQueueInventory,
+} = require('./lifecycle');
 const { readMachineEvents } = require('./events');
 const { readRunState } = require('./run-store');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
@@ -225,6 +230,96 @@ function inputRefs(config = {}) {
   return Array.isArray(config.inputs) ? config.inputs : [];
 }
 
+function arrayConfig(value, label) {
+  if (value === undefined) return [];
+  if (Array.isArray(value)) return value;
+  throw machineExecutionError('MACHINE_ARTIFACT_CONTRACT_INVALID', `${label} must be an array.`);
+}
+
+function artifactContractOnMissing(value) {
+  const policy = value || 'fail-run';
+  if (['fail-run', 'mark-partial', 'warn'].includes(policy)) return policy;
+  throw machineExecutionError('MACHINE_ARTIFACT_CONTRACT_INVALID', `Unsupported ArtifactContract onMissing policy: ${policy}`);
+}
+
+function canonicalContractRoot(root, fallback) {
+  if (!root) return fallback;
+  const normalized = normalizeWriteSetPath(root);
+  const latestRunPrefix = 'harness/generated/latest-run/';
+  const latestRunIndex = normalized.indexOf(latestRunPrefix);
+  const stripped = latestRunIndex >= 0
+    ? normalized.slice(latestRunIndex + latestRunPrefix.length)
+    : normalized;
+  if (!stripped || stripped === fallback || stripped.endsWith(`/${fallback}`)) return fallback;
+  return stripped;
+}
+
+function contractExpectedPath(root, requiredPath, fallbackRoot) {
+  const required = normalizeWriteSetPath(requiredPath);
+  if (!required) return '';
+  if (required === fallbackRoot || required.startsWith(`${fallbackRoot}/`)) return required;
+  return path.posix.join(canonicalContractRoot(root, fallbackRoot), required);
+}
+
+async function runRelativeFileExists(runRoot, relativePath) {
+  try {
+    const stats = await fsp.stat(path.join(path.resolve(runRoot), ...relativePath.split('/')));
+    return stats.isFile();
+  } catch (err) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+async function validateArtifactContract(runRoot, config = {}) {
+  const manifest = await writeArtifactManifest(runRoot);
+  const inventory = await summarizeQueueInventory(runRoot);
+  const manifestPaths = new Set(manifest.files.map(file => file.path));
+  const onMissing = artifactContractOnMissing(config.onMissing);
+  const requiredArtifacts = arrayConfig(config.required, 'ArtifactContract.required').map(required => ({
+    declared: required,
+    path: contractExpectedPath(config.artifactRoot, required, 'artifacts'),
+  })).filter(entry => entry.path);
+  const requiredQueue = [
+    ...arrayConfig(config.requiredQueue, 'ArtifactContract.requiredQueue'),
+    ...arrayConfig(config.requiredQueueArtifacts, 'ArtifactContract.requiredQueueArtifacts'),
+  ].map(required => ({
+    declared: required,
+    path: contractExpectedPath(config.queueRoot, required, 'queue'),
+  })).filter(entry => entry.path);
+
+  const missingArtifacts = requiredArtifacts.filter(entry => !manifestPaths.has(entry.path));
+  const missingQueue = [];
+  for (const entry of requiredQueue) {
+    if (!(await runRelativeFileExists(runRoot, entry.path))) missingQueue.push(entry);
+  }
+
+  const result = {
+    valid: missingArtifacts.length === 0 && missingQueue.length === 0,
+    onMissing,
+    artifactCount: manifest.files.length,
+    manifestSourceEventSequence: manifest.sourceEventSequence,
+    requiredCount: requiredArtifacts.length,
+    requiredQueueCount: requiredQueue.length,
+    missingArtifactCount: missingArtifacts.length,
+    missingQueueCount: missingQueue.length,
+    requiredArtifacts,
+    requiredQueue,
+    missingArtifacts,
+    missingQueue,
+    inventory,
+  };
+  if (!result.valid && result.onMissing === 'fail-run') {
+    const err = machineExecutionError(
+      'MACHINE_ARTIFACT_CONTRACT_MISSING',
+      'ArtifactContract required artifacts or queue files are missing.',
+    );
+    err.contract = result;
+    throw err;
+  }
+  return result;
+}
+
 async function executeSupportNode(runRoot, node, options = {}) {
   const { runId } = options;
   return withNodeLifecycle(runRoot, node, {
@@ -263,15 +358,7 @@ async function executeSupportNode(runRoot, node, options = {}) {
       };
     }
     if (node.nodeType === 'orpad.artifactContract') {
-      const manifest = await writeArtifactManifest(runRoot);
-      const inventory = await summarizeQueueInventory(runRoot);
-      return {
-        artifactCount: manifest.files.length,
-        manifestSourceEventSequence: manifest.sourceEventSequence,
-        requiredCount: Array.isArray(config.required) ? config.required.length : 0,
-        requiredQueueCount: Array.isArray(config.requiredQueue) ? config.requiredQueue.length : 0,
-        inventory,
-      };
+      return validateArtifactContract(runRoot, config);
     }
     if (node.nodeType === 'orpad.graph') {
       return {
@@ -586,10 +673,49 @@ async function executeMachineRunStep(options = {}) {
     }
   }
 
-  const finalization = await finalizeRunFromInventory(runRoot, {
-    runId,
-    reason: 'machine-graph-step.finalize',
-  });
+  const partialArtifactContracts = support
+    .filter(entry => (
+      entry.nodeType === 'orpad.artifactContract'
+      && entry.result?.valid === false
+      && entry.result?.onMissing === 'mark-partial'
+    ))
+    .map(entry => ({
+      nodePath: entry.nodePath,
+      missingArtifactCount: entry.result.missingArtifactCount,
+      missingQueueCount: entry.result.missingQueueCount,
+      missingArtifacts: entry.result.missingArtifacts,
+      missingQueue: entry.result.missingQueue,
+    }));
+  let finalization = null;
+  if (partialArtifactContracts.length) {
+    const inventory = await summarizeQueueInventory(runRoot);
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'waiting',
+      reason: 'artifact-contract.mark-partial',
+      payload: { artifactContracts: partialArtifactContracts },
+    });
+    const runState = await appendRunSummaryStatus(runRoot, {
+      runId,
+      summaryStatus: 'partial',
+      reason: 'artifact-contract.mark-partial',
+      payload: { artifactContracts: partialArtifactContracts },
+    });
+    finalization = {
+      inventory,
+      summaryStatus: 'partial',
+      runState,
+      artifactContracts: {
+        partial: true,
+        contracts: partialArtifactContracts,
+      },
+    };
+  } else {
+    finalization = await finalizeRunFromInventory(runRoot, {
+      runId,
+      reason: 'machine-graph-step.finalize',
+    });
+  }
 
   let exported = null;
   if (exportLatestRunAfterStep) {
@@ -636,6 +762,7 @@ module.exports = {
   flattenTraversalNodes,
   harnessFromPipeline,
   registerCandidateInventoryArtifact,
+  validateArtifactContract,
   nodeCliPatchCommandSpec,
   nodeExecutableForHarness,
   proposalResultForRequest,

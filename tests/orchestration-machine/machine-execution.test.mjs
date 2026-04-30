@@ -10,6 +10,7 @@ const {
   createMachineRun,
   executeMachineRunStep,
   findQueueItem,
+  readMachineEvents,
 } = require('../../src/main/orchestration-machine');
 
 async function makeGraphHarnessWorkspace(runId = 'run_20260430_graph_harness') {
@@ -33,7 +34,16 @@ async function makeGraphHarnessWorkspace(runId = 'run_20260430_graph_harness') {
         { id: 'dispatch', type: 'orpad.dispatcher', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', config: { queueRef: 'queue' } },
         { id: 'verification-gate', type: 'orpad.gate', config: { criteria: ['worker proof accepted'] } },
-        { id: 'artifact', type: 'orpad.artifactContract', config: { required: [], requiredQueue: [] } },
+        {
+          id: 'artifact',
+          type: 'orpad.artifactContract',
+          config: {
+            artifactRoot: 'harness/generated/latest-run/artifacts',
+            queueRoot: 'harness/generated/latest-run/queue',
+            required: ['discovery/candidate-inventory.json'],
+            requiredQueue: ['journal.jsonl'],
+          },
+        },
       ],
       transitions: [
         { from: 'context', to: 'probe' },
@@ -108,7 +118,14 @@ async function makeNestedGraphHarnessWorkspace(runId = 'run_20260430_nested_grap
         { id: 'discovery', type: 'orpad.graph', config: { graphRef: 'discovery.or-graph', executionMode: 'inline' } },
         { id: 'queue-stage', type: 'orpad.graph', config: { graphRef: 'queue.or-graph', executionMode: 'inline' } },
         { id: 'worker-stage', type: 'orpad.graph', config: { graphRef: 'worker.or-graph', executionMode: 'inline' } },
-        { id: 'artifact', type: 'orpad.artifactContract', config: { required: [], requiredQueue: [] } },
+        {
+          id: 'artifact',
+          type: 'orpad.artifactContract',
+          config: {
+            required: ['discovery/candidate-inventory.json'],
+            requiredQueue: ['journal.jsonl'],
+          },
+        },
       ],
       transitions: [
         { from: 'context', to: 'discovery' },
@@ -211,6 +228,17 @@ async function makeNestedGraphHarnessWorkspace(runId = 'run_20260430_nested_grap
   return { workspaceRoot, pipelineDir, pipelinePath, run };
 }
 
+async function updateMainArtifactContract(pipelineDir, config) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  const node = graph.graph.nodes.find(entry => entry.id === 'artifact');
+  node.config = {
+    ...(node.config || {}),
+    ...config,
+  };
+  await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
+}
+
 test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes in graph order', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace();
 
@@ -282,6 +310,56 @@ test('graph-driven execute step rejects pipelines without a deterministic MVP ha
     }),
     error => error?.code === 'MACHINE_EXECUTION_HARNESS_REQUIRED',
   );
+});
+
+test('ArtifactContract fail-run blocks completion when required artifacts are missing', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_artifact_contract_fail');
+  await updateMainArtifactContract(pipelineDir, {
+    required: ['discovery/missing-inventory.json'],
+    requiredQueue: ['journal.jsonl'],
+    onMissing: 'fail-run',
+  });
+
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      nodeExecutable: process.execPath,
+    }),
+    error => error?.code === 'MACHINE_ARTIFACT_CONTRACT_MISSING',
+  );
+
+  const events = await readMachineEvents(run.runRoot);
+  const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/artifact');
+  assert.equal(failed.payload.code, 'MACHINE_ARTIFACT_CONTRACT_MISSING');
+  assert.equal(events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
+});
+
+test('ArtifactContract mark-partial keeps done queue work from becoming a completed run', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_artifact_contract_partial');
+  await updateMainArtifactContract(pipelineDir, {
+    required: ['discovery/missing-inventory.json'],
+    requiredQueue: ['journal.jsonl'],
+    onMissing: 'mark-partial',
+  });
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    nodeExecutable: process.execPath,
+  });
+
+  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'done');
+  assert.equal(executed.finalization.summaryStatus, 'partial');
+  assert.equal(executed.runState.lifecycleStatus, 'waiting');
+  assert.equal(executed.finalization.artifactContracts.partial, true);
+  assert.equal(executed.finalization.artifactContracts.contracts[0].missingArtifactCount, 1);
 });
 
 test('graph-driven execute step expands inline nested graphs and runs every reachable probe', async () => {
