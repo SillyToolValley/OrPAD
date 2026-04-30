@@ -344,3 +344,118 @@ test('audit-orpad-machine-run fails when done worker result has no proof', async
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_WORKER_DONE_PROOF_MISSING'), true);
 });
+
+test('audit-orpad-machine-run fails when queue claim transition has no prior lease', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-claim-causality-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_claim_without_lease',
+    now: fixedNow,
+  });
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:claim-without-lease',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:claim-without-lease',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'claimed',
+    transitionId: 'claim:graph-editor-graph-specific-node-types:missing-lease',
+    payload: {
+      claimId: 'missing-lease',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_QUEUE_CLAIM_WITHOUT_LEASE'), true);
+});
+
+test('audit-orpad-machine-run fails when queue done transition has no prior worker result', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-done-causality-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_done_without_worker',
+    now: fixedNow,
+  });
+  const claimId = 'claim-without-worker-result';
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:done-without-worker',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:done-without-worker',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'claim.lease-created',
+    itemId: 'graph-editor-graph-specific-node-types',
+    reason: 'dispatcher.claim-lease',
+    payload: {
+      claimId,
+      workerId: 'worker-audit',
+      leaseMs: 300000,
+      expiresAt: '2026-04-30T00:05:00.000Z',
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'claimed',
+    transitionId: `claim:graph-editor-graph-specific-node-types:${claimId}`,
+    payload: {
+      claimId,
+      workerId: 'worker-audit',
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'done',
+    transitionId: `close:${claimId}:missing-worker-result`,
+    payload: {
+      claimId,
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_QUEUE_DONE_WITHOUT_WORKER_RESULT'), true);
+  assert.equal(codes.has('MACHINE_QUEUE_CLAIM_WITHOUT_LEASE'), false);
+});

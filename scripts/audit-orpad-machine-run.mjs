@@ -268,6 +268,61 @@ function auditWorkerResultProof(events) {
   return diagnostics;
 }
 
+function findPriorEvent(events, sequence, predicate) {
+  return events.find(event => event.sequence < sequence && predicate(event)) || null;
+}
+
+function auditQueueTransitionCausality(events) {
+  const diagnostics = [];
+  for (const event of events) {
+    if (event.eventType !== 'queue.transition') continue;
+
+    if (event.toState === 'claimed') {
+      const claimId = event.payload?.claimId || '';
+      const lease = findPriorEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'claim.lease-created'
+        && candidate.itemId === event.itemId
+        && candidate.payload?.claimId === claimId
+      ));
+      if (!claimId || !lease) {
+        diagnostics.push(diagnostic('MACHINE_QUEUE_CLAIM_WITHOUT_LEASE', 'Queue claim transitions require a prior Machine-owned claim lease event.', {
+          sequence: event.sequence,
+          itemId: event.itemId,
+          claimId,
+          transitionId: event.payload?.transitionId || '',
+        }));
+      }
+    }
+
+    if (event.fromState === 'claimed' && event.toState === 'done') {
+      const claimId = event.payload?.claimId || '';
+      const workerResult = findPriorEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'worker.result'
+        && candidate.itemId === event.itemId
+        && candidate.payload?.status === 'done'
+        && candidate.payload?.toState === 'done'
+      ));
+      if (!workerResult) {
+        diagnostics.push(diagnostic('MACHINE_QUEUE_DONE_WITHOUT_WORKER_RESULT', 'Queue done transitions require a prior accepted done worker result.', {
+          sequence: event.sequence,
+          itemId: event.itemId,
+          claimId,
+          transitionId: event.payload?.transitionId || '',
+        }));
+      } else if (claimId && workerResult.payload?.claimId !== claimId) {
+        diagnostics.push(diagnostic('MACHINE_QUEUE_DONE_WORKER_CLAIM_MISMATCH', 'Queue done transition claimId must match the accepted worker result claimId.', {
+          sequence: event.sequence,
+          itemId: event.itemId,
+          expected: workerResult.payload?.claimId || '',
+          actual: claimId,
+          workerResultSequence: workerResult.sequence,
+        }));
+      }
+    }
+  }
+  return diagnostics;
+}
+
 async function auditArtifactManifest(runRoot) {
   const diagnostics = [];
   const manifestPath = artifactManifestPath(runRoot);
@@ -525,6 +580,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   diagnostics.push(...auditNodeLifecycle(events));
   diagnostics.push(...auditAdapterIdentity(events));
   diagnostics.push(...auditWorkerResultProof(events));
+  diagnostics.push(...auditQueueTransitionCausality(events));
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);
