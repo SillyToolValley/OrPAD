@@ -3,17 +3,11 @@ const path = require('path');
 
 const { isInsidePath } = require('../authority');
 const { validateRunbookFile } = require('../runbooks/validator');
-const { createAdapterRequest } = require('./adapters/proposal-adapter');
-const { createCliAgentAdapter, cliOverlayRoot } = require('./adapters/cli-agent');
-const { createCommandGrant } = require('./command-grants');
-const { claimNextQueuedItem } = require('./dispatcher');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
+const { executeMachineRunStep } = require('./machine');
 const { latestRunExportRoot, durableRunRoot } = require('./path-resolver');
-const { ingestCandidateProposal, transitionQueueItem } = require('./queue-store');
 const { createMachineRun, readRunState } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
-const { normalizeWriteSetPath } = require('./write-sets');
-const { runWorkerLoopOnce } = require('./worker-loop');
 
 const fsp = fs.promises;
 
@@ -137,19 +131,6 @@ function assertBoolean(value, label, fallback = false) {
     throw machineError('MACHINE_IPC_SCHEMA_INVALID', `${label} must be a boolean.`);
   }
   return value;
-}
-
-async function readJsonFile(filePath, label) {
-  try {
-    return JSON.parse(await fsp.readFile(filePath, 'utf8'));
-  } catch (err) {
-    throw machineError('MACHINE_IPC_SCHEMA_INVALID', `${label} must be valid JSON.`);
-  }
-}
-
-function optionalObject(value, label) {
-  if (value == null) return null;
-  return assertPlainObject(value, label);
 }
 
 function normalizeTrustLevel(options = {}) {
@@ -319,39 +300,6 @@ async function exportLatestRunHandler(event, authority, request) {
   };
 }
 
-function harnessFromPipeline(pipeline) {
-  return pipeline?.run && typeof pipeline.run === 'object' && !Array.isArray(pipeline.run)
-    ? pipeline.run.machineHarness
-    : null;
-}
-
-function nodeExecutableForHarness() {
-  return process.env.ORPAD_MACHINE_NODE_EXEC_PATH
-    || process.env.npm_node_execpath
-    || process.env.NODE
-    || process.execPath;
-}
-
-function nodeCliPatchCommandSpec(patchConfig, cwd) {
-  const patch = assertPlainObject(patchConfig, 'machineHarness.nodeCliPatch');
-  const file = normalizeWriteSetPath(requiredString(patch.file, 'machineHarness.nodeCliPatch.file'));
-  const content = typeof patch.content === 'string' ? patch.content : `${String(patch.content ?? '')}`;
-  const script = [
-    'const fs=require("fs");',
-    'const path=require("path");',
-    `const file=${JSON.stringify(file)};`,
-    `const content=${JSON.stringify(content)};`,
-    'fs.mkdirSync(path.dirname(file),{recursive:true});',
-    'fs.writeFileSync(file,content,"utf8");',
-  ].join('');
-  return {
-    command: nodeExecutableForHarness(),
-    args: ['-e', script],
-    cwd,
-    file,
-  };
-}
-
 async function executeRunStepWithHarnessHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
@@ -361,124 +309,40 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
   }
 
-  const pipeline = await readJsonFile(context.pipelinePath, 'Machine pipeline');
-  const harness = optionalObject(harnessFromPipeline(pipeline), 'run.machineHarness');
-  if (!harness) {
-    return {
-      success: false,
-      ok: false,
-      code: 'MACHINE_EXECUTION_HARNESS_REQUIRED',
-      error: 'This MVP execute step requires a local deterministic run.machineHarness fixture.',
+  try {
+    const executed = await executeMachineRunStep({
+      workspaceRoot: context.workspaceRoot,
+      pipelinePath: context.pipelinePath,
+      pipelineDir: context.pipelineDir,
+      runRoot,
       runId,
-      runState: snapshot.runState,
-      events: snapshot.events,
-    };
-  }
-
-  const candidate = assertPlainObject(harness.candidateProposal, 'machineHarness.candidateProposal');
-  const expectedChangedFiles = (harness.expectedChangedFiles || candidate.sourceOfTruthTargets || [])
-    .map(file => normalizeWriteSetPath(file));
-  const patchConfig = assertPlainObject(harness.nodeCliPatch, 'machineHarness.nodeCliPatch');
-  const patchFile = normalizeWriteSetPath(requiredString(patchConfig.file, 'machineHarness.nodeCliPatch.file'));
-  if (!expectedChangedFiles.includes(patchFile)) {
-    throw machineError(
-      'MACHINE_EXECUTION_HARNESS_INVALID',
-      'machineHarness.nodeCliPatch.file must be listed in expectedChangedFiles or candidate.sourceOfTruthTargets.',
-    );
-  }
-
-  const itemResult = await ingestCandidateProposal(runRoot, candidate, {
-    runId,
-    transitionId: `harness:${runId}:ingest:${candidate.proposalId || candidate.suggestedWorkItemId}`,
-  });
-  await transitionQueueItem(runRoot, {
-    runId,
-    itemId: itemResult.item.id,
-    toState: 'queued',
-    reason: 'machine-harness.triage.accepted',
-    transitionId: `harness:${runId}:triage:${itemResult.item.id}`,
-  });
-
-  const claim = await claimNextQueuedItem(runRoot, {
-    runId,
-    claimId: request.claimId || `claim-${itemResult.item.id}`,
-  });
-  if (!claim.claimed) {
-    const current = await readRunSnapshot(runRoot);
+      exportLatestRunAfterStep: request.exportLatestRun !== false,
+    });
     return {
       success: true,
       ok: true,
       runId,
-      stopReason: claim.stopReason,
-      runState: current.runState,
-      events: current.events,
+      runState: executed.runState,
+      events: executed.events,
+      graphPlan: executed.graphPlan,
+      selectedNodes: executed.selectedNodes,
+      worker: executed.worker?.result || null,
+      exported: executed.exported,
     };
+  } catch (err) {
+    if (String(err?.code || '').startsWith('MACHINE_EXECUTION_')) {
+      return {
+        success: false,
+        ok: false,
+        code: err.code,
+        error: err.message,
+        runId,
+        runState: snapshot.runState,
+        events: snapshot.events,
+      };
+    }
+    throw err;
   }
-
-  const adapterCallId = request.adapterCallId || `${claim.claim.claimId}-harness-cli`;
-  const adapterRequest = createAdapterRequest({
-    adapter: 'cli-agent-overlay',
-    runId,
-    nodePath: 'machine-ui/harness-worker',
-    taskKind: 'workerLoop',
-    workspaceRoot: context.workspaceRoot,
-    workspaceMode: 'read-only-plus-overlay',
-    allowedFiles: claim.writeSet.paths,
-    inputArtifacts: [`queue/claimed/${claim.item.id}.json`],
-    outputContract: 'orpad.workerResult.v1',
-    adapterCallId,
-    attemptId: `${adapterCallId}-attempt-1`,
-    idempotencyKey: `${adapterCallId}:attempt-1`,
-  });
-  adapterRequest.expectedChangedFiles = expectedChangedFiles;
-  adapterRequest.overlayRoot = cliOverlayRoot(runRoot, adapterRequest);
-  adapterRequest.overlayRootMode = 'run-root';
-  const commandSpec = nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot);
-  adapterRequest.commandSpec = {
-    command: commandSpec.command,
-    args: commandSpec.args,
-    cwd: commandSpec.cwd,
-  };
-  adapterRequest.commandGrants = [createCommandGrant({
-    ...adapterRequest.commandSpec,
-    grantId: `grant-${adapterCallId}`,
-    scope: 'machine-ui-harness',
-    expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-    reason: 'explicit Machine UI execute-step harness command',
-  })];
-
-  const worker = await runWorkerLoopOnce({
-    runRoot,
-    runId,
-    workspaceRoot: context.workspaceRoot,
-    claim,
-    request: adapterRequest,
-    adapter: createCliAgentAdapter({
-      enabled: true,
-      runRoot,
-      workspaceRoot: context.workspaceRoot,
-      timeoutMs: 60_000,
-      maxOutputBytes: 64 * 1024,
-    }),
-  });
-  let exported = null;
-  if (request.exportLatestRun !== false) {
-    exported = await exportLatestRun({
-      runRoot,
-      pipelineDir: context.pipelineDir,
-      allowOverwrite: true,
-    });
-  }
-  const current = await readRunSnapshot(runRoot);
-  return {
-    success: true,
-    ok: true,
-    runId,
-    runState: current.runState,
-    events: current.events,
-    worker: worker.result,
-    exported,
-  };
 }
 
 function registerMachineHandlers({ ipcMain, authority, featureGate = featureGateFromEnv() }) {

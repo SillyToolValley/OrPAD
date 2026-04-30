@@ -103,7 +103,9 @@ async function makeHarnessWorkspace() {
     version: '1.0',
     graph: {
       nodes: [
+        { id: 'probe', type: 'orpad.probe', config: { lens: 'ipc-harness' } },
         { id: 'queue', type: 'orpad.workQueue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'triage', type: 'orpad.triage', config: { queueRef: 'queue' } },
         { id: 'dispatcher', type: 'orpad.dispatcher', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', config: { queueRef: 'queue' } },
       ],

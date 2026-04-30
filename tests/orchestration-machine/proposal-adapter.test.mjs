@@ -100,6 +100,18 @@ test('proposal-only probe ingests candidates without letting adapter close the r
 
 test('proposal-only triage performs Machine-owned queue transitions', async () => {
   const run = await makeRun();
+  const probeRequest = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/ux-probe',
+    taskKind: 'probe',
+    workspaceRoot: run.workspaceRoot,
+  });
+  await runProposalProbe({
+    runRoot: run.runRoot,
+    request: probeRequest,
+    fixtureResult: adapterResult(probeRequest),
+  });
+
   const request = createAdapterRequest({
     runId: run.runId,
     nodePath: 'queue/triage',
@@ -111,6 +123,7 @@ test('proposal-only triage performs Machine-owned queue transitions', async () =
     runRoot: run.runRoot,
     request,
     fixtureResult: adapterResult(request, {
+      candidateProposals: [],
       triageTransitions: [{
         itemId: 'graph-editor-graph-specific-node-types',
         toState: 'queued',

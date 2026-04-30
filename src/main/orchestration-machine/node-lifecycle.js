@@ -1,4 +1,5 @@
 const { appendMachineEvent } = require('./events');
+const { repairRunStateFromEvents } = require('./run-store');
 
 const NODE_LIFECYCLE_STATUSES = Object.freeze([
   'scheduled',
@@ -20,13 +21,13 @@ async function recordNodeLifecycleEvent(runRoot, options = {}) {
     nodeType,
     status,
     attempt = 1,
-    timestamp,
+    timestamp = new Date().toISOString(),
     payload = {},
   } = options;
   if (!NODE_LIFECYCLE_STATUSES.includes(status)) {
     throw new Error(`Unknown node lifecycle status: ${status}`);
   }
-  return appendMachineEvent(runRoot, {
+  const event = await appendMachineEvent(runRoot, {
     runId,
     timestamp,
     actor: 'machine',
@@ -40,6 +41,8 @@ async function recordNodeLifecycleEvent(runRoot, options = {}) {
       ...payload,
     },
   });
+  await repairRunStateFromEvents(runRoot);
+  return event;
 }
 
 module.exports = {

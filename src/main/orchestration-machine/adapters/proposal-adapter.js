@@ -73,7 +73,8 @@ function validateAdapterResultForRequest(request, result) {
 
 function assertProposalOnlyResultPolicy(result) {
   const proposals = candidateProposals(result);
-  if (proposals.length) return;
+  const transitions = triageTransitions(result);
+  if (proposals.length || transitions.length) return;
   if (result.status === 'done') {
     const evidence = result.emptyPass?.evidence || [];
     const reason = String(result.emptyPass?.reason || '').trim();

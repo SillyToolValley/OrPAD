@@ -12,18 +12,9 @@ const execFileP = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const {
-  claimNextQueuedItem,
-  cliOverlayRoot,
-  createAdapterRequest,
-  createCliAgentAdapter,
-  createCommandGrant,
   createMachineRun,
-  exportLatestRun,
+  executeMachineRunStep,
   findQueueItem,
-  ingestCandidateProposal,
-  readMachineEvents,
-  runWorkerLoopOnce,
-  transitionQueueItem,
 } = require('../src/main/orchestration-machine');
 const { validateRunbookFile } = require('../src/main/runbooks/validator');
 
@@ -131,6 +122,14 @@ async function writeMachineSmokeWorkspace(options = {}) {
       },
       metadataPath: 'harness/generated/latest-run/run-metadata.json',
       summaryPath: 'harness/generated/latest-run/summary.md',
+      machineHarness: {
+        candidateProposal: smokeCandidateProposal(),
+        expectedChangedFiles: ['src/smoke-target.md'],
+        nodeCliPatch: {
+          file: 'src/smoke-target.md',
+          content: `${options.marker}\n`,
+        },
+      },
     },
     graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
   });
@@ -150,7 +149,7 @@ function smokeCandidateProposal() {
     schemaVersion: 'orpad.candidateProposal.v1',
     proposalId: 'proposal-machine-smoke-target',
     suggestedWorkItemId: 'machine-smoke-target',
-    sourceNode: 'probe/smoke',
+    sourceNode: 'main/probe',
     title: 'Exercise Machine-owned CLI worker overlay',
     fingerprint: 'machine-smoke:src/smoke-target.md',
     contentArea: 'orchestration-machine',
@@ -165,19 +164,6 @@ function smokeCandidateProposal() {
     acceptanceCriteria: ['The Machine stores a patch artifact for src/smoke-target.md and leaves the canonical workspace unchanged.'],
     sourceOfTruthTargets: ['src/smoke-target.md'],
     verificationPlan: 'Run scripts/audit-orpad-machine-run.mjs against the durable run and latest-run export.',
-  };
-}
-
-function nodeCliCommandSpec(marker, cwd) {
-  const script = [
-    'const fs=require("fs");',
-    'fs.mkdirSync("src",{recursive:true});',
-    `fs.writeFileSync("src/smoke-target.md",${JSON.stringify(`${marker}\n`)},"utf8");`,
-  ].join('');
-  return {
-    command: process.execPath,
-    args: ['-e', script],
-    cwd,
   };
 }
 
@@ -271,87 +257,31 @@ async function runMachineSmoke(input = {}) {
       pipelinePath: workspace.pipelinePath,
     });
     const candidate = smokeCandidateProposal();
-    await ingestCandidateProposal(run.runRoot, candidate, {
-      runId: run.runId,
-      transitionId: `smoke:${run.runId}:ingest`,
-    });
-    await transitionQueueItem(run.runRoot, {
-      runId: run.runId,
-      itemId: candidate.suggestedWorkItemId,
-      toState: 'queued',
-      reason: 'smoke.triage.accepted',
-      transitionId: `smoke:${run.runId}:triage`,
-    });
-
-    const claim = await claimNextQueuedItem(run.runRoot, {
-      runId: run.runId,
-      claimId: 'claim-machine-smoke-target',
-    });
-    assertSmoke(claim.claimed, 'Dispatcher did not claim the queued smoke item.', { claim });
-
-    const request = createAdapterRequest({
-      adapter: 'cli-agent-overlay',
-      runId: run.runId,
-      nodePath: 'dispatch/worker',
-      taskKind: 'workerLoop',
+    const executed = await executeMachineRunStep({
       workspaceRoot: workspace.workspaceRoot,
-      workspaceMode: 'read-only-plus-overlay',
-      allowedFiles: claim.writeSet.paths,
-      inputArtifacts: [`queue/claimed/${claim.item.id}.json`],
-      outputContract: 'orpad.workerResult.v1',
-      adapterCallId: 'machine-smoke-cli-call',
-      attemptId: 'machine-smoke-cli-attempt-1',
-      idempotencyKey: `machine-smoke-cli:${run.runId}:attempt-1`,
-    });
-    request.expectedChangedFiles = ['src/smoke-target.md'];
-    const overlayRoot = options.adapter === 'codex-cli' && options.codexBypassSandbox
-      ? await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-codex-overlay-'))
-      : cliOverlayRoot(run.runRoot, request);
-    request.overlayRoot = overlayRoot;
-    request.overlayRootMode = options.adapter === 'codex-cli' && options.codexBypassSandbox
-      ? 'system-temp'
-      : 'run-root';
-    if (options.adapter === 'codex-cli' && options.codexBypassSandbox) {
-      request.dangerousSandboxBypassApproval = {
-        approved: options.approveDangerousBypass === true,
-        reason: options.approveDangerousBypass
-          ? 'explicit smoke approval for Codex dangerous sandbox bypass in a system temp overlay'
-          : '',
-      };
-    }
-    const commandSpec = options.adapter === 'codex-cli'
-      ? await codexCliCommandSpec(options, overlayRoot)
-      : nodeCliCommandSpec(options.marker, overlayRoot);
-    request.commandSpec = commandSpec;
-    request.commandGrants = [createCommandGrant({
-      ...commandSpec,
-      grantId: `grant-machine-smoke-${options.adapter}`,
-      scope: 'machine-smoke',
+      pipelinePath: workspace.pipelinePath,
+      pipelineDir: workspace.pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      nodeExecutable: process.execPath,
+      timeoutMs: options.timeoutMs,
+      overlayRootMode: options.adapter === 'codex-cli' && options.codexBypassSandbox ? 'system-temp' : 'run-root',
       allowDangerousSandboxBypass: options.adapter === 'codex-cli'
         && options.codexBypassSandbox
         && options.approveDangerousBypass,
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-      reason: `explicit OrPAD Machine smoke run using ${options.adapter}`,
-    })];
-
-    const adapter = createCliAgentAdapter({
-      enabled: true,
-      runRoot: run.runRoot,
-      workspaceRoot: workspace.workspaceRoot,
-      overlayRoot,
-      overlayRootMode: request.overlayRootMode,
-      allowDangerousSandboxBypass: options.approveDangerousBypass === true,
-      timeoutMs: options.timeoutMs,
-      maxOutputBytes: 64 * 1024,
+      dangerousSandboxBypassApproval: options.adapter === 'codex-cli' && options.codexBypassSandbox
+        ? {
+          approved: options.approveDangerousBypass === true,
+          reason: options.approveDangerousBypass
+            ? 'explicit smoke approval for Codex dangerous sandbox bypass in a system temp overlay'
+            : '',
+        }
+        : null,
+      createWorkerCommandSpec: options.adapter === 'codex-cli'
+        ? ({ overlayRoot }) => codexCliCommandSpec(options, overlayRoot)
+        : null,
     });
-    const worker = await runWorkerLoopOnce({
-      runRoot: run.runRoot,
-      runId: run.runId,
-      workspaceRoot: workspace.workspaceRoot,
-      claim,
-      request,
-      adapter,
-    });
+    const worker = executed.worker;
     const workerEvent = worker.result?.event;
     const patchArtifact = workerEvent?.payload?.patchArtifact || '';
     const patch = patchArtifact ? await readJson(path.join(run.runRoot, ...patchArtifact.split('/'))) : null;
@@ -373,16 +303,12 @@ async function runMachineSmoke(input = {}) {
     });
 
     const queueItem = await findQueueItem(run.runRoot, candidate.suggestedWorkItemId);
-    const exported = await exportLatestRun({
-      runRoot: run.runRoot,
-      pipelineDir: run.pipelineDir,
-      allowOverwrite: true,
-    });
+    const exported = executed.exported;
     const audit = await runAudit(run.runRoot, exported.targetRoot);
     assertSmoke(audit.ok, 'Machine run audit failed after smoke export.', { audit });
 
     const canonicalContent = await fs.readFile(workspace.targetPath, 'utf8');
-    const events = await readMachineEvents(run.runRoot);
+    const events = executed.events;
     cleanup = workspace.createdWorkspace && !options.keep;
     return {
       ok: true,
@@ -394,6 +320,7 @@ async function runMachineSmoke(input = {}) {
       runId: run.runId,
       runRoot: run.runRoot,
       latestRunExportRoot: exported.targetRoot,
+      selectedNodes: executed.selectedNodes,
       validation: {
         ok: validation.ok,
         canMachineExecute: validation.canMachineExecute,

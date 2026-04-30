@@ -351,9 +351,10 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
 - `machine-create-run` validates `canMachineExecute` first and writes only the durable Machine run
   layout under the pipeline's `runs/` directory.
 - `machine-execute-run-step` is limited to a local deterministic `run.machineHarness` fixture in
-  this MVP. Main process ingests the harness candidate, claims via the dispatcher, runs one
-  WorkerLoop step, and constructs the exact CLI overlay command itself. The renderer cannot pass
-  an arbitrary command, args, cwd, or dangerous Codex bypass flag through this channel.
+  this MVP. Main process loads the pipeline graph, selects the declared Probe/Triage/Dispatcher/
+  WorkerLoop nodes, ingests the harness candidate, claims via the dispatcher, runs one WorkerLoop
+  step, and constructs the exact CLI overlay command itself. The renderer cannot pass an
+  arbitrary command, args, cwd, or dangerous Codex bypass flag through this channel.
 - `machine-export-latest-run` copies a trusted snapshot to the legacy latest-run export directory
   for compatibility. It does not apply patches, edit source files, or call external tools.
 

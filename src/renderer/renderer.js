@@ -7628,7 +7628,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Export Latest</button>
       </div>
       <div class="runbook-replay-events">
-        ${events.slice(0, 12).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No Machine events recorded.</div>'}
+        ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No Machine events recorded.</div>'}
       </div>
       <div class="runbook-machine-grid">
         <div class="runbook-guide">

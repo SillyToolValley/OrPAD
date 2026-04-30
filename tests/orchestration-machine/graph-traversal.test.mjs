@@ -13,6 +13,7 @@ const {
   createMachineRun,
   loadPipelineGraphSet,
   readMachineEvents,
+  readRunState,
   recordNodeLifecycleEvent,
   runtimeHandlerKind,
   topologicalOrder,
@@ -93,6 +94,7 @@ test('node lifecycle events are recorded as Machine events', async () => {
   const events = await readMachineEvents(run.runRoot);
   assert.deepEqual(events.map(event => event.eventType), ['run.created', 'node.scheduled', 'node.completed']);
   assert.equal(events[1].payload.nodeExecutionId, 'run_20260430_graph:main/reference-context:attempt-1');
+  assert.equal((await readRunState(run.runRoot)).eventSequence, events.at(-1).sequence);
 });
 
 test('runtime handler kind classification is explicit for known node families', () => {

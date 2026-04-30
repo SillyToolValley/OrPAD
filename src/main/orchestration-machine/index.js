@@ -13,6 +13,7 @@ const legacyJournalExporter = require('./exporters/legacy-journal-exporter');
 const graphLoader = require('./graph-loader');
 const ipc = require('./ipc');
 const lifecycle = require('./lifecycle');
+const machine = require('./machine');
 const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
 const nodePacks = require('./node-packs');
@@ -46,6 +47,7 @@ module.exports = {
   ...graphLoader,
   ...ipc,
   ...lifecycle,
+  ...machine,
   ...metadataStore,
   ...nodeLifecycle,
   ...nodePacks,
