@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,21 @@ const {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
+
+function runMachineAudit(runRoot, latestRunExportRoot = '') {
+  const args = ['scripts/audit-orpad-machine-run.mjs', runRoot];
+  if (latestRunExportRoot) args.push(latestRunExportRoot);
+  const result = spawnSync(process.execPath, args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  return {
+    exitCode: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    json: result.stdout ? JSON.parse(result.stdout) : null,
+  };
+}
 
 function createIpcHarness(featureGate = { enabled: true, mutatingCapabilityToken: 'test-token' }) {
   const handlers = new Map();
@@ -410,4 +426,7 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   assert.equal(resumed.worker.event.payload.status, 'done');
   assert.equal(resumed.runState.lifecycleStatus, 'completed');
   assert.equal(resumed.runState.summaryStatus, 'done');
+  const audit = runMachineAudit(created.runRoot, resumed.exported.targetRoot);
+  assert.equal(audit.exitCode, 0, audit.stderr || audit.stdout);
+  assert.equal(audit.json.ok, true);
 });

@@ -196,10 +196,12 @@ function proposalResultForRequest(request, options = {}) {
 
 async function withNodeLifecycle(runRoot, node, options = {}, fn) {
   const { runId } = options;
+  const attempt = options.attempt || 1;
   await recordNodeLifecycleEvent(runRoot, {
     runId,
     nodePath: node.nodePath,
     nodeType: node.nodeType,
+    attempt,
     status: 'scheduled',
     payload: options.scheduledPayload || {},
   });
@@ -207,6 +209,7 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
     runId,
     nodePath: node.nodePath,
     nodeType: node.nodeType,
+    attempt,
     status: 'started',
     payload: options.startedPayload || {},
   });
@@ -216,6 +219,7 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
       runId,
       nodePath: node.nodePath,
       nodeType: node.nodeType,
+      attempt,
       status: 'completed',
       payload: typeof options.completedPayload === 'function'
         ? options.completedPayload(result)
@@ -227,6 +231,7 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
       runId,
       nodePath: node.nodePath,
       nodeType: node.nodeType,
+      attempt,
       status: 'failed',
       payload: {
         code: err?.code || 'MACHINE_NODE_FAILED',
@@ -353,6 +358,13 @@ function latestNodeCompletedEvent(events, nodePath) {
   )) || null;
 }
 
+function nextNodeAttempt(events, nodePath) {
+  const attempts = events
+    .filter(event => String(event.eventType || '').startsWith('node.') && event.nodePath === nodePath)
+    .map(event => Number(event.payload?.attempt) || 1);
+  return attempts.length ? Math.max(...attempts) + 1 : 1;
+}
+
 async function validateBarrierNode(runRoot, node, config = {}) {
   const waitFor = arrayConfig(config.waitFor, 'Barrier.waitFor');
   const onPartialFailure = config.onPartialFailure || 'continue-with-warning';
@@ -468,9 +480,10 @@ async function validateGateNode(runRoot, config = {}) {
 }
 
 async function executeSupportNode(runRoot, node, options = {}) {
-  const { runId } = options;
+  const { runId, attempt = 1 } = options;
   return withNodeLifecycle(runRoot, node, {
     runId,
+    attempt,
     completedPayload: result => result,
   }, async () => {
     const config = node.config || {};
@@ -654,18 +667,30 @@ async function executeMachineRunStep(options = {}) {
   let worker = null;
   let candidateInventory = null;
   const support = [];
-  const approvalGrants = summarizeApprovalsFromEvents(await readMachineEvents(runRoot))
+  const initialEvents = await readMachineEvents(runRoot);
+  const approvalGrants = summarizeApprovalsFromEvents(initialEvents)
     .all
     .filter(approval => approval.status === 'approved')
     .flatMap(approval => approval.grants || []);
+  const resumeAfterApproval = approvalGrants.length > 0;
 
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
+    if (
+      resumeAfterApproval
+      && node.nodePath !== dispatcherNode.nodePath
+      && node.nodePath !== workerNode.nodePath
+      && latestNodeCompletedEvent(initialEvents, node.nodePath)
+    ) {
+      continue;
+    }
+    const attempt = nextNodeAttempt(initialEvents, node.nodePath);
     if (probeNodes.some(probeEntry => probeEntry.nodePath === node.nodePath)) {
       const currentProbeNode = node;
       const probeCandidates = candidatesForProbeNode(currentProbeNode, probeNodes, candidates);
       const probeResult = await withNodeLifecycle(runRoot, currentProbeNode, {
         runId,
+        attempt,
         completedPayload: result => ({
           proposalCount: result.proposals?.length || 0,
           summaryStatus: result.summaryStatus,
@@ -701,6 +726,7 @@ async function executeMachineRunStep(options = {}) {
       });
       triage = await withNodeLifecycle(runRoot, triageNode, {
         runId,
+        attempt,
         completedPayload: result => ({
           triageTransitionCount: result.triage?.length || 0,
           summaryStatus: result.summaryStatus,
@@ -724,6 +750,7 @@ async function executeMachineRunStep(options = {}) {
     } else if (node.nodePath === dispatcherNode.nodePath) {
       claim = await withNodeLifecycle(runRoot, dispatcherNode, {
         runId,
+        attempt,
         completedPayload: result => ({
           claimed: result.claimed === true,
           stopReason: result.stopReason || '',
@@ -739,6 +766,7 @@ async function executeMachineRunStep(options = {}) {
       if (!claim?.claimed) continue;
       worker = await withNodeLifecycle(runRoot, workerNode, {
         runId,
+        attempt,
         completedPayload: result => ({
           workerStatus: result.result?.event?.payload?.status || '',
           itemId: claim.item?.id || '',
@@ -812,7 +840,7 @@ async function executeMachineRunStep(options = {}) {
       support.push({
         nodePath: node.nodePath,
         nodeType: node.nodeType,
-        result: await executeSupportNode(runRoot, node, { runId }),
+        result: await executeSupportNode(runRoot, node, { runId, attempt }),
       });
     }
   }
