@@ -7747,6 +7747,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending ? 'disabled' : ''}>Execute Step</button>
+        <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending || !window.orpad?.machine?.resumeRun ? 'disabled' : ''}>Resume</button>
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
       </div>
       <div class="runbook-replay-events">
@@ -8175,6 +8176,43 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
   void refreshWorkspaceRunbookSummary();
 }
 
+async function resumeSelectedMachineRun(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.resumeRun) return;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const resumed = await window.orpad.machine.resumeRun({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    capabilityToken: token,
+    exportLatestRun: true,
+  });
+  if (!resumed?.success) {
+    if (resumed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
+      machineCapabilityToken = '';
+      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
+      alert(resumed?.error || 'Machine resume failed.');
+      return;
+    }
+    lastMachineRunRecord = {
+      ...(lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {}),
+      ...resumed,
+      exported: resumed?.exported || resumed?.export || lastMachineRunRecord?.exported || null,
+    };
+    setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+    renderRunbooksPanel();
+    return;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = {
+    ...resumed,
+    exported: resumed.exported || resumed.export,
+  };
+  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+}
+
 async function exportSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine) return;
   const token = await requestMachineCapabilityToken();
@@ -8563,6 +8601,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'start-local') await startSelectedLocalRun(targetPath);
     else if (action === 'run-machine') await startSelectedMachineRun(targetPath);
     else if (action === 'machine-execute-step') await executeSelectedMachineRunStep(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    else if (action === 'machine-resume-run') await resumeSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-approve-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved');
     else if (action === 'machine-deny-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'denied');
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');

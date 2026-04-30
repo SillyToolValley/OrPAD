@@ -20,6 +20,39 @@ function terminalRunError(current, toState, reason) {
   return err;
 }
 
+function pendingApprovalsFromEvents(events = []) {
+  const approvals = new Map();
+  for (const event of events || []) {
+    const approvalId = event?.payload?.approvalId || '';
+    if (!approvalId) continue;
+    if (event.eventType === 'approval.requested') {
+      approvals.set(approvalId, {
+        approvalId,
+        itemId: event.itemId || event.payload?.itemId || '',
+        status: 'requested',
+        requestedSequence: event.sequence,
+      });
+    } else if (event.eventType === 'approval.decided') {
+      const existing = approvals.get(approvalId) || { approvalId };
+      approvals.set(approvalId, {
+        ...existing,
+        status: event.payload?.decision || 'decided',
+        decisionSequence: event.sequence,
+      });
+    }
+  }
+  return [...approvals.values()].filter(approval => approval.status === 'requested');
+}
+
+async function assertNoPendingApprovalsForResume(runRoot) {
+  const pendingApprovals = pendingApprovalsFromEvents(await readMachineEvents(runRoot));
+  if (!pendingApprovals.length) return pendingApprovals;
+  const err = new Error('Machine run cannot resume while approval requests are pending.');
+  err.code = 'MACHINE_APPROVAL_PENDING';
+  err.pendingApprovals = pendingApprovals;
+  throw err;
+}
+
 async function assertRunLifecycleCanTransition(runRoot, toState, reason = 'lifecycle.transition') {
   const current = await readAuthoritativeRunState(runRoot);
   if (!current) return current;
@@ -157,6 +190,7 @@ async function resumeMachineRun(runRoot, options = {}) {
   const { runId, now = new Date().toISOString(), recoverStaleClaims } = options;
   if (!runId) throw new Error('runId is required.');
   await assertRunLifecycleCanTransition(runRoot, 'waiting', 'lifecycle.resume');
+  await assertNoPendingApprovalsForResume(runRoot);
   const queueRepair = await repairDerivedQueueFilesFromEvents(runRoot);
   const staleClaims = recoverStaleClaims
     ? await recoverStaleClaims(runRoot, { runId, now })
@@ -195,6 +229,7 @@ module.exports = {
   TERMINAL_RUN_LIFECYCLE_STATES,
   appendRunLifecycleStatus,
   appendRunSummaryStatus,
+  assertNoPendingApprovalsForResume,
   assertNoActiveInventoryForDone,
   assertRunLifecycleCanTransition,
   finalizeRunFromInventory,

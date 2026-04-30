@@ -10,7 +10,9 @@ const {
 } = require('./approvals');
 const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
+const { recoverStaleClaims } = require('./dispatcher');
 const { executeMachineRunStep } = require('./machine');
+const { resumeMachineRun } = require('./lifecycle');
 const { latestRunExportRoot, durableRunRoot } = require('./path-resolver');
 const { createMachineRun, readRunState } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
@@ -23,6 +25,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   getRun: 'machine-get-run',
   listRuns: 'machine-list-runs',
   executeRunStep: 'machine-execute-run-step',
+  resumeRun: 'machine-resume-run',
   decideApproval: 'machine-decide-approval',
   exportLatestRun: 'machine-export-latest-run',
 });
@@ -410,6 +413,66 @@ async function decideApprovalHandler(event, authority, request) {
   };
 }
 
+async function resumeRunHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+
+  try {
+    const resumed = await resumeMachineRun(runRoot, {
+      runId,
+      now: optionalString(request.now, 'now') || undefined,
+      recoverStaleClaims,
+    });
+    const updated = await readRunSnapshot(runRoot);
+    const exported = request.exportLatestRun === false
+      ? null
+      : await exportLatestRun({
+        runRoot,
+        pipelineDir: context.pipelineDir,
+        allowOverwrite: true,
+      });
+    return {
+      success: true,
+      ok: true,
+      runId,
+      runState: updated.runState,
+      events: updated.events,
+      candidateInventory: updated.candidateInventory,
+      worker: updated.worker,
+      approvals: updated.approvals,
+      resume: {
+        queueRepair: resumed.queueRepair,
+        staleClaimCount: resumed.staleClaims.length,
+        inventory: resumed.inventory,
+      },
+      exported,
+    };
+  } catch (err) {
+    const code = String(err?.code || '');
+    if (code) {
+      const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+      return {
+        success: false,
+        ok: false,
+        code,
+        error: err.message,
+        runId,
+        runState: failureSnapshot.runState,
+        events: failureSnapshot.events,
+        candidateInventory: failureSnapshot.candidateInventory,
+        worker: failureSnapshot.worker,
+        approvals: failureSnapshot.approvals,
+      };
+    }
+    throw err;
+  }
+}
+
 async function executeRunStepWithHarnessHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
@@ -496,6 +559,7 @@ function registerMachineHandlers({ ipcMain, authority, featureGate = featureGate
   handle(MACHINE_IPC_CHANNELS.getRun, getRunHandler);
   handle(MACHINE_IPC_CHANNELS.listRuns, listRunsHandler);
   handle(MACHINE_IPC_CHANNELS.executeRunStep, executeRunStepWithHarnessHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.resumeRun, resumeRunHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.exportLatestRun, exportLatestRunHandler, { mutating: true });
 

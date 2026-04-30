@@ -147,6 +147,35 @@ test('approval decisions cannot reopen a terminal cancelled run', async () => {
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCount);
 });
 
+test('resume cannot bypass a pending approval request', async () => {
+  const run = await makeRun('run_20260430_resume_pending_approval');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'resume-approval-item',
+    fingerprint: 'lifecycle:resume-approval-item',
+    approvalRequired: true,
+  }));
+
+  const paused = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  assert.equal(paused.stopReason, 'approval-required');
+  const eventCount = (await readMachineEvents(run.runRoot)).length;
+
+  await assert.rejects(
+    resumeMachineRun(run.runRoot, {
+      runId: run.runId,
+      now: '2026-04-30T00:00:30.000Z',
+    }),
+    error => error?.code === 'MACHINE_APPROVAL_PENDING',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'approval-required');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventCount);
+});
+
 test('final lifecycle status cannot become done while active queue inventory remains', async () => {
   const run = await makeRun('run_20260430_done_gate');
   const itemId = await queueProposal(run);

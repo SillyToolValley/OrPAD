@@ -148,6 +148,7 @@ test('Machine IPC registers only typed channels and preload exposes no generic m
 
   assert.deepEqual([...handlers.keys()].sort(), Object.values(MACHINE_IPC_CHANNELS).sort());
   assert.equal(preloadSource.includes('machine-validate-pipeline'), true);
+  assert.equal(preloadSource.includes('machine-resume-run'), true);
   assert.equal(preloadSource.includes('machine-decide-approval'), true);
   assert.equal(preloadSource.includes('machine.invoke'), false);
   assert.equal(preloadSource.includes("ipcRenderer.invoke(channel"), false);
@@ -247,6 +248,20 @@ test('Machine IPC validates, creates, reads, lists, and exports a Machine run wi
   assert.equal(snapshot.success, true);
   assert.equal(snapshot.runState.lifecycleStatus, 'created');
   assert.equal(snapshot.events.length, 1);
+
+  const resumed = await handlers.get(MACHINE_IPC_CHANNELS.resumeRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc',
+    capabilityToken: 'test-token',
+    exportLatestRun: false,
+  });
+  assert.equal(resumed.success, true);
+  assert.equal(resumed.runState.lifecycleStatus, 'waiting');
+  assert.equal(resumed.runState.summaryStatus, 'partial');
+  assert.equal(resumed.resume.staleClaimCount, 0);
+  assert.equal(resumed.resume.inventory.activeCount, 0);
+  assert.equal(resumed.approvals.pendingCount, 0);
+  assert.equal(resumed.exported, null);
 
   const exported = await handlers.get(MACHINE_IPC_CHANNELS.exportLatestRun)(event, {
     ...baseRequest,
@@ -389,6 +404,17 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   assert.equal(snapshot.runState.summaryStatus, 'blocked');
   assert.equal(snapshot.approvals.pendingCount, 1);
   assert.equal(snapshot.approvals.pending[0].status, 'requested');
+
+  const resumePending = await handlers.get(MACHINE_IPC_CHANNELS.resumeRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(resumePending.success, false);
+  assert.equal(resumePending.code, 'MACHINE_APPROVAL_PENDING');
+  assert.equal(resumePending.runState.lifecycleStatus, 'approval-required');
+  assert.equal(resumePending.runState.summaryStatus, 'blocked');
+  assert.equal(resumePending.approvals.pendingCount, 1);
 
   const listed = await handlers.get(MACHINE_IPC_CHANNELS.listRuns)(event, baseRequest);
   assert.equal(listed.runs.find(run => run.runId === created.runId).pendingApprovalCount, 1);
