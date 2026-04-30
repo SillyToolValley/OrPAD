@@ -1,5 +1,8 @@
 const { readMachineEvents } = require('./events');
-const { requestApprovalForItem } = require('./approvals');
+const {
+  requestApprovalForItem,
+  summarizeApprovalsFromEvents,
+} = require('./approvals');
 const {
   appendRunLifecycleStatus,
   assertRunLifecycleCanTransition,
@@ -41,6 +44,13 @@ function hasApprovalGrant(item, grants = []) {
     if (typeof grant === 'string') return grant === item.id;
     return grant?.itemId === item.id && grant?.approved === true;
   });
+}
+
+function approvedApprovalGrantsFromEvents(events = []) {
+  return summarizeApprovalsFromEvents(events)
+    .all
+    .filter(approval => approval.status === 'approved')
+    .flatMap(approval => approval.grants || []);
 }
 
 async function appendRunStatus(runRoot, runId, toState, options = {}) {
@@ -110,7 +120,6 @@ async function claimNextQueuedItem(runRoot, options = {}) {
     runId,
     workerId = 'orpad.workerLoop',
     leaseMs,
-    approvalGrants = [],
     now = new Date().toISOString(),
   } = options;
   if (!runId) throw new Error('runId is required.');
@@ -126,6 +135,7 @@ async function claimNextQueuedItem(runRoot, options = {}) {
   if (!queued.length) return { claimed: false, stopReason: 'queue-empty', recovered };
 
   const next = queued[0];
+  const approvalGrants = approvedApprovalGrantsFromEvents(await readMachineEvents(runRoot));
   if (!hasApprovalGrant(next.item, approvalGrants)) {
     const approval = await requestApprovalForItem(runRoot, {
       runId,
@@ -208,6 +218,7 @@ async function claimNextQueuedItem(runRoot, options = {}) {
 
 module.exports = {
   claimNextQueuedItem,
+  approvedApprovalGrantsFromEvents,
   compareQueuedWorkItems,
   hasApprovalGrant,
   recoverStaleClaims,

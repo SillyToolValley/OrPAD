@@ -106,7 +106,6 @@ test('approval-required pause creates Machine approval artifact and approved dec
   const claimed = await claimNextQueuedItem(run.runRoot, {
     runId: run.runId,
     claimId: 'claim-approved-item',
-    approvalGrants: [approvalGrantForItem(itemId, paused.approval.approvalId)],
   });
   assert.equal(claimed.claimed, true);
   assert.equal(claimed.item.id, itemId);
