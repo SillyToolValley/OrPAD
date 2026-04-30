@@ -358,12 +358,18 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   assert.equal(executed.approvals.pendingCount, 1);
   assert.equal(executed.approvals.pending[0].itemId, 'ipc-harness-smoke');
   assert.equal(executed.approvals.pending[0].approvalId, 'approval-ipc-harness-smoke');
+  assert.equal(executed.runState.lifecycleStatus, 'approval-required');
+  assert.equal(executed.runState.summaryStatus, 'blocked');
+  assert.equal(executed.finalization.summaryStatus, 'blocked');
+  assert.equal(executed.finalization.approvalRequired, true);
   assert.equal(executed.worker, null);
 
   const snapshot = await handlers.get(MACHINE_IPC_CHANNELS.getRun)(event, {
     ...baseRequest,
     runId: created.runId,
   });
+  assert.equal(snapshot.runState.lifecycleStatus, 'approval-required');
+  assert.equal(snapshot.runState.summaryStatus, 'blocked');
   assert.equal(snapshot.approvals.pendingCount, 1);
   assert.equal(snapshot.approvals.pending[0].status, 'requested');
 

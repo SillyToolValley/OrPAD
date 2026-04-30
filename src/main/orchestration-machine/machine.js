@@ -728,6 +728,7 @@ async function executeMachineRunStep(options = {}) {
         runId,
         claimId: options.claimId || `claim-${candidate.suggestedWorkItemId}`,
       }));
+      if (claim?.stopReason === 'approval-required') break;
     } else if (node.nodePath === workerNode.nodePath) {
       if (!claim?.claimed) continue;
       worker = await withNodeLifecycle(runRoot, workerNode, {
@@ -824,7 +825,22 @@ async function executeMachineRunStep(options = {}) {
       missingQueue: entry.result.missingQueue,
     }));
   let finalization = null;
-  if (partialArtifactContracts.length) {
+  if (claim?.stopReason === 'approval-required') {
+    const inventory = await summarizeQueueInventory(runRoot);
+    finalization = {
+      inventory,
+      summaryStatus: 'blocked',
+      runState: await readRunState(runRoot),
+      approvalRequired: true,
+      approval: claim.approval || null,
+      ...(partialArtifactContracts.length ? {
+        artifactContracts: {
+          partial: true,
+          contracts: partialArtifactContracts,
+        },
+      } : {}),
+    };
+  } else if (partialArtifactContracts.length) {
     const inventory = await summarizeQueueInventory(runRoot);
     await appendRunLifecycleStatus(runRoot, {
       runId,
