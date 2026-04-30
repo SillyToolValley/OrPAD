@@ -135,6 +135,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
   await expect(win.locator('#runbooks-content')).toContainText('Latest-run export');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
   const runRoot = path.join(pipelineDir, 'runs');
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(1);
@@ -148,6 +149,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
 
@@ -179,6 +181,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('artifacts/discovery/candidate-inventory.json');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -216,6 +219,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('1 pending approval: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-approve-approval"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-deny-approval"]')).toBeEnabled();
@@ -224,12 +228,14 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('approval.decided');
   await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: approved');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
   await win.locator('button[data-runbook-action="machine-execute-step"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -267,6 +273,7 @@ test('Machine UI keeps denied approval runs terminal', async () => {
   await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: denied');
   await expect(win.locator('#runbooks-content')).toContainText('cancelled');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
