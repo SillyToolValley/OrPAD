@@ -7638,6 +7638,58 @@ function machineFailureDetails(record) {
   `;
 }
 
+function machineCountLabel(count, singular, plural = `${singular}s`) {
+  const value = Number(count) || 0;
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
+function latestMachineEvent(events, eventType, predicate = () => true) {
+  return [...(events || [])].reverse().find(event => (
+    event?.eventType === eventType
+    && predicate(event)
+  )) || null;
+}
+
+function machineCandidateInventoryDetails(record) {
+  const inventory = record?.candidateInventory || null;
+  if (inventory) {
+    return [
+      machineCountLabel(inventory.candidateCount, 'candidate'),
+      machineCountLabel(inventory.emptyPassCount, 'empty-pass', 'empty-pass'),
+      inventory.artifactPath || '',
+    ].filter(Boolean).join(', ');
+  }
+  const event = latestMachineEvent(record?.events, 'artifact.registered', item => (
+    item.payload?.file?.schemaVersion === 'orpad.machineCandidateInventory.v1'
+    || item.payload?.file?.producedBy === 'orpad.machine.candidate-inventory'
+  ));
+  return event?.payload?.file?.path || 'No candidate inventory yet';
+}
+
+function machineWorkerProofDetails(record) {
+  const event = record?.worker?.event || latestMachineEvent(record?.events, 'worker.result');
+  if (!event) return 'No worker proof yet';
+  const payload = event.payload || {};
+  const artifacts = event.artifactRefs || [];
+  const verification = payload.verification || [];
+  const changedFiles = payload.changedFiles || [];
+  return [
+    payload.status || 'worker result',
+    machineCountLabel(artifacts.length, 'artifact'),
+    machineCountLabel(verification.length, 'check'),
+    machineCountLabel(changedFiles.length, 'changed file'),
+  ].filter(Boolean).join('; ');
+}
+
+function machineNodeCompletionDetails(record) {
+  const completed = (record?.events || []).filter(event => event?.eventType === 'node.completed');
+  const selected = Object.values(record?.selectedNodes || {}).filter(Boolean);
+  if (selected.length) {
+    return `${machineCountLabel(completed.length, 'completed node')}; ${selected.join(', ')}`;
+  }
+  return completed.length ? machineCountLabel(completed.length, 'completed node') : 'No completed nodes yet';
+}
+
 function isMachineRunComplete(runState) {
   return runState?.lifecycleStatus === 'completed' && runState?.summaryStatus === 'done';
 }
@@ -7650,6 +7702,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
   const exported = record.exported || null;
   const exportedFiles = exported?.metadata?.artifactManifest?.files || [];
   const runComplete = isMachineRunComplete(runState);
+  const candidateDetails = machineCandidateInventoryDetails(record);
+  const workerProofDetails = machineWorkerProofDetails(record);
+  const nodeCompletionDetails = machineNodeCompletionDetails(record);
   return `
     <section class="runbook-panel-section">
       <h3>Machine Run</h3>
@@ -7667,6 +7722,18 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No Machine events recorded.</div>'}
       </div>
       <div class="runbook-machine-grid">
+        <div class="runbook-guide ${record.candidateInventory ? 'good' : 'warn'}">
+          <strong>Candidate inventory</strong>
+          <span>${escapeHtml(candidateDetails)}</span>
+        </div>
+        <div class="runbook-guide ${workerProofDetails === 'No worker proof yet' ? 'warn' : 'good'}">
+          <strong>Worker proof</strong>
+          <span>${escapeHtml(workerProofDetails)}</span>
+        </div>
+        <div class="runbook-guide">
+          <strong>Node lifecycle</strong>
+          <span>${escapeHtml(nodeCompletionDetails)}</span>
+        </div>
         <div class="runbook-guide">
           <strong>Queue</strong>
           <span>${escapeHtml(queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet')}</span>

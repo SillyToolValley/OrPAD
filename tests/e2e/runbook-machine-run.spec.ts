@@ -137,6 +137,10 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('adapter.requested');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText('queue.transition');
+  await expect(win.locator('#runbooks-content')).toContainText('Candidate inventory');
+  await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
+  await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
@@ -165,6 +169,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
+  await expect(win.locator('#runbooks-content')).toContainText('artifacts/discovery/candidate-inventory.json');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
 
   await app.close();
