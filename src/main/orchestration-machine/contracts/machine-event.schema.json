@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.machineEvent.v1",
+  "title": "OrPAD Machine Event",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "sequence",
+    "timestamp",
+    "actor",
+    "eventType"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["orpad.machineEvent.v1"]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nodePath": {
+      "type": "string"
+    },
+    "eventType": {
+      "type": "string",
+      "minLength": 1
+    },
+    "itemId": {
+      "type": "string"
+    },
+    "fromState": {
+      "type": "string"
+    },
+    "toState": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "artifactRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

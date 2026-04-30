@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.machineRun.v1",
+  "title": "OrPAD Machine Run",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "pipelineId",
+    "pipelinePath",
+    "runRoot",
+    "lifecycleStatus",
+    "summaryStatus",
+    "createdAt",
+    "updatedAt",
+    "eventSequence"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["orpad.machineRun.v1"]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pipelineId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pipelinePath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "latestRunExportPath": {
+      "type": "string"
+    },
+    "lifecycleStatus": {
+      "enum": [
+        "created",
+        "running",
+        "waiting",
+        "approval-required",
+        "cancelling",
+        "cancelled",
+        "failed",
+        "completed"
+      ]
+    },
+    "summaryStatus": {
+      "enum": [
+        "pending",
+        "done",
+        "partial",
+        "blocked"
+      ]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "eventSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "canonicalStoreKind": {
+      "enum": [
+        "jsonl",
+        "sqlite",
+        "indexeddb"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

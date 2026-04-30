@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.adapterRequest.v1",
+  "title": "OrPAD Adapter Request",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "adapter",
+    "runId",
+    "adapterCallId",
+    "attemptId",
+    "idempotencyKey",
+    "nodePath",
+    "taskKind",
+    "workspaceMode",
+    "inputArtifacts",
+    "adapterResultPath",
+    "outputContract"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["orpad.adapterRequest.v1"]
+    },
+    "adapter": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "adapterCallId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nodePath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "taskKind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspaceRoot": {
+      "type": "string"
+    },
+    "workspaceMode": {
+      "enum": [
+        "read-only",
+        "read-only-plus-overlay",
+        "direct-workspace"
+      ]
+    },
+    "allowedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "approvalGrants": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "baselineWorkspaceDigest": {
+      "type": "string"
+    },
+    "inputArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "adapterResultPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "outputContract": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}

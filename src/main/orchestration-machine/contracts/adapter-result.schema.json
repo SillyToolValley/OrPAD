@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.workerResult.v1",
+  "title": "OrPAD Adapter Result",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "adapterCallId",
+    "attemptId",
+    "idempotencyKey",
+    "status",
+    "summary",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["orpad.workerResult.v1"]
+    },
+    "adapterCallId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "done",
+        "blocked",
+        "queued",
+        "failed",
+        "approval-required",
+        "rejected"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "patchArtifact": {
+      "type": "string"
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "additionalProperties": true
+}

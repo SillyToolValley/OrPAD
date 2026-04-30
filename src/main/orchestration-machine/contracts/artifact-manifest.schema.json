@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.artifactManifest.v1",
+  "title": "OrPAD Artifact Manifest",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "createdAt",
+    "files"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["orpad.artifactManifest.v1"]
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sourceEventSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "sha256",
+          "size",
+          "producedBy",
+          "registeredBy"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "minLength": 1
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "schemaVersion": {
+            "type": "string"
+          },
+          "producedBy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "registeredBy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifactId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
