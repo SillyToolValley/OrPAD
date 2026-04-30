@@ -459,3 +459,163 @@ test('audit-orpad-machine-run fails when queue done transition has no prior work
   assert.equal(codes.has('MACHINE_QUEUE_DONE_WITHOUT_WORKER_RESULT'), true);
   assert.equal(codes.has('MACHINE_QUEUE_CLAIM_WITHOUT_LEASE'), false);
 });
+
+test('audit-orpad-machine-run fails when claim lease has no prior write-set acquisition', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-lease-write-set-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_lease_without_write_set',
+    now: fixedNow,
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'claim.lease-created',
+    itemId: 'graph-editor-graph-specific-node-types',
+    reason: 'dispatcher.claim-lease',
+    payload: {
+      claimId: 'claim-without-write-set',
+      workerId: 'worker-audit',
+      leaseMs: 300000,
+      expiresAt: '2026-04-30T00:05:00.000Z',
+      writeSetLockId: 'missing-write-set-lock',
+      writeSetPaths: ['src/renderer/renderer.js'],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_CLAIM_LEASE_WITHOUT_WRITE_SET'), true);
+});
+
+test('audit-orpad-machine-run fails when closed claim leaves lease and write-set unreleased', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-close-release-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_close_without_release',
+    now: fixedNow,
+  });
+  const claimId = 'claim-without-release';
+  const writeSetLockId = 'write-set-without-release';
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:close-without-release',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:close-without-release',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'write-set.acquired',
+    itemId: 'graph-editor-graph-specific-node-types',
+    reason: 'dispatcher.write-set-lock',
+    payload: {
+      lockId: writeSetLockId,
+      claimId,
+      paths: ['src/renderer/renderer.js'],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'claim.lease-created',
+    itemId: 'graph-editor-graph-specific-node-types',
+    reason: 'dispatcher.claim-lease',
+    payload: {
+      claimId,
+      workerId: 'worker-audit',
+      leaseMs: 300000,
+      expiresAt: '2026-04-30T00:05:00.000Z',
+      writeSetLockId,
+      writeSetPaths: ['src/renderer/renderer.js'],
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'claimed',
+    transitionId: `claim:graph-editor-graph-specific-node-types:${claimId}`,
+    payload: {
+      claimId,
+      workerId: 'worker-audit',
+      writeSetLockId,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'worker-fixture',
+      adapterCallId: 'close-without-release-call',
+      attemptId: 'close-without-release-attempt-1',
+      idempotencyKey: 'close-without-release-call:close-without-release-attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'worker.result',
+    itemId: 'graph-editor-graph-specific-node-types',
+    artifactRefs: ['artifacts/patches/close-without-release.patch.json'],
+    payload: {
+      claimId,
+      adapterCallId: 'close-without-release-call',
+      attemptId: 'close-without-release-attempt-1',
+      idempotencyKey: 'close-without-release-call:close-without-release-attempt-1',
+      status: 'done',
+      toState: 'done',
+      patchArtifact: 'artifacts/patches/close-without-release.patch.json',
+      verification: [{ command: 'fixture', ok: true }],
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'done',
+    transitionId: `close:${claimId}:close-without-release-call`,
+    payload: {
+      claimId,
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_QUEUE_CLOSE_WITHOUT_CLAIM_RELEASE'), true);
+  assert.equal(codes.has('MACHINE_QUEUE_CLOSE_WITHOUT_WRITE_SET_RELEASE'), true);
+  assert.equal(codes.has('MACHINE_QUEUE_DONE_WITHOUT_WORKER_RESULT'), false);
+});

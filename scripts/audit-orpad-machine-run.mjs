@@ -272,6 +272,10 @@ function findPriorEvent(events, sequence, predicate) {
   return events.find(event => event.sequence < sequence && predicate(event)) || null;
 }
 
+function findLaterEvent(events, sequence, predicate) {
+  return events.find(event => event.sequence > sequence && predicate(event)) || null;
+}
+
 function auditQueueTransitionCausality(events) {
   const diagnostics = [];
   for (const event of events) {
@@ -290,6 +294,18 @@ function auditQueueTransitionCausality(events) {
           itemId: event.itemId,
           claimId,
           transitionId: event.payload?.transitionId || '',
+        }));
+      }
+      const leaseWriteSetLockId = lease?.payload?.writeSetLockId || '';
+      const transitionWriteSetLockId = event.payload?.writeSetLockId || '';
+      if (leaseWriteSetLockId && transitionWriteSetLockId !== leaseWriteSetLockId) {
+        diagnostics.push(diagnostic('MACHINE_QUEUE_CLAIM_WRITE_SET_MISMATCH', 'Queue claim transition writeSetLockId must match the claim lease.', {
+          sequence: event.sequence,
+          itemId: event.itemId,
+          claimId,
+          expected: leaseWriteSetLockId,
+          actual: transitionWriteSetLockId,
+          leaseSequence: lease.sequence,
         }));
       }
     }
@@ -316,6 +332,74 @@ function auditQueueTransitionCausality(events) {
           expected: workerResult.payload?.claimId || '',
           actual: claimId,
           workerResultSequence: workerResult.sequence,
+        }));
+      }
+    }
+  }
+  return diagnostics;
+}
+
+function auditLockCausality(events) {
+  const diagnostics = [];
+  for (const event of events) {
+    if (event.eventType === 'claim.lease-created') {
+      const writeSetLockId = event.payload?.writeSetLockId || '';
+      if (!writeSetLockId) continue;
+      const writeSet = findPriorEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'write-set.acquired'
+        && candidate.itemId === event.itemId
+        && candidate.payload?.lockId === writeSetLockId
+        && candidate.payload?.claimId === event.payload?.claimId
+      ));
+      if (!writeSet) {
+        diagnostics.push(diagnostic('MACHINE_CLAIM_LEASE_WITHOUT_WRITE_SET', 'Claim leases with a write-set lock require a prior Machine-owned write-set acquisition event.', {
+          sequence: event.sequence,
+          itemId: event.itemId,
+          claimId: event.payload?.claimId || '',
+          writeSetLockId,
+        }));
+      }
+    }
+
+    if (event.eventType === 'queue.transition' && event.fromState === 'claimed') {
+      const claimId = event.payload?.claimId || '';
+      if (!claimId) continue;
+      const release = findLaterEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'claim.lease-released'
+        && candidate.itemId === event.itemId
+        && candidate.payload?.claimId === claimId
+      ));
+      if (!release) {
+        diagnostics.push(diagnostic('MACHINE_QUEUE_CLOSE_WITHOUT_CLAIM_RELEASE', 'Closed queue claims must release the Machine-owned claim lease.', {
+          sequence: event.sequence,
+          itemId: event.itemId,
+          claimId,
+          toState: event.toState,
+          transitionId: event.payload?.transitionId || '',
+        }));
+      }
+
+      const lease = findPriorEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'claim.lease-created'
+        && candidate.itemId === event.itemId
+        && candidate.payload?.claimId === claimId
+      ));
+      const writeSetLockId = lease?.payload?.writeSetLockId || event.payload?.writeSetLockId || '';
+      if (!writeSetLockId) continue;
+      const writeSetRelease = findLaterEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'write-set.released'
+        && candidate.itemId === event.itemId
+        && candidate.payload?.lockId === writeSetLockId
+        && candidate.payload?.claimId === claimId
+      ));
+      if (!writeSetRelease) {
+        diagnostics.push(diagnostic('MACHINE_QUEUE_CLOSE_WITHOUT_WRITE_SET_RELEASE', 'Closed queue claims must release their Machine-owned write-set lock.', {
+          sequence: event.sequence,
+          itemId: event.itemId,
+          claimId,
+          writeSetLockId,
+          toState: event.toState,
+          transitionId: event.payload?.transitionId || '',
         }));
       }
     }
@@ -581,6 +665,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   diagnostics.push(...auditAdapterIdentity(events));
   diagnostics.push(...auditWorkerResultProof(events));
   diagnostics.push(...auditQueueTransitionCausality(events));
+  diagnostics.push(...auditLockCausality(events));
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);
