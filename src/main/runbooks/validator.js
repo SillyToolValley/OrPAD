@@ -77,6 +77,13 @@ const AGENT_ORCHESTRATED_NODE_TYPES = new Set([
   'orpad.workerLoop',
 ]);
 
+const MACHINE_EXECUTABLE_NODE_TYPES = new Set([
+  ...MVP_EXECUTABLE_NODE_TYPES,
+  ...AGENT_ORCHESTRATED_NODE_TYPES,
+  'orpad.skill',
+  'orpad.tree',
+]);
+
 const RENDER_VALIDATE_ONLY_NODE_TYPES = new Set(
   [...ALL_NODE_TYPES].filter(type => !MVP_EXECUTABLE_NODE_TYPES.has(type)),
 );
@@ -368,6 +375,37 @@ function summarizeCanExecute(diagnostics, trustLevel, renderOnlyNodeTypes) {
   if (diagnostics.some(item => item.level === 'error')) return false;
   if (trustLevel !== 'local-authored' && trustLevel !== 'signed-template') return false;
   return renderOnlyNodeTypes.size === 0;
+}
+
+function summarizeMachineExecution(diagnostics, trustLevel, nodeTypes) {
+  const blockedReasons = [];
+  if (diagnostics.some(item => item.level === 'error')) blockedReasons.push('validation-error');
+  if (trustLevel !== 'local-authored' && trustLevel !== 'signed-template') blockedReasons.push('trust-review-required');
+  const unsupportedNodeTypes = [...nodeTypes]
+    .filter(type => !MACHINE_EXECUTABLE_NODE_TYPES.has(type))
+    .sort();
+  if (unsupportedNodeTypes.length) blockedReasons.push('unsupported-node-type');
+  return {
+    canMachineExecute: blockedReasons.length === 0,
+    machineBlockedReasons: blockedReasons,
+    machineUnsupportedNodeTypes: unsupportedNodeTypes,
+  };
+}
+
+function executionModesFor({ canExecute, canMachineExecute, agentOrchestratedTypes = [] }) {
+  const modes = [];
+  if (canExecute) modes.push('local');
+  if (canMachineExecute) modes.push('machine');
+  if (agentOrchestratedTypes.length) modes.push('handoff');
+  return modes;
+}
+
+function handoffCompatibility(agentOrchestratedTypes = []) {
+  return {
+    available: agentOrchestratedTypes.length > 0,
+    mode: agentOrchestratedTypes.length ? 'path-only-agent-handoff' : 'not-needed',
+    nodeTypes: agentOrchestratedTypes,
+  };
 }
 
 function validateTreeEntry(tree, treePath, state, options, diagnostics) {
@@ -708,10 +746,19 @@ function validateGraphRunbookObject(runbook, options, trustLevel, schemaVersion,
 
   const canExecute = summarizeCanExecute(diagnostics, trustLevel, state.renderOnlyNodeTypes)
     && !state.nestedCanExecuteBlocked;
+  const agentOrchestratedTypes = [...state.renderOnlyNodeTypes]
+    .filter(type => AGENT_ORCHESTRATED_NODE_TYPES.has(type))
+    .sort();
+  const machineExecution = summarizeMachineExecution(diagnostics, trustLevel, state.nodeTypes);
 
   return {
     ok: !diagnostics.some(item => item.level === 'error'),
     canExecute,
+    canMachineExecute: machineExecution.canMachineExecute,
+    executionModes: executionModesFor({ canExecute, canMachineExecute: machineExecution.canMachineExecute, agentOrchestratedTypes }),
+    machineBlockedReasons: machineExecution.machineBlockedReasons,
+    machineUnsupportedNodeTypes: machineExecution.machineUnsupportedNodeTypes,
+    handoffCompatibility: handoffCompatibility(agentOrchestratedTypes),
     trustLevel,
     schemaVersion,
     format: runbook.kind === 'orpad.graph' ? 'or-graph' : 'orch-graph',
@@ -750,9 +797,15 @@ function validateTreeRunbookObject(runbook, options, trustLevel, schemaVersion, 
 
   const canExecute = summarizeCanExecute(diagnostics, trustLevel, state.renderOnlyNodeTypes)
     && !state.nestedCanExecuteBlocked;
+  const machineExecution = summarizeMachineExecution(diagnostics, trustLevel, state.nodeTypes);
   return {
     ok: !diagnostics.some(item => item.level === 'error'),
     canExecute,
+    canMachineExecute: machineExecution.canMachineExecute,
+    executionModes: executionModesFor({ canExecute, canMachineExecute: machineExecution.canMachineExecute }),
+    machineBlockedReasons: machineExecution.machineBlockedReasons,
+    machineUnsupportedNodeTypes: machineExecution.machineUnsupportedNodeTypes,
+    handoffCompatibility: handoffCompatibility([]),
     trustLevel,
     schemaVersion,
     format: hasInlineRoot || runbook.kind === 'orpad.tree' ? 'or-tree' : 'orch-tree',
@@ -915,9 +968,15 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
 
   const canExecute = summarizeCanExecute(diagnostics, trustLevel, state.renderOnlyNodeTypes)
     && !state.nestedCanExecuteBlocked;
+  const machineExecution = summarizeMachineExecution(diagnostics, trustLevel, state.nodeTypes);
   return {
     ok: !diagnostics.some(item => item.level === 'error'),
     canExecute,
+    canMachineExecute: machineExecution.canMachineExecute,
+    executionModes: executionModesFor({ canExecute, canMachineExecute: machineExecution.canMachineExecute, agentOrchestratedTypes }),
+    machineBlockedReasons: machineExecution.machineBlockedReasons,
+    machineUnsupportedNodeTypes: machineExecution.machineUnsupportedNodeTypes,
+    handoffCompatibility: handoffCompatibility(agentOrchestratedTypes),
     trustLevel,
     schemaVersion,
     format: 'or-pipeline',
@@ -944,6 +1003,11 @@ function validateRunbookObject(runbook, options = {}) {
     return {
       ok: false,
       canExecute: false,
+      canMachineExecute: false,
+      executionModes: [],
+      machineBlockedReasons: ['validation-error'],
+      machineUnsupportedNodeTypes: [],
+      handoffCompatibility: handoffCompatibility([]),
       trustLevel,
       schemaVersion: '',
       graphCount: 0,
@@ -980,6 +1044,11 @@ function validateRunbookSource(source, options = {}) {
     return {
       ok: false,
       canExecute: false,
+      canMachineExecute: false,
+      executionModes: [],
+      machineBlockedReasons: ['validation-error'],
+      machineUnsupportedNodeTypes: [],
+      handoffCompatibility: handoffCompatibility([]),
       trustLevel,
       schemaVersion: '',
       treeCount: 0,

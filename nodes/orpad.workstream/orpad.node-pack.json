@@ -16,7 +16,14 @@
   "license": "MIT",
   "compatibility": {
     "orpad": ">=1.0.0-beta.3",
-    "pipelineSchema": ">=1.0"
+    "pipelineSchema": ">=1.0",
+    "graphSchema": ">=1.0",
+    "nodeContractSchema": ">=1.0",
+    "machineApi": "orpad.machine.v1",
+    "adapterProtocol": "orpad.adapterRequest.v1",
+    "capabilitySchema": "orpad.capabilities.v1",
+    "nodeRuntime": "orpad.embedded-machine",
+    "packFormat": "orpad.nodePack.v1"
   },
   "dependsOn": [
     {
@@ -33,27 +40,48 @@
   "nodes": [
     {
       "type": "orpad.probe",
-      "path": "nodes/probe.or-node"
+      "path": "nodes/probe.or-node",
+      "runtimeHandlerKind": "adapter-required",
+      "machineApi": "orpad.machine.v1",
+      "adapterProtocol": "orpad.adapterRequest.v1",
+      "capabilities": ["read.workspace", "write.runArtifacts"]
     },
     {
       "type": "orpad.workQueue",
-      "path": "nodes/work-queue.or-node"
+      "path": "nodes/work-queue.or-node",
+      "runtimeHandlerKind": "machine-builtin",
+      "machineApi": "orpad.machine.v1",
+      "capabilities": ["write.runArtifacts"]
     },
     {
       "type": "orpad.triage",
-      "path": "nodes/triage.or-node"
+      "path": "nodes/triage.or-node",
+      "runtimeHandlerKind": "adapter-required",
+      "machineApi": "orpad.machine.v1",
+      "adapterProtocol": "orpad.adapterRequest.v1",
+      "capabilities": ["write.runArtifacts"]
     },
     {
       "type": "orpad.dispatcher",
-      "path": "nodes/dispatcher.or-node"
+      "path": "nodes/dispatcher.or-node",
+      "runtimeHandlerKind": "machine-builtin",
+      "machineApi": "orpad.machine.v1",
+      "capabilities": ["write.runArtifacts"]
     },
     {
       "type": "orpad.workerLoop",
-      "path": "nodes/worker-loop.or-node"
+      "path": "nodes/worker-loop.or-node",
+      "runtimeHandlerKind": "adapter-required",
+      "machineApi": "orpad.machine.v1",
+      "adapterProtocol": "orpad.adapterRequest.v1",
+      "capabilities": ["read.workspace", "write.workspace", "write.runArtifacts", "run.localVerification"]
     },
     {
       "type": "orpad.barrier",
-      "path": "nodes/barrier.or-node"
+      "path": "nodes/barrier.or-node",
+      "runtimeHandlerKind": "machine-builtin",
+      "machineApi": "orpad.machine.v1",
+      "capabilities": ["write.runArtifacts"]
     }
   ],
   "graphs": [
