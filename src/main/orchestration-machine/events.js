@@ -54,6 +54,7 @@ function projectRunStateFromEvents(events) {
   if (!created) return null;
   const latest = events[events.length - 1];
   const statusEvent = [...events].reverse().find(event => event.eventType === 'run.status');
+  const summaryEvent = [...events].reverse().find(event => event.eventType === 'run.summary');
   const payload = created.payload || {};
   return {
     schemaVersion: SCHEMA_VERSIONS.machineRun,
@@ -63,7 +64,7 @@ function projectRunStateFromEvents(events) {
     runRoot: payload.runRoot,
     latestRunExportPath: payload.latestRunExportPath,
     lifecycleStatus: statusEvent?.toState || payload.lifecycleStatus || 'created',
-    summaryStatus: payload.summaryStatus || 'pending',
+    summaryStatus: summaryEvent?.payload?.summaryStatus || payload.summaryStatus || 'pending',
     createdAt: created.timestamp,
     updatedAt: latest?.timestamp || created.timestamp,
     eventSequence: latest?.sequence ?? created.sequence,

@@ -1,4 +1,6 @@
 const contracts = require('./contracts');
+const cliAgentAdapter = require('./adapters/cli-agent');
+const proposalAdapter = require('./adapters/proposal-adapter');
 const events = require('./events');
 const artifacts = require('./artifacts');
 const latestRunExporter = require('./exporters/latest-run-exporter');
@@ -8,13 +10,17 @@ const ipc = require('./ipc');
 const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
 const pathResolver = require('./path-resolver');
+const probeRunner = require('./probe-runner');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
+const triageRunner = require('./triage-runner');
 const traversal = require('./traversal');
 const workItemNormalizer = require('./work-item-normalizer');
 
 module.exports = {
   ...contracts,
+  ...cliAgentAdapter,
+  ...proposalAdapter,
   ...events,
   ...artifacts,
   ...latestRunExporter,
@@ -24,8 +30,10 @@ module.exports = {
   ...metadataStore,
   ...nodeLifecycle,
   ...pathResolver,
+  ...probeRunner,
   ...queueStore,
   ...runStore,
+  ...triageRunner,
   ...traversal,
   ...workItemNormalizer,
 };

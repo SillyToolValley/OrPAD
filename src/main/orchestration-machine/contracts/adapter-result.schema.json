@@ -64,6 +64,51 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "candidateProposals": {
+      "type": "array",
+      "items": {
+        "$ref": "orpad.candidateProposal.v1"
+      }
+    },
+    "triageTransitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["itemId", "toState"],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "toState": {
+            "enum": ["queued", "blocked", "rejected"]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "emptyPass": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "deferredReason": {
+      "type": "string"
     }
   },
   "additionalProperties": true
