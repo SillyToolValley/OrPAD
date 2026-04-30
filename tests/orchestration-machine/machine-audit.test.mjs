@@ -196,6 +196,59 @@ test('audit-orpad-machine-run fails when latest-run export is stale', async () =
   assert.equal(codes.has('MACHINE_LATEST_RUN_EXPORT_SEQUENCE_STALE'), true);
 });
 
+test('audit-orpad-machine-run fails when approval decision has no request', async () => {
+  const run = await makeAuditableRun();
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'approval.decided',
+    itemId: 'graph-editor-graph-specific-node-types',
+    payload: {
+      approvalId: 'approval-orphan',
+      decision: 'approved',
+      grants: [{ itemId: 'graph-editor-graph-specific-node-types', approvalId: 'approval-orphan', approved: true }],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_APPROVAL_DECISION_WITHOUT_REQUEST'), true);
+});
+
+test('audit-orpad-machine-run fails when approved approval omits dispatch grant', async () => {
+  const run = await makeAuditableRun();
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'approval.requested',
+    itemId: 'graph-editor-graph-specific-node-types',
+    payload: {
+      approvalId: 'approval-graph-editor-graph-specific-node-types',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'approval.decided',
+    itemId: 'graph-editor-graph-specific-node-types',
+    payload: {
+      approvalId: 'approval-graph-editor-graph-specific-node-types',
+      decision: 'approved',
+      grants: [],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_APPROVAL_APPROVED_GRANT_MISSING'), true);
+});
+
 test('audit-orpad-machine-run fails when candidate inventory counts are corrupted', async () => {
   const run = await makeAuditableRun();
   const inventoryPath = path.join(run.runRoot, 'artifacts/discovery/candidate-inventory.json');

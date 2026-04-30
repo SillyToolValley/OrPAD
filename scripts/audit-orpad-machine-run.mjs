@@ -462,6 +462,123 @@ function auditLockCausality(events) {
   return diagnostics;
 }
 
+function auditApprovalCausality(events) {
+  const diagnostics = [];
+  const requestsByApprovalId = new Map();
+  const decisionCounts = new Map();
+
+  for (const event of events) {
+    if (event.eventType !== 'approval.requested') continue;
+    const approvalId = event.payload?.approvalId || '';
+    if (!approvalId) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_REQUEST_ID_MISSING', 'Approval requests must include an approvalId.', {
+        sequence: event.sequence,
+        itemId: event.itemId || '',
+      }));
+      continue;
+    }
+    if (requestsByApprovalId.has(approvalId)) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_REQUEST_DUPLICATE', 'Approval requests must not reuse an approvalId within one run.', {
+        approvalId,
+        firstSequence: requestsByApprovalId.get(approvalId).sequence,
+        duplicateSequence: event.sequence,
+      }));
+      continue;
+    }
+    requestsByApprovalId.set(approvalId, event);
+
+    for (const ref of event.artifactRefs || []) {
+      const artifact = findPriorEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'artifact.registered'
+        && candidate.payload?.file?.path === ref
+      ));
+      if (!artifact) {
+        diagnostics.push(diagnostic('MACHINE_APPROVAL_REQUEST_ARTIFACT_UNREGISTERED', 'Approval request artifact refs must be registered before approval.requested.', {
+          sequence: event.sequence,
+          approvalId,
+          ref,
+        }));
+      }
+    }
+  }
+
+  for (const event of events) {
+    if (event.eventType !== 'approval.decided') continue;
+    const approvalId = event.payload?.approvalId || '';
+    const decision = event.payload?.decision || '';
+    if (!approvalId) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_DECISION_ID_MISSING', 'Approval decisions must include an approvalId.', {
+        sequence: event.sequence,
+        itemId: event.itemId || '',
+      }));
+      continue;
+    }
+    if (!['approved', 'denied'].includes(decision)) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_DECISION_INVALID', 'Approval decision must be approved or denied.', {
+        sequence: event.sequence,
+        approvalId,
+        decision,
+      }));
+    }
+    const request = findPriorEvent(events, event.sequence, candidate => (
+      candidate.eventType === 'approval.requested'
+      && candidate.payload?.approvalId === approvalId
+    ));
+    if (!request) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_DECISION_WITHOUT_REQUEST', 'Approval decisions require a prior approval.requested event.', {
+        sequence: event.sequence,
+        approvalId,
+        itemId: event.itemId || '',
+      }));
+    } else if (request.itemId && event.itemId && request.itemId !== event.itemId) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_DECISION_ITEM_MISMATCH', 'Approval decisions must match the requested work item.', {
+        sequence: event.sequence,
+        approvalId,
+        expected: request.itemId,
+        actual: event.itemId,
+        requestSequence: request.sequence,
+      }));
+    }
+
+    const count = (decisionCounts.get(approvalId) || 0) + 1;
+    decisionCounts.set(approvalId, count);
+    if (count > 1) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_DECISION_DUPLICATE', 'Each approvalId can be decided only once.', {
+        sequence: event.sequence,
+        approvalId,
+        count,
+      }));
+    }
+
+    const grants = Array.isArray(event.payload?.grants) ? event.payload.grants : [];
+    if (decision === 'approved') {
+      const hasGrant = grants.some(grant => (
+        grant === true
+        || grant === '*'
+        || grant === event.itemId
+        || (grant?.approved === true && grant?.itemId === event.itemId && grant?.approvalId === approvalId)
+      ));
+      if (!hasGrant) {
+        diagnostics.push(diagnostic('MACHINE_APPROVAL_APPROVED_GRANT_MISSING', 'Approved decisions must record the Machine grant that enables dispatch.', {
+          sequence: event.sequence,
+          approvalId,
+          itemId: event.itemId || '',
+        }));
+      }
+    }
+    if (decision === 'denied' && grants.length) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_DENIED_GRANT_PRESENT', 'Denied decisions must not carry dispatch grants.', {
+        sequence: event.sequence,
+        approvalId,
+        itemId: event.itemId || '',
+        grantCount: grants.length,
+      }));
+    }
+  }
+
+  return diagnostics;
+}
+
 async function auditArtifactManifest(runRoot) {
   const diagnostics = [];
   const manifestPath = artifactManifestPath(runRoot);
@@ -851,6 +968,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   diagnostics.push(...auditWorkerResultProof(events));
   diagnostics.push(...auditQueueTransitionCausality(events));
   diagnostics.push(...auditLockCausality(events));
+  diagnostics.push(...auditApprovalCausality(events));
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);
