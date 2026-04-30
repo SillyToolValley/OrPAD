@@ -664,6 +664,63 @@ function auditRunTerminalSemantics(projectedRunState, projectedQueue) {
   return diagnostics;
 }
 
+function queueInventoryFromEvents(events, maxSequence) {
+  const projected = new Map();
+  for (const event of events) {
+    if (event.sequence > maxSequence) continue;
+    if (event.eventType !== 'queue.transition') continue;
+    projected.set(event.itemId, event.toState);
+  }
+  const counts = {};
+  for (const state of projected.values()) counts[state] = (counts[state] || 0) + 1;
+  const activeCount = ['candidate', 'queued', 'claimed'].reduce((sum, state) => sum + (counts[state] || 0), 0);
+  const terminalCount = ['done', 'blocked', 'rejected'].reduce((sum, state) => sum + (counts[state] || 0), 0);
+  return {
+    counts,
+    activeCount,
+    terminalCount,
+    blockedCount: counts.blocked || 0,
+    doneCount: counts.done || 0,
+  };
+}
+
+function auditRunInventorySnapshots(events) {
+  const diagnostics = [];
+  for (const event of events) {
+    if (!['run.summary', 'run.status'].includes(event.eventType)) continue;
+    const actual = event.payload?.inventory;
+    if (!actual || typeof actual !== 'object') continue;
+    const expected = queueInventoryFromEvents(events, event.sequence);
+    for (const field of ['activeCount', 'terminalCount', 'blockedCount', 'doneCount']) {
+      if (actual[field] === expected[field]) continue;
+      diagnostics.push(diagnostic('MACHINE_RUN_INVENTORY_SNAPSHOT_MISMATCH', 'Run inventory snapshots must match queue replay at the event sequence.', {
+        sequence: event.sequence,
+        eventType: event.eventType,
+        field,
+        expected: expected[field],
+        actual: actual[field],
+      }));
+    }
+    const states = new Set([
+      ...Object.keys(actual.counts || {}),
+      ...Object.keys(expected.counts || {}),
+    ]);
+    for (const state of states) {
+      const expectedCount = expected.counts[state] || 0;
+      const actualCount = actual.counts?.[state] || 0;
+      if (actualCount === expectedCount) continue;
+      diagnostics.push(diagnostic('MACHINE_RUN_INVENTORY_SNAPSHOT_MISMATCH', 'Run inventory count snapshots must match queue replay at the event sequence.', {
+        sequence: event.sequence,
+        eventType: event.eventType,
+        field: `counts.${state}`,
+        expected: expectedCount,
+        actual: actualCount,
+      }));
+    }
+  }
+  return diagnostics;
+}
+
 async function auditLegacyJournal(runRoot, events) {
   const diagnostics = [];
   const expected = legacyJournalRecordsFromEvents(events);
@@ -746,6 +803,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   const queueAudit = await auditQueueProjection(resolvedRunRoot, events);
   diagnostics.push(...queueAudit.diagnostics);
   diagnostics.push(...auditRunTerminalSemantics(projectedRunState, projectQueueStateFromEvents(events)));
+  diagnostics.push(...auditRunInventorySnapshots(events));
   const journalAudit = await auditLegacyJournal(resolvedRunRoot, events);
   diagnostics.push(...journalAudit.diagnostics);
   const exportAudit = await auditLatestRunExport(resolvedRunRoot, latestRunExportRoot, events);

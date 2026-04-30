@@ -780,3 +780,55 @@ test('audit-orpad-machine-run fails when completed lifecycle lacks done summary'
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_RUN_COMPLETED_WITHOUT_DONE_SUMMARY'), true);
 });
+
+test('audit-orpad-machine-run fails when run inventory snapshot diverges from queue replay', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-inventory-snapshot-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_inventory_snapshot',
+    now: fixedNow,
+  });
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:inventory-snapshot',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:inventory-snapshot',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'run.summary',
+    reason: 'test.invalid-inventory-snapshot',
+    payload: {
+      summaryStatus: 'partial',
+      inventory: {
+        counts: { done: 1 },
+        activeCount: 0,
+        terminalCount: 1,
+        blockedCount: 0,
+        doneCount: 1,
+      },
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_RUN_INVENTORY_SNAPSHOT_MISMATCH'), true);
+});
