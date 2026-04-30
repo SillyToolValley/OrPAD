@@ -7708,6 +7708,14 @@ function machineApprovalDetails(record) {
   return 'No pending approvals';
 }
 
+function machineActiveClaimDetails(record) {
+  const activeClaims = record?.activeClaims || [];
+  if (!activeClaims.length) return 'No active claims';
+  const first = activeClaims[0];
+  const label = first.itemId || first.claimId || 'claim';
+  return `${machineCountLabel(activeClaims.length, 'active claim')}: ${label}`;
+}
+
 function isMachineRunTerminal(runState) {
   return ['completed', 'cancelled', 'failed'].includes(runState?.lifecycleStatus)
     || runState?.summaryStatus === 'done';
@@ -7723,10 +7731,13 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
   const runTerminal = isMachineRunTerminal(runState);
   const pendingApprovals = record.approvals?.pending || [];
   const approvalPending = (record.approvals?.pendingCount || 0) > 0;
+  const activeClaims = record.activeClaims || [];
+  const firstActiveClaim = activeClaims[0] || null;
   const candidateDetails = machineCandidateInventoryDetails(record);
   const workerProofDetails = machineWorkerProofDetails(record);
   const nodeCompletionDetails = machineNodeCompletionDetails(record);
   const approvalDetails = machineApprovalDetails(record);
+  const activeClaimDetails = machineActiveClaimDetails(record);
   const runId = runState.runId || record.runId || '';
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
@@ -7748,6 +7759,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending ? 'disabled' : ''}>Execute Step</button>
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending || !window.orpad?.machine?.resumeRun ? 'disabled' : ''}>Resume</button>
+        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${runTerminal || !window.orpad?.machine?.cancelClaim ? 'disabled' : ''}>Cancel Claim</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
       </div>
       <div class="runbook-replay-events">
@@ -7768,7 +7780,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         </div>
         <div class="runbook-guide">
           <strong>Queue</strong>
-          <span>${escapeHtml(queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet')}</span>
+          <span>${escapeHtml([queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet', activeClaimDetails].join('; '))}</span>
         </div>
         <div class="runbook-guide">
           <strong>Artifacts</strong>
@@ -8213,6 +8225,46 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
   void refreshWorkspaceRunbookSummary();
 }
 
+async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
+  if (!workspacePath || !runbookPath || !runId || !claimId || !itemId || !window.orpad?.machine?.cancelClaim) return;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const cancelled = await window.orpad.machine.cancelClaim({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    claimId,
+    itemId,
+    toState: 'blocked',
+    capabilityToken: token,
+    exportLatestRun: true,
+  });
+  if (!cancelled?.success) {
+    if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
+      machineCapabilityToken = '';
+      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
+      alert(cancelled?.error || 'Machine claim cancellation failed.');
+      return;
+    }
+    lastMachineRunRecord = {
+      ...(lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {}),
+      ...cancelled,
+      exported: cancelled?.exported || cancelled?.export || lastMachineRunRecord?.exported || null,
+    };
+    setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+    renderRunbooksPanel();
+    return;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = {
+    ...cancelled,
+    exported: cancelled.exported || cancelled.export,
+  };
+  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+}
+
 async function exportSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine) return;
   const token = await requestMachineCapabilityToken();
@@ -8602,6 +8654,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'run-machine') await startSelectedMachineRun(targetPath);
     else if (action === 'machine-execute-step') await executeSelectedMachineRunStep(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-resume-run') await resumeSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    else if (action === 'machine-cancel-claim') await cancelSelectedMachineClaim(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.claimId || '', button.dataset.itemId || '');
     else if (action === 'machine-approve-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved');
     else if (action === 'machine-deny-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'denied');
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');

@@ -11,7 +11,11 @@ const require = createRequire(import.meta.url);
 const { createAuthorityManager } = require('../../src/main/authority');
 const {
   MACHINE_IPC_CHANNELS,
+  claimNextQueuedItem,
+  findQueueItem,
+  ingestCandidateProposal,
   registerMachineHandlers,
+  transitionQueueItem,
 } = require('../../src/main/orchestration-machine');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -149,6 +153,7 @@ test('Machine IPC registers only typed channels and preload exposes no generic m
   assert.deepEqual([...handlers.keys()].sort(), Object.values(MACHINE_IPC_CHANNELS).sort());
   assert.equal(preloadSource.includes('machine-validate-pipeline'), true);
   assert.equal(preloadSource.includes('machine-resume-run'), true);
+  assert.equal(preloadSource.includes('machine-cancel-claim'), true);
   assert.equal(preloadSource.includes('machine-decide-approval'), true);
   assert.equal(preloadSource.includes('machine.invoke'), false);
   assert.equal(preloadSource.includes("ipcRenderer.invoke(channel"), false);
@@ -271,6 +276,88 @@ test('Machine IPC validates, creates, reads, lists, and exports a Machine run wi
   assert.equal(exported.success, true);
   assert.equal(exported.targetRoot, path.join(pipelineDir, 'harness/generated/latest-run'));
   assert.equal((await fs.stat(path.join(exported.targetRoot, 'run-metadata.json'))).isFile(), true);
+});
+
+test('Machine IPC snapshots expose active claims and cancel a claimed item', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_cancel_claim',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const candidate = {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-ipc-cancel-claim',
+    suggestedWorkItemId: 'ipc-cancel-claim',
+    sourceNode: 'probe/ipc-cancel',
+    title: 'Exercise Machine IPC claim cancellation',
+    fingerprint: 'ipc-cancel:claim',
+    evidence: [{ id: 'ipc-cancel-source', file: 'src/smoke-target.md' }],
+    acceptanceCriteria: ['Claim cancellation is Machine-owned.'],
+    sourceOfTruthTargets: ['src/smoke-target.md'],
+  };
+  await ingestCandidateProposal(created.runRoot, candidate, {
+    runId: created.runId,
+    transitionId: 'ingest:ipc-cancel-claim',
+  });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'ipc-cancel-claim',
+    toState: 'queued',
+    transitionId: 'triage:ipc-cancel-claim',
+  });
+  const claimed = await claimNextQueuedItem(created.runRoot, {
+    runId: created.runId,
+    claimId: 'claim-ipc-cancel-claim',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+
+  const snapshot = await handlers.get(MACHINE_IPC_CHANNELS.getRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+  });
+  assert.equal(snapshot.success, true);
+  assert.equal(snapshot.activeClaims.length, 1);
+  assert.equal(snapshot.activeClaims[0].claimId, 'claim-ipc-cancel-claim');
+  assert.equal(snapshot.activeWriteSets.length, 1);
+
+  const listed = await handlers.get(MACHINE_IPC_CHANNELS.listRuns)(event, baseRequest);
+  assert.equal(listed.runs.find(run => run.runId === created.runId).activeClaimCount, 1);
+
+  const invalidClaimId = await handlers.get(MACHINE_IPC_CHANNELS.cancelClaim)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    claimId: '../claim-ipc-cancel-claim',
+    itemId: 'ipc-cancel-claim',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(invalidClaimId.success, false);
+  assert.equal(invalidClaimId.code, 'MACHINE_IPC_SCHEMA_INVALID');
+
+  const cancelled = await handlers.get(MACHINE_IPC_CHANNELS.cancelClaim)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    claimId: 'claim-ipc-cancel-claim',
+    itemId: 'ipc-cancel-claim',
+    toState: 'blocked',
+    now: '2026-04-30T00:00:30.000Z',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(cancelled.success, true);
+  assert.equal(cancelled.runState.lifecycleStatus, 'cancelled');
+  assert.equal(cancelled.runState.summaryStatus, 'blocked');
+  assert.equal(cancelled.activeClaims.length, 0);
+  assert.equal(cancelled.activeWriteSets.length, 0);
+  assert.equal(cancelled.cancellation.toState, 'blocked');
+  assert.equal((await findQueueItem(created.runRoot, 'ipc-cancel-claim')).state, 'blocked');
 });
 
 test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay adapter with a harness grant', async () => {

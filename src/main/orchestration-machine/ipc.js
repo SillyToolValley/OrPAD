@@ -8,6 +8,7 @@ const {
   recordApprovalDecision,
   summarizeApprovalsFromEvents,
 } = require('./approvals');
+const { readActiveClaimLeases } = require('./claims');
 const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
 const { recoverStaleClaims } = require('./dispatcher');
@@ -16,6 +17,8 @@ const { resumeMachineRun } = require('./lifecycle');
 const { latestRunExportRoot, durableRunRoot } = require('./path-resolver');
 const { createMachineRun, readRunState } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
+const { cancelClaimedItem } = require('./worker-loop');
+const { readActiveWriteSetLocks } = require('./write-sets');
 
 const fsp = fs.promises;
 
@@ -26,6 +29,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   listRuns: 'machine-list-runs',
   executeRunStep: 'machine-execute-run-step',
   resumeRun: 'machine-resume-run',
+  cancelClaim: 'machine-cancel-claim',
   decideApproval: 'machine-decide-approval',
   exportLatestRun: 'machine-export-latest-run',
 });
@@ -117,6 +121,14 @@ function assertRunId(value) {
   return runId;
 }
 
+function assertOpaqueId(value, label) {
+  const id = requiredString(value, label).trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,191}$/.test(id)) {
+    throw machineError('MACHINE_IPC_SCHEMA_INVALID', `${label} contains unsupported characters.`);
+  }
+  return id;
+}
+
 function assertOptionalRunId(value) {
   if (value == null || value === '') return '';
   return assertRunId(value);
@@ -146,6 +158,14 @@ function assertBoolean(value, label, fallback = false) {
   if (value == null) return fallback;
   if (typeof value !== 'boolean') {
     throw machineError('MACHINE_IPC_SCHEMA_INVALID', `${label} must be a boolean.`);
+  }
+  return value;
+}
+
+function assertCancelToState(value) {
+  if (value == null || value === '') return 'blocked';
+  if (value !== 'queued' && value !== 'blocked') {
+    throw machineError('MACHINE_IPC_SCHEMA_INVALID', 'toState must be queued or blocked.');
   }
   return value;
 }
@@ -226,6 +246,8 @@ async function readRunSnapshot(runRoot) {
     candidateInventory: await readCandidateInventorySummary(runRoot, events),
     worker: latestWorkerResult(events),
     approvals: summarizeApprovalsFromEvents(events),
+    activeClaims: await readActiveClaimLeases(runRoot),
+    activeWriteSets: await readActiveWriteSetLocks(runRoot),
   };
 }
 
@@ -254,6 +276,7 @@ async function listRunSummaries(pipelineDir) {
       updatedAt: snapshot.runState.updatedAt,
       eventSequence: snapshot.runState.eventSequence,
       pendingApprovalCount: snapshot.approvals.pendingCount,
+      activeClaimCount: snapshot.activeClaims.length,
     });
   }
   return summaries.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
@@ -328,6 +351,8 @@ async function getRunHandler(event, authority, request) {
     candidateInventory: snapshot.candidateInventory,
     worker: snapshot.worker,
     approvals: snapshot.approvals,
+    activeClaims: snapshot.activeClaims,
+    activeWriteSets: snapshot.activeWriteSets,
   };
 }
 
@@ -409,6 +434,8 @@ async function decideApprovalHandler(event, authority, request) {
     candidateInventory: updated.candidateInventory,
     worker: updated.worker,
     approvals: updated.approvals,
+    activeClaims: updated.activeClaims,
+    activeWriteSets: updated.activeWriteSets,
     exported,
   };
 }
@@ -445,6 +472,8 @@ async function resumeRunHandler(event, authority, request) {
       candidateInventory: updated.candidateInventory,
       worker: updated.worker,
       approvals: updated.approvals,
+      activeClaims: updated.activeClaims,
+      activeWriteSets: updated.activeWriteSets,
       resume: {
         queueRepair: resumed.queueRepair,
         staleClaimCount: resumed.staleClaims.length,
@@ -467,6 +496,78 @@ async function resumeRunHandler(event, authority, request) {
         candidateInventory: failureSnapshot.candidateInventory,
         worker: failureSnapshot.worker,
         approvals: failureSnapshot.approvals,
+        activeClaims: failureSnapshot.activeClaims,
+        activeWriteSets: failureSnapshot.activeWriteSets,
+      };
+    }
+    throw err;
+  }
+}
+
+async function cancelClaimHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const claimId = assertOpaqueId(request.claimId, 'claimId');
+  const itemId = assertOpaqueId(request.itemId, 'itemId');
+  const toState = assertCancelToState(request.toState);
+  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+
+  try {
+    const cancelled = await cancelClaimedItem(runRoot, {
+      runId,
+      claimId,
+      itemId,
+      toState,
+      now: optionalString(request.now, 'now') || undefined,
+    });
+    const updated = await readRunSnapshot(runRoot);
+    const exported = request.exportLatestRun === false
+      ? null
+      : await exportLatestRun({
+        runRoot,
+        pipelineDir: context.pipelineDir,
+        allowOverwrite: true,
+      });
+    return {
+      success: true,
+      ok: true,
+      runId,
+      runState: updated.runState,
+      events: updated.events,
+      candidateInventory: updated.candidateInventory,
+      worker: updated.worker,
+      approvals: updated.approvals,
+      activeClaims: updated.activeClaims,
+      activeWriteSets: updated.activeWriteSets,
+      cancellation: {
+        claimId,
+        itemId,
+        toState,
+        transition: cancelled.transition,
+      },
+      exported,
+    };
+  } catch (err) {
+    const code = String(err?.code || '');
+    if (code) {
+      const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+      return {
+        success: false,
+        ok: false,
+        code,
+        error: err.message,
+        runId,
+        runState: failureSnapshot.runState,
+        events: failureSnapshot.events,
+        candidateInventory: failureSnapshot.candidateInventory,
+        worker: failureSnapshot.worker,
+        approvals: failureSnapshot.approvals,
+        activeClaims: failureSnapshot.activeClaims,
+        activeWriteSets: failureSnapshot.activeWriteSets,
       };
     }
     throw err;
@@ -507,6 +608,8 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
       finalization: executed.finalization,
       exported: executed.exported,
       approvals: updatedSnapshot?.approvals || summarizeApprovalsFromEvents(executed.events),
+      activeClaims: updatedSnapshot?.activeClaims || [],
+      activeWriteSets: updatedSnapshot?.activeWriteSets || [],
     };
   } catch (err) {
     const code = String(err?.code || '');
@@ -523,6 +626,8 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
         candidateInventory: failureSnapshot.candidateInventory,
         worker: failureSnapshot.worker,
         approvals: failureSnapshot.approvals,
+        activeClaims: failureSnapshot.activeClaims,
+        activeWriteSets: failureSnapshot.activeWriteSets,
         failure: {
           contract: err.contract || null,
           barrier: err.barrier || null,
@@ -560,6 +665,7 @@ function registerMachineHandlers({ ipcMain, authority, featureGate = featureGate
   handle(MACHINE_IPC_CHANNELS.listRuns, listRunsHandler);
   handle(MACHINE_IPC_CHANNELS.executeRunStep, executeRunStepWithHarnessHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.resumeRun, resumeRunHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.cancelClaim, cancelClaimHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.exportLatestRun, exportLatestRunHandler, { mutating: true });
 
