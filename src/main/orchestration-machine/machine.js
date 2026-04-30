@@ -7,6 +7,7 @@ const { createAdapterRequest } = require('./adapters/proposal-adapter');
 const { registerArtifact, writeArtifactManifest } = require('./artifacts');
 const { claimNextQueuedItem } = require('./dispatcher');
 const { createCommandGrant } = require('./command-grants');
+const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { buildTraversalPlan } = require('./traversal');
 const { loadPipelineGraphSet } = require('./graph-loader');
@@ -20,7 +21,8 @@ const { runWorkerLoopOnce } = require('./worker-loop');
 const { normalizeWriteSetPath } = require('./write-sets');
 
 const fsp = fs.promises;
-const MACHINE_CANDIDATE_INVENTORY_SCHEMA = 'orpad.machineCandidateInventory.v1';
+const contractValidator = createContractValidator();
+const MACHINE_CANDIDATE_INVENTORY_SCHEMA = SCHEMA_VERSIONS.candidateInventory;
 const SUPPORT_NODE_TYPES = new Set([
   'orpad.context',
   'orpad.workQueue',
@@ -344,6 +346,7 @@ async function registerCandidateInventoryArtifact(runRoot, options = {}) {
     emptyPassCount: rows.filter(row => row.status === 'empty-pass').length,
     items: rows,
   };
+  contractValidator.assertValid('candidateInventory', inventory);
   const artifact = await registerArtifact(runRoot, {
     runId,
     artifactPath,

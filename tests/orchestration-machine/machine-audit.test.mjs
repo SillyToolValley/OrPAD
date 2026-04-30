@@ -13,7 +13,9 @@ const {
   exportLatestRun,
   ingestCandidateProposal,
   repairRunStateFromEvents,
+  recordNodeLifecycleEvent,
   registerArtifact,
+  registerCandidateInventoryArtifact,
   transitionQueueItem,
 } = require('../../src/main/orchestration-machine');
 
@@ -69,6 +71,22 @@ async function makeAuditableRun() {
     producedBy: 'adapter:proposal-only',
     registeredBy: 'machine',
   });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    status: 'completed',
+    payload: { proposalCount: 1 },
+  });
+  await registerCandidateInventoryArtifact(run.runRoot, {
+    runId: run.runId,
+    probes: [
+      {
+        nodePath: 'main/probe',
+        candidateProposals: [proposal()],
+      },
+    ],
+  });
   await repairRunStateFromEvents(run.runRoot);
   const exportResult = await exportLatestRun({
     runRoot: run.runRoot,
@@ -99,8 +117,10 @@ test('audit-orpad-machine-run passes on a durable Machine run and export', async
 
   assert.equal(result.exitCode, 0, result.stderr || result.stdout);
   assert.equal(result.json.ok, true);
-  assert.equal(result.json.eventCount, 4);
-  assert.equal(result.json.artifactCount, 1);
+  assert.equal(result.json.eventCount, 6);
+  assert.equal(result.json.artifactCount, 2);
+  assert.equal(result.json.candidateInventoryCount, 1);
+  assert.equal(result.json.candidateInventoryItemCount, 1);
   assert.equal(result.json.projectedQueueItemCount, 1);
   assert.equal(result.json.legacyJournalCount, 2);
 });
@@ -130,4 +150,53 @@ test('audit-orpad-machine-run fails when latest-run export is stale', async () =
 
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_LATEST_RUN_EXPORT_SEQUENCE_STALE'), true);
+});
+
+test('audit-orpad-machine-run fails when candidate inventory counts are corrupted', async () => {
+  const run = await makeAuditableRun();
+  const inventoryPath = path.join(run.runRoot, 'artifacts/discovery/candidate-inventory.json');
+  const inventory = JSON.parse(await fs.readFile(inventoryPath, 'utf8'));
+  inventory.candidateCount = 0;
+  await fs.writeFile(inventoryPath, JSON.stringify(inventory, null, 2), 'utf8');
+
+  const result = runAudit(run.runRoot, run.latestRunExportRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_COUNT_MISMATCH'), true);
+});
+
+test('audit-orpad-machine-run fails when candidate inventory names a probe that did not complete', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-probe-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_probe_missing',
+    now: fixedNow,
+  });
+  await registerCandidateInventoryArtifact(run.runRoot, {
+    runId: run.runId,
+    probes: [
+      {
+        nodePath: 'main/probe',
+        candidateProposals: [proposal()],
+      },
+    ],
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_PROBE_NOT_COMPLETED'), true);
 });

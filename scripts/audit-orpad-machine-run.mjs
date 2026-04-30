@@ -4,7 +4,9 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const {
+  SCHEMA_VERSIONS,
   artifactManifestPath,
+  createContractValidator,
   fileDigest,
   legacyJournalRecordsFromEvents,
   projectQueueStateFromEvents,
@@ -14,12 +16,18 @@ const {
   readRunState,
 } = require('../src/main/orchestration-machine');
 
+const contractValidator = createContractValidator();
+
 function usage() {
   return 'Usage: node scripts/audit-orpad-machine-run.mjs <runRoot> [latestRunExportRoot]';
 }
 
 function diagnostic(code, message, details = {}) {
   return { code, message, ...details };
+}
+
+function runRelativePath(runRoot, relativePath) {
+  return path.join(path.resolve(runRoot), ...String(relativePath || '').replace(/\\/g, '/').split('/'));
 }
 
 async function readJsonIfExists(filePath, fallback = null) {
@@ -88,7 +96,7 @@ async function auditArtifactManifest(runRoot) {
   if (!manifest) return { manifest: null, diagnostics };
 
   for (const file of manifest.files || []) {
-    const filePath = path.join(runRoot, ...String(file.path || '').replace(/\\/g, '/').split('/'));
+    const filePath = runRelativePath(runRoot, file.path);
     try {
       const digest = await fileDigest(filePath);
       if (digest.sha256 !== file.sha256) {
@@ -118,6 +126,129 @@ async function auditArtifactManifest(runRoot) {
     }
   }
   return { manifest, diagnostics };
+}
+
+function candidateInventoryFiles(manifest) {
+  return (manifest?.files || []).filter(file => (
+    file.schemaVersion === SCHEMA_VERSIONS.candidateInventory
+    || file.producedBy === 'orpad.machine.candidate-inventory'
+    || file.path === 'artifacts/discovery/candidate-inventory.json'
+  ));
+}
+
+function completedProbeNodePaths(events, maxSequence) {
+  return new Set(events
+    .filter(event => (
+      event.eventType === 'node.completed'
+      && event.nodePath
+      && event.sequence <= maxSequence
+      && event.payload?.nodeType === 'orpad.probe'
+    ))
+    .map(event => event.nodePath));
+}
+
+async function auditCandidateInventory(runRoot, manifest, events) {
+  const diagnostics = [];
+  const files = candidateInventoryFiles(manifest);
+  if (!files.length) return { inventoryCount: 0, itemCount: 0, diagnostics };
+
+  let itemCount = 0;
+  for (const file of files) {
+    const filePath = runRelativePath(runRoot, file.path);
+    let inventory = null;
+    try {
+      inventory = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    } catch (err) {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_UNREADABLE', 'Candidate inventory artifact must be readable JSON.', {
+        path: file.path,
+        error: err.message,
+      }));
+      continue;
+    }
+
+    const validation = contractValidator.validate('candidateInventory', inventory);
+    if (!validation.ok) {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_SCHEMA_INVALID', 'Candidate inventory artifact must match the Machine contract schema.', {
+        path: file.path,
+        errors: validation.errors,
+      }));
+      continue;
+    }
+
+    itemCount += inventory.items.length;
+    const candidateCount = inventory.items.filter(item => item.status === 'candidate').length;
+    const emptyPassCount = inventory.items.filter(item => item.status === 'empty-pass').length;
+    if (inventory.candidateCount !== candidateCount) {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_COUNT_MISMATCH', 'Candidate inventory candidateCount must match candidate rows.', {
+        path: file.path,
+        field: 'candidateCount',
+        expected: candidateCount,
+        actual: inventory.candidateCount,
+      }));
+    }
+    if (inventory.emptyPassCount !== emptyPassCount) {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_COUNT_MISMATCH', 'Candidate inventory emptyPassCount must match empty-pass rows.', {
+        path: file.path,
+        field: 'emptyPassCount',
+        expected: emptyPassCount,
+        actual: inventory.emptyPassCount,
+      }));
+    }
+
+    const selectedProbeNodes = new Set(inventory.selectedProbeNodes);
+    for (const item of inventory.items) {
+      if (!selectedProbeNodes.has(item.nodePath)) {
+        diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_NODE_UNSELECTED', 'Candidate inventory item nodePath must be listed in selectedProbeNodes.', {
+          path: file.path,
+          itemId: item.id,
+          nodePath: item.nodePath,
+        }));
+      }
+      if (item.status === 'candidate' && !item.proposalId && !item.suggestedWorkItemId) {
+        diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_CANDIDATE_ID_MISSING', 'Candidate inventory candidate rows must carry a proposalId or suggestedWorkItemId.', {
+          path: file.path,
+          itemId: item.id,
+          nodePath: item.nodePath,
+        }));
+      }
+      if (item.status === 'empty-pass' && !item.reason) {
+        diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_EMPTY_PASS_REASON_MISSING', 'Candidate inventory empty-pass rows must explain why no candidate was submitted.', {
+          path: file.path,
+          itemId: item.id,
+          nodePath: item.nodePath,
+        }));
+      }
+    }
+
+    const registrationEvent = events.find(event => (
+      event.eventType === 'artifact.registered'
+      && event.payload?.file?.path === file.path
+    ));
+    if (!registrationEvent) {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_REGISTRATION_MISSING', 'Candidate inventory artifact must have an artifact.registered event.', {
+        path: file.path,
+      }));
+    } else if (inventory.sourceEventSequence >= registrationEvent.sequence) {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_SOURCE_SEQUENCE_INVALID', 'Candidate inventory sourceEventSequence must point to events before artifact registration.', {
+        path: file.path,
+        sourceEventSequence: inventory.sourceEventSequence,
+        registrationSequence: registrationEvent.sequence,
+      }));
+    }
+
+    const completedProbeNodes = completedProbeNodePaths(events, inventory.sourceEventSequence);
+    for (const nodePath of inventory.selectedProbeNodes) {
+      if (!completedProbeNodes.has(nodePath)) {
+        diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_PROBE_NOT_COMPLETED', 'Candidate inventory selectedProbeNodes must be completed probe nodes at the source event sequence.', {
+          path: file.path,
+          nodePath,
+          sourceEventSequence: inventory.sourceEventSequence,
+        }));
+      }
+    }
+  }
+
+  return { inventoryCount: files.length, itemCount, diagnostics };
 }
 
 async function auditQueueProjection(runRoot, events) {
@@ -215,6 +346,8 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);
+  const candidateInventoryAudit = await auditCandidateInventory(resolvedRunRoot, artifactAudit.manifest, events);
+  diagnostics.push(...candidateInventoryAudit.diagnostics);
   const queueAudit = await auditQueueProjection(resolvedRunRoot, events);
   diagnostics.push(...queueAudit.diagnostics);
   const journalAudit = await auditLegacyJournal(resolvedRunRoot, events);
@@ -228,6 +361,8 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
     latestRunExportRoot: latestRunExportRoot ? path.resolve(latestRunExportRoot) : '',
     eventCount: events.length,
     artifactCount: artifactAudit.manifest?.files?.length || 0,
+    candidateInventoryCount: candidateInventoryAudit.inventoryCount,
+    candidateInventoryItemCount: candidateInventoryAudit.itemCount,
     projectedQueueItemCount: queueAudit.projectedCount,
     legacyJournalCount: journalAudit.journalCount,
     diagnostics,
