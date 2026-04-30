@@ -281,6 +281,15 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   });
   assert.equal(snapshot.worker.event.payload.status, 'done');
   assert.equal(snapshot.worker.event.artifactRefs.length, 2);
+
+  const repeated = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(repeated.success, false);
+  assert.equal(repeated.code, 'MACHINE_RUN_TERMINAL');
+  assert.equal(repeated.runState.eventSequence, snapshot.runState.eventSequence);
 });
 
 test('Machine IPC execute step returns refreshed run evidence when a runtime node fails', async () => {

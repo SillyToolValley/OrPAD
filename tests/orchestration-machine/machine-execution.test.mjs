@@ -301,6 +301,20 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
   const gateEvent = executed.events.find(event => event.eventType === 'node.completed' && event.nodePath === 'main/verification-gate');
   assert.equal(gateEvent.payload.valid, true);
   assert.deepEqual(gateEvent.payload.evaluations.map(entry => entry.passed), [true, true]);
+
+  const eventCountAfterCompletion = (await readMachineEvents(run.runRoot)).length;
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      nodeExecutable: process.execPath,
+    }),
+    error => error?.code === 'MACHINE_RUN_TERMINAL',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventCountAfterCompletion);
 });
 
 test('graph-driven execute step rejects pipelines without a deterministic MVP harness', async () => {

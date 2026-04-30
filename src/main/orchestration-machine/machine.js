@@ -28,6 +28,7 @@ const { normalizeWriteSetPath } = require('./write-sets');
 const fsp = fs.promises;
 const contractValidator = createContractValidator();
 const MACHINE_CANDIDATE_INVENTORY_SCHEMA = SCHEMA_VERSIONS.candidateInventory;
+const TERMINAL_RUN_LIFECYCLE_STATUSES = new Set(['completed', 'cancelled', 'failed']);
 const SUPPORT_NODE_TYPES = new Set([
   'orpad.context',
   'orpad.workQueue',
@@ -41,6 +42,19 @@ function machineExecutionError(code, message) {
   const err = new Error(message);
   err.code = code;
   return err;
+}
+
+async function assertRunCanExecuteStep(runRoot) {
+  const runState = await readRunState(runRoot);
+  if (
+    TERMINAL_RUN_LIFECYCLE_STATUSES.has(runState?.lifecycleStatus)
+    || runState?.summaryStatus === 'done'
+  ) {
+    throw machineExecutionError(
+      'MACHINE_RUN_TERMINAL',
+      `Machine run is terminal (${runState.lifecycleStatus}/${runState.summaryStatus}) and cannot execute another step.`,
+    );
+  }
 }
 
 async function readJsonFile(filePath, label = 'JSON file') {
@@ -589,6 +603,7 @@ async function executeMachineRunStep(options = {}) {
   if (!runRoot) throw new Error('runRoot is required.');
   if (!runId) throw new Error('runId is required.');
 
+  await assertRunCanExecuteStep(runRoot);
   const graphSet = await loadPipelineGraphSet({ pipelinePath });
   const plan = buildTraversalPlan(graphSet);
   const orderedNodes = flattenTraversalNodes(plan);
