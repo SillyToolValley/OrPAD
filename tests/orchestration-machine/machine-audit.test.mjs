@@ -249,6 +249,37 @@ test('audit-orpad-machine-run fails when approved approval omits dispatch grant'
   assert.equal(codes.has('MACHINE_APPROVAL_APPROVED_GRANT_MISSING'), true);
 });
 
+test('audit-orpad-machine-run fails when approved approval uses a broad grant', async () => {
+  const run = await makeAuditableRun();
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'approval.requested',
+    itemId: 'graph-editor-graph-specific-node-types',
+    payload: {
+      approvalId: 'approval-graph-editor-graph-specific-node-types',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'approval.decided',
+    itemId: 'graph-editor-graph-specific-node-types',
+    payload: {
+      approvalId: 'approval-graph-editor-graph-specific-node-types',
+      decision: 'approved',
+      grants: [true],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_APPROVAL_APPROVED_GRANT_MISSING'), true);
+});
+
 test('audit-orpad-machine-run fails when pending approval is resumed without a decision', async () => {
   const run = await makeAuditableRun();
   await appendMachineEvent(run.runRoot, {

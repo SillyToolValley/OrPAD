@@ -148,6 +148,25 @@ async function recordApprovalDecision(runRoot, options = {}) {
     err.actualItemId = itemId;
     throw err;
   }
+  const hasStructuredGrant = grants.some(grant => (
+    grant?.approved === true
+    && grant?.itemId === itemId
+    && grant?.approvalId === approvalId
+  ));
+  if (decision === 'approved' && !hasStructuredGrant) {
+    const err = new Error(`Approved decision must include a structured dispatch grant: ${approvalId}`);
+    err.code = 'MACHINE_APPROVAL_APPROVED_GRANT_MISSING';
+    err.approvalId = approvalId;
+    err.itemId = itemId;
+    throw err;
+  }
+  if (decision === 'denied' && grants.length) {
+    const err = new Error(`Denied decision must not include dispatch grants: ${approvalId}`);
+    err.code = 'MACHINE_APPROVAL_DENIED_GRANT_PRESENT';
+    err.approvalId = approvalId;
+    err.itemId = itemId;
+    throw err;
+  }
   await assertRunLifecycleCanTransition(
     runRoot,
     decision === 'approved' ? 'waiting' : 'cancelled',

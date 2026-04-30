@@ -40,9 +40,10 @@ function compareQueuedWorkItems(a, b) {
 function hasApprovalGrant(item, grants = []) {
   if (!item.approvalRequired) return true;
   return grants.some(grant => {
-    if (grant === true || grant === '*') return true;
-    if (typeof grant === 'string') return grant === item.id;
-    return grant?.itemId === item.id && grant?.approved === true;
+    return grant?.itemId === item.id
+      && grant?.approved === true
+      && typeof grant?.approvalId === 'string'
+      && grant.approvalId.length > 0;
   });
 }
 

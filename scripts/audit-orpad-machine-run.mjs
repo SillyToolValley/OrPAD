@@ -554,10 +554,9 @@ function auditApprovalCausality(events) {
     const grants = Array.isArray(event.payload?.grants) ? event.payload.grants : [];
     if (decision === 'approved') {
       const hasGrant = grants.some(grant => (
-        grant === true
-        || grant === '*'
-        || grant === event.itemId
-        || (grant?.approved === true && grant?.itemId === event.itemId && grant?.approvalId === approvalId)
+        grant?.approved === true
+        && grant?.itemId === event.itemId
+        && grant?.approvalId === approvalId
       ));
       if (!hasGrant) {
         diagnostics.push(diagnostic('MACHINE_APPROVAL_APPROVED_GRANT_MISSING', 'Approved decisions must record the Machine grant that enables dispatch.', {
