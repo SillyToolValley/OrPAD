@@ -341,7 +341,7 @@ test('expired claim rejects late worker result and stale recovery requeues the i
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
 });
 
-test('cancellation releases a claimed item and leaves a valid cancelled run state', async () => {
+test('claim cancellation requeues a claimed item and leaves a resumable run state', async () => {
   const run = await makeRun('run_20260430_worker_cancel');
   const itemId = await queueProposal(run, proposal());
   const claimed = await claimNextQueuedItem(run.runRoot, {
@@ -357,9 +357,33 @@ test('cancellation releases a claimed item and leaves a valid cancelled run stat
     now: '2026-04-30T00:00:30.000Z',
   });
 
-  assert.equal(cancelled.runState.lifecycleStatus, 'cancelled');
+  assert.equal(cancelled.runState.lifecycleStatus, 'waiting');
   assert.equal(cancelled.runState.summaryStatus, 'partial');
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'cancelled');
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+});
+
+test('claim cancellation can block a claimed item and cancel the run', async () => {
+  const run = await makeRun('run_20260430_worker_cancel_block');
+  const itemId = await queueProposal(run, proposal());
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-cancel-block',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  const cancelled = await cancelClaimedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: claimed.claim.claimId,
+    itemId,
+    toState: 'blocked',
+    now: '2026-04-30T00:00:30.000Z',
+  });
+
+  assert.equal(cancelled.runState.lifecycleStatus, 'cancelled');
+  assert.equal(cancelled.runState.summaryStatus, 'blocked');
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'blocked');
   assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'cancelled');
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
 });

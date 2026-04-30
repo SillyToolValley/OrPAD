@@ -30,6 +30,10 @@ function summaryStatusForWorkerResult(result) {
   return 'partial';
 }
 
+function finalRunLifecycleForCancellation(toState) {
+  return toState === 'queued' ? 'waiting' : 'cancelled';
+}
+
 function assertDoneResultHasProof(result) {
   if (result.status !== 'done') return;
   const hasArtifact = (result.artifacts || []).length > 0 || Boolean(result.patchArtifact);
@@ -333,12 +337,13 @@ async function cancelClaimedItem(runRoot, options = {}) {
       reason: 'cancelled-during-claim',
     });
   }
-  await appendRunStatus(runRoot, runId, 'cancelled', {
-    reason: 'worker-loop.cancelled',
+  const finalLifecycleStatus = finalRunLifecycleForCancellation(toState);
+  await appendRunStatus(runRoot, runId, finalLifecycleStatus, {
+    reason: finalLifecycleStatus === 'waiting' ? 'worker-loop.cancel-requeued' : 'worker-loop.cancelled',
     payload: { itemId, claimId },
   });
   const runState = await appendRunSummary(runRoot, runId, toState === 'blocked' ? 'blocked' : 'partial', {
-    reason: 'worker-loop.cancelled',
+    reason: finalLifecycleStatus === 'waiting' ? 'worker-loop.cancel-requeued' : 'worker-loop.cancelled',
     payload: { itemId, claimId },
   });
   return { transition, runState };
@@ -351,6 +356,7 @@ module.exports = {
   assertWorkerResultWithinWriteSet,
   cancelClaimedItem,
   findWorkerResultEvent,
+  finalRunLifecycleForCancellation,
   runSerialWorkerLoop,
   runWorkerLoopOnce,
   summaryStatusForWorkerResult,
