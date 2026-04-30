@@ -7,6 +7,11 @@
   "origin": "built-in",
   "trustLevel": "official",
   "mutable": false,
+  "installPolicy": {
+    "mode": "built-in",
+    "allowLifecycleScripts": false,
+    "allowExecutableHandlers": false
+  },
   "description": "Queue-driven orchestration nodes for probe, triage, dispatch, worker loop, and proof workflows.",
   "author": {
     "name": "OrPAD",

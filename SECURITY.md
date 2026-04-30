@@ -392,6 +392,11 @@ path still creates durable run metadata only.
 - Resume repair uses Machine events as canonical metadata and only repairs derived queue files
   when an item snapshot is still available. Artifact presence alone is never treated as proof
   that claimed work completed.
+- Node pack compatibility is metadata-only in this phase. Normal install validation rejects npm
+  lifecycle scripts, executable handlers, community overrides of the reserved `orpad.*`
+  namespace, incompatible pack formats, and capability-denied packs before any code can run.
+- Missing or incompatible community nodes are represented as lossless placeholders for graph
+  round-trip; placeholder metadata is not executable.
 
 ## URL handling
 

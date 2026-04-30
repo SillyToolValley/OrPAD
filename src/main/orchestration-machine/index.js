@@ -15,6 +15,7 @@ const ipc = require('./ipc');
 const lifecycle = require('./lifecycle');
 const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
+const nodePacks = require('./node-packs');
 const patches = require('./patches');
 const pathResolver = require('./path-resolver');
 const processRunner = require('./adapters/process-runner');
@@ -46,6 +47,7 @@ module.exports = {
   ...lifecycle,
   ...metadataStore,
   ...nodeLifecycle,
+  ...nodePacks,
   ...patches,
   ...pathResolver,
   ...processRunner,
