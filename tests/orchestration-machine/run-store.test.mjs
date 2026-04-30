@@ -167,6 +167,20 @@ test('Machine event append is monotonic and validates contract shape', async () 
   await assert.rejects(
     appendMachineEvent(run.runRoot, {
       runId: run.runId,
+      sequence: 99,
+      timestamp: '2026-04-30T00:00:03.000Z',
+      actor: 'machine',
+      eventType: 'run.status',
+      fromState: 'running',
+      toState: 'completed',
+    }),
+    error => error?.code === 'MACHINE_EVENT_SEQUENCE_OWNED',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, 2);
+
+  await assert.rejects(
+    appendMachineEvent(run.runRoot, {
+      runId: run.runId,
       actor: 'machine',
       toState: 'completed',
     }),

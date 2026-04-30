@@ -55,13 +55,16 @@ function assertEventBelongsToRun(existing, event) {
 
 async function appendMachineEvent(runRoot, event) {
   const existing = await readMachineEvents(runRoot);
+  if (event.sequence != null) {
+    throw eventLogError('MACHINE_EVENT_SEQUENCE_OWNED', 'Machine event sequence is assigned by the durable event log.');
+  }
   assertEventBelongsToRun(existing, event);
   const record = {
     schemaVersion: SCHEMA_VERSIONS.machineEvent,
     timestamp: nowIso(),
     artifactRefs: [],
     ...event,
-    sequence: event.sequence ?? nextSequence(existing),
+    sequence: nextSequence(existing),
   };
   validator.assertValid('machineEvent', record);
   await ensureDir(path.resolve(runRoot));
