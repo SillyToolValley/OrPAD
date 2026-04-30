@@ -315,6 +315,20 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
     error => error?.code === 'MACHINE_RUN_TERMINAL',
   );
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCountAfterCompletion);
+
+  await fs.rm(path.join(run.runRoot, 'run-state.json'), { force: true });
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      nodeExecutable: process.execPath,
+    }),
+    error => error?.code === 'MACHINE_RUN_TERMINAL',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventCountAfterCompletion);
 });
 
 test('graph-driven execute step rejects pipelines without a deterministic MVP harness', async () => {

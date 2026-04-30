@@ -17,7 +17,7 @@ const {
   finalizeRunFromInventory,
   summarizeQueueInventory,
 } = require('./lifecycle');
-const { readMachineEvents } = require('./events');
+const { projectRunStateFromEvents, readMachineEvents } = require('./events');
 const { readRunState } = require('./run-store');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
 const { runProposalProbe } = require('./probe-runner');
@@ -45,7 +45,7 @@ function machineExecutionError(code, message) {
 }
 
 async function assertRunCanExecuteStep(runRoot) {
-  const runState = await readRunState(runRoot);
+  const runState = await readRunState(runRoot) || projectRunStateFromEvents(await readMachineEvents(runRoot));
   if (
     TERMINAL_RUN_LIFECYCLE_STATUSES.has(runState?.lifecycleStatus)
     || runState?.summaryStatus === 'done'
