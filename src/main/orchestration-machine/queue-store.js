@@ -189,7 +189,14 @@ async function ingestCandidateProposal(runRoot, proposal, options = {}) {
 
 async function transitionQueueItem(runRoot, options = {}) {
   await ensureQueueLayout(runRoot);
-  const { runId, itemId, toState, reason = 'queue.transition', evidence = '', transitionId = `${itemId}:${toState}` } = options;
+  const {
+    runId,
+    itemId,
+    toState,
+    reason = 'queue.transition',
+    evidence = '',
+    transitionId = `${itemId}:${toState}`,
+  } = options;
   const duplicateEvent = await findEventByTransitionId(runRoot, transitionId);
   if (duplicateEvent) {
     return {
@@ -204,8 +211,12 @@ async function transitionQueueItem(runRoot, options = {}) {
   const action = transitionAction(current.state, toState);
   if (!action) throw new Error(`Invalid queue transition: ${current.state} -> ${toState}`);
 
+  const itemPatch = typeof options.itemPatch === 'function'
+    ? options.itemPatch(current.item)
+    : (options.itemPatch || {});
   const nextItem = {
     ...current.item,
+    ...itemPatch,
     state: toState,
     updatedAt: options.now || new Date().toISOString(),
   };
@@ -222,6 +233,7 @@ async function transitionQueueItem(runRoot, options = {}) {
       action,
       transitionId,
       evidence: evidence || `queue/${toState}/${itemId}.json`,
+      ...(options.payload || {}),
     },
   });
   await writeQueueItem(runRoot, nextItem);
