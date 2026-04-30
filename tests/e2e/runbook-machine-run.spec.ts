@@ -149,6 +149,21 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   expect(fs.readFileSync(path.join(runRoot, runDirs[0], 'events.jsonl'), 'utf-8')).toContain('run.created');
   expect(pipelinePath.endsWith('pipeline.or-pipeline')).toBe(true);
 
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(() => {
+    localStorage.setItem('orpad-machine-ui-enabled', '1');
+    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
+  });
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
+  await expect(win.locator('#runbooks-content')).toContainText('worker.result');
+  await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
+
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
 });

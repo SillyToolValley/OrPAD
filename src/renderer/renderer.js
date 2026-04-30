@@ -7816,6 +7816,14 @@ async function validateSelectedRunbook(runbookPath) {
   lastRunRecord = null;
   lastMachineRunRecord = getRunbookCache(machineRunRecordCache, runbookPath);
   renderRunbooksPanel();
+  if (isMachineUiEnabled() && isMachineCompatiblePipeline(selectedRunbookValidation)) {
+    const latestMachineRun = await loadLatestMachineRunRecord(runbookPath);
+    if (latestMachineRun && runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase()) {
+      lastMachineRunRecord = latestMachineRun;
+      setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+      renderRunbooksPanel();
+    }
+  }
 }
 
 async function openPipelineEntryOrFile(filePath) {
@@ -7912,6 +7920,30 @@ async function startSelectedLocalRun(runbookPath) {
   setRunbookCache(runbookRecordCache, runbookPath, lastRunRecord);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
+}
+
+async function loadLatestMachineRunRecord(runbookPath) {
+  if (!workspacePath || !runbookPath || !window.orpad?.machine?.listRuns || !window.orpad?.machine?.getRun) return null;
+  try {
+    const listed = await window.orpad.machine.listRuns({
+      workspacePath,
+      pipelinePath: runbookPath,
+    });
+    if (!listed?.success || !(listed.runs || []).length) return null;
+    const latest = listed.runs[0];
+    const snapshot = await window.orpad.machine.getRun({
+      workspacePath,
+      pipelinePath: runbookPath,
+      runId: latest.runId,
+    });
+    return snapshot?.success ? snapshot : {
+      runId: latest.runId,
+      runState: latest,
+      events: [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function requestMachineCapabilityToken() {
