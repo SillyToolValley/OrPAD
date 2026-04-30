@@ -6,6 +6,16 @@ function toPortablePath(value) {
   return String(value || '').replace(/\\/g, '/').replace(/\/+/g, '/');
 }
 
+function assertRunIdSegment(runId) {
+  const value = String(runId || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(value)) {
+    const err = new Error('Machine runId must be a single safe path segment.');
+    err.code = 'MACHINE_RUN_ID_INVALID';
+    throw err;
+  }
+  return value;
+}
+
 function trimLeadingSlash(value) {
   return String(value || '').replace(/^\/+/, '');
 }
@@ -23,8 +33,7 @@ function legacyLatestRunSuffix(ref) {
 
 function durableRunRoot(pipelineDir, runId) {
   if (!pipelineDir) throw new Error('pipelineDir is required.');
-  if (!runId) throw new Error('runId is required.');
-  return path.join(path.resolve(pipelineDir), 'runs', String(runId));
+  return path.join(path.resolve(pipelineDir), 'runs', assertRunIdSegment(runId));
 }
 
 function latestRunExportRoot(pipelineDir) {
@@ -79,6 +88,7 @@ function resolvePipelineContext({ workspaceRoot, pipelinePath }) {
 
 module.exports = {
   LEGACY_LATEST_RUN_PREFIX,
+  assertRunIdSegment,
   durableRunRoot,
   isLegacyLatestRunRef,
   latestRunExportRoot,

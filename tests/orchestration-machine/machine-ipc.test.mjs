@@ -211,6 +211,14 @@ test('Machine IPC validates, creates, reads, lists, and exports a Machine run wi
   assert.equal(created.success, true);
   assert.equal(created.runId, 'run_20260430_ipc');
 
+  const duplicateCreate = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(duplicateCreate.success, false);
+  assert.equal(duplicateCreate.code, 'MACHINE_RUN_ALREADY_EXISTS');
+
   const listed = await handlers.get(MACHINE_IPC_CHANNELS.listRuns)(event, baseRequest);
   assert.equal(listed.success, true);
   assert.deepEqual(listed.runs.map(run => run.runId), ['run_20260430_ipc']);

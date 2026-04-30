@@ -27,6 +27,22 @@ async function readPipeline(pipelinePath) {
   return JSON.parse(await fsp.readFile(pipelinePath, 'utf8'));
 }
 
+function runStoreError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+async function assertRunRootAvailable(runRoot) {
+  try {
+    await fsp.lstat(runRoot);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+  throw runStoreError('MACHINE_RUN_ALREADY_EXISTS', `Machine run already exists: ${path.basename(runRoot)}`);
+}
+
 async function writeRunState(runRoot, runState) {
   validator.assertValid('machineRun', runState);
   await writeJsonAtomic(runStatePath(runRoot), runState);
@@ -51,6 +67,7 @@ async function createMachineRun(options = {}) {
   const exportRoot = latestRunExportRoot(context.pipelineDir);
   const timestamp = now.toISOString();
 
+  await assertRunRootAvailable(targetRunRoot);
   await ensureRunLayout(targetRunRoot);
   const createdEvent = await appendMachineEvent(targetRunRoot, {
     runId,

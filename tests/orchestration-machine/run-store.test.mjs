@@ -59,6 +59,10 @@ test('path resolver treats legacy latest-run refs as durable run aliases', async
   assert.equal(resolved.kind, 'legacy-latest-run-alias');
   assert.equal(resolved.runRelativePath, 'queue');
   assert.equal(resolved.resolvedPath, path.join(runRoot, 'queue'));
+  assert.throws(
+    () => durableRunRoot(pipelineDir, '../run_20260430_escape'),
+    error => error?.code === 'MACHINE_RUN_ID_INVALID',
+  );
 });
 
 test('current maintenance pipeline latest-run refs resolve to durable run paths', async () => {
@@ -113,6 +117,16 @@ test('createMachineRun writes durable run root and leaves latest-run as export-o
     error => error?.code === 'ENOENT',
     'createMachineRun must not materialize latest-run export',
   );
+  await assert.rejects(
+    createMachineRun({
+      workspaceRoot,
+      pipelinePath,
+      runId,
+      now: fixedNow,
+    }),
+    error => error?.code === 'MACHINE_RUN_ALREADY_EXISTS',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, 1);
 });
 
 test('Machine event append is monotonic and validates contract shape', async () => {
