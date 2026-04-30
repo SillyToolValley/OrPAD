@@ -33,7 +33,10 @@ function killProcessTree(pid?: number): void {
   } catch {}
 }
 
-export async function launchElectron(extraArgs: string[] = []): Promise<ElectronApplication> {
+export async function launchElectron(
+  extraArgs: string[] = [],
+  extraEnv: Record<string, string> = {},
+): Promise<ElectronApplication> {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-e2e-'));
   const app = await electron.launch({
     args: ['.', ...extraArgs],
@@ -41,6 +44,7 @@ export async function launchElectron(extraArgs: string[] = []): Promise<Electron
     env: {
       ...process.env,
       ORPAD_TEST_USER_DATA: userDataDir,
+      ...extraEnv,
     },
   });
   const win = await app.firstWindow();

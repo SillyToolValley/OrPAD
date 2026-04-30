@@ -1579,6 +1579,11 @@ body.json-diff-mode #preview-pane {
 }
 .runbook-diagnostics,
 .runbook-replay-events { display: grid; gap: calc(5px * var(--us)); }
+.runbook-machine-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(7px * var(--us));
+}
 .runbook-guide {
   display: grid;
   gap: calc(3px * var(--us));
@@ -1593,7 +1598,10 @@ body.json-diff-mode #preview-pane {
   color: var(--text-primary);
   font-size: calc(12px * var(--us));
 }
-.runbook-guide span { color: var(--text-secondary); }
+.runbook-guide span {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
 .runbook-guide.good { border-left-color: var(--syntax-string, #9ece6a); }
 .runbook-guide.warn { border-left-color: var(--syntax-meta, #e0af68); }
 .runbook-guide.danger { border-left-color: var(--danger-color, #ff7676); }
@@ -2330,6 +2338,7 @@ body.json-diff-mode #preview-pane {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (max-width: 980px) {
+  .runbook-machine-grid,
   .pipeline-field-grid,
   .pipeline-policy-grid,
   .orch-graph-layout {

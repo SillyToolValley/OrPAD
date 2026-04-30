@@ -386,9 +386,14 @@ let selectedRunbookValidation = null;
 let lastRunRecord = null;
 let runbookScanRequestId = 0;
 const RUNBOOK_TASK_STORAGE_KEY = 'orpad-runbook-task';
+const MACHINE_UI_STORAGE_KEY = 'orpad-machine-ui-enabled';
+const MACHINE_CAPABILITY_SESSION_KEY = 'orpad-machine-capability-token';
 let runbookDraftTask = localStorage.getItem(RUNBOOK_TASK_STORAGE_KEY) || '';
 const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
+const machineRunRecordCache = new Map();
+let lastMachineRunRecord = null;
+let machineCapabilityToken = sessionStorage.getItem(MACHINE_CAPABILITY_SESSION_KEY) || '';
 let gitRepoState = { isRepo: false, statuses: new Map(), branch: null, ahead: null, behind: null, slow: false };
 let gitStatusTimer = null;
 let gitRefreshToken = 0;
@@ -7070,6 +7075,17 @@ function isAgentOrchestratedPipeline(validation) {
   return (validation.renderOnlyNodeTypes || []).some(type => String(type || '').startsWith('orpad.'));
 }
 
+function isMachineUiEnabled() {
+  return !!window.orpad?.machine && localStorage.getItem(MACHINE_UI_STORAGE_KEY) === '1';
+}
+
+function isMachineCompatiblePipeline(validation) {
+  return !!validation?.ok
+    && validation.format === 'or-pipeline'
+    && validation.canMachineExecute === true
+    && !(validation.diagnostics || []).some(isDiagnosticError);
+}
+
 function agentOrchestratedPipelineIssue(validation) {
   if (!isAgentOrchestratedPipeline(validation)) return null;
   return (validation.diagnostics || []).find(item => item?.code === 'PIPELINE_AGENT_ORCHESTRATED') || {
@@ -7588,6 +7604,53 @@ function renderRunRecordPanel(record = lastRunRecord) {
   `;
 }
 
+function machineEventLabel(event) {
+  return event?.eventType || event?.type || 'event';
+}
+
+function renderMachineRunPanel(record = lastMachineRunRecord) {
+  if (!record) return '';
+  const runState = record.runState || {};
+  const events = record.events || [];
+  const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
+  const exported = record.exported || null;
+  const exportedFiles = exported?.metadata?.artifactManifest?.files || [];
+  return `
+    <section class="runbook-panel-section">
+      <h3>Machine Run</h3>
+      <div class="runbook-chip-row">
+        <span class="runbook-chip good">${escapeHtml(runState.lifecycleStatus || 'created')}</span>
+        <span class="runbook-chip">${escapeHtml(runState.summaryStatus || 'pending')}</span>
+        <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
+      </div>
+      <div class="runbook-action-row">
+        <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Export Latest</button>
+      </div>
+      <div class="runbook-replay-events">
+        ${events.slice(0, 12).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No Machine events recorded.</div>'}
+      </div>
+      <div class="runbook-machine-grid">
+        <div class="runbook-guide">
+          <strong>Queue</strong>
+          <span>${escapeHtml(queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet')}</span>
+        </div>
+        <div class="runbook-guide">
+          <strong>Artifacts</strong>
+          <span>${escapeHtml(exportedFiles.length ? `${exportedFiles.length} files in latest export` : 'No artifact manifest files yet')}</span>
+        </div>
+        <div class="runbook-guide ${exported ? 'good' : 'warn'}">
+          <strong>Latest-run export</strong>
+          <span>${escapeHtml(exported ? (exported.targetRoot || exported.latestRunExportPath || 'exported') : 'Not exported')}</span>
+        </div>
+        <div class="runbook-guide">
+          <strong>Approval</strong>
+          <span>Not required for create-run only</span>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function renderRunbookPrimaryIssue(validation) {
   if (!validation) return '';
   if (validation.ok && validation.canExecute) return '';
@@ -7599,6 +7662,28 @@ function renderRunbookPrimaryIssue(validation) {
     || (validation.diagnostics || [])[0];
   if (!issue) return '';
   return `<div class="runbook-diagnostic ${isDiagnosticError(issue) ? 'error' : 'warning'}">${escapeHtml(issue.code || 'CHECK')} - ${escapeHtml(issue.message || '')}</div>`;
+}
+
+function renderRunbookActionButtons(selected, selectedValidation, selectedAgentReady) {
+  if (!isMachineUiEnabled()) {
+    return `
+      <button class="primary" data-runbook-action="${selectedAgentReady ? 'agent-handoff' : 'start-local'}" data-path="${escapeHtml(selected)}" ${selectedValidation?.canExecute || selectedAgentReady ? '' : 'disabled'} title="${selectedAgentReady ? 'Prepare a copyable path-only launch prompt for a supervised agent session.' : ''}">${selectedAgentReady ? 'Prepare Handoff' : 'Run locally'}</button>
+      <button data-runbook-action="validate" data-path="${escapeHtml(selected)}">Check</button>
+    `;
+  }
+
+  const canLocal = selectedValidation?.canExecute === true;
+  const isPipeline = selectedValidation?.format === 'or-pipeline' || /\.or-pipeline$/i.test(selected || '');
+  const canMachine = isMachineCompatiblePipeline(selectedValidation);
+  const machineReason = selectedValidation
+    ? (selectedValidation.machineBlockedReasons || []).join(', ') || 'not Machine-compatible'
+    : 'Check the pipeline first';
+  return `
+    <button class="${canLocal ? 'primary' : ''}" data-runbook-action="start-local" data-path="${escapeHtml(selected)}" ${canLocal ? '' : 'disabled'}>Run locally</button>
+    ${isPipeline ? `<button class="${!canLocal && canMachine ? 'primary' : ''}" data-runbook-action="run-machine" data-path="${escapeHtml(selected)}" ${canMachine ? '' : 'disabled'} title="${escapeHtml(canMachine ? 'Create a durable Machine run.' : machineReason)}">Run Machine</button>` : ''}
+    ${selectedAgentReady ? `<button data-runbook-action="agent-handoff" data-path="${escapeHtml(selected)}">Prepare Handoff</button>` : ''}
+    <button data-runbook-action="validate" data-path="${escapeHtml(selected)}">Check</button>
+  `;
 }
 
 function renderRunbooksPanel() {
@@ -7624,6 +7709,7 @@ function renderRunbooksPanel() {
     || getRunbookCache(runbookValidationCache, selected);
   const selectedAgentReady = isAgentOrchestratedPipeline(selectedValidation);
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
+  const selectedMachineRunRecord = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, selected);
   const selectedKey = runbookNormalizePath(selected).toLowerCase();
   runbooksContentEl.innerHTML = `
     <section class="runbook-panel-section">
@@ -7664,10 +7750,11 @@ function renderRunbooksPanel() {
         <div class="runbook-chip-row">
           ${runbookStatusChip(selectedValidation)}
           ${selectedValidation ? `<span class="runbook-chip">${selectedValidation.nodeCount || 0} nodes</span>` : ''}
+          ${isMachineUiEnabled() && isMachineCompatiblePipeline(selectedValidation) ? '<span class="runbook-chip good">Machine-compatible</span>' : ''}
+          ${isMachineUiEnabled() && selectedValidation?.handoffCompatibility?.available ? '<span class="runbook-chip">handoff-compatible</span>' : ''}
         </div>
         <div class="runbook-action-row">
-          <button class="primary" data-runbook-action="${selectedAgentReady ? 'agent-handoff' : 'start-local'}" data-path="${escapeHtml(selected)}" ${selectedValidation?.canExecute || selectedAgentReady ? '' : 'disabled'} title="${selectedAgentReady ? 'Prepare a copyable path-only launch prompt for a supervised agent session.' : ''}">${selectedAgentReady ? 'Prepare Handoff' : 'Run locally'}</button>
-          <button data-runbook-action="validate" data-path="${escapeHtml(selected)}">Check</button>
+          ${renderRunbookActionButtons(selected, selectedValidation, selectedAgentReady)}
         </div>
         ${renderRunbookPrimaryIssue(selectedValidation)}
         ${selectedAgentReady ? `
@@ -7684,6 +7771,7 @@ function renderRunbooksPanel() {
       </section>
     `}
     ${renderRunRecordPanel(selected ? selectedRunRecord : null)}
+    ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null)}
   `;
 }
 
@@ -7694,6 +7782,7 @@ async function validateSelectedRunbook(runbookPath) {
   selectedRunbookValidation = await pipelineApi.validateFile(runbookPath, { trustLevel: 'local-authored' });
   setRunbookCache(runbookValidationCache, runbookPath, selectedRunbookValidation);
   lastRunRecord = null;
+  lastMachineRunRecord = getRunbookCache(machineRunRecordCache, runbookPath);
   renderRunbooksPanel();
 }
 
@@ -7723,12 +7812,14 @@ async function toggleRunbookSlot(runbookPath) {
     selectedRunbookPath = null;
     selectedRunbookValidation = null;
     lastRunRecord = null;
+    lastMachineRunRecord = null;
     renderRunbooksPanel();
     return;
   }
   selectedRunbookPath = runbookPath;
   selectedRunbookValidation = getRunbookCache(runbookValidationCache, runbookPath);
   lastRunRecord = getRunbookCache(runbookRecordCache, runbookPath);
+  lastMachineRunRecord = getRunbookCache(machineRunRecordCache, runbookPath);
   renderRunbooksPanel();
   await openPipelineEntryOrFile(runbookPath);
   await validateSelectedRunbook(runbookPath);
@@ -7789,6 +7880,122 @@ async function startSelectedLocalRun(runbookPath) {
   setRunbookCache(runbookRecordCache, runbookPath, lastRunRecord);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
+}
+
+async function requestMachineCapabilityToken() {
+  if (!machineCapabilityToken) {
+    machineCapabilityToken = sessionStorage.getItem(MACHINE_CAPABILITY_SESSION_KEY) || '';
+  }
+  if (machineCapabilityToken) return machineCapabilityToken;
+  return new Promise((resolve) => {
+    let settled = false;
+    const body = document.createElement('div');
+    body.className = 'runbook-modal-body';
+    body.innerHTML = `
+      <p>Enter the Machine capability token for this desktop session.</p>
+      <input class="runbook-task-input" type="password" data-machine-token-input autocomplete="off" placeholder="Capability token">
+      <div class="runbook-diagnostic warning">The token stays in session memory and is used only for Machine run-store mutations.</div>
+    `;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      closeFmtModal();
+      resolve(value || '');
+    };
+    openFmtModal({
+      title: 'Machine Capability',
+      body,
+      onClose: () => finish(''),
+      footer: [
+        { label: 'Cancel', onClick: () => finish('') },
+        {
+          label: 'Use Token',
+          primary: true,
+          onClick: () => {
+            const token = body.querySelector('[data-machine-token-input]')?.value || '';
+            machineCapabilityToken = token.trim();
+            if (machineCapabilityToken) {
+              try { sessionStorage.setItem(MACHINE_CAPABILITY_SESSION_KEY, machineCapabilityToken); } catch {}
+            }
+            finish(machineCapabilityToken);
+          },
+        },
+      ],
+    });
+    setTimeout(() => body.querySelector('[data-machine-token-input]')?.focus(), 30);
+  });
+}
+
+async function startSelectedMachineRun(runbookPath) {
+  if (!workspacePath || !runbookPath || !window.orpad?.machine) return;
+  if (!selectedRunbookValidation || selectedRunbookPath !== runbookPath) {
+    await validateSelectedRunbook(runbookPath);
+  }
+  const validation = selectedRunbookValidation || getRunbookCache(runbookValidationCache, runbookPath);
+  if (!isMachineCompatiblePipeline(validation)) {
+    alert('Pipeline must validate as Machine-compatible before starting a Machine run.');
+    return;
+  }
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const created = await window.orpad.machine.createRun({
+    workspacePath,
+    pipelinePath: runbookPath,
+    capabilityToken: token,
+    options: { trustLevel: 'local-authored' },
+  });
+  if (!created?.success) {
+    if (created?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
+      machineCapabilityToken = '';
+      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
+    }
+    alert(created?.error || 'Machine run could not be created.');
+    return;
+  }
+  const snapshot = await window.orpad.machine.getRun({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId: created.runId,
+  });
+  selectedRunbookPath = runbookPath;
+  selectedRunbookValidation = created.validation || validation;
+  setRunbookCache(runbookValidationCache, runbookPath, selectedRunbookValidation);
+  lastMachineRunRecord = snapshot?.success ? snapshot : {
+    runId: created.runId,
+    runState: created.runState,
+    events: created.event ? [created.event] : [],
+  };
+  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+}
+
+async function exportSelectedMachineRun(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine) return;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const exported = await window.orpad.machine.exportLatestRun({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    capabilityToken: token,
+    allowOverwrite: true,
+  });
+  if (!exported?.success) {
+    if (exported?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
+      machineCapabilityToken = '';
+      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
+    }
+    alert(exported?.error || 'Machine latest-run export failed.');
+    return;
+  }
+  const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || { runId, events: [] };
+  lastMachineRunRecord = {
+    ...cached,
+    exported,
+  };
+  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  renderRunbooksPanel();
 }
 
 function openWorkspaceDashboardNote() {
@@ -8118,6 +8325,8 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'context') await openRunbookContextInspector(targetPath, selectedRunbookValidation);
     else if (action === 'agent-handoff') await openAgentHandoffModal(targetPath, selectedRunbookValidation);
     else if (action === 'start-local') await startSelectedLocalRun(targetPath);
+    else if (action === 'run-machine') await startSelectedMachineRun(targetPath);
+    else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
   } catch (err) {
     notifyFormatError('Runbooks', err);
   }

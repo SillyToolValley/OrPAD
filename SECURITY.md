@@ -339,6 +339,9 @@ workspace edits outside Machine run-store/latest-run export paths.
 - Mutating actions (`machine-create-run`, `machine-export-latest-run`) require
   `ORPAD_MACHINE_IPC_TOKEN` and a matching `capabilityToken` in the request. Read-only validate,
   list, and get-run actions still require the feature gate and sender/path/schema checks.
+- The renderer Machine run UI remains hidden unless `localStorage.orpad-machine-ui-enabled` is
+  explicitly set to `1` for internal/dev rollout. The mutating capability token is entered or
+  supplied per desktop session and kept in `sessionStorage`/renderer memory, not localStorage.
 - Requests are typed objects; missing or incorrectly typed fields fail before calling Machine
   storage helpers.
 - `workspacePath` and `pipelinePath` must stay inside the renderer's approved workspace authority,
