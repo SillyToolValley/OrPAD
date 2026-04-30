@@ -15,7 +15,9 @@ function writeMachineWorkspace(): { workspace: string; pipelinePath: string; pip
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-machine-ui-'));
   const pipelineDir = path.join(workspace, '.orpad', 'pipelines', 'machine-workstream');
   fs.mkdirSync(path.join(pipelineDir, 'graphs'), { recursive: true });
+  fs.mkdirSync(path.join(workspace, 'src'), { recursive: true });
   const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  fs.writeFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'before\n');
 
   fs.writeFileSync(path.join(pipelineDir, 'graphs', 'main.or-graph'), JSON.stringify({
     kind: 'orpad.graph',
@@ -55,6 +57,24 @@ function writeMachineWorkspace(): { workspace: string; pipelinePath: string; pip
       queueRoot: 'harness/generated/latest-run/queue',
       metadataPath: 'harness/generated/latest-run/run-metadata.json',
       summaryPath: 'harness/generated/latest-run/summary.md',
+      machineHarness: {
+        candidateProposal: {
+          schemaVersion: 'orpad.candidateProposal.v1',
+          proposalId: 'proposal-machine-ui-smoke',
+          suggestedWorkItemId: 'machine-ui-smoke',
+          sourceNode: 'probe/machine-ui',
+          title: 'Exercise Machine UI worker execution',
+          fingerprint: 'machine-ui:src/smoke-target.md',
+          evidence: [{ id: 'target-before', file: 'src/smoke-target.md' }],
+          acceptanceCriteria: ['Patch artifact records the target file change.'],
+          sourceOfTruthTargets: ['src/smoke-target.md'],
+        },
+        expectedChangedFiles: ['src/smoke-target.md'],
+        nodeCliPatch: {
+          file: 'src/smoke-target.md',
+          content: 'after from Machine UI harness\n',
+        },
+      },
     },
     graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
   }, null, 2));
@@ -62,11 +82,12 @@ function writeMachineWorkspace(): { workspace: string; pipelinePath: string; pip
   return { workspace, pipelinePath, pipelineDir };
 }
 
-test('Machine UI creates a durable run while keeping handoff available', async () => {
+test('Machine UI creates a durable run and executes a dispatcher worker adapter step', async () => {
   const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
   const app = await launchElectron([], {
     ORPAD_MACHINE_IPC: '1',
     ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
   });
   const win = await app.firstWindow();
   const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
@@ -92,9 +113,16 @@ test('Machine UI creates a durable run while keeping handoff available', async (
   await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
   await expect(win.locator('#runbooks-content')).toContainText('Latest-run export');
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
 
   const runRoot = path.join(pipelineDir, 'runs');
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(1);
+
+  await win.locator('button[data-runbook-action="machine-execute-step"]').click();
+  await expect(win.locator('#runbooks-content')).toContainText('adapter.requested');
+  await expect(win.locator('#runbooks-content')).toContainText('worker.result');
+  await expect(win.locator('#runbooks-content')).toContainText('queue.transition');
+  expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
 
   await win.locator('button[data-runbook-action="machine-export"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('harness');

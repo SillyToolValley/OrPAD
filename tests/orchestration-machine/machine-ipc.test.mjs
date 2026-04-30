@@ -57,6 +57,62 @@ async function makeWorkspace() {
   return { workspaceRoot, pipelineDir, pipelinePath };
 }
 
+async function makeHarnessWorkspace() {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-ipc-harness-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/harness-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'before\n', 'utf8');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'harness-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+    nodePacks: [
+      { id: 'orpad.core', version: '>=1.0.0-beta.3', origin: 'built-in' },
+      { id: 'orpad.workstream', version: '>=0.1.0', origin: 'built-in' },
+    ],
+    run: {
+      artifactRoot: 'harness/generated/latest-run/artifacts',
+      queueRoot: 'harness/generated/latest-run/queue',
+      metadataPath: 'harness/generated/latest-run/run-metadata.json',
+      summaryPath: 'harness/generated/latest-run/summary.md',
+      machineHarness: {
+        candidateProposal: {
+          schemaVersion: 'orpad.candidateProposal.v1',
+          proposalId: 'proposal-ipc-harness-smoke',
+          suggestedWorkItemId: 'ipc-harness-smoke',
+          sourceNode: 'probe/ipc-harness',
+          title: 'Exercise Machine IPC worker execution',
+          fingerprint: 'ipc-harness:src/smoke-target.md',
+          evidence: [{ id: 'target-before', file: 'src/smoke-target.md' }],
+          acceptanceCriteria: ['Patch artifact records the target file change.'],
+          sourceOfTruthTargets: ['src/smoke-target.md'],
+        },
+        expectedChangedFiles: ['src/smoke-target.md'],
+        nodeCliPatch: {
+          file: 'src/smoke-target.md',
+          content: 'after from Machine IPC harness\n',
+        },
+      },
+    },
+  }, null, 2), 'utf8');
+  await fs.writeFile(path.join(pipelineDir, 'graphs/main.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      nodes: [
+        { id: 'queue', type: 'orpad.workQueue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'dispatcher', type: 'orpad.dispatcher', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+        { id: 'worker', type: 'orpad.workerLoop', config: { queueRef: 'queue' } },
+      ],
+      edges: [],
+    },
+  }, null, 2), 'utf8');
+  return { workspaceRoot, pipelineDir, pipelinePath };
+}
+
 test('Machine IPC registers only typed channels and preload exposes no generic machine invoke', async () => {
   const { handlers } = createIpcHarness();
   const preloadSource = await fs.readFile(path.join(repoRoot, 'src/main/preload.js'), 'utf8');
@@ -162,4 +218,33 @@ test('Machine IPC validates, creates, reads, lists, and exports a Machine run wi
   assert.equal(exported.success, true);
   assert.equal(exported.targetRoot, path.join(pipelineDir, 'harness/generated/latest-run'));
   assert.equal((await fs.stat(path.join(exported.targetRoot, 'run-metadata.json'))).isFile(), true);
+});
+
+test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay adapter with a harness grant', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_harness',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+
+  assert.equal(executed.success, true);
+  assert.equal(executed.worker.event.payload.status, 'done');
+  assert.equal(executed.events.some(item => item.eventType === 'adapter.requested'), true);
+  assert.equal(executed.events.some(item => item.eventType === 'worker.result'), true);
+  assert.equal(executed.events.some(item => item.eventType === 'queue.transition' && item.toState === 'done'), true);
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'before\n');
+  assert.equal((await fs.stat(path.join(pipelineDir, 'harness/generated/latest-run/run-metadata.json'))).isFile(), true);
 });

@@ -19,6 +19,7 @@ const nodePacks = require('./node-packs');
 const patches = require('./patches');
 const pathResolver = require('./path-resolver');
 const processRunner = require('./adapters/process-runner');
+const processContainment = require('./adapters/process-containment');
 const probeRunner = require('./probe-runner');
 const providerPolicy = require('./providers/policy');
 const queueStore = require('./queue-store');
@@ -51,6 +52,7 @@ module.exports = {
   ...patches,
   ...pathResolver,
   ...processRunner,
+  ...processContainment,
   ...probeRunner,
   ...providerPolicy,
   ...queueStore,

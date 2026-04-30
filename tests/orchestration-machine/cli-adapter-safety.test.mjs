@@ -306,6 +306,162 @@ test('CLI overlay adapter blocks successful no-op when expected changed files ar
   assert.deepEqual(result.verification[0].missingExpectedChanges, ['src/allowed.txt']);
 });
 
+test('CLI overlay adapter blocks Codex dangerous sandbox bypass without explicit approval', async () => {
+  const run = await makeRun('run_20260430_cli_dangerous_denied');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/allowed.txt'],
+    adapterCallId: 'cli-dangerous-denied-call',
+    attemptId: 'cli-dangerous-denied-attempt-1',
+    idempotencyKey: 'cli-dangerous-denied-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-dangerous-denied-'));
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("should-not-run")', '--', '--dangerously-bypass-approvals-and-sandbox'],
+    cwd: overlayRoot,
+  };
+
+  await assert.rejects(
+    createCliAgentAdapter({
+      enabled: true,
+      runRoot: run.runRoot,
+      workspaceRoot: run.workspaceRoot,
+      commandSpec,
+      commandGrants: [createCommandGrant({
+        ...commandSpec,
+        grantId: 'grant-cli-dangerous-denied',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })],
+      overlayRoot,
+      overlayRootMode: 'system-temp',
+    }).invoke(request),
+    error => error?.code === 'MACHINE_DANGEROUS_SANDBOX_BYPASS_NOT_APPROVED',
+  );
+});
+
+test('CLI overlay adapter allows dangerous sandbox bypass only from approved system temp overlay', async () => {
+  const run = await makeRun('run_20260430_cli_dangerous_approved');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/allowed.txt'],
+    adapterCallId: 'cli-dangerous-approved-call',
+    attemptId: 'cli-dangerous-approved-attempt-1',
+    idempotencyKey: 'cli-dangerous-approved-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.expectedChangedFiles = ['src/allowed.txt'];
+  request.dangerousSandboxBypassApproval = {
+    approved: true,
+    reason: 'unit test approved dangerous Codex bypass in a temp overlay',
+  };
+  const overlayRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-dangerous-approved-'));
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("src",{recursive:true});',
+    'fs.writeFileSync("src/allowed.txt","after\\n","utf8");',
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script, '--', '--dangerously-bypass-approvals-and-sandbox'],
+    cwd: overlayRoot,
+  };
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-dangerous-approved',
+      allowDangerousSandboxBypass: true,
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+    overlayRoot,
+    overlayRootMode: 'system-temp',
+    allowDangerousSandboxBypass: true,
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.deepEqual(result.changedFiles, ['src/allowed.txt']);
+  assert.equal(result.verification[0].containment.dangerousSandboxBypass, true);
+  assert.equal(result.verification[0].containment.dangerousSandboxBypassApproved, true);
+});
+
+test('CLI overlay adapter rejects commands that escape overlay cwd or reference the canonical workspace path', async () => {
+  const run = await makeRun('run_20260430_cli_containment');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const baseRequest = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/allowed.txt'],
+    adapterCallId: 'cli-containment-call',
+    attemptId: 'cli-containment-attempt-1',
+    idempotencyKey: 'cli-containment-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, baseRequest);
+  const outsideCwdSpec = {
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("outside-cwd")'],
+    cwd: run.workspaceRoot,
+  };
+  await assert.rejects(
+    createCliAgentAdapter({
+      enabled: true,
+      runRoot: run.runRoot,
+      workspaceRoot: run.workspaceRoot,
+      commandSpec: outsideCwdSpec,
+      commandGrants: [createCommandGrant({
+        ...outsideCwdSpec,
+        grantId: 'grant-cli-outside-cwd',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })],
+    }).invoke(baseRequest),
+    error => error?.code === 'MACHINE_PROCESS_CWD_OUTSIDE_OVERLAY',
+  );
+
+  const canonicalArgSpec = {
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write(process.argv[1] || "")', run.workspaceRoot],
+    cwd: overlayRoot,
+  };
+  await assert.rejects(
+    createCliAgentAdapter({
+      enabled: true,
+      runRoot: run.runRoot,
+      workspaceRoot: run.workspaceRoot,
+      commandSpec: canonicalArgSpec,
+      commandGrants: [createCommandGrant({
+        ...canonicalArgSpec,
+        grantId: 'grant-cli-canonical-arg',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })],
+    }).invoke(baseRequest),
+    error => error?.code === 'MACHINE_PROCESS_CANONICAL_PATH_ARG',
+  );
+});
+
 test('Machine-applied patch rejects out-of-write-set paths and duplicate base application', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-patch-'));
   await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });

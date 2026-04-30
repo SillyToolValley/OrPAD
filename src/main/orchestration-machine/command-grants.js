@@ -43,6 +43,8 @@ function createCommandGrant(input = {}) {
     command: spec.command,
     args: spec.args,
     cwd: spec.cwd,
+    approvalId: input.approvalId || '',
+    allowDangerousSandboxBypass: input.allowDangerousSandboxBypass === true,
     createdAt: input.createdAt || new Date().toISOString(),
     expiresAt: input.expiresAt || '',
     reason: input.reason || 'explicit-command-grant',

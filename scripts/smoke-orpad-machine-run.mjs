@@ -32,6 +32,7 @@ const DEFAULT_MARKER = 'after from OrPAD Machine smoke adapter';
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     adapter: 'node-cli',
+    approveDangerousBypass: false,
     codexCommand: 'codex',
     codexBypassSandbox: false,
     json: false,
@@ -43,6 +44,7 @@ function parseArgs(argv = process.argv.slice(2)) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--adapter') options.adapter = argv[++index] || options.adapter;
+    else if (arg === '--approve-dangerous-bypass') options.approveDangerousBypass = true;
     else if (arg === '--codex-cli') options.adapter = 'codex-cli';
     else if (arg === '--codex-bypass-sandbox') options.codexBypassSandbox = true;
     else if (arg === '--codex-command') options.codexCommand = argv[++index] || options.codexCommand;
@@ -59,10 +61,11 @@ function parseArgs(argv = process.argv.slice(2)) {
 
 function usage() {
   return [
-    'Usage: node scripts/smoke-orpad-machine-run.mjs [--adapter node-cli|codex-cli] [--codex-bypass-sandbox] [--keep] [--json]',
+    'Usage: node scripts/smoke-orpad-machine-run.mjs [--adapter node-cli|codex-cli] [--codex-bypass-sandbox --approve-dangerous-bypass] [--keep] [--json]',
     '',
     'Creates a temporary .or-pipeline, runs the Orchestration Machine queue/dispatcher/worker loop,',
     'executes the CLI adapter in an overlay, exports latest-run evidence, and audits the run.',
+    'Codex dangerous sandbox bypass requires --approve-dangerous-bypass and uses a system temp overlay.',
   ].join('\n');
 }
 
@@ -301,7 +304,21 @@ async function runMachineSmoke(input = {}) {
       idempotencyKey: `machine-smoke-cli:${run.runId}:attempt-1`,
     });
     request.expectedChangedFiles = ['src/smoke-target.md'];
-    const overlayRoot = cliOverlayRoot(run.runRoot, request);
+    const overlayRoot = options.adapter === 'codex-cli' && options.codexBypassSandbox
+      ? await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-codex-overlay-'))
+      : cliOverlayRoot(run.runRoot, request);
+    request.overlayRoot = overlayRoot;
+    request.overlayRootMode = options.adapter === 'codex-cli' && options.codexBypassSandbox
+      ? 'system-temp'
+      : 'run-root';
+    if (options.adapter === 'codex-cli' && options.codexBypassSandbox) {
+      request.dangerousSandboxBypassApproval = {
+        approved: options.approveDangerousBypass === true,
+        reason: options.approveDangerousBypass
+          ? 'explicit smoke approval for Codex dangerous sandbox bypass in a system temp overlay'
+          : '',
+      };
+    }
     const commandSpec = options.adapter === 'codex-cli'
       ? await codexCliCommandSpec(options, overlayRoot)
       : nodeCliCommandSpec(options.marker, overlayRoot);
@@ -310,6 +327,9 @@ async function runMachineSmoke(input = {}) {
       ...commandSpec,
       grantId: `grant-machine-smoke-${options.adapter}`,
       scope: 'machine-smoke',
+      allowDangerousSandboxBypass: options.adapter === 'codex-cli'
+        && options.codexBypassSandbox
+        && options.approveDangerousBypass,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       reason: `explicit OrPAD Machine smoke run using ${options.adapter}`,
     })];
@@ -318,6 +338,9 @@ async function runMachineSmoke(input = {}) {
       enabled: true,
       runRoot: run.runRoot,
       workspaceRoot: workspace.workspaceRoot,
+      overlayRoot,
+      overlayRootMode: request.overlayRootMode,
+      allowDangerousSandboxBypass: options.approveDangerousBypass === true,
       timeoutMs: options.timeoutMs,
       maxOutputBytes: 64 * 1024,
     });
@@ -365,6 +388,7 @@ async function runMachineSmoke(input = {}) {
       ok: true,
       adapter: options.adapter,
       codexBypassSandbox: options.codexBypassSandbox === true,
+      approveDangerousBypass: options.approveDangerousBypass === true,
       workspaceRoot: workspace.workspaceRoot,
       pipelinePath: workspace.pipelinePath,
       runId: run.runId,

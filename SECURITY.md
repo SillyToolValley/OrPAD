@@ -47,7 +47,7 @@ process is fully sandboxed with no direct Node.js access.
 | `searchFiles(dirPath, query, options)` | workspace search | MEDIUM |
 | `buildLinkIndex` / `resolveWikiLink` / `getBacklinks` / `getFileNames` | wiki-link graph | MEDIUM |
 | `pipelines.*` / `runbooks.*` validation, scan, run-record, and local-run APIs | `.or-pipeline`, `.or-graph`, `.or-tree`, and legacy `.orch-*` validation plus local MVP run evidence | HIGH (future execution substrate) |
-| `machine.*` validation, run-store, readback, listing, and latest-run export APIs | Feature-gated Orchestration Machine IPC for durable run metadata only | HIGH (future execution substrate) |
+| `machine.*` validation, run-store, readback, listing, execute-step harness, and latest-run export APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic MVP harness execution | HIGH (execution substrate) |
 | `revealInExplorer(targetPath)` | `shell.showItemInFolder` | LOW |
 | `saveBinary` / `saveText` | save-dialog before write | LOW |
 | `svgToPng(svg, w, h, bg)` | offscreen BrowserWindow render | LOW |
@@ -326,9 +326,9 @@ MCP, URL, or file-write pipeline steps.
 
 ## OrPAD Orchestration Machine IPC security model
 
-The initial Orchestration Machine IPC surface is a typed, feature-gated bridge for durable run
-metadata only. It does not execute adapters, terminal commands, MCP tools, provider calls, or
-workspace edits outside Machine run-store/latest-run export paths.
+The Orchestration Machine IPC surface is a typed, feature-gated bridge for durable run metadata
+and a deterministic MVP execute-step harness. It does not expose arbitrary adapter execution,
+terminal commands, MCP tools, provider calls, or source workspace edits from the renderer.
 
 - The preload surface exposes one method per action under `window.orpad.machine`; there is no
   generic Machine `invoke(channel, args)` wrapper.
@@ -336,7 +336,7 @@ workspace edits outside Machine run-store/latest-run export paths.
   renderer frame before doing any path or filesystem work.
 - The feature gate is off by default. Handlers reject until `ORPAD_MACHINE_IPC=1` is present
   when handlers are registered.
-- Mutating actions (`machine-create-run`, `machine-export-latest-run`) require
+- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-export-latest-run`) require
   `ORPAD_MACHINE_IPC_TOKEN` and a matching `capabilityToken` in the request. Read-only validate,
   list, and get-run actions still require the feature gate and sender/path/schema checks.
 - The renderer Machine run UI remains hidden unless `localStorage.orpad-machine-ui-enabled` is
@@ -350,23 +350,35 @@ workspace edits outside Machine run-store/latest-run export paths.
   `<pipelineDir>/runs/<runId>`.
 - `machine-create-run` validates `canMachineExecute` first and writes only the durable Machine run
   layout under the pipeline's `runs/` directory.
+- `machine-execute-run-step` is limited to a local deterministic `run.machineHarness` fixture in
+  this MVP. Main process ingests the harness candidate, claims via the dispatcher, runs one
+  WorkerLoop step, and constructs the exact CLI overlay command itself. The renderer cannot pass
+  an arbitrary command, args, cwd, or dangerous Codex bypass flag through this channel.
 - `machine-export-latest-run` copies a trusted snapshot to the legacy latest-run export directory
   for compatibility. It does not apply patches, edit source files, or call external tools.
 
 ## OrPAD Orchestration Machine adapter security model
 
-The first CLI adapter kernel is intentionally not exposed through renderer IPC and remains
-disabled unless a main-process caller constructs it with `enabled: true`. The default Machine UI
-path still creates durable run metadata only.
+The first CLI adapter kernel remains disabled unless a main-process caller constructs it with
+`enabled: true`. The Machine UI execute-step path can reach it only through a deterministic
+harness command assembled by main process.
 
 - CLI adapter execution uses `read-only-plus-overlay` workspaces. Allowed files are copied to an
-  adapter-local overlay under the durable run root (or an explicit temp overlay in tests).
+  adapter-local overlay under the durable run root, or to a system temp overlay when an explicit
+  dangerous Codex sandbox bypass approval is present.
 - The child process cwd is the overlay, not the canonical workspace. Direct writes to canonical
   queue/state/run files are therefore impossible through the adapter process.
 - Commands are represented as `{ command, args[] }` and launched with `spawn(shell:false)`. Shell
   operators are rejected by the command grant layer.
 - Each process launch must match an exact command grant, including command, args, and cwd. A
   mismatched or expired grant blocks before process launch.
+- The adapter containment gate requires command cwd to be exactly the overlay root and rejects
+  command args that reference the canonical workspace root. This is a guardrail against accidental
+  direct workspace targeting; it is not a substitute for OS-level sandboxing.
+- `--dangerously-bypass-approvals-and-sandbox` is treated as a high-risk Codex CLI flag. It is
+  blocked unless the adapter caller enables dangerous bypass, the exact command grant has
+  `allowDangerousSandboxBypass: true`, the adapter request carries an explicit approval reason,
+  and the overlay root is outside the canonical workspace in a system temp directory.
 - The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
   and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
 - Stdout/stderr are captured with output limits and written only as Machine artifacts when a
@@ -472,6 +484,7 @@ features that intentionally launch configured/user-requested child processes.
 | `machine-create-run` | handle | Create a durable Machine run root after `canMachineExecute` validation | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
 | `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
 | `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/` only |
+| `machine-execute-run-step` | handle | Run one deterministic MVP harness step: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled CLI overlay adapter, optional latest-run export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, overlay-only process cwd |
 | `machine-export-latest-run` | handle | Export durable Machine run artifacts/queue metadata to `harness/generated/latest-run` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / pipeline latest-run export only |
 | `save-binary` | handle | Save dialog then binary write | reads `event.sender` | Dialog enforces |
 | `svg-to-png` | handle | Offscreen BrowserWindow render | reads `event.sender` | Validates dimensions |
@@ -509,8 +522,10 @@ pipeline/runbook write or execution surface must treat path authority tests as r
 
 **Machine IPC update:** Orchestration Machine handlers also route through the authority manager
 and add `senderFrame`, feature-gate, typed request, `runId`, and mutating capability-token
-checks before touching storage. PR 8 exposes durable run metadata only; adapter execution,
-provider calls, terminal commands, MCP tools, and source workspace writes remain out of scope.
+checks before touching storage. `machine-execute-run-step` reaches the CLI adapter only through
+a deterministic main-process harness command and overlay cwd containment. Arbitrary adapter
+execution, provider calls, terminal commands, MCP tools, and source workspace writes remain out
+of scope for renderer IPC.
 
 **Command execution boundaries:** General filesystem/editor IPC still does not expose arbitrary
 shell execution. P1-3 MCP uses the official SDK `StdioClientTransport`, which spawns the

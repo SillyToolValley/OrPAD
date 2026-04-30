@@ -4,6 +4,7 @@ const path = require('path');
 
 const { registerArtifact } = require('../artifacts');
 const { assertCommandGranted } = require('../command-grants');
+const { assertCliProcessContainment } = require('./process-containment');
 const { runMachineProcess } = require('./process-runner');
 const {
   collectOverlayPatch,
@@ -48,6 +49,10 @@ async function prepareCliOverlayWorkspace(options = {}) {
   if (!request) throw new Error('adapter request is required.');
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   const overlayRoot = options.overlayRoot
+    || request.overlayRoot
+    || (options.overlayRootMode === 'system-temp' || request.overlayRootMode === 'system-temp'
+      ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
+      : '')
     || cliOverlayRoot(runRoot, request)
     || await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'));
 
@@ -120,8 +125,16 @@ function createCliAgentAdapter(options = {}) {
         ...(options.commandSpec || request.commandSpec || {}),
         cwd: (options.commandSpec || request.commandSpec || {}).cwd || overlay.overlayRoot,
       };
-      assertCommandGranted(options.commandGrants || request.commandGrants || [], commandSpec, {
+      const grant = assertCommandGranted(options.commandGrants || request.commandGrants || [], commandSpec, {
         now: options.now,
+      });
+      const containment = assertCliProcessContainment({
+        commandSpec,
+        grant,
+        overlayRoot: overlay.overlayRoot,
+        workspaceRoot: overlay.workspaceRoot,
+        request,
+        allowDangerousSandboxBypass: options.allowDangerousSandboxBypass === true,
       });
 
       const processResult = await runMachineProcess({
@@ -152,6 +165,7 @@ function createCliAgentAdapter(options = {}) {
             idempotencyKey: request.idempotencyKey,
           },
           overlay,
+          containment,
           process: processResult,
         },
       });
@@ -188,6 +202,7 @@ function createCliAgentAdapter(options = {}) {
           command: commandSpec.command,
           args: commandSpec.args || [],
           cwdKind: 'overlay',
+          containment,
           exitCode: processResult.code,
           timedOut: processResult.timedOut,
           stdoutTruncated: processResult.stdoutTruncated,

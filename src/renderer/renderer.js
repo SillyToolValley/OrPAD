@@ -7624,6 +7624,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
       </div>
       <div class="runbook-action-row">
+        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Execute Step</button>
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Export Latest</button>
       </div>
       <div class="runbook-replay-events">
@@ -7644,7 +7645,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         </div>
         <div class="runbook-guide">
           <strong>Approval</strong>
-          <span>Not required for create-run only</span>
+          <span>Required before mutating Machine actions</span>
         </div>
       </div>
     </section>
@@ -7964,6 +7965,35 @@ async function startSelectedMachineRun(runbookPath) {
     runId: created.runId,
     runState: created.runState,
     events: created.event ? [created.event] : [],
+  };
+  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+}
+
+async function executeSelectedMachineRunStep(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) return;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const executed = await window.orpad.machine.executeRunStep({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    capabilityToken: token,
+    exportLatestRun: true,
+  });
+  if (!executed?.success) {
+    if (executed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
+      machineCapabilityToken = '';
+      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
+    }
+    alert(executed?.error || 'Machine execute step failed.');
+    return;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = {
+    ...executed,
+    exported: executed.exported || executed.export,
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
   renderRunbooksPanel();
@@ -8326,6 +8356,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'agent-handoff') await openAgentHandoffModal(targetPath, selectedRunbookValidation);
     else if (action === 'start-local') await startSelectedLocalRun(targetPath);
     else if (action === 'run-machine') await startSelectedMachineRun(targetPath);
+    else if (action === 'machine-execute-step') await executeSelectedMachineRunStep(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
   } catch (err) {
     notifyFormatError('Runbooks', err);
