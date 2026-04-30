@@ -153,11 +153,38 @@ test('Machine event append is monotonic and validates contract shape', async () 
 
   await assert.rejects(
     appendMachineEvent(run.runRoot, {
+      runId: 'run_20260430_other',
+      timestamp: '2026-04-30T00:00:02.000Z',
+      actor: 'machine',
+      eventType: 'run.status',
+      fromState: 'running',
+      toState: 'completed',
+    }),
+    error => error?.code === 'MACHINE_EVENT_RUN_ID_MISMATCH',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, 2);
+
+  await assert.rejects(
+    appendMachineEvent(run.runRoot, {
       runId: run.runId,
       actor: 'machine',
       toState: 'completed',
     }),
     /Invalid Orchestration Machine machineEvent contract/,
+  );
+});
+
+test('Machine event append requires run.created as the first durable event', async () => {
+  const { pipelineDir } = await makeWorkspace();
+  await assert.rejects(
+    appendMachineEvent(durableRunRoot(pipelineDir, 'run_20260430_orphan'), {
+      runId: 'run_20260430_orphan',
+      timestamp: '2026-04-30T00:00:00.000Z',
+      actor: 'machine',
+      eventType: 'run.status',
+      toState: 'running',
+    }),
+    error => error?.code === 'MACHINE_EVENT_RUN_CREATED_REQUIRED',
   );
 });
 

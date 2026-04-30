@@ -34,8 +34,28 @@ function nextSequence(events) {
   return Math.max(...events.map(event => Number(event.sequence) || 0)) + 1;
 }
 
+function eventLogError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function assertEventBelongsToRun(existing, event) {
+  if (!existing.length) {
+    if (event.eventType !== 'run.created') {
+      throw eventLogError('MACHINE_EVENT_RUN_CREATED_REQUIRED', 'First Machine event must be run.created.');
+    }
+    return;
+  }
+  const runId = existing.find(item => item.eventType === 'run.created')?.runId || existing[0]?.runId;
+  if (runId && event.runId !== runId) {
+    throw eventLogError('MACHINE_EVENT_RUN_ID_MISMATCH', 'Machine event runId must match the durable run root.');
+  }
+}
+
 async function appendMachineEvent(runRoot, event) {
   const existing = await readMachineEvents(runRoot);
+  assertEventBelongsToRun(existing, event);
   const record = {
     schemaVersion: SCHEMA_VERSIONS.machineEvent,
     timestamp: nowIso(),
