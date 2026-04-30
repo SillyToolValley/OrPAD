@@ -1,0 +1,123 @@
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
+const { appendMachineEvent, readMachineEvents } = require('./events');
+const { ensureDir, writeJsonAtomic } = require('./metadata-store');
+
+const fsp = fs.promises;
+const validator = createContractValidator();
+
+function toPortablePath(value) {
+  return String(value || '').replace(/\\/g, '/');
+}
+
+function assertRunRelativePath(artifactPath) {
+  const portable = toPortablePath(artifactPath);
+  if (!portable || portable.startsWith('/') || portable.includes('../') || portable === '..') {
+    throw new Error(`Artifact path must be run-relative: ${artifactPath}`);
+  }
+  return portable;
+}
+
+function artifactManifestPath(runRoot) {
+  return path.join(path.resolve(runRoot), 'artifacts', 'manifest.json');
+}
+
+function sha256(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+async function fileDigest(filePath) {
+  const bytes = await fsp.readFile(filePath);
+  return {
+    sha256: sha256(bytes),
+    size: bytes.length,
+  };
+}
+
+async function buildArtifactManifest(runRoot) {
+  const events = await readMachineEvents(runRoot);
+  const filesByPath = new Map();
+  let runId = '';
+  let sourceEventSequence = 0;
+  let createdAt = new Date(0).toISOString();
+
+  for (const event of events) {
+    if (event.runId) runId = event.runId;
+    sourceEventSequence = Math.max(sourceEventSequence, Number(event.sequence) || 0);
+    if (event.timestamp) createdAt = event.timestamp;
+    if (event.eventType !== 'artifact.registered' || !event.payload?.file) continue;
+    filesByPath.set(event.payload.file.path, event.payload.file);
+  }
+
+  const manifest = {
+    schemaVersion: SCHEMA_VERSIONS.artifactManifest,
+    runId,
+    createdAt,
+    sourceEventSequence,
+    files: [...filesByPath.values()].sort((a, b) => a.path.localeCompare(b.path)),
+  };
+  validator.assertValid('artifactManifest', manifest);
+  return manifest;
+}
+
+async function writeArtifactManifest(runRoot) {
+  const manifest = await buildArtifactManifest(runRoot);
+  await writeJsonAtomic(artifactManifestPath(runRoot), manifest);
+  return manifest;
+}
+
+async function readArtifactManifest(runRoot) {
+  return JSON.parse(await fsp.readFile(artifactManifestPath(runRoot), 'utf8'));
+}
+
+async function registerArtifact(runRoot, options = {}) {
+  const {
+    runId,
+    artifactPath,
+    content,
+    producedBy,
+    registeredBy = 'machine',
+    schemaVersion = '',
+  } = options;
+  if (!runId) throw new Error('runId is required.');
+  if (!producedBy) throw new Error('producedBy is required.');
+
+  const relativePath = assertRunRelativePath(artifactPath);
+  const absolutePath = path.join(path.resolve(runRoot), ...relativePath.split('/'));
+  if (content !== undefined) {
+    await ensureDir(path.dirname(absolutePath));
+    await fsp.writeFile(absolutePath, content, 'utf8');
+  }
+  const digest = await fileDigest(absolutePath);
+  const file = {
+    path: relativePath,
+    sha256: digest.sha256,
+    size: digest.size,
+    producedBy,
+    registeredBy,
+    ...(schemaVersion ? { schemaVersion } : {}),
+  };
+  const event = await appendMachineEvent(runRoot, {
+    runId,
+    actor: 'machine',
+    eventType: 'artifact.registered',
+    artifactRefs: [relativePath],
+    payload: { file },
+  });
+  const manifest = await writeArtifactManifest(runRoot);
+  return { event, file, manifest };
+}
+
+module.exports = {
+  artifactManifestPath,
+  assertRunRelativePath,
+  buildArtifactManifest,
+  fileDigest,
+  readArtifactManifest,
+  registerArtifact,
+  sha256,
+  writeArtifactManifest,
+};
