@@ -1,15 +1,40 @@
-const { appendMachineEvent, readMachineEvents } = require('./events');
+const { appendMachineEvent, projectRunStateFromEvents, readMachineEvents } = require('./events');
 const { repairRunStateFromEvents, readRunState } = require('./run-store');
 const { findQueueItem, projectQueueStateFromEvents, readQueueItems, writeQueueItem } = require('./queue-store');
 
 const ACTIVE_QUEUE_STATES = new Set(['candidate', 'queued', 'claimed']);
 const TERMINAL_QUEUE_STATES = new Set(['done', 'blocked', 'rejected']);
+const TERMINAL_RUN_LIFECYCLE_STATES = new Set(['completed', 'cancelled', 'failed']);
+
+async function readAuthoritativeRunState(runRoot) {
+  return await readRunState(runRoot) || projectRunStateFromEvents(await readMachineEvents(runRoot));
+}
+
+function terminalRunError(current, toState, reason) {
+  const err = new Error(`Machine run is terminal (${current.lifecycleStatus}/${current.summaryStatus}) and cannot transition to ${toState}.`);
+  err.code = 'MACHINE_RUN_TERMINAL';
+  err.lifecycleStatus = current.lifecycleStatus;
+  err.summaryStatus = current.summaryStatus;
+  err.toState = toState;
+  err.reason = reason;
+  return err;
+}
+
+async function assertRunLifecycleCanTransition(runRoot, toState, reason = 'lifecycle.transition') {
+  const current = await readAuthoritativeRunState(runRoot);
+  if (!current) return current;
+  if (current.lifecycleStatus === toState) return current;
+  if (TERMINAL_RUN_LIFECYCLE_STATES.has(current.lifecycleStatus)) {
+    throw terminalRunError(current, toState, reason);
+  }
+  return current;
+}
 
 async function appendRunLifecycleStatus(runRoot, options = {}) {
   const { runId, toState, reason = `run.${toState}`, payload = {} } = options;
   if (!runId) throw new Error('runId is required.');
   if (!toState) throw new Error('toState is required.');
-  const current = await readRunState(runRoot);
+  const current = await assertRunLifecycleCanTransition(runRoot, toState, reason);
   if (current?.lifecycleStatus === toState) return { duplicate: true, runState: current };
   await appendMachineEvent(runRoot, {
     runId,
@@ -131,6 +156,7 @@ async function repairDerivedQueueFilesFromEvents(runRoot) {
 async function resumeMachineRun(runRoot, options = {}) {
   const { runId, now = new Date().toISOString(), recoverStaleClaims } = options;
   if (!runId) throw new Error('runId is required.');
+  await assertRunLifecycleCanTransition(runRoot, 'waiting', 'lifecycle.resume');
   const queueRepair = await repairDerivedQueueFilesFromEvents(runRoot);
   const staleClaims = recoverStaleClaims
     ? await recoverStaleClaims(runRoot, { runId, now })
@@ -166,9 +192,11 @@ async function resumeMachineRun(runRoot, options = {}) {
 module.exports = {
   ACTIVE_QUEUE_STATES,
   TERMINAL_QUEUE_STATES,
+  TERMINAL_RUN_LIFECYCLE_STATES,
   appendRunLifecycleStatus,
   appendRunSummaryStatus,
   assertNoActiveInventoryForDone,
+  assertRunLifecycleCanTransition,
   finalizeRunFromInventory,
   repairDerivedQueueFilesFromEvents,
   resumeMachineRun,

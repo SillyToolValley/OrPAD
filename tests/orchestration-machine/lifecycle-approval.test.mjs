@@ -111,6 +111,42 @@ test('approval-required pause creates Machine approval artifact and approved dec
   assert.equal(claimed.item.id, itemId);
 });
 
+test('approval decisions cannot reopen a terminal cancelled run', async () => {
+  const run = await makeRun('run_20260430_approval_terminal');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'approval-terminal-item',
+    fingerprint: 'lifecycle:approval-terminal-item',
+    approvalRequired: true,
+  }));
+
+  const paused = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  assert.equal(paused.stopReason, 'approval-required');
+
+  await recordApprovalDecision(run.runRoot, {
+    runId: run.runId,
+    approvalId: paused.approval.approvalId,
+    itemId,
+    decision: 'denied',
+  });
+  assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'cancelled');
+  const eventCount = (await readMachineEvents(run.runRoot)).length;
+
+  await assert.rejects(
+    recordApprovalDecision(run.runRoot, {
+      runId: run.runId,
+      approvalId: paused.approval.approvalId,
+      itemId,
+      decision: 'approved',
+      grants: [approvalGrantForItem(itemId, paused.approval.approvalId)],
+    }),
+    error => error?.code === 'MACHINE_RUN_TERMINAL',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventCount);
+});
+
 test('final lifecycle status cannot become done while active queue inventory remains', async () => {
   const run = await makeRun('run_20260430_done_gate');
   const itemId = await queueProposal(run);
@@ -139,6 +175,35 @@ test('final lifecycle status cannot become done while active queue inventory rem
   const done = await finalizeRunFromInventory(run.runRoot, { runId: run.runId });
   assert.equal(done.summaryStatus, 'done');
   assert.equal(done.runState.lifecycleStatus, 'completed');
+});
+
+test('resume cannot reopen a terminal run even when run-state is missing', async () => {
+  const run = await makeRun('run_20260430_resume_terminal');
+  const itemId = await queueProposal(run);
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'claimed',
+    transitionId: 'claim:lifecycle-terminal-item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'done',
+    transitionId: 'close:lifecycle-terminal-item',
+  });
+  await finalizeRunFromInventory(run.runRoot, { runId: run.runId });
+  await fs.rm(path.join(run.runRoot, 'run-state.json'), { force: true });
+  const eventCount = (await readMachineEvents(run.runRoot)).length;
+
+  await assert.rejects(
+    resumeMachineRun(run.runRoot, {
+      runId: run.runId,
+      now: '2026-04-30T00:00:30.000Z',
+    }),
+    error => error?.code === 'MACHINE_RUN_TERMINAL',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventCount);
 });
 
 test('resume repairs derived queue directories from canonical transition events', async () => {

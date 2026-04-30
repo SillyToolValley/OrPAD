@@ -1,6 +1,10 @@
 const { registerArtifact } = require('./artifacts');
 const { appendMachineEvent } = require('./events');
-const { appendRunLifecycleStatus, appendRunSummaryStatus } = require('./lifecycle');
+const {
+  appendRunLifecycleStatus,
+  appendRunSummaryStatus,
+  assertRunLifecycleCanTransition,
+} = require('./lifecycle');
 
 function approvalIdForItem(itemId) {
   return `approval-${String(itemId || '')
@@ -95,6 +99,11 @@ async function recordApprovalDecision(runRoot, options = {}) {
   if (!['approved', 'denied'].includes(decision)) {
     throw new Error(`Unsupported approval decision: ${decision}`);
   }
+  await assertRunLifecycleCanTransition(
+    runRoot,
+    decision === 'approved' ? 'waiting' : 'cancelled',
+    reason,
+  );
   const event = await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
