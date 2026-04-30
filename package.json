@@ -28,6 +28,7 @@
     "audit:orpad-node-schemas": "node scripts/audit-orpad-node-schemas.mjs",
     "audit:orpad-queue": "node scripts/audit-orpad-workqueue.mjs",
     "audit:orpad-run": "node scripts/audit-orpad-run.mjs",
+    "audit:orpad-machine-run": "node scripts/audit-orpad-machine-run.mjs",
     "lh": "npx --yes lighthouse http://localhost:4173 --preset=pwa --chrome-flags='--headless=new' --quiet --output=html --output-path=./lighthouse-report.html"
   },
   "author": "",
