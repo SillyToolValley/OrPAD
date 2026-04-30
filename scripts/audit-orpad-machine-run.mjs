@@ -157,6 +157,97 @@ function auditNodeLifecycle(events) {
   return diagnostics;
 }
 
+function adapterIdentity(event) {
+  const payload = event.payload || {};
+  return {
+    adapterCallId: payload.adapterCallId || '',
+    attemptId: payload.attemptId || '',
+    idempotencyKey: payload.idempotencyKey || '',
+  };
+}
+
+function auditAdapterIdentity(events) {
+  const diagnostics = [];
+  const requestsByIdempotencyKey = new Map();
+  const resultCounts = new Map();
+
+  for (const event of events) {
+    if (event.eventType !== 'adapter.requested') continue;
+    const identity = adapterIdentity(event);
+    if (!identity.idempotencyKey) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_REQUEST_IDENTITY_MISSING', 'Adapter requests must record idempotency identity fields.', {
+        sequence: event.sequence,
+        nodePath: event.nodePath,
+      }));
+      continue;
+    }
+    if (requestsByIdempotencyKey.has(identity.idempotencyKey)) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_REQUEST_DUPLICATE_IDEMPOTENCY', 'Adapter requests must not reuse an idempotency key within one run.', {
+        idempotencyKey: identity.idempotencyKey,
+        firstSequence: requestsByIdempotencyKey.get(identity.idempotencyKey).sequence,
+        duplicateSequence: event.sequence,
+      }));
+      continue;
+    }
+    requestsByIdempotencyKey.set(identity.idempotencyKey, event);
+  }
+
+  for (const event of events) {
+    if (!['adapter.result', 'worker.result'].includes(event.eventType)) continue;
+    const identity = adapterIdentity(event);
+    const count = (resultCounts.get(identity.idempotencyKey) || 0) + 1;
+    resultCounts.set(identity.idempotencyKey, count);
+    if (!identity.adapterCallId || !identity.attemptId || !identity.idempotencyKey) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_RESULT_IDENTITY_MISSING', 'Adapter results must record adapterCallId, attemptId, and idempotencyKey.', {
+        sequence: event.sequence,
+        eventType: event.eventType,
+        nodePath: event.nodePath,
+      }));
+      continue;
+    }
+    const request = requestsByIdempotencyKey.get(identity.idempotencyKey);
+    if (!request) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_RESULT_WITHOUT_REQUEST', 'Adapter result events must match a prior adapter.requested event.', {
+        sequence: event.sequence,
+        eventType: event.eventType,
+        idempotencyKey: identity.idempotencyKey,
+      }));
+      continue;
+    }
+    const requestIdentity = adapterIdentity(request);
+    for (const field of ['adapterCallId', 'attemptId']) {
+      if (identity[field] !== requestIdentity[field]) {
+        diagnostics.push(diagnostic('MACHINE_ADAPTER_RESULT_IDENTITY_MISMATCH', 'Adapter result identity must match the request identity.', {
+          sequence: event.sequence,
+          eventType: event.eventType,
+          field,
+          expected: requestIdentity[field],
+          actual: identity[field],
+          requestSequence: request.sequence,
+        }));
+      }
+    }
+    if (request.sequence >= event.sequence) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_RESULT_BEFORE_REQUEST', 'Adapter result event must occur after its request event.', {
+        requestSequence: request.sequence,
+        resultSequence: event.sequence,
+        idempotencyKey: identity.idempotencyKey,
+      }));
+    }
+  }
+
+  for (const [idempotencyKey, count] of resultCounts.entries()) {
+    if (count > 1) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_RESULT_DUPLICATE_IDEMPOTENCY', 'Adapter results must not reuse an idempotency key within one run.', {
+        idempotencyKey,
+        count,
+      }));
+    }
+  }
+
+  return diagnostics;
+}
+
 async function auditArtifactManifest(runRoot) {
   const diagnostics = [];
   const manifestPath = artifactManifestPath(runRoot);
@@ -412,6 +503,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   const runState = await readRunState(resolvedRunRoot);
   diagnostics.push(...auditRunState(runState, projectedRunState));
   diagnostics.push(...auditNodeLifecycle(events));
+  diagnostics.push(...auditAdapterIdentity(events));
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);

@@ -251,3 +251,41 @@ test('audit-orpad-machine-run fails when node lifecycle terminal events skip sta
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_NODE_TERMINAL_WITHOUT_STARTED'), true);
 });
+
+test('audit-orpad-machine-run fails when adapter result has no matching request identity', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-adapter-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_bad_adapter',
+    now: fixedNow,
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/probe',
+    eventType: 'adapter.result',
+    payload: {
+      adapterCallId: 'missing-request-call',
+      attemptId: 'missing-request-attempt-1',
+      idempotencyKey: 'missing-request-call:missing-request-attempt-1',
+      status: 'done',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_ADAPTER_RESULT_WITHOUT_REQUEST'), true);
+});
