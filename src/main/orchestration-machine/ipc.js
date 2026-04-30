@@ -428,21 +428,22 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
       runId,
       exportLatestRunAfterStep: request.exportLatestRun !== false,
     });
+    const updatedSnapshot = await readRunSnapshot(runRoot);
     return {
       success: true,
       ok: true,
       runId,
-      runState: executed.runState,
-      events: executed.events,
+      runState: updatedSnapshot?.runState || executed.runState,
+      events: updatedSnapshot?.events || executed.events,
       graphPlan: executed.graphPlan,
       selectedNodes: executed.selectedNodes,
       selectedProbeNodes: executed.selectedProbeNodes,
       supportNodes: executed.supportNodes,
-      candidateInventory: executed.candidateInventory,
-      worker: executed.worker?.result || null,
+      candidateInventory: executed.candidateInventory || updatedSnapshot?.candidateInventory || null,
+      worker: executed.worker?.result || updatedSnapshot?.worker || null,
       finalization: executed.finalization,
       exported: executed.exported,
-      approvals: summarizeApprovalsFromEvents(executed.events),
+      approvals: updatedSnapshot?.approvals || summarizeApprovalsFromEvents(executed.events),
     };
   } catch (err) {
     const code = String(err?.code || '');

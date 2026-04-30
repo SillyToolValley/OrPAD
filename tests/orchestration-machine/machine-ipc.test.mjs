@@ -424,6 +424,7 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   });
   assert.equal(resumed.success, true);
   assert.equal(resumed.worker.event.payload.status, 'done');
+  assert.equal(resumed.candidateInventory.candidateCount, 1);
   assert.equal(resumed.runState.lifecycleStatus, 'completed');
   assert.equal(resumed.runState.summaryStatus, 'done');
   const audit = runMachineAudit(created.runRoot, resumed.exported.targetRoot);
