@@ -25,6 +25,7 @@
     "test:web": "playwright test --project=web-chromium",
     "test:web:compat": "playwright test --project=web-chromium --project=web-firefox --project=web-webkit",
     "test:machine": "node --test tests/orchestration-machine/*.test.mjs",
+    "smoke:machine": "node scripts/smoke-orpad-machine-run.mjs",
     "audit:orpad-node-schemas": "node scripts/audit-orpad-node-schemas.mjs",
     "audit:orpad-queue": "node scripts/audit-orpad-workqueue.mjs",
     "audit:orpad-run": "node scripts/audit-orpad-run.mjs",

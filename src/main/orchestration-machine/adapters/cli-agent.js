@@ -77,9 +77,21 @@ async function registerJsonArtifact(runRoot, options = {}) {
   });
 }
 
-function resultStatusForProcess(processResult, patch) {
+function normalizeExpectedChangedFiles(request = {}) {
+  return (request.expectedChangedFiles || [])
+    .filter(item => typeof item === 'string' && item.trim())
+    .map(item => item.replace(/\\/g, '/'));
+}
+
+function missingExpectedChangedFiles(patch, expectedChangedFiles = []) {
+  const changed = new Set((patch.changes || []).map(change => String(change.path || '').replace(/\\/g, '/')));
+  return expectedChangedFiles.filter(file => !changed.has(file));
+}
+
+function resultStatusForProcess(processResult, patch, request = {}) {
   if ((patch.violations || []).length) return 'blocked';
   if (processResult.code !== 0 || processResult.timedOut) return 'failed';
+  if (missingExpectedChangedFiles(patch, normalizeExpectedChangedFiles(request)).length) return 'blocked';
   return 'done';
 }
 
@@ -157,7 +169,9 @@ function createCliAgentAdapter(options = {}) {
         if (patchArtifactPath) artifacts.push(patchArtifactPath);
       }
 
-      const status = resultStatusForProcess(processResult, patch);
+      const expectedChangedFiles = normalizeExpectedChangedFiles(request);
+      const missingExpectedChanges = missingExpectedChangedFiles(patch, expectedChangedFiles);
+      const status = resultStatusForProcess(processResult, patch, request);
       return {
         schemaVersion: 'orpad.workerResult.v1',
         adapterCallId: request.adapterCallId,
@@ -179,6 +193,8 @@ function createCliAgentAdapter(options = {}) {
           stdoutTruncated: processResult.stdoutTruncated,
           stderrTruncated: processResult.stderrTruncated,
           writeSetViolationCount: (patch.violations || []).length,
+          expectedChangedFiles,
+          missingExpectedChanges,
         }],
       };
     },
@@ -189,5 +205,7 @@ module.exports = {
   cliOverlayRoot,
   createCliAgentAdapter,
   createCliAgentProposalOnlyAdapter,
+  missingExpectedChangedFiles,
   prepareCliOverlayWorkspace,
+  resultStatusForProcess,
 };

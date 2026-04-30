@@ -146,6 +146,33 @@ test('process runner times out long-running adapter commands', async () => {
   assert.notEqual(result.code, 0);
 });
 
+test('process runner closes stdin when no adapter input is provided', async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-process-stdin-'));
+  const result = await runMachineProcess({
+    command: process.execPath,
+    args: ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("stdin-closed"));'],
+    cwd,
+    timeoutMs: 5000,
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, 'stdin-closed');
+});
+
+test('process runner forwards explicit adapter stdin', async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-process-stdin-data-'));
+  const result = await runMachineProcess({
+    command: process.execPath,
+    args: ['-e', 'let body=""; process.stdin.on("data", chunk => body += chunk); process.stdin.on("end", () => process.stdout.write(body));'],
+    cwd,
+    stdin: 'adapter-input',
+    timeoutMs: 5000,
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, 'adapter-input');
+});
+
 test('CLI overlay adapter cannot mutate canonical queue/state files directly', async () => {
   const run = await makeRun();
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
@@ -235,6 +262,48 @@ test('CLI overlay adapter refuses to run without an exact command grant', async 
     }).invoke(request),
     error => error?.code === 'MACHINE_COMMAND_NOT_GRANTED',
   );
+});
+
+test('CLI overlay adapter blocks successful no-op when expected changed files are missing', async () => {
+  const run = await makeRun('run_20260430_cli_noop_block');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/allowed.txt'],
+    adapterCallId: 'cli-noop-call',
+    attemptId: 'cli-noop-attempt-1',
+    idempotencyKey: 'cli-noop-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.expectedChangedFiles = ['src/allowed.txt'];
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("no-op")'],
+    cwd: overlayRoot,
+  };
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-noop',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  }).invoke(request);
+
+  assert.equal(result.status, 'blocked');
+  assert.deepEqual(result.changedFiles, []);
+  assert.deepEqual(result.verification[0].expectedChangedFiles, ['src/allowed.txt']);
+  assert.deepEqual(result.verification[0].missingExpectedChanges, ['src/allowed.txt']);
 });
 
 test('Machine-applied patch rejects out-of-write-set paths and duplicate base application', async () => {

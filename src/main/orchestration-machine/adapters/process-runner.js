@@ -66,6 +66,11 @@ function runMachineProcess(input = {}) {
       shell: false,
       windowsHide: true,
     });
+    if (input.stdin == null) {
+      child.stdin?.end();
+    } else {
+      child.stdin?.end(String(input.stdin));
+    }
 
     const timeout = setTimeout(() => {
       timedOut = true;
