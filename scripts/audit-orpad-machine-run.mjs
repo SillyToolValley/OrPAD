@@ -248,6 +248,45 @@ function auditAdapterIdentity(events) {
   return diagnostics;
 }
 
+function auditAdapterNodeLifecycle(events) {
+  const diagnostics = [];
+  const adapterEventTypes = new Set(['adapter.requested', 'adapter.result', 'worker.result']);
+  const terminalEventTypes = new Set(['node.completed', 'node.failed', 'node.blocked', 'node.skipped']);
+  for (const event of events) {
+    if (!adapterEventTypes.has(event.eventType)) continue;
+    if (!event.nodePath) continue;
+    const priorStarted = [...events].reverse().find(candidate => (
+      candidate.sequence < event.sequence
+      && candidate.eventType === 'node.started'
+      && candidate.nodePath === event.nodePath
+    ));
+    if (!priorStarted) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_EVENT_WITHOUT_NODE_START', 'Adapter events with a nodePath must occur after the owning node starts.', {
+        sequence: event.sequence,
+        eventType: event.eventType,
+        nodePath: event.nodePath,
+      }));
+      continue;
+    }
+    const priorTerminal = [...events].reverse().find(candidate => (
+      candidate.sequence < event.sequence
+      && terminalEventTypes.has(candidate.eventType)
+      && candidate.nodePath === event.nodePath
+    ));
+    if (priorTerminal && priorTerminal.sequence > priorStarted.sequence) {
+      diagnostics.push(diagnostic('MACHINE_ADAPTER_EVENT_AFTER_NODE_TERMINAL', 'Adapter events with a nodePath must not occur after the owning node has reached a terminal lifecycle event.', {
+        sequence: event.sequence,
+        eventType: event.eventType,
+        nodePath: event.nodePath,
+        startedSequence: priorStarted.sequence,
+        terminalSequence: priorTerminal.sequence,
+        terminalEventType: priorTerminal.eventType,
+      }));
+    }
+  }
+  return diagnostics;
+}
+
 function auditWorkerResultProof(events) {
   const diagnostics = [];
   for (const event of events) {
@@ -791,6 +830,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   diagnostics.push(...auditRunState(runState, projectedRunState));
   diagnostics.push(...auditNodeLifecycle(events));
   diagnostics.push(...auditAdapterIdentity(events));
+  diagnostics.push(...auditAdapterNodeLifecycle(events));
   diagnostics.push(...auditWorkerResultProof(events));
   diagnostics.push(...auditQueueTransitionCausality(events));
   diagnostics.push(...auditLockCausality(events));
