@@ -248,6 +248,26 @@ function auditAdapterIdentity(events) {
   return diagnostics;
 }
 
+function auditWorkerResultProof(events) {
+  const diagnostics = [];
+  for (const event of events) {
+    if (event.eventType !== 'worker.result') continue;
+    if (event.payload?.status !== 'done') continue;
+    const hasArtifact = (event.artifactRefs || []).length > 0 || Boolean(event.payload?.patchArtifact);
+    const hasVerification = (event.payload?.verification || []).length > 0;
+    if (!hasArtifact || !hasVerification) {
+      diagnostics.push(diagnostic('MACHINE_WORKER_DONE_PROOF_MISSING', 'Done worker results must include artifact evidence and verification proof.', {
+        sequence: event.sequence,
+        itemId: event.itemId,
+        adapterCallId: event.payload?.adapterCallId || '',
+        hasArtifact,
+        hasVerification,
+      }));
+    }
+  }
+  return diagnostics;
+}
+
 async function auditArtifactManifest(runRoot) {
   const diagnostics = [];
   const manifestPath = artifactManifestPath(runRoot);
@@ -504,6 +524,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   diagnostics.push(...auditRunState(runState, projectedRunState));
   diagnostics.push(...auditNodeLifecycle(events));
   diagnostics.push(...auditAdapterIdentity(events));
+  diagnostics.push(...auditWorkerResultProof(events));
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);
