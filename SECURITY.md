@@ -386,6 +386,12 @@ path still creates durable run metadata only.
 - API tracing and telemetry export are off unless exact capability grants include
   `use.tracing` or `export.telemetry`. Trace IDs and provider session IDs are non-authoritative
   adapter metadata, never canonical Machine state.
+- Approval requests are Machine artifacts plus `approval.requested` events. Approval decisions
+  are explicit `approval.decided` events; renderer/UI approval state must project from Machine
+  state rather than becoming a second source of truth.
+- Resume repair uses Machine events as canonical metadata and only repairs derived queue files
+  when an item snapshot is still available. Artifact presence alone is never treated as proof
+  that claimed work completed.
 
 ## URL handling
 

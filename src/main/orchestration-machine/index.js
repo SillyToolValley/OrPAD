@@ -1,5 +1,6 @@
 const contracts = require('./contracts');
 const apiAgentAdapter = require('./adapters/api-agent');
+const approvals = require('./approvals');
 const cliAgentAdapter = require('./adapters/cli-agent');
 const commandGrants = require('./command-grants');
 const proposalAdapter = require('./adapters/proposal-adapter');
@@ -11,6 +12,7 @@ const latestRunExporter = require('./exporters/latest-run-exporter');
 const legacyJournalExporter = require('./exporters/legacy-journal-exporter');
 const graphLoader = require('./graph-loader');
 const ipc = require('./ipc');
+const lifecycle = require('./lifecycle');
 const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
 const patches = require('./patches');
@@ -29,6 +31,7 @@ const writeSets = require('./write-sets');
 module.exports = {
   ...contracts,
   ...apiAgentAdapter,
+  ...approvals,
   ...cliAgentAdapter,
   ...commandGrants,
   ...proposalAdapter,
@@ -40,6 +43,7 @@ module.exports = {
   ...legacyJournalExporter,
   ...graphLoader,
   ...ipc,
+  ...lifecycle,
   ...metadataStore,
   ...nodeLifecycle,
   ...patches,

@@ -1,5 +1,6 @@
 const { appendMachineEvent, readMachineEvents } = require('./events');
 const { readRunState, repairRunStateFromEvents } = require('./run-store');
+const { requestApprovalForItem } = require('./approvals');
 const {
   createClaimId,
   createClaimLease,
@@ -127,17 +128,18 @@ async function claimNextQueuedItem(runRoot, options = {}) {
 
   const next = queued[0];
   if (!hasApprovalGrant(next.item, approvalGrants)) {
-    const status = await appendRunStatus(runRoot, runId, 'approval-required', {
+    const approval = await requestApprovalForItem(runRoot, {
+      runId,
+      item: next.item,
       reason: 'dispatcher.approval-required',
-      payload: {
-        itemId: next.item.id,
-      },
+      now,
     });
     return {
       claimed: false,
       stopReason: 'approval-required',
       item: next.item,
-      runState: status.runState,
+      approval,
+      runState: approval.runState,
       recovered,
     };
   }
