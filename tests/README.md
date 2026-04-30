@@ -17,6 +17,9 @@ npm run test:electron
 # Web test only (test 15) — requires docs/ to be built first
 npm run build:web:min && npm run test:web
 
+# Orchestration Machine kernel/fixture tests
+npm run test:machine
+
 # Interactive UI mode (local dev)
 npm run test:ui
 ```
@@ -27,6 +30,8 @@ npm run test:ui
 tests/
   e2e/              – 15 *.spec.ts files (one per feature)
   fixtures/         – small static files committed to the repo
+  orchestration-machine/
+                    – Node built-in test runner coverage for Machine kernel fixtures
   helpers.ts        – launchElectron() and startStaticServer() utilities
   README.md         – this file
 ```

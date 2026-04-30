@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "orpad.machineAuditSnapshot.v1",
+  "snapshotDate": "2026-04-30",
+  "sourcePipeline": ".orpad/pipelines/orpad-maintenance-quality-workstream-20260429/pipeline.or-pipeline",
+  "generatedEvidencePolicy": "Snapshot summarizes current ignored latest-run evidence; it does not commit generated evidence files.",
+  "commands": {
+    "queueAudit": {
+      "command": "node scripts/audit-orpad-workqueue.mjs .orpad/pipelines/orpad-maintenance-quality-workstream-20260429/pipeline.or-pipeline",
+      "expectedExitCode": 0,
+      "expectedOk": true,
+      "summary": {
+        "stagedCandidateCount": 1,
+        "itemCount": 1,
+        "journalActions": {
+          "ingest": 1,
+          "triage": 1,
+          "claim": 1,
+          "close": 1
+        },
+        "finalItemState": "done"
+      }
+    },
+    "runAudit": {
+      "command": "node scripts/audit-orpad-run.mjs .orpad/pipelines/orpad-maintenance-quality-workstream-20260429/pipeline.or-pipeline",
+      "expectedExitCode": 1,
+      "expectedOk": false,
+      "queueAuditOk": true,
+      "nodeSchemaAuditOk": true,
+      "representativeDiagnosticCodes": [
+        "RUN_METADATA_HEAD_STALE",
+        "RUN_METADATA_WORKTREE_STALE",
+        "RUN_METADATA_ARTIFACT_MANIFEST_HASH_MISMATCH",
+        "RUN_METADATA_ARTIFACT_MANIFEST_SIZE_MISMATCH",
+        "CANDIDATE_INVENTORY_NEGATIVE_CHECK_BOILERPLATE",
+        "CANDIDATE_INVENTORY_NEGATIVE_CHECK_NOT_CONCRETE",
+        "CANDIDATE_INVENTORY_NEGATIVE_CHECK_EVIDENCE_UNLINKED",
+        "CANDIDATE_INVENTORY_EMPTY_PASS_REASON_WEAK"
+      ],
+      "inventorySummary": {
+        "totalItems": 36,
+        "statuses": {
+          "candidate": 1,
+          "deduped-into": 1,
+          "empty-pass": 34
+        }
+      }
+    }
+  },
+  "machineImplication": [
+    "Queue/journal shape is currently audit-compatible, but it is generated output rather than Machine-owned state.",
+    "Run-level evidence is stale and can fail independently from queue audit.",
+    "Candidate inventory proves why generic empty-pass/negative-check evidence must be rejected by Machine-owned proposal acceptance."
+  ]
+}
