@@ -466,6 +466,7 @@ function auditApprovalCausality(events) {
   const diagnostics = [];
   const requestsByApprovalId = new Map();
   const decisionCounts = new Map();
+  const pendingApprovals = new Map();
 
   for (const event of events) {
     if (event.eventType !== 'approval.requested') continue;
@@ -572,6 +573,25 @@ function auditApprovalCausality(events) {
         approvalId,
         itemId: event.itemId || '',
         grantCount: grants.length,
+      }));
+    }
+  }
+
+  for (const event of events) {
+    const approvalId = event.payload?.approvalId || '';
+    if (event.eventType === 'approval.requested' && approvalId) {
+      pendingApprovals.set(approvalId, {
+        approvalId,
+        itemId: event.itemId || event.payload?.itemId || '',
+        sequence: event.sequence,
+      });
+    } else if (event.eventType === 'approval.decided' && approvalId) {
+      pendingApprovals.delete(approvalId);
+    } else if (event.eventType === 'run.status' && ['waiting', 'running'].includes(event.toState) && pendingApprovals.size) {
+      diagnostics.push(diagnostic('MACHINE_APPROVAL_PENDING_RUN_RESUMED', 'Run status cannot resume or dispatch while approval requests are pending.', {
+        sequence: event.sequence,
+        toState: event.toState,
+        pendingApprovals: [...pendingApprovals.values()],
       }));
     }
   }
