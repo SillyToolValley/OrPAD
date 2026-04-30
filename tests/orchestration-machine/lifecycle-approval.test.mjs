@@ -8,6 +8,7 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   approvalGrantForItem,
+  appendRunLifecycleStatus,
   assertNoActiveInventoryForDone,
   claimNextQueuedItem,
   createMachineRun,
@@ -125,11 +126,10 @@ test('approval decisions cannot reopen a terminal cancelled run', async () => {
   });
   assert.equal(paused.stopReason, 'approval-required');
 
-  await recordApprovalDecision(run.runRoot, {
+  await appendRunLifecycleStatus(run.runRoot, {
     runId: run.runId,
-    approvalId: paused.approval.approvalId,
-    itemId,
-    decision: 'denied',
+    toState: 'cancelled',
+    reason: 'test.terminal-before-approval-decision',
   });
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'cancelled');
   const eventCount = (await readMachineEvents(run.runRoot)).length;
@@ -145,6 +145,64 @@ test('approval decisions cannot reopen a terminal cancelled run', async () => {
     error => error?.code === 'MACHINE_RUN_TERMINAL',
   );
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCount);
+});
+
+test('approval decisions are accepted only once for a requested approval', async () => {
+  const run = await makeRun('run_20260430_approval_single_use');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'approval-single-use-item',
+    fingerprint: 'lifecycle:approval-single-use-item',
+    approvalRequired: true,
+  }));
+
+  const paused = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  assert.equal(paused.stopReason, 'approval-required');
+
+  await assert.rejects(
+    recordApprovalDecision(run.runRoot, {
+      runId: run.runId,
+      approvalId: paused.approval.approvalId,
+      itemId: 'other-item',
+      decision: 'approved',
+      grants: [approvalGrantForItem('other-item', paused.approval.approvalId)],
+    }),
+    error => error?.code === 'MACHINE_APPROVAL_ITEM_MISMATCH',
+  );
+
+  await recordApprovalDecision(run.runRoot, {
+    runId: run.runId,
+    approvalId: paused.approval.approvalId,
+    itemId,
+    decision: 'approved',
+    grants: [approvalGrantForItem(itemId, paused.approval.approvalId)],
+  });
+  const eventCount = (await readMachineEvents(run.runRoot)).length;
+
+  await assert.rejects(
+    recordApprovalDecision(run.runRoot, {
+      runId: run.runId,
+      approvalId: paused.approval.approvalId,
+      itemId,
+      decision: 'approved',
+      grants: [approvalGrantForItem(itemId, paused.approval.approvalId)],
+    }),
+    error => error?.code === 'MACHINE_APPROVAL_ALREADY_DECIDED',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventCount);
+
+  await assert.rejects(
+    recordApprovalDecision(run.runRoot, {
+      runId: run.runId,
+      approvalId: 'approval-missing',
+      itemId,
+      decision: 'approved',
+      grants: [approvalGrantForItem(itemId, 'approval-missing')],
+    }),
+    error => error?.code === 'MACHINE_APPROVAL_NOT_REQUESTED',
+  );
 });
 
 test('resume cannot bypass a pending approval request', async () => {

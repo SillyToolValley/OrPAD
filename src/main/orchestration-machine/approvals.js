@@ -1,5 +1,5 @@
 const { registerArtifact } = require('./artifacts');
-const { appendMachineEvent } = require('./events');
+const { appendMachineEvent, readMachineEvents } = require('./events');
 const {
   appendRunLifecycleStatus,
   appendRunSummaryStatus,
@@ -98,6 +98,30 @@ async function recordApprovalDecision(runRoot, options = {}) {
   if (!approvalId) throw new Error('approvalId is required.');
   if (!['approved', 'denied'].includes(decision)) {
     throw new Error(`Unsupported approval decision: ${decision}`);
+  }
+  const approval = summarizeApprovalsFromEvents(await readMachineEvents(runRoot))
+    .all
+    .find(item => item.approvalId === approvalId);
+  if (!approval) {
+    const err = new Error(`Approval request not found: ${approvalId}`);
+    err.code = 'MACHINE_APPROVAL_NOT_REQUESTED';
+    err.approvalId = approvalId;
+    throw err;
+  }
+  if (approval.status !== 'requested') {
+    const err = new Error(`Approval has already been decided: ${approvalId}`);
+    err.code = 'MACHINE_APPROVAL_ALREADY_DECIDED';
+    err.approvalId = approvalId;
+    err.status = approval.status;
+    throw err;
+  }
+  if (approval.itemId && itemId && approval.itemId !== itemId) {
+    const err = new Error(`Approval decision item mismatch: ${approvalId}`);
+    err.code = 'MACHINE_APPROVAL_ITEM_MISMATCH';
+    err.approvalId = approvalId;
+    err.expectedItemId = approval.itemId;
+    err.actualItemId = itemId;
+    throw err;
   }
   await assertRunLifecycleCanTransition(
     runRoot,
