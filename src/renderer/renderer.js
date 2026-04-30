@@ -7608,6 +7608,36 @@ function machineEventLabel(event) {
   return event?.eventType || event?.type || 'event';
 }
 
+function machineFailureDetails(record) {
+  if (!record || record.success !== false) return '';
+  const failure = record.failure || {};
+  const failedNodes = (record.events || [])
+    .filter(event => event?.eventType === 'node.failed')
+    .map(event => event.nodePath || event.payload?.nodePath || '')
+    .filter(Boolean);
+  const contract = failure.contract
+    ? `Artifact contract missing: ${failure.contract.missingArtifactCount || 0} artifacts, ${failure.contract.missingQueueCount || 0} queue files.`
+    : '';
+  const gate = failure.gate
+    ? `Gate failed: ${(failure.gate.failed || []).map(item => item.criterion).filter(Boolean).join(', ') || 'criteria unmet'}.`
+    : '';
+  const barrier = failure.barrier
+    ? `Barrier failed: ${(failure.barrier.dependencies || []).filter(item => !item.completed).map(item => item.nodePath).join(', ') || 'dependency incomplete'}.`
+    : '';
+  return `
+    <div class="runbook-diagnostic error">
+      ${escapeHtml([record.code || 'MACHINE_EXECUTION_FAILED', record.error || '', contract, gate, barrier]
+        .filter(Boolean)
+        .join('\n'))}
+    </div>
+    ${failedNodes.length ? `
+      <div class="runbook-chip-row">
+        ${failedNodes.slice(0, 4).map(nodePath => `<span class="runbook-chip danger">${escapeHtml(nodePath)}</span>`).join('')}
+      </div>
+    ` : ''}
+  `;
+}
+
 function renderMachineRunPanel(record = lastMachineRunRecord) {
   if (!record) return '';
   const runState = record.runState || {};
@@ -7623,6 +7653,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         <span class="runbook-chip">${escapeHtml(runState.summaryStatus || 'pending')}</span>
         <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
       </div>
+      ${machineFailureDetails(record)}
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Execute Step</button>
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Export Latest</button>
@@ -7986,8 +8017,16 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
     if (executed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
       try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
+      alert(executed?.error || 'Machine execute step failed.');
+      return;
     }
-    alert(executed?.error || 'Machine execute step failed.');
+    lastMachineRunRecord = {
+      ...(lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {}),
+      ...executed,
+      exported: executed?.exported || executed?.export || lastMachineRunRecord?.exported || null,
+    };
+    setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+    renderRunbooksPanel();
     return;
   }
   selectedRunbookPath = runbookPath;

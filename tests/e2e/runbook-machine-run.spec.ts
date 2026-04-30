@@ -82,6 +82,21 @@ function writeMachineWorkspace(): { workspace: string; pipelinePath: string; pip
   return { workspace, pipelinePath, pipelineDir };
 }
 
+function appendFailingArtifactContract(pipelineDir: string): void {
+  const graphPath = path.join(pipelineDir, 'graphs', 'main.or-graph');
+  const graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
+  graph.graph.nodes.push({
+    id: 'artifact',
+    type: 'orpad.artifactContract',
+    label: 'Artifact contract',
+    config: {
+      required: ['missing-proof.md'],
+      onMissing: 'fail-run',
+    },
+  });
+  fs.writeFileSync(graphPath, JSON.stringify(graph, null, 2));
+}
+
 test('Machine UI creates a durable run and executes a dispatcher worker adapter step', async () => {
   const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
   const app = await launchElectron([], {
@@ -133,6 +148,46 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   expect(fs.existsSync(path.join(runRoot, runDirs[0], 'events.jsonl'))).toBe(true);
   expect(fs.readFileSync(path.join(runRoot, runDirs[0], 'events.jsonl'), 'utf-8')).toContain('run.created');
   expect(pipelinePath.endsWith('pipeline.or-pipeline')).toBe(true);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI renders failure evidence from a failed runtime node', async () => {
+  const { workspace, pipelineDir } = writeMachineWorkspace();
+  appendFailingArtifactContract(pipelineDir);
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(() => {
+    localStorage.setItem('orpad-machine-ui-enabled', '1');
+    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
+  });
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('button[data-runbook-action="run-machine"]').click();
+  await win.locator('button[data-runbook-action="machine-execute-step"]').click();
+
+  await expect(win.locator('#runbooks-content')).toContainText('MACHINE_ARTIFACT_CONTRACT_MISSING');
+  await expect(win.locator('#runbooks-content')).toContainText('Artifact contract missing: 1 artifacts');
+  await expect(win.locator('#runbooks-content')).toContainText('main/artifact');
+  await expect(win.locator('#runbooks-content')).toContainText('node.failed');
+
+  const runRoot = path.join(pipelineDir, 'runs');
+  const runDirs = fs.readdirSync(runRoot);
+  expect(fs.readFileSync(path.join(runRoot, runDirs[0], 'events.jsonl'), 'utf-8')).toContain('node.failed');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
