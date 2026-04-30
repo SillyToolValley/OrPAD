@@ -1,7 +1,12 @@
 const { appendMachineEvent, readMachineEvents } = require('./events');
 const { createAdapterRequest, recordAdapterRequest, validateAdapterResultForRequest } = require('./adapters/proposal-adapter');
-const { readRunState, repairRunStateFromEvents } = require('./run-store');
 const { claimNextQueuedItem } = require('./dispatcher');
+const {
+  appendRunLifecycleStatus,
+  appendRunSummaryStatus,
+  assertRunLifecycleCanTransition,
+} = require('./lifecycle');
+const { readRunState } = require('./run-store');
 const {
   isClaimLeaseExpired,
   markClaimLeaseReleased,
@@ -47,32 +52,21 @@ function assertWorkerResultWithinWriteSet(result, lease) {
 }
 
 async function appendRunStatus(runRoot, runId, toState, options = {}) {
-  const current = await readRunState(runRoot);
-  if (current?.lifecycleStatus === toState) return { duplicate: true, runState: current };
-  await appendMachineEvent(runRoot, {
+  return appendRunLifecycleStatus(runRoot, {
     runId,
-    actor: 'machine',
-    eventType: 'run.status',
-    fromState: current?.lifecycleStatus || 'created',
     toState,
     reason: options.reason || `run.${toState}`,
     payload: options.payload || {},
   });
-  return { runState: await repairRunStateFromEvents(runRoot) };
 }
 
 async function appendRunSummary(runRoot, runId, summaryStatus, options = {}) {
-  await appendMachineEvent(runRoot, {
+  return appendRunSummaryStatus(runRoot, {
     runId,
-    actor: 'machine',
-    eventType: 'run.summary',
+    summaryStatus,
     reason: options.reason || `run.summary.${summaryStatus}`,
-    payload: {
-      summaryStatus,
-      ...(options.payload || {}),
-    },
+    payload: options.payload || {},
   });
-  return repairRunStateFromEvents(runRoot);
 }
 
 async function findWorkerResultEvent(runRoot, claimId, idempotencyKey = '') {
@@ -135,9 +129,15 @@ async function applyWorkerResult(runRoot, options = {}) {
     return {
       duplicate: true,
       event: duplicate,
-      runState: await repairRunStateFromEvents(runRoot),
+      runState: await readRunState(runRoot),
     };
   }
+
+  await assertRunLifecycleCanTransition(
+    runRoot,
+    result.status === 'approval-required' ? 'approval-required' : 'running',
+    'worker-result.accepted',
+  );
 
   const { lease } = await assertClaimCanAcceptResult(runRoot, { claimId, itemId, now });
   assertWorkerResultWithinWriteSet(result, lease);
@@ -297,6 +297,7 @@ async function cancelClaimedItem(runRoot, options = {}) {
   if (!claimId) throw new Error('claimId is required.');
   if (!itemId) throw new Error('itemId is required.');
 
+  await assertRunLifecycleCanTransition(runRoot, 'cancelling', 'worker-loop.cancel');
   const { lease } = await assertClaimCanAcceptResult(runRoot, { claimId, itemId, now });
   await appendRunStatus(runRoot, runId, 'cancelling', {
     reason: 'worker-loop.cancel',

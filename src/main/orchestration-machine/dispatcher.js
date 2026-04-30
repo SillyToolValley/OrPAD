@@ -1,6 +1,9 @@
-const { appendMachineEvent, readMachineEvents } = require('./events');
-const { readRunState, repairRunStateFromEvents } = require('./run-store');
+const { readMachineEvents } = require('./events');
 const { requestApprovalForItem } = require('./approvals');
+const {
+  appendRunLifecycleStatus,
+  assertRunLifecycleCanTransition,
+} = require('./lifecycle');
 const {
   createClaimId,
   createClaimLease,
@@ -41,18 +44,12 @@ function hasApprovalGrant(item, grants = []) {
 }
 
 async function appendRunStatus(runRoot, runId, toState, options = {}) {
-  const current = await readRunState(runRoot);
-  if (current?.lifecycleStatus === toState) return { duplicate: true, runState: current };
-  await appendMachineEvent(runRoot, {
+  return appendRunLifecycleStatus(runRoot, {
     runId,
-    actor: 'machine',
-    eventType: 'run.status',
-    fromState: current?.lifecycleStatus || 'created',
     toState,
     reason: options.reason || `run.${toState}`,
     payload: options.payload || {},
   });
-  return { runState: await repairRunStateFromEvents(runRoot) };
 }
 
 async function hasAcceptedWorkerResult(runRoot, claimId) {
@@ -67,6 +64,7 @@ async function recoverStaleClaims(runRoot, options = {}) {
     toState = 'queued',
     reason = 'claim.stale-recovered',
   } = options;
+  await assertRunLifecycleCanTransition(runRoot, 'running', reason);
   const recovered = [];
   const claimed = (await readQueueItems(runRoot))
     .filter(entry => entry.state === 'claimed')
@@ -116,6 +114,7 @@ async function claimNextQueuedItem(runRoot, options = {}) {
     now = new Date().toISOString(),
   } = options;
   if (!runId) throw new Error('runId is required.');
+  await assertRunLifecycleCanTransition(runRoot, 'running', 'dispatcher.claimed');
 
   const recovered = options.recoverStale === false
     ? []

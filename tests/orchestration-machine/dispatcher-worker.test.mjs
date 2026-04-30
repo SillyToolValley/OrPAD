@@ -8,6 +8,7 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   acquireWriteSetLock,
+  appendRunLifecycleStatus,
   applyWorkerResult,
   cancelClaimedItem,
   claimNextQueuedItem,
@@ -181,6 +182,34 @@ test('dispatcher pauses on approval-required queued item without claiming it', a
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'approval-required');
 });
 
+test('dispatcher refuses terminal runs before claiming queued work', async () => {
+  const run = await makeRun('run_20260430_dispatcher_terminal');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'terminal-dispatch-work',
+    fingerprint: 'ux:terminal-dispatch-work',
+  }));
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'cancelled',
+    reason: 'test.terminal-before-dispatch',
+  });
+  const eventsBefore = await readMachineEvents(run.runRoot);
+
+  await assert.rejects(
+    claimNextQueuedItem(run.runRoot, {
+      runId: run.runId,
+      claimId: 'claim-after-terminal-dispatch',
+      now: '2026-04-30T00:00:20.000Z',
+    }),
+    error => error?.code === 'MACHINE_RUN_TERMINAL',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventsBefore.length);
+});
+
 test('worker result closes a claimed item only after proof is accepted', async () => {
   const run = await makeRun('run_20260430_worker_done');
   const itemId = await queueProposal(run, proposal());
@@ -215,6 +244,40 @@ test('worker result closes a claimed item only after proof is accepted', async (
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
   assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'worker.result').length, 1);
   assert.deepEqual((await readJournal(run.runRoot)).map(entry => entry.action), ['ingest', 'triage', 'claim', 'close']);
+});
+
+test('worker result refuses terminal runs before closing claimed work', async () => {
+  const run = await makeRun('run_20260430_worker_terminal_result');
+  const itemId = await queueProposal(run, proposal());
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-terminal-result',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'cancelled',
+    reason: 'test.terminal-before-worker-result',
+  });
+  const eventsBefore = await readMachineEvents(run.runRoot);
+
+  await assert.rejects(
+    applyWorkerResult(run.runRoot, {
+      runId: run.runId,
+      claimId: claimed.claim.claimId,
+      itemId,
+      request,
+      result: workerResult(request),
+      now: '2026-04-30T00:00:30.000Z',
+    }),
+    error => error?.code === 'MACHINE_RUN_TERMINAL',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'active');
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 1);
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventsBefore.length);
 });
 
 test('worker done result without artifact and verification proof is rejected before close', async () => {
@@ -299,6 +362,37 @@ test('cancellation releases a claimed item and leaves a valid cancelled run stat
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
   assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'cancelled');
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+});
+
+test('cancellation refuses terminal runs before releasing claimed work', async () => {
+  const run = await makeRun('run_20260430_worker_terminal_cancel');
+  const itemId = await queueProposal(run, proposal());
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-terminal-cancel',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'cancelled',
+    reason: 'test.terminal-before-cancel',
+  });
+  const eventsBefore = await readMachineEvents(run.runRoot);
+
+  await assert.rejects(
+    cancelClaimedItem(run.runRoot, {
+      runId: run.runId,
+      claimId: claimed.claim.claimId,
+      itemId,
+      now: '2026-04-30T00:00:30.000Z',
+    }),
+    error => error?.code === 'MACHINE_RUN_TERMINAL',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'active');
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 1);
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventsBefore.length);
 });
 
 test('serial worker loop processes queued items one at a time until queue-empty', async () => {
