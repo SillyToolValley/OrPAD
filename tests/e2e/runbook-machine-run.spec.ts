@@ -137,6 +137,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('adapter.requested');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText('queue.transition');
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
 
   await win.locator('button[data-runbook-action="machine-export"]').click();
@@ -163,6 +165,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

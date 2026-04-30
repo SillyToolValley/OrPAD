@@ -7638,6 +7638,10 @@ function machineFailureDetails(record) {
   `;
 }
 
+function isMachineRunComplete(runState) {
+  return runState?.lifecycleStatus === 'completed' && runState?.summaryStatus === 'done';
+}
+
 function renderMachineRunPanel(record = lastMachineRunRecord) {
   if (!record) return '';
   const runState = record.runState || {};
@@ -7645,6 +7649,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
   const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
   const exported = record.exported || null;
   const exportedFiles = exported?.metadata?.artifactManifest?.files || [];
+  const runComplete = isMachineRunComplete(runState);
   return `
     <section class="runbook-panel-section">
       <h3>Machine Run</h3>
@@ -7655,7 +7660,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
       </div>
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
-        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Execute Step</button>
+        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'} ${runComplete ? 'disabled' : ''}>Execute Step</button>
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runState.runId || record.runId || '')}" ${runState.runId || record.runId ? '' : 'disabled'}>Export Latest</button>
       </div>
       <div class="runbook-replay-events">
