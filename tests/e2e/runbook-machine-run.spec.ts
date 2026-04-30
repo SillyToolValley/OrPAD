@@ -234,6 +234,43 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Machine UI keeps denied approval runs terminal', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  requireMachineApproval(pipelinePath);
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(() => {
+    localStorage.setItem('orpad-machine-ui-enabled', '1');
+    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
+  });
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('button[data-runbook-action="run-machine"]').click();
+  await win.locator('button[data-runbook-action="machine-execute-step"]').click();
+  await win.locator('button[data-runbook-action="machine-deny-approval"]').click();
+
+  await expect(win.locator('#runbooks-content')).toContainText('approval.decided');
+  await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: denied');
+  await expect(win.locator('#runbooks-content')).toContainText('cancelled');
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('Machine UI renders failure evidence from a failed runtime node', async () => {
   const { workspace, pipelineDir } = writeMachineWorkspace();
   appendFailingArtifactContract(pipelineDir);

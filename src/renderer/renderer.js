@@ -7708,8 +7708,9 @@ function machineApprovalDetails(record) {
   return 'No pending approvals';
 }
 
-function isMachineRunComplete(runState) {
-  return runState?.lifecycleStatus === 'completed' && runState?.summaryStatus === 'done';
+function isMachineRunTerminal(runState) {
+  return ['completed', 'cancelled', 'failed'].includes(runState?.lifecycleStatus)
+    || runState?.summaryStatus === 'done';
 }
 
 function renderMachineRunPanel(record = lastMachineRunRecord) {
@@ -7719,7 +7720,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
   const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
   const exported = record.exported || null;
   const exportedFiles = exported?.metadata?.artifactManifest?.files || [];
-  const runComplete = isMachineRunComplete(runState);
+  const runTerminal = isMachineRunTerminal(runState);
   const pendingApprovals = record.approvals?.pending || [];
   const approvalPending = (record.approvals?.pendingCount || 0) > 0;
   const candidateDetails = machineCandidateInventoryDetails(record);
@@ -7745,7 +7746,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
       </div>
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
-        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runComplete || approvalPending ? 'disabled' : ''}>Execute Step</button>
+        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending ? 'disabled' : ''}>Execute Step</button>
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
       </div>
       <div class="runbook-replay-events">
