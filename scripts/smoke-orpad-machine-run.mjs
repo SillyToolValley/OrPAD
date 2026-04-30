@@ -321,6 +321,11 @@ async function runMachineSmoke(input = {}) {
       runRoot: run.runRoot,
       latestRunExportRoot: exported.targetRoot,
       selectedNodes: executed.selectedNodes,
+      supportNodes: executed.supportNodes,
+      finalization: {
+        summaryStatus: executed.finalization?.summaryStatus || '',
+        lifecycleStatus: executed.finalization?.runState?.lifecycleStatus || '',
+      },
       validation: {
         ok: validation.ok,
         canMachineExecute: validation.canMachineExecute,

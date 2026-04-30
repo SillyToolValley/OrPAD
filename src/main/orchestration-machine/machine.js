@@ -4,11 +4,13 @@ const path = require('path');
 
 const { createCliAgentAdapter, cliOverlayRoot } = require('./adapters/cli-agent');
 const { createAdapterRequest } = require('./adapters/proposal-adapter');
+const { writeArtifactManifest } = require('./artifacts');
 const { claimNextQueuedItem } = require('./dispatcher');
 const { createCommandGrant } = require('./command-grants');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { buildTraversalPlan } = require('./traversal');
 const { loadPipelineGraphSet } = require('./graph-loader');
+const { finalizeRunFromInventory, summarizeQueueInventory } = require('./lifecycle');
 const { readMachineEvents } = require('./events');
 const { readRunState } = require('./run-store');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
@@ -18,6 +20,14 @@ const { runWorkerLoopOnce } = require('./worker-loop');
 const { normalizeWriteSetPath } = require('./write-sets');
 
 const fsp = fs.promises;
+const SUPPORT_NODE_TYPES = new Set([
+  'orpad.context',
+  'orpad.workQueue',
+  'orpad.gate',
+  'orpad.barrier',
+  'orpad.artifactContract',
+  'orpad.graph',
+]);
 
 function machineExecutionError(code, message) {
   const err = new Error(message);
@@ -106,6 +116,16 @@ function selectNode(orderedNodes, nodeType, explicitNodePath = '') {
   return orderedNodes.find(node => node.nodeType === nodeType) || null;
 }
 
+function supportNodesForExecution(orderedNodes, operationNodes) {
+  const operationPaths = new Set(operationNodes.filter(Boolean).map(node => node.nodePath));
+  const operationGraphKeys = new Set(operationNodes.filter(Boolean).map(node => node.graphKey));
+  return orderedNodes.filter(node => (
+    SUPPORT_NODE_TYPES.has(node.nodeType)
+    && operationGraphKeys.has(node.graphKey)
+    && !operationPaths.has(node.nodePath)
+  ));
+}
+
 function proposalResultForRequest(request, options = {}) {
   return {
     schemaVersion: 'orpad.workerResult.v1',
@@ -164,6 +184,73 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
   }
 }
 
+function outputRefs(config = {}) {
+  return Array.isArray(config.outputs) ? config.outputs : [];
+}
+
+function inputRefs(config = {}) {
+  return Array.isArray(config.inputs) ? config.inputs : [];
+}
+
+async function executeSupportNode(runRoot, node, options = {}) {
+  const { runId } = options;
+  return withNodeLifecycle(runRoot, node, {
+    runId,
+    completedPayload: result => result,
+  }, async () => {
+    const config = node.config || {};
+    if (node.nodeType === 'orpad.context') {
+      return {
+        summary: config.summary || '',
+        outputCount: outputRefs(config).length,
+      };
+    }
+    if (node.nodeType === 'orpad.workQueue') {
+      const inventory = await summarizeQueueInventory(runRoot);
+      return {
+        queueRef: config.queueRef || '',
+        schema: config.schema || '',
+        inventory,
+      };
+    }
+    if (node.nodeType === 'orpad.barrier') {
+      return {
+        waitForCount: Array.isArray(config.waitFor) ? config.waitFor.length : 0,
+        mergePolicy: config.mergePolicy || '',
+        outputCount: outputRefs(config).length,
+      };
+    }
+    if (node.nodeType === 'orpad.gate') {
+      const inventory = await summarizeQueueInventory(runRoot);
+      return {
+        criteriaCount: Array.isArray(config.criteria) ? config.criteria.length : 0,
+        inputCount: inputRefs(config).length,
+        outputCount: outputRefs(config).length,
+        inventory,
+      };
+    }
+    if (node.nodeType === 'orpad.artifactContract') {
+      const manifest = await writeArtifactManifest(runRoot);
+      const inventory = await summarizeQueueInventory(runRoot);
+      return {
+        artifactCount: manifest.files.length,
+        manifestSourceEventSequence: manifest.sourceEventSequence,
+        requiredCount: Array.isArray(config.required) ? config.required.length : 0,
+        requiredQueueCount: Array.isArray(config.requiredQueue) ? config.requiredQueue.length : 0,
+        inventory,
+      };
+    }
+    if (node.nodeType === 'orpad.graph') {
+      return {
+        graphRef: config.graphRef || '',
+        executionMode: config.executionMode || '',
+        viewMode: config.viewMode || '',
+      };
+    }
+    return {};
+  });
+}
+
 async function executeMachineRunStep(options = {}) {
   const {
     workspaceRoot,
@@ -218,130 +305,156 @@ async function executeMachineRunStep(options = {}) {
     if (!node) throw machineExecutionError('MACHINE_EXECUTION_NODE_NOT_FOUND', `Machine graph harness could not find ${label}.`);
   }
 
-  const probe = await withNodeLifecycle(runRoot, probeNode, {
-    runId,
-    completedPayload: result => ({
-      proposalCount: result.proposals?.length || 0,
-      summaryStatus: result.summaryStatus,
-    }),
-  }, () => runProposalProbe({
-    runRoot,
-    runId,
-    nodePath: probeNode.nodePath,
-    workspaceRoot,
-    fixtureResult: request => proposalResultForRequest(request, {
-      summary: 'Machine graph probe produced harness candidate proposal.',
-      candidateProposals: [candidate],
-    }),
-  }));
-
-  const triage = await withNodeLifecycle(runRoot, triageNode, {
-    runId,
-    completedPayload: result => ({
-      triageTransitionCount: result.triage?.length || 0,
-      summaryStatus: result.summaryStatus,
-    }),
-  }, () => runProposalTriage({
-    runRoot,
-    runId,
-    nodePath: triageNode.nodePath,
-    workspaceRoot,
-    fixtureResult: request => proposalResultForRequest(request, {
-      summary: 'Machine graph triage accepted harness candidate.',
-      triageTransitions: [{
-        itemId: candidate.suggestedWorkItemId,
-        toState: 'queued',
-        reason: 'machine-graph-harness.triage.accepted',
-      }],
-    }),
-  }));
-
-  const claim = await withNodeLifecycle(runRoot, dispatcherNode, {
-    runId,
-    completedPayload: result => ({
-      claimed: result.claimed === true,
-      stopReason: result.stopReason || '',
-      itemId: result.item?.id || '',
-    }),
-  }, () => claimNextQueuedItem(runRoot, {
-    runId,
-    claimId: options.claimId || `claim-${candidate.suggestedWorkItemId}`,
-  }));
-
+  const operationNodes = [probeNode, triageNode, dispatcherNode, workerNode];
+  const supportNodes = supportNodesForExecution(orderedNodes, operationNodes);
+  const executablePaths = new Set([
+    ...operationNodes.map(node => node.nodePath),
+    ...supportNodes.map(node => node.nodePath),
+  ]);
+  let probe = null;
+  let triage = null;
+  let claim = null;
   let worker = null;
-  if (claim.claimed) {
-    worker = await withNodeLifecycle(runRoot, workerNode, {
-      runId,
-      completedPayload: result => ({
-        workerStatus: result.result?.event?.payload?.status || '',
-        itemId: claim.item?.id || '',
-      }),
-    }, async () => {
-      const adapterCallId = options.adapterCallId || `${claim.claim.claimId}-graph-cli`;
-      const adapterRequest = createAdapterRequest({
-        adapter: 'cli-agent-overlay',
+  const support = [];
+
+  for (const node of orderedNodes) {
+    if (!executablePaths.has(node.nodePath)) continue;
+    if (node.nodePath === probeNode.nodePath) {
+      probe = await withNodeLifecycle(runRoot, probeNode, {
         runId,
-        nodePath: workerNode.nodePath,
-        taskKind: 'workerLoop',
-        workspaceRoot,
-        workspaceMode: 'read-only-plus-overlay',
-        allowedFiles: claim.writeSet.paths,
-        inputArtifacts: [`queue/claimed/${claim.item.id}.json`],
-        outputContract: 'orpad.workerResult.v1',
-        adapterCallId,
-        attemptId: `${adapterCallId}-attempt-1`,
-        idempotencyKey: `${adapterCallId}:attempt-1`,
-      });
-      adapterRequest.expectedChangedFiles = expectedChangedFiles;
-      adapterRequest.overlayRootMode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
-      adapterRequest.overlayRoot = overlayRoot
-        || (adapterRequest.overlayRootMode === 'system-temp'
-          ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
-          : cliOverlayRoot(runRoot, adapterRequest));
-      if (dangerousSandboxBypassApproval) {
-        adapterRequest.dangerousSandboxBypassApproval = dangerousSandboxBypassApproval;
-      }
-      const commandSpec = createWorkerCommandSpec
-        ? await createWorkerCommandSpec({
-          request: adapterRequest,
-          overlayRoot: adapterRequest.overlayRoot,
-          claim,
-          candidate,
-          workerNode,
-          harness,
-          patchConfig,
-        })
-        : nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable });
-      adapterRequest.commandSpec = {
-        command: commandSpec.command,
-        args: commandSpec.args,
-        cwd: commandSpec.cwd,
-      };
-      adapterRequest.commandGrants = [createCommandGrant({
-        ...adapterRequest.commandSpec,
-        grantId: `grant-${adapterCallId}`,
-        scope: 'machine-graph-harness',
-        allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
-        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-        reason: 'explicit Machine graph harness command',
-      })];
-      return runWorkerLoopOnce({
+        completedPayload: result => ({
+          proposalCount: result.proposals?.length || 0,
+          summaryStatus: result.summaryStatus,
+        }),
+      }, () => runProposalProbe({
         runRoot,
         runId,
+        nodePath: probeNode.nodePath,
         workspaceRoot,
-        claim,
-        request: adapterRequest,
-        adapter: createCliAgentAdapter({
-          enabled: true,
-          runRoot,
-          workspaceRoot,
-          allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
-          timeoutMs,
-          maxOutputBytes: 64 * 1024,
+        fixtureResult: request => proposalResultForRequest(request, {
+          summary: 'Machine graph probe produced harness candidate proposal.',
+          candidateProposals: [candidate],
         }),
+      }));
+    } else if (node.nodePath === triageNode.nodePath) {
+      triage = await withNodeLifecycle(runRoot, triageNode, {
+        runId,
+        completedPayload: result => ({
+          triageTransitionCount: result.triage?.length || 0,
+          summaryStatus: result.summaryStatus,
+        }),
+      }, () => runProposalTriage({
+        runRoot,
+        runId,
+        nodePath: triageNode.nodePath,
+        workspaceRoot,
+        fixtureResult: request => proposalResultForRequest(request, {
+          summary: 'Machine graph triage accepted harness candidate.',
+          triageTransitions: [{
+            itemId: candidate.suggestedWorkItemId,
+            toState: 'queued',
+            reason: 'machine-graph-harness.triage.accepted',
+          }],
+        }),
+      }));
+    } else if (node.nodePath === dispatcherNode.nodePath) {
+      claim = await withNodeLifecycle(runRoot, dispatcherNode, {
+        runId,
+        completedPayload: result => ({
+          claimed: result.claimed === true,
+          stopReason: result.stopReason || '',
+          itemId: result.item?.id || '',
+        }),
+      }, () => claimNextQueuedItem(runRoot, {
+        runId,
+        claimId: options.claimId || `claim-${candidate.suggestedWorkItemId}`,
+      }));
+    } else if (node.nodePath === workerNode.nodePath) {
+      if (!claim?.claimed) continue;
+      worker = await withNodeLifecycle(runRoot, workerNode, {
+        runId,
+        completedPayload: result => ({
+          workerStatus: result.result?.event?.payload?.status || '',
+          itemId: claim.item?.id || '',
+        }),
+      }, async () => {
+        const adapterCallId = options.adapterCallId || `${claim.claim.claimId}-graph-cli`;
+        const adapterRequest = createAdapterRequest({
+          adapter: 'cli-agent-overlay',
+          runId,
+          nodePath: workerNode.nodePath,
+          taskKind: 'workerLoop',
+          workspaceRoot,
+          workspaceMode: 'read-only-plus-overlay',
+          allowedFiles: claim.writeSet.paths,
+          inputArtifacts: [`queue/claimed/${claim.item.id}.json`],
+          outputContract: 'orpad.workerResult.v1',
+          adapterCallId,
+          attemptId: `${adapterCallId}-attempt-1`,
+          idempotencyKey: `${adapterCallId}:attempt-1`,
+        });
+        adapterRequest.expectedChangedFiles = expectedChangedFiles;
+        adapterRequest.overlayRootMode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
+        adapterRequest.overlayRoot = overlayRoot
+          || (adapterRequest.overlayRootMode === 'system-temp'
+            ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
+            : cliOverlayRoot(runRoot, adapterRequest));
+        if (dangerousSandboxBypassApproval) {
+          adapterRequest.dangerousSandboxBypassApproval = dangerousSandboxBypassApproval;
+        }
+        const commandSpec = createWorkerCommandSpec
+          ? await createWorkerCommandSpec({
+            request: adapterRequest,
+            overlayRoot: adapterRequest.overlayRoot,
+            claim,
+            candidate,
+            workerNode,
+            harness,
+            patchConfig,
+          })
+          : nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable });
+        adapterRequest.commandSpec = {
+          command: commandSpec.command,
+          args: commandSpec.args,
+          cwd: commandSpec.cwd,
+        };
+        adapterRequest.commandGrants = [createCommandGrant({
+          ...adapterRequest.commandSpec,
+          grantId: `grant-${adapterCallId}`,
+          scope: 'machine-graph-harness',
+          allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+          reason: 'explicit Machine graph harness command',
+        })];
+        return runWorkerLoopOnce({
+          runRoot,
+          runId,
+          workspaceRoot,
+          claim,
+          request: adapterRequest,
+          adapter: createCliAgentAdapter({
+            enabled: true,
+            runRoot,
+            workspaceRoot,
+            allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
+            timeoutMs,
+            maxOutputBytes: 64 * 1024,
+          }),
+        });
       });
-    });
+    } else {
+      support.push({
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        result: await executeSupportNode(runRoot, node, { runId }),
+      });
+    }
   }
+
+  const finalization = await finalizeRunFromInventory(runRoot, {
+    runId,
+    reason: 'machine-graph-step.finalize',
+  });
 
   let exported = null;
   if (exportLatestRunAfterStep) {
@@ -361,10 +474,15 @@ async function executeMachineRunStep(options = {}) {
       dispatcher: dispatcherNode.nodePath,
       worker: workerNode.nodePath,
     },
+    supportNodes: support.map(entry => ({
+      nodePath: entry.nodePath,
+      nodeType: entry.nodeType,
+    })),
     probe,
     triage,
     claim,
     worker,
+    finalization,
     exported,
     runState: await readRunState(runRoot),
     events: await readMachineEvents(runRoot),
@@ -379,4 +497,5 @@ module.exports = {
   nodeExecutableForHarness,
   proposalResultForRequest,
   selectNode,
+  supportNodesForExecution,
 };
