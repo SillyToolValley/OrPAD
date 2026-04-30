@@ -326,6 +326,7 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
       events: executed.events,
       graphPlan: executed.graphPlan,
       selectedNodes: executed.selectedNodes,
+      selectedProbeNodes: executed.selectedProbeNodes,
       supportNodes: executed.supportNodes,
       worker: executed.worker?.result || null,
       finalization: executed.finalization,

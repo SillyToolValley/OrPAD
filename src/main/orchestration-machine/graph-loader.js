@@ -26,8 +26,15 @@ async function readJson(filePath) {
 function graphRefsFromPipeline(pipeline) {
   const refs = new Map();
   if (pipeline.entryGraph) refs.set('main', pipeline.entryGraph);
-  for (const [key, value] of Object.entries(pipeline.graphs || {})) {
-    if (value?.file) refs.set(key, value.file);
+  const graphs = pipeline.graphs || {};
+  if (Array.isArray(graphs)) {
+    for (const [index, value] of graphs.entries()) {
+      if (value?.file) refs.set(value.id || `graph-${index + 1}`, value.file);
+    }
+  } else {
+    for (const [key, value] of Object.entries(graphs)) {
+      if (value?.file) refs.set(key, value.file);
+    }
   }
   return refs;
 }

@@ -70,6 +70,21 @@ function requiredString(value, label) {
   return value;
 }
 
+function candidateProposalsFromHarness(harness) {
+  const candidates = Array.isArray(harness.candidateProposals)
+    ? harness.candidateProposals
+    : (harness.candidateProposal ? [harness.candidateProposal] : []);
+  if (!candidates.length) {
+    throw machineExecutionError('MACHINE_EXECUTION_SCHEMA_INVALID', 'machineHarness.candidateProposal is required.');
+  }
+  return candidates.map((candidate, index) => assertPlainObject(candidate, `machineHarness.candidateProposals[${index}]`));
+}
+
+function expectedChangedFilesFromHarness(harness, candidates) {
+  const files = harness.expectedChangedFiles || candidates.flatMap(candidate => candidate.sourceOfTruthTargets || []);
+  return [...new Set(files.map(file => normalizeWriteSetPath(file)))];
+}
+
 function nodeCliPatchCommandSpec(patchConfig, cwd, options = {}) {
   const patch = assertPlainObject(patchConfig, 'machineHarness.nodeCliPatch');
   const file = normalizeWriteSetPath(requiredString(patch.file, 'machineHarness.nodeCliPatch.file'));
@@ -93,11 +108,12 @@ function nodeCliPatchCommandSpec(patchConfig, cwd, options = {}) {
 function flattenTraversalNodes(plan) {
   const byPath = new Map(plan.inventory.map(node => [node.nodePath, node]));
   const ordered = [];
-  for (const graphPlan of plan.graphPlans) {
-    for (const nodePath of graphPlan.nodePaths) {
-      const node = byPath.get(nodePath);
-      if (node) ordered.push(node);
-    }
+  const nodePaths = plan.inlinePlan?.nodePaths?.length
+    ? plan.inlinePlan.nodePaths
+    : plan.graphPlans.flatMap(graphPlan => graphPlan.nodePaths);
+  for (const nodePath of nodePaths) {
+    const node = byPath.get(nodePath);
+    if (node) ordered.push(node);
   }
   return ordered;
 }
@@ -116,12 +132,18 @@ function selectNode(orderedNodes, nodeType, explicitNodePath = '') {
   return orderedNodes.find(node => node.nodeType === nodeType) || null;
 }
 
+function selectNodes(orderedNodes, nodeType, explicitNodePaths = []) {
+  const explicitPaths = Array.isArray(explicitNodePaths)
+    ? explicitNodePaths.filter(Boolean)
+    : (explicitNodePaths ? [explicitNodePaths] : []);
+  if (!explicitPaths.length) return orderedNodes.filter(node => node.nodeType === nodeType);
+  return explicitPaths.map(nodePath => selectNode(orderedNodes, nodeType, nodePath));
+}
+
 function supportNodesForExecution(orderedNodes, operationNodes) {
   const operationPaths = new Set(operationNodes.filter(Boolean).map(node => node.nodePath));
-  const operationGraphKeys = new Set(operationNodes.filter(Boolean).map(node => node.graphKey));
   return orderedNodes.filter(node => (
     SUPPORT_NODE_TYPES.has(node.nodeType)
-    && operationGraphKeys.has(node.graphKey)
     && !operationPaths.has(node.nodePath)
   ));
 }
@@ -251,6 +273,15 @@ async function executeSupportNode(runRoot, node, options = {}) {
   });
 }
 
+function candidatesForProbeNode(probeNode, probeNodes, candidates) {
+  const probePaths = new Set(probeNodes.map(node => node.nodePath));
+  const matching = candidates.filter(candidate => candidate.sourceNode === probeNode.nodePath);
+  if (matching.length) return matching;
+  const hasAnyExplicitProbeMatch = candidates.some(candidate => probePaths.has(candidate.sourceNode));
+  if (!hasAnyExplicitProbeMatch && probeNode.nodePath === probeNodes[0]?.nodePath) return candidates;
+  return [];
+}
+
 async function executeMachineRunStep(options = {}) {
   const {
     workspaceRoot,
@@ -285,9 +316,9 @@ async function executeMachineRunStep(options = {}) {
     );
   }
   const harness = assertPlainObject(harnessSource, 'run.machineHarness');
-  const candidate = assertPlainObject(harness.candidateProposal, 'machineHarness.candidateProposal');
-  const expectedChangedFiles = (harness.expectedChangedFiles || candidate.sourceOfTruthTargets || [])
-    .map(file => normalizeWriteSetPath(file));
+  const candidates = candidateProposalsFromHarness(harness);
+  const candidate = candidates[0];
+  const expectedChangedFiles = expectedChangedFilesFromHarness(harness, candidates);
   const patchConfig = assertPlainObject(harness.nodeCliPatch, 'machineHarness.nodeCliPatch');
   const patchFile = normalizeWriteSetPath(requiredString(patchConfig.file, 'machineHarness.nodeCliPatch.file'));
   if (!expectedChangedFiles.includes(patchFile)) {
@@ -297,21 +328,26 @@ async function executeMachineRunStep(options = {}) {
     );
   }
 
-  const probeNode = selectNode(orderedNodes, 'orpad.probe', harness.probeNodePath);
+  const probeNodes = selectNodes(orderedNodes, 'orpad.probe', harness.probeNodePaths || harness.probeNodePath);
   const triageNode = selectNode(orderedNodes, 'orpad.triage', harness.triageNodePath);
   const dispatcherNode = selectNode(orderedNodes, 'orpad.dispatcher', harness.dispatcherNodePath);
   const workerNode = selectNode(orderedNodes, 'orpad.workerLoop', harness.workerNodePath);
-  for (const [label, node] of Object.entries({ probeNode, triageNode, dispatcherNode, workerNode })) {
+  if (!probeNodes.length) {
+    throw machineExecutionError('MACHINE_EXECUTION_NODE_NOT_FOUND', 'Machine graph harness could not find probeNode.');
+  }
+  const probeNode = probeNodes[0];
+  for (const [label, node] of Object.entries({ triageNode, dispatcherNode, workerNode })) {
     if (!node) throw machineExecutionError('MACHINE_EXECUTION_NODE_NOT_FOUND', `Machine graph harness could not find ${label}.`);
   }
 
-  const operationNodes = [probeNode, triageNode, dispatcherNode, workerNode];
+  const operationNodes = [...probeNodes, triageNode, dispatcherNode, workerNode];
   const supportNodes = supportNodesForExecution(orderedNodes, operationNodes);
   const executablePaths = new Set([
     ...operationNodes.map(node => node.nodePath),
     ...supportNodes.map(node => node.nodePath),
   ]);
   let probe = null;
+  const probes = [];
   let triage = null;
   let claim = null;
   let worker = null;
@@ -319,8 +355,10 @@ async function executeMachineRunStep(options = {}) {
 
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
-    if (node.nodePath === probeNode.nodePath) {
-      probe = await withNodeLifecycle(runRoot, probeNode, {
+    if (probeNodes.some(probeEntry => probeEntry.nodePath === node.nodePath)) {
+      const currentProbeNode = node;
+      const probeCandidates = candidatesForProbeNode(currentProbeNode, probeNodes, candidates);
+      const probeResult = await withNodeLifecycle(runRoot, currentProbeNode, {
         runId,
         completedPayload: result => ({
           proposalCount: result.proposals?.length || 0,
@@ -329,13 +367,23 @@ async function executeMachineRunStep(options = {}) {
       }, () => runProposalProbe({
         runRoot,
         runId,
-        nodePath: probeNode.nodePath,
+        nodePath: currentProbeNode.nodePath,
         workspaceRoot,
         fixtureResult: request => proposalResultForRequest(request, {
-          summary: 'Machine graph probe produced harness candidate proposal.',
-          candidateProposals: [candidate],
+          summary: probeCandidates.length
+            ? 'Machine graph probe produced harness candidate proposal.'
+            : 'Machine graph probe completed with no harness candidate for this node.',
+          candidateProposals: probeCandidates,
+          ...(probeCandidates.length ? {} : {
+            emptyPass: {
+              reason: 'No deterministic harness candidate was assigned to this probe node.',
+              evidence: [`node:${currentProbeNode.nodePath}`],
+            },
+          }),
         }),
       }));
+      probes.push({ nodePath: currentProbeNode.nodePath, result: probeResult });
+      if (!probe) probe = probeResult;
     } else if (node.nodePath === triageNode.nodePath) {
       triage = await withNodeLifecycle(runRoot, triageNode, {
         runId,
@@ -350,11 +398,11 @@ async function executeMachineRunStep(options = {}) {
         workspaceRoot,
         fixtureResult: request => proposalResultForRequest(request, {
           summary: 'Machine graph triage accepted harness candidate.',
-          triageTransitions: [{
-            itemId: candidate.suggestedWorkItemId,
+          triageTransitions: candidates.map(candidateProposal => ({
+            itemId: candidateProposal.suggestedWorkItemId,
             toState: 'queued',
             reason: 'machine-graph-harness.triage.accepted',
-          }],
+          })),
         }),
       }));
     } else if (node.nodePath === dispatcherNode.nodePath) {
@@ -474,11 +522,13 @@ async function executeMachineRunStep(options = {}) {
       dispatcher: dispatcherNode.nodePath,
       worker: workerNode.nodePath,
     },
+    selectedProbeNodes: probeNodes.map(node => node.nodePath),
     supportNodes: support.map(entry => ({
       nodePath: entry.nodePath,
       nodeType: entry.nodeType,
     })),
     probe,
+    probes,
     triage,
     claim,
     worker,
@@ -497,5 +547,6 @@ module.exports = {
   nodeExecutableForHarness,
   proposalResultForRequest,
   selectNode,
+  selectNodes,
   supportNodesForExecution,
 };

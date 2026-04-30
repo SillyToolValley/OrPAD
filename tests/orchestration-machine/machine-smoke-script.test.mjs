@@ -19,6 +19,7 @@ test('smoke script runs a real .or-pipeline through Machine queue, worker, expor
     dispatcher: 'main/dispatch',
     worker: 'main/worker',
   });
+  assert.deepEqual(result.selectedProbeNodes, ['main/probe']);
   assert.deepEqual(result.supportNodes.map(node => node.nodePath), [
     'main/context',
     'main/queue',

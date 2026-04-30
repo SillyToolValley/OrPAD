@@ -49,6 +49,24 @@ test('traversal plan uses stable topological order per graph', async () => {
   assert.equal(mainPlan.nodePaths.at(-1), 'main/artifact-contract');
 });
 
+test('traversal plan expands inline nested graph containers at their source position', async () => {
+  const graphSet = await loadPipelineGraphSet({ pipelinePath: maintenancePipelinePath });
+  const plan = buildTraversalPlan(graphSet);
+  const paths = plan.inlinePlan.nodePaths;
+
+  assert.equal(plan.inlinePlan.entryGraphKey, 'main');
+  assert.deepEqual(paths.slice(0, 4), [
+    'main/reference-context',
+    'main/authority-gate',
+    'main/discovery-lenses',
+    'discovery-lenses/source-quality',
+  ]);
+  assert.equal(paths.indexOf('discovery-lenses/discovery-barrier') < paths.indexOf('main/queue-and-triage'), true);
+  assert.equal(paths.indexOf('queue-and-triage/scope-gate') < paths.indexOf('main/worker-loop'), true);
+  assert.equal(paths.indexOf('worker-loop/retrospective') < paths.indexOf('main/done-gate'), true);
+  assert.equal(paths.at(-1), 'main/artifact-contract');
+});
+
 test('topological order falls back to source order for cyclic leftovers', () => {
   const ordered = topologicalOrder(
     [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
