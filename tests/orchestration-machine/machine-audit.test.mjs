@@ -692,3 +692,91 @@ test('audit-orpad-machine-run fails when closed claim leaves lease and write-set
   assert.equal(codes.has('MACHINE_QUEUE_CLOSE_WITHOUT_WRITE_SET_RELEASE'), true);
   assert.equal(codes.has('MACHINE_QUEUE_DONE_WITHOUT_WORKER_RESULT'), false);
 });
+
+test('audit-orpad-machine-run fails when terminal run status leaves active queue inventory', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-terminal-active-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_done_with_active_queue',
+    now: fixedNow,
+  });
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:done-with-active-queue',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:done-with-active-queue',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'run.status',
+    fromState: 'running',
+    toState: 'completed',
+    reason: 'test.invalid-completed',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'run.summary',
+    reason: 'test.invalid-done',
+    payload: {
+      summaryStatus: 'done',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_RUN_DONE_ACTIVE_QUEUE'), true);
+  assert.equal(codes.has('MACHINE_RUN_COMPLETED_ACTIVE_QUEUE'), true);
+});
+
+test('audit-orpad-machine-run fails when completed lifecycle lacks done summary', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-completed-summary-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_completed_without_done',
+    now: fixedNow,
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'run.status',
+    fromState: 'running',
+    toState: 'completed',
+    reason: 'test.invalid-completed',
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_RUN_COMPLETED_WITHOUT_DONE_SUMMARY'), true);
+});

@@ -628,6 +628,42 @@ async function auditQueueProjection(runRoot, events) {
   return { projectedCount: projected.size, diagnostics };
 }
 
+function auditRunTerminalSemantics(projectedRunState, projectedQueue) {
+  const diagnostics = [];
+  const active = [];
+  const blocked = [];
+  for (const [itemId, state] of projectedQueue.entries()) {
+    if (['candidate', 'queued', 'claimed'].includes(state)) active.push({ itemId, state });
+    if (state === 'blocked') blocked.push({ itemId, state });
+  }
+
+  if (projectedRunState?.summaryStatus === 'done' && active.length) {
+    diagnostics.push(diagnostic('MACHINE_RUN_DONE_ACTIVE_QUEUE', 'Run summary cannot be done while active queue items remain.', {
+      activeCount: active.length,
+      active,
+    }));
+  }
+  if (projectedRunState?.summaryStatus === 'done' && blocked.length) {
+    diagnostics.push(diagnostic('MACHINE_RUN_DONE_BLOCKED_QUEUE', 'Run summary cannot be done while blocked queue items remain.', {
+      blockedCount: blocked.length,
+      blocked,
+    }));
+  }
+  if (projectedRunState?.lifecycleStatus === 'completed' && projectedRunState?.summaryStatus !== 'done') {
+    diagnostics.push(diagnostic('MACHINE_RUN_COMPLETED_WITHOUT_DONE_SUMMARY', 'Completed lifecycle status requires a done run summary.', {
+      lifecycleStatus: projectedRunState.lifecycleStatus,
+      summaryStatus: projectedRunState.summaryStatus,
+    }));
+  }
+  if (projectedRunState?.lifecycleStatus === 'completed' && active.length) {
+    diagnostics.push(diagnostic('MACHINE_RUN_COMPLETED_ACTIVE_QUEUE', 'Completed lifecycle status requires no active queue items.', {
+      activeCount: active.length,
+      active,
+    }));
+  }
+  return diagnostics;
+}
+
 async function auditLegacyJournal(runRoot, events) {
   const diagnostics = [];
   const expected = legacyJournalRecordsFromEvents(events);
@@ -709,6 +745,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   diagnostics.push(...candidateInventoryAudit.diagnostics);
   const queueAudit = await auditQueueProjection(resolvedRunRoot, events);
   diagnostics.push(...queueAudit.diagnostics);
+  diagnostics.push(...auditRunTerminalSemantics(projectedRunState, projectQueueStateFromEvents(events)));
   const journalAudit = await auditLegacyJournal(resolvedRunRoot, events);
   diagnostics.push(...journalAudit.diagnostics);
   const exportAudit = await auditLatestRunExport(resolvedRunRoot, latestRunExportRoot, events);
