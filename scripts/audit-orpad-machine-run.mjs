@@ -459,7 +459,15 @@ async function auditArtifactManifest(runRoot) {
   const manifest = await readJsonIfExists(manifestPath, null);
   if (!manifest) return { manifest: null, diagnostics };
 
-  for (const file of manifest.files || []) {
+  const validation = contractValidator.validate('artifactManifest', manifest);
+  if (!validation.ok) {
+    diagnostics.push(diagnostic('MACHINE_ARTIFACT_MANIFEST_SCHEMA_INVALID', 'Artifact manifest must match the Machine contract schema.', {
+      path: manifestPath,
+      errors: validation.errors,
+    }));
+  }
+
+  for (const file of Array.isArray(manifest.files) ? manifest.files : []) {
     const filePath = runRelativePath(runRoot, file.path);
     try {
       const digest = await fileDigest(filePath);
