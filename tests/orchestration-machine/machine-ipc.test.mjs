@@ -358,6 +358,9 @@ test('Machine IPC snapshots expose active claims and cancel a claimed item', asy
   assert.equal(cancelled.activeWriteSets.length, 0);
   assert.equal(cancelled.cancellation.toState, 'blocked');
   assert.equal((await findQueueItem(created.runRoot, 'ipc-cancel-claim')).state, 'blocked');
+  const audit = runMachineAudit(created.runRoot, cancelled.exported.targetRoot);
+  assert.equal(audit.exitCode, 0, audit.stderr || audit.stdout);
+  assert.equal(audit.json.ok, true);
 });
 
 test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay adapter with a harness grant', async () => {
