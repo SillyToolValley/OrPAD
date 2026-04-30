@@ -268,6 +268,13 @@ function auditWorkerResultProof(events) {
   return diagnostics;
 }
 
+function workerResultArtifactRefs(event) {
+  return Array.from(new Set([
+    ...(event.artifactRefs || []),
+    event.payload?.patchArtifact || '',
+  ].filter(Boolean).map(ref => String(ref).replace(/\\/g, '/'))));
+}
+
 function findPriorEvent(events, sequence, predicate) {
   return events.find(event => event.sequence < sequence && predicate(event)) || null;
 }
@@ -444,6 +451,34 @@ async function auditArtifactManifest(runRoot) {
     }
   }
   return { manifest, diagnostics };
+}
+
+function auditWorkerResultArtifacts(events, manifest) {
+  const diagnostics = [];
+  const manifestPaths = new Set((manifest?.files || []).map(file => file.path));
+  for (const event of events) {
+    if (event.eventType !== 'worker.result') continue;
+    if (event.payload?.status !== 'done') continue;
+    const refs = workerResultArtifactRefs(event);
+    if (!refs.length) continue;
+    if (!manifest) {
+      diagnostics.push(diagnostic('MACHINE_WORKER_RESULT_ARTIFACT_MANIFEST_MISSING', 'Worker result artifact proof requires a Machine artifact manifest.', {
+        sequence: event.sequence,
+        itemId: event.itemId,
+        refs,
+      }));
+      continue;
+    }
+    for (const ref of refs) {
+      if (manifestPaths.has(ref)) continue;
+      diagnostics.push(diagnostic('MACHINE_WORKER_RESULT_ARTIFACT_UNREGISTERED', 'Worker result artifact proof must reference a registered Machine artifact.', {
+        sequence: event.sequence,
+        itemId: event.itemId,
+        ref,
+      }));
+    }
+  }
+  return diagnostics;
 }
 
 function candidateInventoryFiles(manifest) {
@@ -669,6 +704,7 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
 
   const artifactAudit = await auditArtifactManifest(resolvedRunRoot);
   diagnostics.push(...artifactAudit.diagnostics);
+  diagnostics.push(...auditWorkerResultArtifacts(events, artifactAudit.manifest));
   const candidateInventoryAudit = await auditCandidateInventory(resolvedRunRoot, artifactAudit.manifest, events);
   diagnostics.push(...candidateInventoryAudit.diagnostics);
   const queueAudit = await auditQueueProjection(resolvedRunRoot, events);

@@ -345,6 +345,72 @@ test('audit-orpad-machine-run fails when done worker result has no proof', async
   assert.equal(codes.has('MACHINE_WORKER_DONE_PROOF_MISSING'), true);
 });
 
+test('audit-orpad-machine-run fails when done worker result references unregistered artifact proof', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-worker-artifact-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_audit_worker_unregistered_artifact',
+    now: fixedNow,
+  });
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/queue/triage-log.md',
+    content: '# Triage log\n',
+    producedBy: 'adapter:proposal-only',
+    registeredBy: 'machine',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'worker-fixture',
+      adapterCallId: 'worker-unregistered-artifact-call',
+      attemptId: 'worker-unregistered-artifact-attempt-1',
+      idempotencyKey: 'worker-unregistered-artifact-call:worker-unregistered-artifact-attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'worker.result',
+    itemId: 'worker-unregistered-artifact',
+    artifactRefs: ['artifacts/patches/unregistered.patch.json'],
+    payload: {
+      claimId: 'claim-worker-unregistered-artifact',
+      adapterCallId: 'worker-unregistered-artifact-call',
+      attemptId: 'worker-unregistered-artifact-attempt-1',
+      idempotencyKey: 'worker-unregistered-artifact-call:worker-unregistered-artifact-attempt-1',
+      status: 'done',
+      toState: 'done',
+      patchArtifact: 'artifacts/patches/unregistered.patch.json',
+      verification: [{ command: 'fixture', ok: true }],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_WORKER_RESULT_ARTIFACT_UNREGISTERED'), true);
+  assert.equal(codes.has('MACHINE_WORKER_DONE_PROOF_MISSING'), false);
+});
+
 test('audit-orpad-machine-run fails when queue claim transition has no prior lease', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-claim-causality-'));
   const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
@@ -567,6 +633,13 @@ test('audit-orpad-machine-run fails when closed claim leaves lease and write-set
       workerId: 'worker-audit',
       writeSetLockId,
     },
+  });
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/patches/close-without-release.patch.json',
+    content: '{"schemaVersion":"orpad.patchArtifact.v1","changes":[]}\n',
+    producedBy: 'worker-fixture',
+    registeredBy: 'machine',
   });
   await appendMachineEvent(run.runRoot, {
     runId: run.runId,
