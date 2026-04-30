@@ -331,3 +331,42 @@ test('Machine IPC execute step returns refreshed run evidence when a runtime nod
   assert.equal(executed.events.some(item => item.eventType === 'worker.result'), true);
   assert.equal(executed.runState.eventSequence, executed.events.at(-1).sequence);
 });
+
+test('Machine IPC snapshots expose pending approval summaries', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const source = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  source.run.machineHarness.candidateProposal.approvalRequired = true;
+  await fs.writeFile(pipelinePath, `${JSON.stringify(source, null, 2)}\n`, 'utf8');
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_harness_approval',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(executed.success, true);
+  assert.equal(executed.approvals.pendingCount, 1);
+  assert.equal(executed.approvals.pending[0].itemId, 'ipc-harness-smoke');
+  assert.equal(executed.approvals.pending[0].approvalId, 'approval-ipc-harness-smoke');
+  assert.equal(executed.worker, null);
+
+  const snapshot = await handlers.get(MACHINE_IPC_CHANNELS.getRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+  });
+  assert.equal(snapshot.approvals.pendingCount, 1);
+  assert.equal(snapshot.approvals.pending[0].status, 'requested');
+
+  const listed = await handlers.get(MACHINE_IPC_CHANNELS.listRuns)(event, baseRequest);
+  assert.equal(listed.runs.find(run => run.runId === created.runId).pendingApprovalCount, 1);
+});

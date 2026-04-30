@@ -3,6 +3,7 @@ const path = require('path');
 
 const { isInsidePath } = require('../authority');
 const { validateRunbookFile } = require('../runbooks/validator');
+const { summarizeApprovalsFromEvents } = require('./approvals');
 const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
 const { executeMachineRunStep } = require('./machine');
@@ -209,6 +210,7 @@ async function readRunSnapshot(runRoot) {
     events,
     candidateInventory: await readCandidateInventorySummary(runRoot, events),
     worker: latestWorkerResult(events),
+    approvals: summarizeApprovalsFromEvents(events),
   };
 }
 
@@ -236,6 +238,7 @@ async function listRunSummaries(pipelineDir) {
       createdAt: snapshot.runState.createdAt,
       updatedAt: snapshot.runState.updatedAt,
       eventSequence: snapshot.runState.eventSequence,
+      pendingApprovalCount: snapshot.approvals.pendingCount,
     });
   }
   return summaries.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
@@ -309,6 +312,7 @@ async function getRunHandler(event, authority, request) {
     events: snapshot.events,
     candidateInventory: snapshot.candidateInventory,
     worker: snapshot.worker,
+    approvals: snapshot.approvals,
   };
 }
 
@@ -376,6 +380,7 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
       worker: executed.worker?.result || null,
       finalization: executed.finalization,
       exported: executed.exported,
+      approvals: summarizeApprovalsFromEvents(executed.events),
     };
   } catch (err) {
     const code = String(err?.code || '');
@@ -391,6 +396,7 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
         events: failureSnapshot.events,
         candidateInventory: failureSnapshot.candidateInventory,
         worker: failureSnapshot.worker,
+        approvals: failureSnapshot.approvals,
         failure: {
           contract: err.contract || null,
           barrier: err.barrier || null,

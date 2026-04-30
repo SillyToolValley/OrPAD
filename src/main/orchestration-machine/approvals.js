@@ -145,9 +145,61 @@ function approvalGrantForItem(itemId, approvalId) {
   };
 }
 
+function summarizeApprovalsFromEvents(events = []) {
+  const approvalsById = new Map();
+  for (const event of events || []) {
+    const payload = event.payload || {};
+    const approvalId = payload.approvalId || '';
+    if (!approvalId) continue;
+    if (event.eventType === 'approval.requested') {
+      approvalsById.set(approvalId, {
+        approvalId,
+        runId: event.runId || '',
+        itemId: event.itemId || payload.itemId || '',
+        status: 'requested',
+        reason: event.reason || '',
+        requestedAt: event.timestamp || '',
+        requestedSequence: event.sequence,
+        artifactRefs: event.artifactRefs || [],
+        requestedCapabilities: payload.requestedCapabilities || [],
+        commandSpec: payload.commandSpec || null,
+        writeSetPaths: payload.writeSetPaths || [],
+      });
+    } else if (event.eventType === 'approval.decided') {
+      const existing = approvalsById.get(approvalId) || {
+        approvalId,
+        runId: event.runId || '',
+        itemId: event.itemId || payload.itemId || '',
+        artifactRefs: [],
+        requestedCapabilities: [],
+        commandSpec: null,
+        writeSetPaths: [],
+      };
+      approvalsById.set(approvalId, {
+        ...existing,
+        status: payload.decision || 'decided',
+        decision: payload.decision || '',
+        decidedAt: payload.decidedAt || event.timestamp || '',
+        decidedBy: payload.decidedBy || '',
+        decisionSequence: event.sequence,
+        grants: payload.grants || [],
+      });
+    }
+  }
+  const all = [...approvalsById.values()]
+    .sort((a, b) => (a.requestedSequence ?? Number.MAX_SAFE_INTEGER) - (b.requestedSequence ?? Number.MAX_SAFE_INTEGER));
+  const pending = all.filter(item => item.status === 'requested');
+  return {
+    all,
+    pending,
+    pendingCount: pending.length,
+  };
+}
+
 module.exports = {
   approvalGrantForItem,
   approvalIdForItem,
   recordApprovalDecision,
   requestApprovalForItem,
+  summarizeApprovalsFromEvents,
 };
