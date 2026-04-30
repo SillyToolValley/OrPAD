@@ -1,0 +1,108 @@
+const fs = require('fs');
+const path = require('path');
+
+const fsp = fs.promises;
+
+function toPortablePath(value) {
+  return String(value || '').replace(/\\/g, '/');
+}
+
+function graphNodes(graphDoc) {
+  if (Array.isArray(graphDoc?.nodes)) return graphDoc.nodes;
+  if (Array.isArray(graphDoc?.graph?.nodes)) return graphDoc.graph.nodes;
+  return [];
+}
+
+function graphTransitions(graphDoc) {
+  if (Array.isArray(graphDoc?.transitions)) return graphDoc.transitions;
+  if (Array.isArray(graphDoc?.graph?.transitions)) return graphDoc.graph.transitions;
+  return [];
+}
+
+async function readJson(filePath) {
+  return JSON.parse(await fsp.readFile(filePath, 'utf8'));
+}
+
+function graphRefsFromPipeline(pipeline) {
+  const refs = new Map();
+  if (pipeline.entryGraph) refs.set('main', pipeline.entryGraph);
+  for (const [key, value] of Object.entries(pipeline.graphs || {})) {
+    if (value?.file) refs.set(key, value.file);
+  }
+  return refs;
+}
+
+async function loadPipelineGraphSet({ pipelinePath }) {
+  if (!pipelinePath) throw new Error('pipelinePath is required.');
+  const resolvedPipelinePath = path.resolve(pipelinePath);
+  const pipelineDir = path.dirname(resolvedPipelinePath);
+  const pipeline = await readJson(resolvedPipelinePath);
+  const graphRefs = graphRefsFromPipeline(pipeline);
+  const graphs = [];
+  const seenFiles = new Set();
+
+  for (const [graphKey, graphRef] of graphRefs.entries()) {
+    const graphPath = path.resolve(pipelineDir, graphRef);
+    const portableRef = toPortablePath(path.relative(pipelineDir, graphPath));
+    if (seenFiles.has(portableRef)) continue;
+    seenFiles.add(portableRef);
+    const graphDoc = await readJson(graphPath);
+    graphs.push({
+      graphKey,
+      graphRef: portableRef,
+      graphPath,
+      graphId: graphDoc.id || graphKey,
+      graphDoc,
+      nodes: graphNodes(graphDoc),
+      transitions: graphTransitions(graphDoc),
+    });
+  }
+
+  return {
+    pipeline,
+    pipelinePath: resolvedPipelinePath,
+    pipelineDir,
+    graphs,
+  };
+}
+
+function runtimeHandlerKind(nodeType) {
+  if (['orpad.context', 'orpad.gate', 'orpad.barrier', 'orpad.artifactContract', 'orpad.graph'].includes(nodeType)) {
+    return 'machine-builtin';
+  }
+  if (['orpad.probe', 'orpad.skill', 'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop'].includes(nodeType)) {
+    return 'adapter-required';
+  }
+  if (nodeType === 'orpad.workQueue') return 'machine-builtin';
+  return 'render-validate-only';
+}
+
+function buildNodeInventory(graphSet) {
+  const inventory = [];
+  for (const graph of graphSet.graphs) {
+    for (const [index, node] of graph.nodes.entries()) {
+      inventory.push({
+        graphKey: graph.graphKey,
+        graphId: graph.graphId,
+        graphRef: graph.graphRef,
+        nodeId: node.id || `node-${index + 1}`,
+        nodePath: `${graph.graphKey}/${node.id || `node-${index + 1}`}`,
+        nodeType: node.type || 'unknown',
+        label: node.label || '',
+        runtimeHandlerKind: runtimeHandlerKind(node.type || ''),
+        config: node.config || {},
+        order: index,
+      });
+    }
+  }
+  return inventory;
+}
+
+module.exports = {
+  buildNodeInventory,
+  graphNodes,
+  graphRefsFromPipeline,
+  graphTransitions,
+  loadPipelineGraphSet,
+  runtimeHandlerKind,
+};

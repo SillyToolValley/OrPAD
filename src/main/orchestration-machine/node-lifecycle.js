@@ -1,0 +1,49 @@
+const { appendMachineEvent } = require('./events');
+
+const NODE_LIFECYCLE_STATUSES = Object.freeze([
+  'scheduled',
+  'started',
+  'completed',
+  'failed',
+  'skipped',
+  'blocked',
+]);
+
+function createNodeExecutionId(runId, nodePath, attempt = 1) {
+  return `${runId}:${String(nodePath || '').replace(/[^a-zA-Z0-9_.:/-]+/g, '-')}:attempt-${attempt}`;
+}
+
+async function recordNodeLifecycleEvent(runRoot, options = {}) {
+  const {
+    runId,
+    nodePath,
+    nodeType,
+    status,
+    attempt = 1,
+    timestamp,
+    payload = {},
+  } = options;
+  if (!NODE_LIFECYCLE_STATUSES.includes(status)) {
+    throw new Error(`Unknown node lifecycle status: ${status}`);
+  }
+  return appendMachineEvent(runRoot, {
+    runId,
+    timestamp,
+    actor: 'machine',
+    nodePath,
+    eventType: `node.${status}`,
+    payload: {
+      nodeExecutionId: createNodeExecutionId(runId, nodePath, attempt),
+      nodeType,
+      status,
+      attempt,
+      ...payload,
+    },
+  });
+}
+
+module.exports = {
+  NODE_LIFECYCLE_STATUSES,
+  createNodeExecutionId,
+  recordNodeLifecycleEvent,
+};
