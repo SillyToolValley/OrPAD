@@ -11,6 +11,7 @@ const {
 const { readActiveClaimLeases } = require('./claims');
 const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
+const { assertNoSymlinkInRunPath, assertRunRelativePath } = require('./artifacts');
 const { recoverStaleClaims } = require('./dispatcher');
 const { executeMachineRunStep } = require('./machine');
 const { resumeMachineRun } = require('./lifecycle');
@@ -182,10 +183,15 @@ function latestEvent(events, eventType, predicate = () => true) {
   )) || null;
 }
 
-function runRelativeArtifactPath(runRoot, artifactPath) {
-  const portable = String(artifactPath || '').replace(/\\/g, '/');
-  if (!portable || portable.startsWith('/') || portable.includes('../') || portable === '..') return '';
-  const absolutePath = path.resolve(runRoot, ...portable.split('/'));
+async function runRelativeArtifactPath(runRoot, artifactPath) {
+  let safePath = '';
+  try {
+    safePath = assertRunRelativePath(artifactPath);
+    await assertNoSymlinkInRunPath(runRoot, safePath);
+  } catch {
+    return '';
+  }
+  const absolutePath = path.resolve(runRoot, ...safePath.split('/'));
   return isInsidePath(absolutePath, path.resolve(runRoot)) ? absolutePath : '';
 }
 
@@ -195,7 +201,7 @@ async function readCandidateInventorySummary(runRoot, events) {
     || item.payload?.file?.producedBy === 'orpad.machine.candidate-inventory'
   ));
   const artifactPath = event?.payload?.file?.path || '';
-  const absolutePath = runRelativeArtifactPath(runRoot, artifactPath);
+  const absolutePath = await runRelativeArtifactPath(runRoot, artifactPath);
   if (!absolutePath) return null;
   try {
     const inventory = JSON.parse(await fsp.readFile(absolutePath, 'utf8'));

@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 const { createAuthorityManager } = require('../../src/main/authority');
 const {
   MACHINE_IPC_CHANNELS,
+  appendMachineEvent,
   claimNextQueuedItem,
   findQueueItem,
   ingestCandidateProposal,
@@ -53,6 +54,19 @@ function senderEvent(url = 'file:///C:/OrPAD/src/renderer/index.html') {
     sender: { id: 1001 },
     senderFrame: { url },
   };
+}
+
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
 }
 
 async function makeWorkspace() {
@@ -361,6 +375,51 @@ test('Machine IPC snapshots expose active claims and cancel a claimed item', asy
   const audit = runMachineAudit(created.runRoot, cancelled.exported.targetRoot);
   assert.equal(audit.exitCode, 0, audit.stderr || audit.stdout);
   assert.equal(audit.json.ok, true);
+});
+
+test('Machine IPC snapshots do not follow symlinked artifact summary refs', async t => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_symlink_inventory',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-ipc-inventory-outside-'));
+  const outsideInventory = path.join(outsideRoot, 'candidate-inventory.json');
+  await fs.writeFile(outsideInventory, JSON.stringify({
+    candidateCount: 99,
+    emptyPassCount: 0,
+  }), 'utf8');
+  await fs.mkdir(path.join(created.runRoot, 'artifacts/discovery'), { recursive: true });
+  const inventoryPath = path.join(created.runRoot, 'artifacts/discovery/candidate-inventory.json');
+  if (!await createTestSymlink(t, outsideInventory, inventoryPath, 'file')) return;
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    actor: 'machine',
+    eventType: 'artifact.registered',
+    artifactRefs: ['artifacts/discovery/candidate-inventory.json'],
+    payload: {
+      file: {
+        path: 'artifacts/discovery/candidate-inventory.json',
+        schemaVersion: 'orpad.machineCandidateInventory.v1',
+        producedBy: 'orpad.machine.candidate-inventory',
+      },
+    },
+  });
+
+  const snapshot = await handlers.get(MACHINE_IPC_CHANNELS.getRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+  });
+
+  assert.equal(snapshot.success, true);
+  assert.equal(snapshot.candidateInventory, null);
 });
 
 test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay adapter with a harness grant', async () => {
