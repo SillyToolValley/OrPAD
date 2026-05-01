@@ -2,6 +2,7 @@ const RESERVED_TYPE_PREFIX = 'orpad.';
 const SAFE_TRUST_LEVELS = new Set(['official', 'signed', 'local']);
 const BLOCKED_LIFECYCLE_SCRIPTS = new Set(['preinstall', 'install', 'postinstall', 'prepare']);
 const EXECUTABLE_HANDLER_KINDS = new Set(['executable', 'unsafe-executable', 'native', 'process']);
+const PACK_ASSET_COLLECTIONS = ['graphs', 'trees', 'skills', 'rules', 'examples'];
 
 function diagnostic(level, code, message, details = {}) {
   return { level, code, message, ...details };
@@ -46,6 +47,41 @@ function lifecycleScriptNames(pack) {
 function hasExecutableHandler(node) {
   const kind = String(node?.runtimeHandlerKind || '').trim();
   return EXECUTABLE_HANDLER_KINDS.has(kind) || Boolean(node?.handler || node?.main);
+}
+
+function normalizePackRelativePath(value) {
+  const portable = String(value || '').trim().replace(/\\/g, '/');
+  if (!portable) return '';
+  const segments = portable.split('/');
+  const hasUnsafeSegment = segments.some(segment => (
+    !segment
+    || segment === '.'
+    || segment === '..'
+    || /^[a-zA-Z]:$/.test(segment)
+  ));
+  const normalized = portable.replace(/\/+/g, '/');
+  if (
+    portable.startsWith('/')
+    || /^[a-zA-Z]:\//.test(portable)
+    || hasUnsafeSegment
+    || normalized.startsWith('../')
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+function validatePackAssetPath(diagnostics, pack, assetKind, assetId, assetPath) {
+  if (!assetPath) return '';
+  const normalized = normalizePackRelativePath(assetPath);
+  if (normalized) return normalized;
+  diagnostics.push(diagnostic('error', 'NODE_PACK_ASSET_PATH_UNSAFE', 'Node pack asset paths must be pack-relative portable paths.', {
+    packId: pack.id,
+    assetKind,
+    assetId,
+    path: assetPath,
+  }));
+  return '';
 }
 
 function validateNodePackManifest(pack, options = {}) {
@@ -117,6 +153,7 @@ function validateNodePackManifest(pack, options = {}) {
     if (installMode === 'normal' && hasExecutableHandler(node)) {
       diagnostics.push(diagnostic('error', 'NODE_PACK_EXECUTABLE_HANDLER_BLOCKED', 'Normal node pack install rejects executable handlers.', { packId: pack.id, nodeType: type }));
     }
+    const nodePath = validatePackAssetPath(diagnostics, pack, 'node', type, node.path || '');
     for (const capability of node.capabilities || []) {
       if (!packCapabilities.has(capability)) {
         diagnostics.push(diagnostic('error', 'NODE_PACK_NODE_CAPABILITY_UNDECLARED', 'Node capability must be pack-declared.', { packId: pack.id, nodeType: type, capability }));
@@ -128,10 +165,15 @@ function validateNodePackManifest(pack, options = {}) {
     nodeTypeMap[type] = {
       packId: pack.id,
       packVersion: pack.version,
-      path: node.path || '',
+      path: nodePath,
       runtimeHandlerKind: node.runtimeHandlerKind || '',
       capabilities: node.capabilities || [],
     };
+  }
+  for (const collectionName of PACK_ASSET_COLLECTIONS) {
+    for (const asset of Array.isArray(pack[collectionName]) ? pack[collectionName] : []) {
+      validatePackAssetPath(diagnostics, pack, collectionName, asset?.id || asset?.type || '', asset?.path || '');
+    }
   }
 
   const hasError = diagnostics.some(item => item.level === 'error');
@@ -195,6 +237,7 @@ function createNodePackLockEntry(pack, options = {}) {
 module.exports = {
   BLOCKED_LIFECYCLE_SCRIPTS,
   EXECUTABLE_HANDLER_KINDS,
+  PACK_ASSET_COLLECTIONS,
   RESERVED_TYPE_PREFIX,
   createLosslessNodePlaceholder,
   createNodePackLockEntry,

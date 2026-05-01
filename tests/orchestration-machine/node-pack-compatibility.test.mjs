@@ -153,3 +153,26 @@ test('normal node pack install rejects lifecycle scripts and executable handlers
   assert.equal(codes.has('NODE_PACK_LIFECYCLE_SCRIPT_BLOCKED'), true);
   assert.equal(codes.has('NODE_PACK_EXECUTABLE_HANDLER_BLOCKED'), true);
 });
+
+test('node pack asset paths must stay pack-relative and portable', () => {
+  const result = validateNodePackManifest(communityPack({
+    nodes: [{
+      type: 'community.unsafePathNode',
+      path: '../outside.or-node',
+      runtimeHandlerKind: 'metadata-only',
+      capabilities: ['read.workspace'],
+    }],
+    graphs: [{
+      id: 'unsafe-graph',
+      path: 'C:/outside/graph.or-graph',
+    }],
+  }), {
+    installMode: 'normal',
+    grantedCapabilities: ['read.workspace'],
+  });
+  const unsafePaths = result.diagnostics.filter(item => item.code === 'NODE_PACK_ASSET_PATH_UNSAFE');
+
+  assert.equal(result.ok, false);
+  assert.equal(unsafePaths.length, 2);
+  assert.deepEqual(unsafePaths.map(item => item.assetKind), ['node', 'graphs']);
+});
