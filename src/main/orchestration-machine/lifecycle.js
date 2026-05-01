@@ -4,6 +4,17 @@ const { findQueueItem, projectQueueStateFromEvents, readQueueItems, writeQueueIt
 
 const ACTIVE_QUEUE_STATES = new Set(['candidate', 'queued', 'claimed']);
 const TERMINAL_QUEUE_STATES = new Set(['done', 'blocked', 'rejected']);
+const RUN_LIFECYCLE_STATES = new Set([
+  'created',
+  'running',
+  'waiting',
+  'approval-required',
+  'cancelling',
+  'cancelled',
+  'failed',
+  'completed',
+]);
+const RUN_SUMMARY_STATUSES = new Set(['pending', 'done', 'partial', 'blocked']);
 const TERMINAL_RUN_LIFECYCLE_STATES = new Set(['completed', 'cancelled', 'failed']);
 
 async function readAuthoritativeRunState(runRoot) {
@@ -54,6 +65,7 @@ async function assertNoPendingApprovalsForResume(runRoot) {
 }
 
 async function assertRunLifecycleCanTransition(runRoot, toState, reason = 'lifecycle.transition') {
+  assertRunLifecycleStatus(toState);
   const current = await readAuthoritativeRunState(runRoot);
   if (!current) return current;
   if (current.lifecycleStatus === toState) return current;
@@ -63,18 +75,35 @@ async function assertRunLifecycleCanTransition(runRoot, toState, reason = 'lifec
   return current;
 }
 
+function assertRunLifecycleStatus(status) {
+  if (RUN_LIFECYCLE_STATES.has(status)) return status;
+  const err = new Error(`Invalid Machine run lifecycle status: ${status}`);
+  err.code = 'MACHINE_RUN_LIFECYCLE_STATUS_INVALID';
+  err.status = status;
+  throw err;
+}
+
+function assertRunSummaryStatus(status) {
+  if (RUN_SUMMARY_STATUSES.has(status)) return status;
+  const err = new Error(`Invalid Machine run summary status: ${status}`);
+  err.code = 'MACHINE_RUN_SUMMARY_STATUS_INVALID';
+  err.status = status;
+  throw err;
+}
+
 async function appendRunLifecycleStatus(runRoot, options = {}) {
   const { runId, toState, reason = `run.${toState}`, payload = {} } = options;
   if (!runId) throw new Error('runId is required.');
   if (!toState) throw new Error('toState is required.');
-  const current = await assertRunLifecycleCanTransition(runRoot, toState, reason);
-  if (current?.lifecycleStatus === toState) return { duplicate: true, runState: current };
+  const safeToState = assertRunLifecycleStatus(toState);
+  const current = await assertRunLifecycleCanTransition(runRoot, safeToState, reason);
+  if (current?.lifecycleStatus === safeToState) return { duplicate: true, runState: current };
   await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
     eventType: 'run.status',
     fromState: current?.lifecycleStatus || 'created',
-    toState,
+    toState: safeToState,
     reason,
     payload,
   });
@@ -85,14 +114,15 @@ async function appendRunSummaryStatus(runRoot, options = {}) {
   const { runId, summaryStatus, reason = `run.summary.${summaryStatus}`, payload = {} } = options;
   if (!runId) throw new Error('runId is required.');
   if (!summaryStatus) throw new Error('summaryStatus is required.');
+  const safeSummaryStatus = assertRunSummaryStatus(summaryStatus);
   await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
     eventType: 'run.summary',
     reason,
     payload: {
-      summaryStatus,
       ...payload,
+      summaryStatus: safeSummaryStatus,
     },
   });
   return repairRunStateFromEvents(runRoot);
@@ -225,6 +255,8 @@ async function resumeMachineRun(runRoot, options = {}) {
 
 module.exports = {
   ACTIVE_QUEUE_STATES,
+  RUN_LIFECYCLE_STATES,
+  RUN_SUMMARY_STATUSES,
   TERMINAL_QUEUE_STATES,
   TERMINAL_RUN_LIFECYCLE_STATES,
   appendRunLifecycleStatus,
@@ -232,6 +264,8 @@ module.exports = {
   assertNoPendingApprovalsForResume,
   assertNoActiveInventoryForDone,
   assertRunLifecycleCanTransition,
+  assertRunLifecycleStatus,
+  assertRunSummaryStatus,
   finalizeRunFromInventory,
   repairDerivedQueueFilesFromEvents,
   resumeMachineRun,

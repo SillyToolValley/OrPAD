@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const {
   approvalGrantForItem,
   appendRunLifecycleStatus,
+  appendRunSummaryStatus,
   assertNoActiveInventoryForDone,
   claimNextQueuedItem,
   createMachineRun,
@@ -109,6 +110,35 @@ test('approval-required pause creates Machine approval artifact and approved dec
   });
   assert.equal(claimed.claimed, true);
   assert.equal(claimed.item.id, itemId);
+});
+
+test('run lifecycle and summary statuses are validated before event append', async () => {
+  const run = await makeRun('run_20260430_lifecycle_invalid_status');
+  const eventsBefore = await readMachineEvents(run.runRoot);
+
+  await assert.rejects(
+    appendRunLifecycleStatus(run.runRoot, {
+      runId: run.runId,
+      toState: 'bogus',
+    }),
+    error => error?.code === 'MACHINE_RUN_LIFECYCLE_STATUS_INVALID',
+  );
+  await assert.rejects(
+    appendRunSummaryStatus(run.runRoot, {
+      runId: run.runId,
+      summaryStatus: 'bogus',
+    }),
+    error => error?.code === 'MACHINE_RUN_SUMMARY_STATUS_INVALID',
+  );
+
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventsBefore.length);
+
+  const runState = await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    payload: { summaryStatus: 'bogus' },
+  });
+  assert.equal(runState.summaryStatus, 'partial');
 });
 
 test('approval decisions cannot reopen a terminal cancelled run', async () => {
