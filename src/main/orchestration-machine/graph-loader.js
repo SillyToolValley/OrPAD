@@ -7,6 +7,27 @@ function toPortablePath(value) {
   return String(value || '').replace(/\\/g, '/');
 }
 
+function graphLoaderError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+function normalizeGraphRef(value, label = 'graphRef') {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw graphLoaderError('MACHINE_GRAPH_REF_INVALID', `${label} must be a non-empty string.`);
+  }
+  const portable = toPortablePath(value.trim());
+  if (portable.startsWith('/') || portable.match(/^[a-zA-Z]:\//)) {
+    throw graphLoaderError('MACHINE_GRAPH_REF_INVALID', `${label} must be pipeline-relative.`);
+  }
+  const normalized = path.posix.normalize(portable).replace(/^\.\//, '');
+  if (normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
+    throw graphLoaderError('MACHINE_GRAPH_REF_INVALID', `${label} must stay inside the pipeline directory.`);
+  }
+  return normalized;
+}
+
 function graphNodes(graphDoc) {
   if (Array.isArray(graphDoc?.nodes)) return graphDoc.nodes;
   if (Array.isArray(graphDoc?.graph?.nodes)) return graphDoc.graph.nodes;
@@ -25,15 +46,15 @@ async function readJson(filePath) {
 
 function graphRefsFromPipeline(pipeline) {
   const refs = new Map();
-  if (pipeline.entryGraph) refs.set('main', pipeline.entryGraph);
+  if (pipeline.entryGraph) refs.set('main', normalizeGraphRef(pipeline.entryGraph, 'entryGraph'));
   const graphs = pipeline.graphs || {};
   if (Array.isArray(graphs)) {
     for (const [index, value] of graphs.entries()) {
-      if (value?.file) refs.set(value.id || `graph-${index + 1}`, value.file);
+      if (value?.file) refs.set(value.id || `graph-${index + 1}`, normalizeGraphRef(value.file, `graphs[${index}].file`));
     }
   } else {
     for (const [key, value] of Object.entries(graphs)) {
-      if (value?.file) refs.set(key, value.file);
+      if (value?.file) refs.set(key, normalizeGraphRef(value.file, `graphs.${key}.file`));
     }
   }
   return refs;
@@ -111,5 +132,6 @@ module.exports = {
   graphRefsFromPipeline,
   graphTransitions,
   loadPipelineGraphSet,
+  normalizeGraphRef,
   runtimeHandlerKind,
 };

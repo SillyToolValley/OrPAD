@@ -38,6 +38,40 @@ test('graph loader reads the current maintenance pipeline graph set', async () =
   assert.equal(inventory.find(node => node.nodePath === 'discovery-lenses/ux-ui-probe').runtimeHandlerKind, 'adapter-required');
 });
 
+test('graph loader rejects graph refs outside the pipeline directory', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-graph-ref-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/ref-boundary');
+  await fs.mkdir(pipelineDir, { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'ref-boundary',
+    entryGraph: '../outside.or-graph',
+  }, null, 2), 'utf8');
+  await assert.rejects(
+    loadPipelineGraphSet({ pipelinePath }),
+    error => error?.code === 'MACHINE_GRAPH_REF_INVALID',
+  );
+
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'ref-boundary',
+    entryGraph: 'graphs/main.or-graph',
+    graphs: {
+      outside: {
+        file: path.resolve(workspaceRoot, 'outside.or-graph'),
+      },
+    },
+  }, null, 2), 'utf8');
+  await assert.rejects(
+    loadPipelineGraphSet({ pipelinePath }),
+    error => error?.code === 'MACHINE_GRAPH_REF_INVALID',
+  );
+});
+
 test('traversal plan uses stable topological order per graph', async () => {
   const graphSet = await loadPipelineGraphSet({ pipelinePath: maintenancePipelinePath });
   const plan = buildTraversalPlan(graphSet);
