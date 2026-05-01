@@ -256,6 +256,15 @@ function arrayConfig(value, label, code = 'MACHINE_CONFIG_INVALID') {
   throw machineExecutionError(code, `${label} must be an array.`);
 }
 
+function stringArrayConfig(value, label, code = 'MACHINE_CONFIG_INVALID') {
+  return arrayConfig(value, label, code).map((entry, index) => {
+    if (typeof entry !== 'string' || !entry.trim()) {
+      throw machineExecutionError(code, `${label}[${index}] must be a non-empty string.`);
+    }
+    return entry.trim();
+  });
+}
+
 function artifactContractOnMissing(value) {
   const policy = value || 'fail-run';
   if (['fail-run', 'mark-partial', 'warn'].includes(policy)) return policy;
@@ -297,7 +306,7 @@ async function validateArtifactContract(runRoot, config = {}) {
   const inventory = await summarizeQueueInventory(runRoot);
   const manifestPaths = new Set(manifest.files.map(file => file.path));
   const onMissing = artifactContractOnMissing(config.onMissing);
-  const requiredArtifacts = arrayConfig(
+  const requiredArtifacts = stringArrayConfig(
     config.required,
     'ArtifactContract.required',
     'MACHINE_ARTIFACT_CONTRACT_INVALID',
@@ -306,8 +315,8 @@ async function validateArtifactContract(runRoot, config = {}) {
     path: contractExpectedPath(config.artifactRoot, required, 'artifacts'),
   })).filter(entry => entry.path);
   const requiredQueue = [
-    ...arrayConfig(config.requiredQueue, 'ArtifactContract.requiredQueue', 'MACHINE_ARTIFACT_CONTRACT_INVALID'),
-    ...arrayConfig(config.requiredQueueArtifacts, 'ArtifactContract.requiredQueueArtifacts', 'MACHINE_ARTIFACT_CONTRACT_INVALID'),
+    ...stringArrayConfig(config.requiredQueue, 'ArtifactContract.requiredQueue', 'MACHINE_ARTIFACT_CONTRACT_INVALID'),
+    ...stringArrayConfig(config.requiredQueueArtifacts, 'ArtifactContract.requiredQueueArtifacts', 'MACHINE_ARTIFACT_CONTRACT_INVALID'),
   ].map(required => ({
     declared: required,
     path: contractExpectedPath(config.queueRoot, required, 'queue'),
@@ -367,7 +376,7 @@ function nextNodeAttempt(events, nodePath) {
 }
 
 async function validateBarrierNode(runRoot, node, config = {}) {
-  const waitFor = arrayConfig(config.waitFor, 'Barrier.waitFor');
+  const waitFor = stringArrayConfig(config.waitFor, 'Barrier.waitFor');
   const onPartialFailure = config.onPartialFailure || 'continue-with-warning';
   if (!['fail', 'continue-with-warning', 'block'].includes(onPartialFailure)) {
     throw machineExecutionError('MACHINE_BARRIER_CONFIG_INVALID', `Unsupported Barrier onPartialFailure policy: ${onPartialFailure}`);
@@ -453,7 +462,7 @@ function evaluateGateCriterion(criterion, input = {}) {
 }
 
 async function validateGateNode(runRoot, config = {}) {
-  const criteria = arrayConfig(config.criteria, 'Gate.criteria');
+  const criteria = stringArrayConfig(config.criteria, 'Gate.criteria');
   const onFail = config.onFail || 'block';
   if (!['block', 'warn', 'continue', 'continue-with-warning'].includes(onFail)) {
     throw machineExecutionError('MACHINE_GATE_CONFIG_INVALID', `Unsupported Gate onFail policy: ${onFail}`);

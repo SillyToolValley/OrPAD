@@ -12,6 +12,8 @@ const {
   findQueueItem,
   readMachineEvents,
   validateArtifactContract,
+  validateBarrierNode,
+  validateGateNode,
 } = require('../../src/main/orchestration-machine');
 
 async function createTestSymlink(testContext, target, linkPath, type = 'file') {
@@ -405,6 +407,35 @@ test('ArtifactContract rejects symlinked queue requirements before treating them
       onMissing: 'warn',
     }),
     error => error?.code === 'MACHINE_ARTIFACT_SYMLINK_UNSAFE',
+  );
+});
+
+test('runtime support nodes reject non-string contract arrays before coercion', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_support_array_type_invalid');
+
+  await assert.rejects(
+    validateArtifactContract(run.runRoot, {
+      required: [{ path: 'discovery/candidate-inventory.json' }],
+      onMissing: 'warn',
+    }),
+    error => error?.code === 'MACHINE_ARTIFACT_CONTRACT_INVALID',
+  );
+
+  await assert.rejects(
+    validateBarrierNode(
+      run.runRoot,
+      { graphKey: 'main', nodePath: 'main/barrier', nodeType: 'orpad.barrier' },
+      { waitFor: [{ node: 'probe' }], onPartialFailure: 'continue-with-warning' },
+    ),
+    error => error?.code === 'MACHINE_CONFIG_INVALID',
+  );
+
+  await assert.rejects(
+    validateGateNode(run.runRoot, {
+      criteria: [{ criterion: 'queue empty' }],
+      onFail: 'warn',
+    }),
+    error => error?.code === 'MACHINE_CONFIG_INVALID',
   );
 });
 
