@@ -40,6 +40,13 @@ function eventLogError(code, message) {
   return err;
 }
 
+function assertEventMatchesRunRoot(runRoot, event) {
+  const runRootId = path.basename(path.resolve(runRoot));
+  if (runRootId.startsWith('run_') && event.runId !== runRootId) {
+    throw eventLogError('MACHINE_EVENT_RUN_ROOT_MISMATCH', 'Machine event runId must match the durable run root id.');
+  }
+}
+
 function assertEventBelongsToRun(existing, event) {
   if (!existing.length) {
     if (event.eventType !== 'run.created') {
@@ -59,6 +66,7 @@ async function appendMachineEvent(runRoot, event) {
     throw eventLogError('MACHINE_EVENT_SEQUENCE_OWNED', 'Machine event sequence is assigned by the durable event log.');
   }
   assertEventBelongsToRun(existing, event);
+  assertEventMatchesRunRoot(runRoot, event);
   const record = {
     schemaVersion: SCHEMA_VERSIONS.machineEvent,
     timestamp: nowIso(),

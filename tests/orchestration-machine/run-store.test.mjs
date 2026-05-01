@@ -223,6 +223,19 @@ test('Machine event append requires run.created as the first durable event', asy
   );
 });
 
+test('Machine event append binds run.created to the durable run root id', async () => {
+  const { pipelineDir } = await makeWorkspace();
+  await assert.rejects(
+    appendMachineEvent(durableRunRoot(pipelineDir, 'run_20260430_bound'), {
+      runId: 'run_20260430_other',
+      timestamp: '2026-04-30T00:00:00.000Z',
+      actor: 'machine',
+      eventType: 'run.created',
+    }),
+    error => error?.code === 'MACHINE_EVENT_RUN_ROOT_MISMATCH',
+  );
+});
+
 test('run-state can be repaired from committed Machine events', async () => {
   const { workspaceRoot, pipelinePath } = await makeWorkspace();
   const run = await createMachineRun({
