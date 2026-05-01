@@ -138,6 +138,7 @@ async function prepareCliOverlayWorkspace(options = {}) {
   return {
     workspaceRoot: path.resolve(workspaceRoot),
     overlayRoot,
+    overlayRootMode,
     copied,
   };
 }
@@ -194,97 +195,107 @@ function createCliAgentAdapter(options = {}) {
         overlayRoot: options.overlayRoot,
         overlayRootMode: options.overlayRootMode,
       });
-      const commandSpec = {
-        ...(options.commandSpec || request.commandSpec || {}),
-        cwd: (options.commandSpec || request.commandSpec || {}).cwd || overlay.overlayRoot,
-      };
-      const grant = assertCommandGranted(options.commandGrants || request.commandGrants || [], commandSpec, {
-        now: options.now,
-      });
-      const containment = assertCliProcessContainment({
-        commandSpec,
-        grant,
-        overlayRoot: overlay.overlayRoot,
-        workspaceRoot: overlay.workspaceRoot,
-        request,
-        allowDangerousSandboxBypass: options.allowDangerousSandboxBypass === true,
-      });
-
-      const processResult = await runMachineProcess({
-        command: commandSpec.command,
-        args: commandSpec.args || [],
-        cwd: commandSpec.cwd,
-        env: options.env,
-        extraEnv: options.extraEnv,
-        timeoutMs: options.timeoutMs,
-        maxOutputBytes: options.maxOutputBytes,
-      });
-      const patch = await collectOverlayPatch({
-        workspaceRoot: overlay.workspaceRoot,
-        overlayRoot: overlay.overlayRoot,
-        allowedFiles: request.allowedFiles || [],
-        now: options.now,
-      });
-
-      const artifacts = [];
-      const transcriptArtifact = await registerJsonArtifact(runRoot, {
-        runId,
-        artifactPath: `artifacts/adapters/${request.adapterCallId}.transcript.json`,
-        producedBy: 'cli-agent-overlay',
-        value: {
-          request: {
-            adapterCallId: request.adapterCallId,
-            attemptId: request.attemptId,
-            idempotencyKey: request.idempotencyKey,
-          },
-          overlay,
-          containment,
-          process: processResult,
-        },
-      });
-      if (transcriptArtifact?.file?.path) artifacts.push(transcriptArtifact.file.path);
-
-      let patchArtifactPath = '';
-      if ((patch.changes || []).length || (patch.violations || []).length) {
-        const patchArtifact = await registerPatchArtifact(runRoot, {
-          runId,
-          patch,
-          artifactPath: `artifacts/patches/${request.adapterCallId}.patch.json`,
-          producedBy: 'cli-agent-overlay',
+      const cleanupSystemOverlay = overlay.overlayRootMode === 'system-temp' && options.keepOverlay !== true;
+      try {
+        const commandSpec = {
+          ...(options.commandSpec || request.commandSpec || {}),
+          cwd: (options.commandSpec || request.commandSpec || {}).cwd || overlay.overlayRoot,
+        };
+        const grant = assertCommandGranted(options.commandGrants || request.commandGrants || [], commandSpec, {
+          now: options.now,
         });
-        patchArtifactPath = patchArtifact?.file?.path || '';
-        if (patchArtifactPath) artifacts.push(patchArtifactPath);
-      }
+        const containment = assertCliProcessContainment({
+          commandSpec,
+          grant,
+          overlayRoot: overlay.overlayRoot,
+          workspaceRoot: overlay.workspaceRoot,
+          request,
+          allowDangerousSandboxBypass: options.allowDangerousSandboxBypass === true,
+        });
 
-      const expectedChangedFiles = normalizeExpectedChangedFiles(request);
-      const missingExpectedChanges = missingExpectedChangedFiles(patch, expectedChangedFiles);
-      const status = resultStatusForProcess(processResult, patch, request);
-      return {
-        schemaVersion: 'orpad.workerResult.v1',
-        adapterCallId: request.adapterCallId,
-        attemptId: request.attemptId,
-        idempotencyKey: request.idempotencyKey,
-        status,
-        summary: status === 'done'
-          ? 'CLI adapter completed in overlay and produced a Machine-owned result.'
-          : 'CLI adapter result requires Machine review before any canonical mutation.',
-        artifacts,
-        patchArtifact: patchArtifactPath,
-        changedFiles: (patch.changes || []).map(change => change.path),
-        verification: [{
+        const processResult = await runMachineProcess({
           command: commandSpec.command,
           args: commandSpec.args || [],
-          cwdKind: 'overlay',
-          containment,
-          exitCode: processResult.code,
-          timedOut: processResult.timedOut,
-          stdoutTruncated: processResult.stdoutTruncated,
-          stderrTruncated: processResult.stderrTruncated,
-          writeSetViolationCount: (patch.violations || []).length,
-          expectedChangedFiles,
-          missingExpectedChanges,
-        }],
-      };
+          cwd: commandSpec.cwd,
+          env: options.env,
+          extraEnv: options.extraEnv,
+          timeoutMs: options.timeoutMs,
+          maxOutputBytes: options.maxOutputBytes,
+        });
+        const patch = await collectOverlayPatch({
+          workspaceRoot: overlay.workspaceRoot,
+          overlayRoot: overlay.overlayRoot,
+          allowedFiles: request.allowedFiles || [],
+          now: options.now,
+        });
+
+        const artifacts = [];
+        const transcriptArtifact = await registerJsonArtifact(runRoot, {
+          runId,
+          artifactPath: `artifacts/adapters/${request.adapterCallId}.transcript.json`,
+          producedBy: 'cli-agent-overlay',
+          value: {
+            request: {
+              adapterCallId: request.adapterCallId,
+              attemptId: request.attemptId,
+              idempotencyKey: request.idempotencyKey,
+            },
+            overlay: {
+              ...overlay,
+              cleanupPlanned: cleanupSystemOverlay,
+            },
+            containment,
+            process: processResult,
+          },
+        });
+        if (transcriptArtifact?.file?.path) artifacts.push(transcriptArtifact.file.path);
+
+        let patchArtifactPath = '';
+        if ((patch.changes || []).length || (patch.violations || []).length) {
+          const patchArtifact = await registerPatchArtifact(runRoot, {
+            runId,
+            patch,
+            artifactPath: `artifacts/patches/${request.adapterCallId}.patch.json`,
+            producedBy: 'cli-agent-overlay',
+          });
+          patchArtifactPath = patchArtifact?.file?.path || '';
+          if (patchArtifactPath) artifacts.push(patchArtifactPath);
+        }
+
+        const expectedChangedFiles = normalizeExpectedChangedFiles(request);
+        const missingExpectedChanges = missingExpectedChangedFiles(patch, expectedChangedFiles);
+        const status = resultStatusForProcess(processResult, patch, request);
+        return {
+          schemaVersion: 'orpad.workerResult.v1',
+          adapterCallId: request.adapterCallId,
+          attemptId: request.attemptId,
+          idempotencyKey: request.idempotencyKey,
+          status,
+          summary: status === 'done'
+            ? 'CLI adapter completed in overlay and produced a Machine-owned result.'
+            : 'CLI adapter result requires Machine review before any canonical mutation.',
+          artifacts,
+          patchArtifact: patchArtifactPath,
+          changedFiles: (patch.changes || []).map(change => change.path),
+          verification: [{
+            command: commandSpec.command,
+            args: commandSpec.args || [],
+            cwdKind: 'overlay',
+            containment,
+            exitCode: processResult.code,
+            timedOut: processResult.timedOut,
+            stdoutTruncated: processResult.stdoutTruncated,
+            stderrTruncated: processResult.stderrTruncated,
+            writeSetViolationCount: (patch.violations || []).length,
+            expectedChangedFiles,
+            missingExpectedChanges,
+          }],
+        };
+      } finally {
+        if (cleanupSystemOverlay) {
+          await fsp.rm(overlay.overlayRoot, { recursive: true, force: true }).catch(() => {});
+        }
+      }
     },
   };
 }

@@ -382,6 +382,8 @@ harness command assembled by main process.
 - CLI adapter execution uses `read-only-plus-overlay` workspaces. Allowed files are copied to an
   adapter-local overlay under the durable run root, or to a system temp overlay when an explicit
   dangerous Codex sandbox bypass approval is present.
+  System temp overlays are removed after transcript and patch collection unless the caller
+  explicitly opts into keeping them for debugging.
 - The child process cwd is the overlay, not the canonical workspace. Direct writes to canonical
   queue/state/run files are therefore impossible through the adapter process.
 - Commands are represented as `{ command, args[] }` and launched with `spawn(shell:false)`. Shell

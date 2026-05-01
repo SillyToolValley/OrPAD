@@ -471,6 +471,10 @@ test('CLI overlay adapter allows dangerous sandbox bypass only from approved sys
   assert.deepEqual(result.changedFiles, ['src/allowed.txt']);
   assert.equal(result.verification[0].containment.dangerousSandboxBypass, true);
   assert.equal(result.verification[0].containment.dangerousSandboxBypassApproved, true);
+  await assert.rejects(
+    fs.access(overlayRoot),
+    error => error?.code === 'ENOENT',
+  );
 });
 
 test('CLI overlay adapter rejects commands that escape overlay cwd or reference the canonical workspace path', async () => {
