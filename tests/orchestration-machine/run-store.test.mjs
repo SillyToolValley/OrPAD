@@ -18,6 +18,7 @@ const {
   readRunState,
   repairRunStateFromEvents,
   resolveRunRef,
+  writeRunState,
 } = require('../../src/main/orchestration-machine');
 
 const fixedNow = new Date('2026-04-30T00:00:00.000Z');
@@ -320,6 +321,35 @@ test('Machine event log rejects symlinked append targets', async t => {
     error => error?.code === 'MACHINE_EVENT_LOG_SYMLINK_UNSAFE',
   );
   assert.equal(await fs.readFile(outsideEvents, 'utf8'), '');
+});
+
+test('Machine run-state rejects symlinked derived state files', async t => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_run_state_symlink',
+    now: fixedNow,
+  });
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-run-state-target-'));
+  const outsideRunState = path.join(outsideRoot, 'run-state.json');
+  await fs.writeFile(outsideRunState, JSON.stringify({
+    ...run.runState,
+    lifecycleStatus: 'completed',
+  }), 'utf8');
+  await fs.rm(path.join(run.runRoot, 'run-state.json'));
+  if (!await createTestSymlink(t, outsideRunState, path.join(run.runRoot, 'run-state.json'), 'file')) return;
+
+  await assert.rejects(
+    readRunState(run.runRoot),
+    error => error?.code === 'MACHINE_RUN_STATE_SYMLINK_UNSAFE',
+  );
+  await assert.rejects(
+    writeRunState(run.runRoot, run.runState),
+    error => error?.code === 'MACHINE_RUN_STATE_SYMLINK_UNSAFE',
+  );
+  const outside = JSON.parse(await fs.readFile(outsideRunState, 'utf8'));
+  assert.equal(outside.lifecycleStatus, 'completed');
 });
 
 test('run-state can be repaired from committed Machine events', async () => {

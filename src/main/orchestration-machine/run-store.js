@@ -28,6 +28,24 @@ function runStatePath(runRoot) {
   return path.join(path.resolve(runRoot), 'run-state.json');
 }
 
+function assertRunStoreError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+async function assertRunStatePathSafe(runRoot) {
+  try {
+    const stats = await fsp.lstat(runStatePath(runRoot));
+    if (stats.isSymbolicLink()) {
+      throw assertRunStoreError('MACHINE_RUN_STATE_SYMLINK_UNSAFE', 'Machine run-state.json must not be a symlink.');
+    }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+}
+
 async function readPipeline(pipelinePath) {
   return JSON.parse(await fsp.readFile(pipelinePath, 'utf8'));
 }
@@ -50,11 +68,13 @@ async function assertRunRootAvailable(runRoot) {
 
 async function writeRunState(runRoot, runState) {
   validator.assertValid('machineRun', runState);
+  await assertRunStatePathSafe(runRoot);
   await writeJsonAtomic(runStatePath(runRoot), runState);
   return runState;
 }
 
 async function readRunState(runRoot) {
+  await assertRunStatePathSafe(runRoot);
   return readJsonIfExists(runStatePath(runRoot), null);
 }
 
@@ -125,6 +145,7 @@ async function repairRunStateFromEvents(runRoot) {
 }
 
 module.exports = {
+  assertRunStatePathSafe,
   createMachineRun,
   createRunId,
   readRunState,
