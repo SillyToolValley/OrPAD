@@ -21,7 +21,8 @@
       "minLength": 1
     },
     "suggestedWorkItemId": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
     },
     "sourceNode": {
       "type": "string",

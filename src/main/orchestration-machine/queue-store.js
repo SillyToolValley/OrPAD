@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { appendMachineEvent, readMachineEvents } = require('./events');
+const { assertMachineStorageId } = require('./ids');
 const { ensureDir, writeJsonAtomic } = require('./metadata-store');
 const { normalizeCandidateProposal } = require('./work-item-normalizer');
 
@@ -29,12 +30,20 @@ function queueRoot(runRoot) {
   return path.join(path.resolve(runRoot), 'queue');
 }
 
+function assertQueueState(state) {
+  if (QUEUE_STATES.includes(state)) return state;
+  const err = new Error(`Invalid queue state: ${state}`);
+  err.code = 'MACHINE_QUEUE_STATE_INVALID';
+  err.state = state;
+  throw err;
+}
+
 function queueStateDir(runRoot, state) {
-  return path.join(queueRoot(runRoot), state);
+  return path.join(queueRoot(runRoot), assertQueueState(state));
 }
 
 function queueItemPath(runRoot, state, itemId) {
-  return path.join(queueStateDir(runRoot, state), `${itemId}.json`);
+  return path.join(queueStateDir(runRoot, state), `${assertMachineStorageId(itemId, 'itemId')}.json`);
 }
 
 function queueJournalPath(runRoot) {
@@ -195,21 +204,23 @@ async function transitionQueueItem(runRoot, options = {}) {
     toState,
     reason = 'queue.transition',
     evidence = '',
-    transitionId = `${itemId}:${toState}`,
   } = options;
+  const safeItemId = assertMachineStorageId(itemId, 'itemId');
+  const safeToState = assertQueueState(toState);
+  const transitionId = options.transitionId || `${safeItemId}:${safeToState}`;
   const duplicateEvent = await findEventByTransitionId(runRoot, transitionId);
   if (duplicateEvent) {
     return {
       duplicate: true,
       event: duplicateEvent,
-      item: (await findQueueItem(runRoot, itemId))?.item || null,
+      item: (await findQueueItem(runRoot, safeItemId))?.item || null,
     };
   }
 
-  const current = await findQueueItem(runRoot, itemId);
-  if (!current) throw new Error(`Queue item not found: ${itemId}`);
-  const action = transitionAction(current.state, toState);
-  if (!action) throw new Error(`Invalid queue transition: ${current.state} -> ${toState}`);
+  const current = await findQueueItem(runRoot, safeItemId);
+  if (!current) throw new Error(`Queue item not found: ${safeItemId}`);
+  const action = transitionAction(current.state, safeToState);
+  if (!action) throw new Error(`Invalid queue transition: ${current.state} -> ${safeToState}`);
 
   const itemPatch = typeof options.itemPatch === 'function'
     ? options.itemPatch(current.item)
@@ -217,22 +228,22 @@ async function transitionQueueItem(runRoot, options = {}) {
   const nextItem = {
     ...current.item,
     ...itemPatch,
-    state: toState,
+    state: safeToState,
     updatedAt: options.now || new Date().toISOString(),
   };
   const event = await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
     eventType: 'queue.transition',
-    itemId,
+    itemId: safeItemId,
     fromState: current.state,
-    toState,
+    toState: safeToState,
     reason,
-    artifactRefs: [`queue/${toState}/${itemId}.json`],
+    artifactRefs: [`queue/${safeToState}/${safeItemId}.json`],
     payload: {
       action,
       transitionId,
-      evidence: evidence || `queue/${toState}/${itemId}.json`,
+      evidence: evidence || `queue/${safeToState}/${safeItemId}.json`,
       ...(options.payload || {}),
     },
   });
@@ -259,6 +270,7 @@ module.exports = {
   ingestCandidateProposal,
   legacyJournalFromEvent,
   projectQueueStateFromEvents,
+  assertQueueState,
   queueItemPath,
   queueJournalPath,
   queueRoot,

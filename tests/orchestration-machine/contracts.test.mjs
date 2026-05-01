@@ -178,6 +178,23 @@ test('contract validator rejects missing required Machine event fields', () => {
   assert.equal(result.errors.some(error => error.keyword === 'required'), true);
 });
 
+test('contract validator rejects unsafe work item storage ids', () => {
+  const validator = createContractValidator();
+
+  assert.equal(validator.validate('workItem', { ...samples().workItem, id: '../escape' }).ok, false);
+  assert.equal(validator.validate('candidateProposal', {
+    ...samples().candidateProposal,
+    suggestedWorkItemId: 'unsafe/item',
+  }).ok, false);
+  assert.equal(validator.validate('candidateInventory', {
+    ...samples().candidateInventory,
+    items: [{
+      ...samples().candidateInventory.items[0],
+      suggestedWorkItemId: 'unsafe\\item',
+    }],
+  }).ok, false);
+});
+
 test('adapter contracts require retry identity fields', () => {
   const validator = createContractValidator();
   const request = samples().adapterRequest;

@@ -229,6 +229,45 @@ test('dispatcher refuses terminal runs before claiming queued work', async () =>
   assert.equal((await readMachineEvents(run.runRoot)).length, eventsBefore.length);
 });
 
+test('dispatcher rejects unsafe claim ids before creating locks or claims', async () => {
+  const run = await makeRun('run_20260430_dispatcher_unsafe_claim');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'unsafe-claim-work',
+    fingerprint: 'ux:unsafe-claim-work',
+  }));
+
+  await assert.rejects(
+    claimNextQueuedItem(run.runRoot, {
+      runId: run.runId,
+      claimId: '../claim-unsafe',
+      now: '2026-04-30T00:00:20.000Z',
+    }),
+    error => error?.code === 'MACHINE_STORAGE_ID_INVALID' && error?.field === 'claimId',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+});
+
+test('write-set locks reject unsafe lock ids before creating durable files', async () => {
+  const run = await makeRun('run_20260430_dispatcher_unsafe_write_set');
+
+  await assert.rejects(
+    acquireWriteSetLock(run.runRoot, {
+      runId: run.runId,
+      claimId: 'claim-safe',
+      itemId: 'item-safe',
+      lockId: '../wset-unsafe',
+      paths: ['src/renderer/renderer.js'],
+    }),
+    error => error?.code === 'MACHINE_STORAGE_ID_INVALID' && error?.field === 'lockId',
+  );
+
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+  assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'write-set.acquired').length, 0);
+});
+
 test('worker result closes a claimed item only after proof is accepted', async () => {
   const run = await makeRun('run_20260430_worker_done');
   const itemId = await queueProposal(run, proposal());

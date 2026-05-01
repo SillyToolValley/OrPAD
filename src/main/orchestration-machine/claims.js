@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { appendMachineEvent } = require('./events');
+const { assertMachineStorageId } = require('./ids');
 const { ensureDir, readJsonIfExists, writeJsonAtomic } = require('./metadata-store');
 
 const fsp = fs.promises;
@@ -13,7 +14,7 @@ function claimRoot(runRoot) {
 }
 
 function claimLeasePath(runRoot, claimId) {
-  return path.join(claimRoot(runRoot), `${claimId}.json`);
+  return path.join(claimRoot(runRoot), `${assertMachineStorageId(claimId, 'claimId')}.json`);
 }
 
 function idSegment(value) {
@@ -33,13 +34,13 @@ function leaseExpiry(now, leaseMs = DEFAULT_CLAIM_LEASE_MS) {
 }
 
 function createClaimId(itemId, options = {}) {
-  if (options.claimId) return options.claimId;
+  if (options.claimId) return assertMachineStorageId(options.claimId, 'claimId');
   const stamp = isoDate(options.now || new Date())
     .replace(/[-:]/g, '')
     .replace(/\.\d{3}Z$/, '')
     .replace('T', '_');
   const suffix = options.suffix || crypto.randomBytes(3).toString('hex');
-  return `claim-${idSegment(itemId)}-${stamp}-${suffix}`;
+  return assertMachineStorageId(`claim-${idSegment(itemId)}-${stamp}-${suffix}`, 'claimId');
 }
 
 function isClaimLeaseExpired(lease, now = new Date()) {

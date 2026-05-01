@@ -162,6 +162,49 @@ test('invalid queue transitions fail before mutating state', async () => {
   assert.equal(projection.get('graph-editor-graph-specific-node-types'), 'candidate');
 });
 
+test('unsafe work item ids are rejected before queue storage writes', async () => {
+  const run = await makeRun();
+
+  await assert.rejects(
+    ingestCandidateProposal(run.runRoot, proposal({
+      proposalId: 'proposal-unsafe-id',
+      suggestedWorkItemId: '../escape',
+      fingerprint: 'ux:unsafe-id',
+    }), {
+      runId: run.runId,
+      transitionId: 'ingest:unsafe-id',
+    }),
+    error => error?.code === 'MACHINE_STORAGE_ID_INVALID' && error?.field === 'workItem.id',
+  );
+
+  assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'queue.transition').length, 0);
+  await assert.rejects(
+    fs.stat(path.join(run.runRoot, 'queue', 'escape.json')),
+    error => error?.code === 'ENOENT',
+  );
+});
+
+test('unsafe queue transition ids are rejected before mutating state', async () => {
+  const run = await makeRun();
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:item',
+  });
+
+  await assert.rejects(
+    transitionQueueItem(run.runRoot, {
+      runId: run.runId,
+      itemId: '../graph-editor-graph-specific-node-types',
+      toState: 'queued',
+      transitionId: 'unsafe-transition',
+    }),
+    error => error?.code === 'MACHINE_STORAGE_ID_INVALID' && error?.field === 'itemId',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, 'graph-editor-graph-specific-node-types')).state, 'candidate');
+  assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'queue.transition').length, 1);
+});
+
 test('transition ids are idempotent and do not mutate state twice', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {

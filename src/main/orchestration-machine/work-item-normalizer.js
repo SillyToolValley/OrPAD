@@ -1,4 +1,5 @@
 const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
+const { assertMachineStorageId } = require('./ids');
 
 const validator = createContractValidator();
 
@@ -26,9 +27,15 @@ function evidenceFiles(evidence) {
 }
 
 function normalizeCandidateProposal(proposal, options = {}) {
+  if (proposal?.suggestedWorkItemId !== undefined) {
+    assertMachineStorageId(proposal.suggestedWorkItemId, 'workItem.id');
+  }
   validator.assertValid('candidateProposal', proposal);
   const now = options.now || new Date().toISOString();
-  const id = proposal.suggestedWorkItemId || slugify(proposal.proposalId || proposal.title);
+  const id = assertMachineStorageId(
+    proposal.suggestedWorkItemId || slugify(proposal.proposalId || proposal.title),
+    'workItem.id',
+  );
   const coverageEvidenceIds = proposal.coverageEvidenceIds?.length
     ? proposal.coverageEvidenceIds
     : evidenceIds(proposal.evidence);

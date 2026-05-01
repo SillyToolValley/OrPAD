@@ -11,6 +11,7 @@ const artifacts = require('./artifacts');
 const latestRunExporter = require('./exporters/latest-run-exporter');
 const legacyJournalExporter = require('./exporters/legacy-journal-exporter');
 const graphLoader = require('./graph-loader');
+const ids = require('./ids');
 const ipc = require('./ipc');
 const lifecycle = require('./lifecycle');
 const machine = require('./machine');
@@ -45,6 +46,7 @@ module.exports = {
   ...latestRunExporter,
   ...legacyJournalExporter,
   ...graphLoader,
+  ...ids,
   ...ipc,
   ...lifecycle,
   ...machine,

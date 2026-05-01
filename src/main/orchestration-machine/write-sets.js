@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { appendMachineEvent } = require('./events');
+const { assertMachineStorageId } = require('./ids');
 const { ensureDir, readJsonIfExists, writeJsonAtomic } = require('./metadata-store');
 
 const fsp = fs.promises;
@@ -11,7 +12,7 @@ function writeSetRoot(runRoot) {
 }
 
 function writeSetLockPath(runRoot, lockId) {
-  return path.join(writeSetRoot(runRoot), `${lockId}.json`);
+  return path.join(writeSetRoot(runRoot), `${assertMachineStorageId(lockId, 'lockId')}.json`);
 }
 
 function idSegment(value) {
@@ -91,7 +92,7 @@ async function acquireWriteSetLock(runRoot, options = {}) {
   if (!claimId) throw new Error('claimId is required.');
   if (!itemId) throw new Error('itemId is required.');
 
-  const lockId = options.lockId || `wset-${idSegment(claimId)}`;
+  const lockId = assertMachineStorageId(options.lockId || `wset-${idSegment(claimId)}`, 'lockId');
   const existing = await readWriteSetLock(runRoot, lockId);
   if (existing?.state === 'active') return { duplicate: true, lock: existing };
 
