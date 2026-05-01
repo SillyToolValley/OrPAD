@@ -1579,6 +1579,13 @@ body.json-diff-mode #preview-pane {
 }
 .runbook-diagnostics,
 .runbook-replay-events { display: grid; gap: calc(5px * var(--us)); }
+.runbook-machine-history {
+  display: grid;
+  gap: calc(6px * var(--us));
+  padding: calc(7px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-radius: calc(7px * var(--us));
+}
 .runbook-machine-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -246,6 +246,57 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Machine UI switches between durable run history snapshots', async () => {
+  const { workspace, pipelineDir } = writeMachineWorkspace();
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await enableMachineUi(win);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('button[data-runbook-action="run-machine"]').click();
+  await submitMachineCapabilityToken(win);
+  const runRoot = path.join(pipelineDir, 'runs');
+  await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(1);
+  const firstRunId = fs.readdirSync(runRoot)[0];
+
+  await win.locator('button[data-runbook-action="machine-execute-step"]').click();
+  await expect(win.locator('#runbooks-content')).toContainText('worker.result');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+
+  await win.locator('button[data-runbook-action="run-machine"]').click();
+  await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(2);
+  const runIds = fs.readdirSync(runRoot);
+  const secondRunId = runIds.find(runId => runId !== firstRunId) || '';
+  await expect(win.locator('#runbooks-content')).toContainText('Recent Machine Runs');
+  await expect(win.locator('#runbooks-content')).toContainText('2 recent runs');
+  await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
+
+  await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${firstRunId}"]`).click();
+  await expect(win.locator('#runbooks-content')).toContainText(firstRunId);
+  await expect(win.locator('#runbooks-content')).toContainText('worker.result');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+
+  await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`).click();
+  await expect(win.locator('#runbooks-content')).toContainText(secondRunId);
+  await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('Machine UI keeps denied approval runs terminal', async () => {
   const { workspace, pipelinePath } = writeMachineWorkspace();
   requireMachineApproval(pipelinePath);

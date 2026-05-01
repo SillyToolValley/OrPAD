@@ -391,6 +391,7 @@ let runbookDraftTask = localStorage.getItem(RUNBOOK_TASK_STORAGE_KEY) || '';
 const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
+const machineRunListCache = new Map();
 let lastMachineRunRecord = null;
 let machineCapabilityToken = '';
 let gitRepoState = { isRepo: false, statuses: new Map(), branch: null, ahead: null, behind: null, slow: false };
@@ -7720,7 +7721,32 @@ function isMachineRunTerminal(runState) {
     || runState?.summaryStatus === 'done';
 }
 
-function renderMachineRunPanel(record = lastMachineRunRecord) {
+function machineRunListForRunbook(runbookPath) {
+  const cached = getRunbookCache(machineRunListCache, runbookPath);
+  return Array.isArray(cached?.runs) ? cached.runs : [];
+}
+
+function renderMachineRunHistory(runbookPath, currentRunId) {
+  const runs = machineRunListForRunbook(runbookPath);
+  if (!runs.length) return '';
+  return `
+    <div class="runbook-machine-history">
+      <div class="runbook-item-title">
+        <strong>Recent Machine Runs</strong>
+        <span class="runbook-chip">${escapeHtml(machineCountLabel(runs.length, 'recent run'))}</span>
+      </div>
+      <div class="runbook-action-row">
+        ${runs.slice(0, 6).map(run => {
+          const selected = run.runId === currentRunId;
+          const label = run.runId ? run.runId.replace(/^run_/, '') : 'run';
+          return `<button data-runbook-action="machine-select-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(run.runId || '')}" class="${selected ? 'primary' : ''}" title="${escapeHtml([run.lifecycleStatus, run.summaryStatus, run.updatedAt || run.createdAt].filter(Boolean).join(' - '))}">${escapeHtml(label)}</button>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = selectedRunbookPath) {
   if (!record) return '';
   const runState = record.runState || {};
   const events = record.events || [];
@@ -7754,6 +7780,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord) {
         <span class="runbook-chip">${escapeHtml(runState.summaryStatus || 'pending')}</span>
         <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
       </div>
+      ${renderMachineRunHistory(runbookPath, runId)}
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending ? 'disabled' : ''}>Execute Step</button>
@@ -7919,7 +7946,7 @@ function renderRunbooksPanel() {
       </section>
     `}
     ${renderRunRecordPanel(selected ? selectedRunRecord : null)}
-    ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null)}
+    ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null, selected)}
   `;
 }
 
@@ -8041,25 +8068,49 @@ async function startSelectedLocalRun(runbookPath) {
 async function loadLatestMachineRunRecord(runbookPath) {
   if (!workspacePath || !runbookPath || !window.orpad?.machine?.listRuns || !window.orpad?.machine?.getRun) return null;
   try {
-    const listed = await window.orpad.machine.listRuns({
-      workspacePath,
-      pipelinePath: runbookPath,
-    });
-    if (!listed?.success || !(listed.runs || []).length) return null;
-    const latest = listed.runs[0];
-    const snapshot = await window.orpad.machine.getRun({
-      workspacePath,
-      pipelinePath: runbookPath,
-      runId: latest.runId,
-    });
-    return snapshot?.success ? snapshot : {
-      runId: latest.runId,
-      runState: latest,
-      events: [],
-    };
+    const runs = await refreshMachineRunList(runbookPath);
+    if (!runs.length) return null;
+    return loadMachineRunRecord(runbookPath, runs[0].runId);
   } catch {
     return null;
   }
+}
+
+async function refreshMachineRunList(runbookPath) {
+  if (!workspacePath || !runbookPath || !window.orpad?.machine?.listRuns) return [];
+  const listed = await window.orpad.machine.listRuns({
+    workspacePath,
+    pipelinePath: runbookPath,
+  });
+  const runs = listed?.success && Array.isArray(listed.runs) ? listed.runs : [];
+  setRunbookCache(machineRunListCache, runbookPath, {
+    runs,
+    loadedAt: new Date().toISOString(),
+  });
+  return runs;
+}
+
+async function loadMachineRunRecord(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.getRun) return null;
+  const snapshot = await window.orpad.machine.getRun({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+  });
+  return snapshot?.success ? snapshot : {
+    runId,
+    runState: { runId },
+    events: [],
+  };
+}
+
+async function selectMachineRunRecord(runbookPath, runId) {
+  const snapshot = await loadMachineRunRecord(runbookPath, runId);
+  if (!snapshot) return;
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = snapshot;
+  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  renderRunbooksPanel();
 }
 
 async function requestMachineCapabilityToken() {
@@ -8139,6 +8190,7 @@ async function startSelectedMachineRun(runbookPath) {
     events: created.event ? [created.event] : [],
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
 }
@@ -8166,6 +8218,7 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
       exported: executed?.exported || executed?.export || lastMachineRunRecord?.exported || null,
     };
     setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+    await refreshMachineRunList(runbookPath);
     renderRunbooksPanel();
     return;
   }
@@ -8175,6 +8228,7 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
     exported: executed.exported || executed.export,
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
 }
@@ -8202,6 +8256,7 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
       exported: resumed?.exported || resumed?.export || lastMachineRunRecord?.exported || null,
     };
     setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+    await refreshMachineRunList(runbookPath);
     renderRunbooksPanel();
     return;
   }
@@ -8211,6 +8266,7 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
     exported: resumed.exported || resumed.export,
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
 }
@@ -8241,6 +8297,7 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
       exported: cancelled?.exported || cancelled?.export || lastMachineRunRecord?.exported || null,
     };
     setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+    await refreshMachineRunList(runbookPath);
     renderRunbooksPanel();
     return;
   }
@@ -8250,6 +8307,7 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
     exported: cancelled.exported || cancelled.export,
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
 }
@@ -8278,6 +8336,7 @@ async function exportSelectedMachineRun(runbookPath, runId) {
     exported,
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
 }
 
@@ -8307,6 +8366,7 @@ async function decideSelectedMachineApproval(runbookPath, runId, approvalId, dec
     exported: decided.exported || decided.export,
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
 }
@@ -8645,6 +8705,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-approve-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved');
     else if (action === 'machine-deny-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'denied');
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    else if (action === 'machine-select-run') await selectMachineRunRecord(targetPath, button.dataset.runId || '');
   } catch (err) {
     notifyFormatError('Runbooks', err);
   }
@@ -8672,8 +8733,11 @@ async function openFolder() {
     selectedRunbookPath = null;
     selectedRunbookValidation = null;
     lastRunRecord = null;
+    lastMachineRunRecord = null;
     runbookValidationCache.clear();
     runbookRecordCache.clear();
+    machineRunRecordCache.clear();
+    machineRunListCache.clear();
     localStorage.setItem('orpad-workspace-path', workspacePath);
     await loadFileTree();
     window.orpad.watchDirectory(folderPath);
