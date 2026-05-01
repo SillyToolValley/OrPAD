@@ -455,6 +455,9 @@ function evaluateGateCriterion(criterion, input = {}) {
 async function validateGateNode(runRoot, config = {}) {
   const criteria = arrayConfig(config.criteria, 'Gate.criteria');
   const onFail = config.onFail || 'block';
+  if (!['block', 'warn', 'continue', 'continue-with-warning'].includes(onFail)) {
+    throw machineExecutionError('MACHINE_GATE_CONFIG_INVALID', `Unsupported Gate onFail policy: ${onFail}`);
+  }
   const events = await readMachineEvents(runRoot);
   const inventory = await summarizeQueueInventory(runRoot);
   const evaluations = criteria.map(criterion => evaluateGateCriterion(criterion, { events, inventory }));

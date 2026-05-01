@@ -458,6 +458,31 @@ test('Gate rejects unsupported or unmet criteria instead of passing by prompt te
   assert.equal(events.some(event => event.nodePath === 'main/artifact'), false);
 });
 
+test('Gate rejects unsupported onFail policy even when criteria pass', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_gate_invalid_onfail');
+  await updateMainNodeConfig(pipelineDir, 'verification-gate', {
+    criteria: ['worker proof accepted', 'queue empty'],
+    onFail: 'agent-decides',
+  });
+
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      nodeExecutable: process.execPath,
+    }),
+    error => error?.code === 'MACHINE_GATE_CONFIG_INVALID',
+  );
+
+  const events = await readMachineEvents(run.runRoot);
+  const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/verification-gate');
+  assert.equal(failed.payload.code, 'MACHINE_GATE_CONFIG_INVALID');
+  assert.equal(events.some(event => event.nodePath === 'main/artifact'), false);
+});
+
 test('ArtifactContract mark-partial keeps done queue work from becoming a completed run', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_artifact_contract_partial');
   await updateMainArtifactContract(pipelineDir, {
