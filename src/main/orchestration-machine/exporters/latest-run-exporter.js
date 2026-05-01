@@ -7,6 +7,32 @@ const { atomicWriteFile, ensureDir, writeJsonAtomic } = require('../metadata-sto
 const { latestRunExportRoot } = require('../path-resolver');
 
 const fsp = fs.promises;
+const LATEST_RUN_EXPORT_RELATIVE_PATH = 'harness/generated/latest-run';
+
+function unsafeLatestRunExportSymlink(relativePath) {
+  const err = new Error(`Latest-run export path crosses a symbolic link: ${relativePath}`);
+  err.code = 'LATEST_RUN_EXPORT_SYMLINK_UNSAFE';
+  err.path = relativePath;
+  return err;
+}
+
+async function assertNoSymlinkInPipelinePath(pipelineDir, relativePath) {
+  const segments = String(relativePath || '').split('/').filter(Boolean);
+  let current = path.resolve(pipelineDir);
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]);
+    let stat = null;
+    try {
+      stat = await fsp.lstat(current);
+    } catch (err) {
+      if (err?.code === 'ENOENT') break;
+      throw err;
+    }
+    if (stat.isSymbolicLink()) {
+      throw unsafeLatestRunExportSymlink(segments.slice(0, index + 1).join('/'));
+    }
+  }
+}
 
 async function copyIfExists(source, target) {
   try {
@@ -27,6 +53,7 @@ async function exportLatestRun(options = {}) {
   if (!pipelineDir) throw new Error('pipelineDir is required.');
 
   const targetRoot = latestRunExportRoot(pipelineDir);
+  await assertNoSymlinkInPipelinePath(pipelineDir, LATEST_RUN_EXPORT_RELATIVE_PATH);
   try {
     await fsp.access(targetRoot);
     if (!allowOverwrite) {
@@ -85,5 +112,6 @@ async function exportLatestRun(options = {}) {
 }
 
 module.exports = {
+  assertNoSymlinkInPipelinePath,
   exportLatestRun,
 };

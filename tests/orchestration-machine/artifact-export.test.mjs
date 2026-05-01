@@ -214,3 +214,23 @@ test('latest-run export refuses to overwrite an existing export unless explicitl
 
   assert.equal(await fs.readFile(path.join(targetRoot, 'trusted.txt'), 'utf8'), 'keep me');
 });
+
+test('latest-run export rejects symlinked target path segments before writing', async t => {
+  const run = await makeRun();
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-export-outside-'));
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  if (!await createTestSymlink(t, outsideRoot, path.join(run.pipelineDir, 'harness'), linkType)) return;
+
+  await assert.rejects(
+    exportLatestRun({
+      runRoot: run.runRoot,
+      pipelineDir: run.pipelineDir,
+      allowOverwrite: true,
+    }),
+    error => error?.code === 'LATEST_RUN_EXPORT_SYMLINK_UNSAFE',
+  );
+  await assert.rejects(
+    fs.stat(path.join(outsideRoot, 'generated/latest-run/run-metadata.json')),
+    error => error?.code === 'ENOENT',
+  );
+});
