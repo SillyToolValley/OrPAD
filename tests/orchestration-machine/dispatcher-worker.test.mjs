@@ -365,6 +365,35 @@ test('worker done result without artifact and verification proof is rejected bef
   assert.equal((await readMachineEvents(run.runRoot)).some(event => event.eventType === 'worker.result'), false);
 });
 
+test('worker result rejects invalid close targets before recording result events', async () => {
+  const run = await makeRun('run_20260430_worker_invalid_target');
+  const itemId = await queueProposal(run, proposal());
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-invalid-target',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+  const eventsBefore = await readMachineEvents(run.runRoot);
+
+  await assert.rejects(
+    applyWorkerResult(run.runRoot, {
+      runId: run.runId,
+      claimId: claimed.claim.claimId,
+      itemId,
+      request,
+      result: workerResult(request),
+      toState: 'candidate',
+      now: '2026-04-30T00:00:30.000Z',
+    }),
+    error => error?.code === 'WORKER_RESULT_TARGET_INVALID',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'active');
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventsBefore.length);
+});
+
 test('expired claim rejects late worker result and stale recovery requeues the item', async () => {
   const run = await makeRun('run_20260430_worker_stale');
   const itemId = await queueProposal(run, proposal());
@@ -444,6 +473,32 @@ test('claim cancellation can block a claimed item and cancel the run', async () 
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'blocked');
   assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'cancelled');
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+});
+
+test('claim cancellation rejects invalid close targets before recording cancelling status', async () => {
+  const run = await makeRun('run_20260430_worker_cancel_invalid_target');
+  const itemId = await queueProposal(run, proposal());
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-cancel-invalid-target',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const eventsBefore = await readMachineEvents(run.runRoot);
+
+  await assert.rejects(
+    cancelClaimedItem(run.runRoot, {
+      runId: run.runId,
+      claimId: claimed.claim.claimId,
+      itemId,
+      toState: 'done',
+      now: '2026-04-30T00:00:30.000Z',
+    }),
+    error => error?.code === 'CLAIM_CANCELLATION_TARGET_INVALID',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'active');
+  assert.equal((await readMachineEvents(run.runRoot)).length, eventsBefore.length);
 });
 
 test('cancellation refuses terminal runs before releasing claimed work', async () => {

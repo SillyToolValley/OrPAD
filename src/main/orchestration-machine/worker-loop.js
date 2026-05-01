@@ -14,7 +14,12 @@ const {
 } = require('./claims');
 const { createContractValidator } = require('./contracts');
 const { isPathAllowedByWriteSet } = require('./patches');
-const { findQueueItem, transitionQueueItem } = require('./queue-store');
+const {
+  assertQueueState,
+  findQueueItem,
+  transitionAction,
+  transitionQueueItem,
+} = require('./queue-store');
 const { releaseWriteSetLock } = require('./write-sets');
 
 const validator = createContractValidator();
@@ -32,6 +37,24 @@ function summaryStatusForWorkerResult(result) {
 
 function finalRunLifecycleForCancellation(toState) {
   return toState === 'queued' ? 'waiting' : 'cancelled';
+}
+
+function assertWorkerResultTargetQueueState(toState) {
+  const state = assertQueueState(toState);
+  if (transitionAction('claimed', state)) return state;
+  const err = new Error(`Worker result cannot close a claimed item as ${state}.`);
+  err.code = 'WORKER_RESULT_TARGET_INVALID';
+  err.toState = state;
+  throw err;
+}
+
+function assertCancellationTargetQueueState(toState) {
+  const state = assertQueueState(toState);
+  if (state === 'queued' || state === 'blocked') return state;
+  const err = new Error(`Claim cancellation cannot move a claimed item to ${state}.`);
+  err.code = 'CLAIM_CANCELLATION_TARGET_INVALID';
+  err.toState = state;
+  throw err;
 }
 
 function assertDoneResultHasProof(result) {
@@ -145,7 +168,7 @@ async function applyWorkerResult(runRoot, options = {}) {
 
   const { lease } = await assertClaimCanAcceptResult(runRoot, { claimId, itemId, now });
   assertWorkerResultWithinWriteSet(result, lease);
-  const toState = options.toState || targetQueueStateForWorkerResult(result);
+  const toState = assertWorkerResultTargetQueueState(options.toState || targetQueueStateForWorkerResult(result));
   const workerEvent = await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
@@ -302,6 +325,7 @@ async function cancelClaimedItem(runRoot, options = {}) {
   if (!itemId) throw new Error('itemId is required.');
 
   await assertRunLifecycleCanTransition(runRoot, 'cancelling', 'worker-loop.cancel');
+  const finalToState = assertCancellationTargetQueueState(toState);
   const { lease } = await assertClaimCanAcceptResult(runRoot, { claimId, itemId, now });
   await appendRunStatus(runRoot, runId, 'cancelling', {
     reason: 'worker-loop.cancel',
@@ -310,10 +334,10 @@ async function cancelClaimedItem(runRoot, options = {}) {
   const transition = await transitionQueueItem(runRoot, {
     runId,
     itemId,
-    toState,
+    toState: finalToState,
     reason: 'cancelled-during-claim',
     evidence: `locks/claims/${claimId}.json`,
-    transitionId: `cancel:${claimId}:${toState}`,
+    transitionId: `cancel:${claimId}:${finalToState}`,
     now,
     itemPatch: {
       cancelledClaimId: claimId,
@@ -337,12 +361,12 @@ async function cancelClaimedItem(runRoot, options = {}) {
       reason: 'cancelled-during-claim',
     });
   }
-  const finalLifecycleStatus = finalRunLifecycleForCancellation(toState);
+  const finalLifecycleStatus = finalRunLifecycleForCancellation(finalToState);
   await appendRunStatus(runRoot, runId, finalLifecycleStatus, {
     reason: finalLifecycleStatus === 'waiting' ? 'worker-loop.cancel-requeued' : 'worker-loop.cancelled',
     payload: { itemId, claimId },
   });
-  const runState = await appendRunSummary(runRoot, runId, toState === 'blocked' ? 'blocked' : 'partial', {
+  const runState = await appendRunSummary(runRoot, runId, finalToState === 'blocked' ? 'blocked' : 'partial', {
     reason: finalLifecycleStatus === 'waiting' ? 'worker-loop.cancel-requeued' : 'worker-loop.cancelled',
     payload: { itemId, claimId },
   });
@@ -355,6 +379,8 @@ module.exports = {
   assertDoneResultHasProof,
   assertWorkerResultWithinWriteSet,
   cancelClaimedItem,
+  assertCancellationTargetQueueState,
+  assertWorkerResultTargetQueueState,
   findWorkerResultEvent,
   finalRunLifecycleForCancellation,
   runSerialWorkerLoop,
