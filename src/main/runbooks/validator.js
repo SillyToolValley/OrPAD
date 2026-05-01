@@ -392,6 +392,21 @@ function summarizeMachineExecution(diagnostics, trustLevel, nodeTypes) {
   };
 }
 
+function summarizeMachineStepExecution(machineExecution, pipeline) {
+  const blockedReasons = [];
+  if (!machineExecution.canMachineExecute) blockedReasons.push(...machineExecution.machineBlockedReasons);
+  const harness = pipeline?.run && typeof pipeline.run === 'object' && !Array.isArray(pipeline.run)
+    ? pipeline.run.machineHarness
+    : null;
+  if (!harness || typeof harness !== 'object' || Array.isArray(harness)) {
+    blockedReasons.push('machine-harness-required');
+  }
+  return {
+    canMachineExecuteStep: blockedReasons.length === 0,
+    machineStepBlockedReasons: [...new Set(blockedReasons)],
+  };
+}
+
 function executionModesFor({ canExecute, canMachineExecute, agentOrchestratedTypes = [] }) {
   const modes = [];
   if (canExecute) modes.push('local');
@@ -750,13 +765,19 @@ function validateGraphRunbookObject(runbook, options, trustLevel, schemaVersion,
     .filter(type => AGENT_ORCHESTRATED_NODE_TYPES.has(type))
     .sort();
   const machineExecution = summarizeMachineExecution(diagnostics, trustLevel, state.nodeTypes);
+  const machineStepExecution = {
+    canMachineExecuteStep: false,
+    machineStepBlockedReasons: ['pipeline-required'],
+  };
 
   return {
     ok: !diagnostics.some(item => item.level === 'error'),
     canExecute,
     canMachineExecute: machineExecution.canMachineExecute,
+    canMachineExecuteStep: machineStepExecution.canMachineExecuteStep,
     executionModes: executionModesFor({ canExecute, canMachineExecute: machineExecution.canMachineExecute, agentOrchestratedTypes }),
     machineBlockedReasons: machineExecution.machineBlockedReasons,
+    machineStepBlockedReasons: machineStepExecution.machineStepBlockedReasons,
     machineUnsupportedNodeTypes: machineExecution.machineUnsupportedNodeTypes,
     handoffCompatibility: handoffCompatibility(agentOrchestratedTypes),
     trustLevel,
@@ -798,12 +819,18 @@ function validateTreeRunbookObject(runbook, options, trustLevel, schemaVersion, 
   const canExecute = summarizeCanExecute(diagnostics, trustLevel, state.renderOnlyNodeTypes)
     && !state.nestedCanExecuteBlocked;
   const machineExecution = summarizeMachineExecution(diagnostics, trustLevel, state.nodeTypes);
+  const machineStepExecution = {
+    canMachineExecuteStep: false,
+    machineStepBlockedReasons: ['pipeline-required'],
+  };
   return {
     ok: !diagnostics.some(item => item.level === 'error'),
     canExecute,
     canMachineExecute: machineExecution.canMachineExecute,
+    canMachineExecuteStep: machineStepExecution.canMachineExecuteStep,
     executionModes: executionModesFor({ canExecute, canMachineExecute: machineExecution.canMachineExecute }),
     machineBlockedReasons: machineExecution.machineBlockedReasons,
+    machineStepBlockedReasons: machineStepExecution.machineStepBlockedReasons,
     machineUnsupportedNodeTypes: machineExecution.machineUnsupportedNodeTypes,
     handoffCompatibility: handoffCompatibility([]),
     trustLevel,
@@ -969,12 +996,15 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
   const canExecute = summarizeCanExecute(diagnostics, trustLevel, state.renderOnlyNodeTypes)
     && !state.nestedCanExecuteBlocked;
   const machineExecution = summarizeMachineExecution(diagnostics, trustLevel, state.nodeTypes);
+  const machineStepExecution = summarizeMachineStepExecution(machineExecution, pipeline);
   return {
     ok: !diagnostics.some(item => item.level === 'error'),
     canExecute,
     canMachineExecute: machineExecution.canMachineExecute,
+    canMachineExecuteStep: machineStepExecution.canMachineExecuteStep,
     executionModes: executionModesFor({ canExecute, canMachineExecute: machineExecution.canMachineExecute, agentOrchestratedTypes }),
     machineBlockedReasons: machineExecution.machineBlockedReasons,
+    machineStepBlockedReasons: machineStepExecution.machineStepBlockedReasons,
     machineUnsupportedNodeTypes: machineExecution.machineUnsupportedNodeTypes,
     handoffCompatibility: handoffCompatibility(agentOrchestratedTypes),
     trustLevel,
@@ -1004,8 +1034,10 @@ function validateRunbookObject(runbook, options = {}) {
       ok: false,
       canExecute: false,
       canMachineExecute: false,
+      canMachineExecuteStep: false,
       executionModes: [],
       machineBlockedReasons: ['validation-error'],
+      machineStepBlockedReasons: ['validation-error'],
       machineUnsupportedNodeTypes: [],
       handoffCompatibility: handoffCompatibility([]),
       trustLevel,
@@ -1045,8 +1077,10 @@ function validateRunbookSource(source, options = {}) {
       ok: false,
       canExecute: false,
       canMachineExecute: false,
+      canMachineExecuteStep: false,
       executionModes: [],
       machineBlockedReasons: ['validation-error'],
+      machineStepBlockedReasons: ['validation-error'],
       machineUnsupportedNodeTypes: [],
       handoffCompatibility: handoffCompatibility([]),
       trustLevel,

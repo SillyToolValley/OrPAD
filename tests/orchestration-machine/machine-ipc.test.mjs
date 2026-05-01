@@ -306,7 +306,10 @@ test('Machine IPC validates, creates, reads, lists, and exports a Machine run wi
   const validation = await handlers.get(MACHINE_IPC_CHANNELS.validatePipeline)(event, baseRequest);
   assert.equal(validation.success, true);
   assert.equal(validation.canMachineExecute, true);
+  assert.equal(validation.canMachineExecuteStep, false);
   assert.equal(validation.validation.canExecute, true);
+  assert.equal(validation.validation.canMachineExecuteStep, false);
+  assert.deepEqual(validation.validation.machineStepBlockedReasons, ['machine-harness-required']);
 
   const deniedCreate = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
     ...baseRequest,
@@ -380,6 +383,11 @@ test('Machine IPC snapshots expose active claims and cancel a claimed item', asy
   const { handlers, authority } = createIpcHarness();
   authority.grantWorkspace(event.sender, workspaceRoot);
   const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const validation = await handlers.get(MACHINE_IPC_CHANNELS.validatePipeline)(event, baseRequest);
+  assert.equal(validation.success, true);
+  assert.equal(validation.canMachineExecute, true);
+  assert.equal(validation.canMachineExecuteStep, false);
 
   const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
     ...baseRequest,
@@ -466,6 +474,11 @@ test('Machine IPC snapshots do not follow symlinked artifact summary refs', asyn
   authority.grantWorkspace(event.sender, workspaceRoot);
   const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
 
+  const validation = await handlers.get(MACHINE_IPC_CHANNELS.validatePipeline)(event, baseRequest);
+  assert.equal(validation.success, true);
+  assert.equal(validation.canMachineExecute, true);
+  assert.equal(validation.canMachineExecuteStep, false);
+
   const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
     ...baseRequest,
     runId: 'run_20260430_ipc_symlink_inventory',
@@ -510,6 +523,11 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   const { handlers, authority } = createIpcHarness();
   authority.grantWorkspace(event.sender, workspaceRoot);
   const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const validation = await handlers.get(MACHINE_IPC_CHANNELS.validatePipeline)(event, baseRequest);
+  assert.equal(validation.success, true);
+  assert.equal(validation.canMachineExecute, true);
+  assert.equal(validation.canMachineExecuteStep, true);
 
   const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
     ...baseRequest,

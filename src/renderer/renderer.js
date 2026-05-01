@@ -2560,6 +2560,9 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason) {
       }
       return { state: 'warn', text: 'Workstream pipeline: local runner unavailable; managed run setup needed.' };
     }
+    if (isMachineCompatiblePipeline(validation) && !isMachineStartablePipeline(validation)) {
+      return { state: 'warn', text: 'Managed run needs a runnable adapter before it can start.' };
+    }
     return { state: 'good', text: 'Ready for managed run or supervised handoff.' };
   }
   if (validation.canExecute) {
@@ -2578,13 +2581,14 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath()) {
   const handoffDisabled = checked && !agentReady;
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = runtimeBlockReason || (checked
-    ? (validation.machineBlockedReasons || []).join(', ') || 'This pipeline is not ready for a managed run yet.'
+    ? machineStartBlockReason(validation) || 'Start a durable run with OrPAD-owned queue, state, and artifacts.'
     : 'Check and start a durable run with OrPAD-owned queue, state, and artifacts.');
+  const machineStartable = isMachineStartablePipeline(validation);
   const machineCompatible = isMachineCompatiblePipeline(validation);
-  const machineDisabled = checked && !machineCompatible;
-  const defaultTitle = agentReady
-    ? 'Prepare a supervised agent handoff'
-    : 'Run this pipeline';
+  const machineDisabled = checked && !machineStartable;
+  const defaultTitle = machineCompatible
+    ? (machineReason || 'Start Managed Run')
+    : (agentReady ? 'Prepare a supervised agent handoff' : 'Run this pipeline');
   const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason);
   const activeLabel = context.activeRelativePath || (context.isManifest ? 'pipeline.or-pipeline' : runbookRelativePath(runbookPath));
   if (isMachineApiAvailable() && !machineRuntimeStatus && !machineRuntimeStatusLoading) {
@@ -7255,6 +7259,23 @@ function isMachineCompatiblePipeline(validation) {
     && !(validation.diagnostics || []).some(isDiagnosticError);
 }
 
+function isMachineStartablePipeline(validation) {
+  return isMachineCompatiblePipeline(validation) && validation.canMachineExecuteStep === true;
+}
+
+function machineStartBlockReason(validation) {
+  if (!validation) return 'Check this pipeline before starting a managed run.';
+  if (!isMachineCompatiblePipeline(validation)) {
+    return (validation.machineBlockedReasons || []).join(', ') || 'This pipeline is not ready for a managed run yet.';
+  }
+  const reasons = validation.machineStepBlockedReasons || [];
+  if (reasons.includes('machine-harness-required')) {
+    return 'Managed run cannot start yet: this MVP needs run.machineHarness or a live adapter for this pipeline.';
+  }
+  if (reasons.length) return `Managed run cannot start yet: ${reasons.join(', ')}.`;
+  return '';
+}
+
 function agentOrchestratedPipelineIssue(validation) {
   if (!isAgentOrchestratedPipeline(validation)) return null;
   return (validation.diagnostics || []).find(item => item?.code === 'PIPELINE_AGENT_ORCHESTRATED') || {
@@ -7976,12 +7997,13 @@ function machineStaleActiveClaims(record) {
   });
 }
 
-function machineExecuteControlDetails(record) {
+function machineExecuteControlDetails(record, validation = null) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
   const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
   const activeClaims = record?.activeClaims || [];
   if (!runId) return 'Execute unavailable: no managed run selected';
+  if (validation && !isMachineStartablePipeline(validation)) return machineStartBlockReason(validation);
   if (isMachineRunTerminal(runState)) return `Execute unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}`;
   if (pendingApprovals > 0) return `Execute blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first`;
   if (activeClaims.length) return `Execute guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing`;
@@ -8091,13 +8113,15 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const activeWriteSetDetails = machineActiveWriteSetDetails(record);
   const auditDetails = machineAuditDetails(record);
   const artifactDetails = machineArtifactSummary(record);
-  const executeDetails = machineExecuteControlDetails(record);
+  const validation = selectedPipelineValidation(runbookPath);
+  const machineStepUnavailable = !!validation && !isMachineStartablePipeline(validation);
+  const executeDetails = machineExecuteControlDetails(record, validation);
   const resumeDetails = machineResumeControlDetails(record);
   const cancellationDetails = machineCancellationControlDetails(record);
   const runId = runState.runId || record.runId || '';
   const hasActiveClaims = activeClaims.length > 0;
   const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
-  const executeDisabled = !runId || runTerminal || approvalPending || hasActiveClaims;
+  const executeDisabled = !runId || machineStepUnavailable || runTerminal || approvalPending || hasActiveClaims;
   const resumeDisabled = !runId || runTerminal || approvalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
   const cancelDisabled = runTerminal || !window.orpad?.machine?.cancelClaim;
   const approvalActions = pendingApprovals.length ? `
@@ -8289,6 +8313,10 @@ async function runPipelinePreviewAction(action, runbookPath) {
   }
   if (action === 'local') {
     await startSelectedLocalRun(runbookPath);
+    return;
+  }
+  if (isMachineCompatiblePipeline(validation)) {
+    await startSelectedMachineRun(runbookPath);
     return;
   }
   if (isAgentOrchestratedPipeline(validation)) {
@@ -8494,6 +8522,10 @@ async function startSelectedMachineRun(runbookPath) {
   const validation = selectedRunbookValidation || getRunbookCache(runbookValidationCache, runbookPath);
   if (!isMachineCompatiblePipeline(validation)) {
     alert('Pipeline must be ready for a managed run before starting.');
+    return;
+  }
+  if (!isMachineStartablePipeline(validation)) {
+    alert(machineStartBlockReason(validation));
     return;
   }
   const token = await requestMachineCapabilityToken();

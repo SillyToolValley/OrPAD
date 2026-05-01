@@ -328,6 +328,7 @@ async function validatePipelineHandler(event, authority, request) {
     success: true,
     ok: validation.ok,
     canMachineExecute: validation.canMachineExecute === true,
+    canMachineExecuteStep: validation.canMachineExecuteStep === true,
     validation,
   };
 }

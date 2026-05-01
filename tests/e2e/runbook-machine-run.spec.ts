@@ -112,6 +112,12 @@ function requireMachineApproval(pipelinePath: string): void {
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
+function removeMachineHarness(pipelinePath: string): void {
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  delete pipeline.run.machineHarness;
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+}
+
 async function seedActiveClaimRun(
   workspace: string,
   pipelinePath: string,
@@ -216,7 +222,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('button[data-pipeline-run-action="local"]')).toBeDisabled();
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toContainText('Start Managed Run');
   await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toContainText('Prepare Handoff');
-  await win.locator('button[data-pipeline-run-action="managed"]').click();
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="default"]').click();
   await submitMachineCapabilityToken(win);
   await expect(win.locator('#runbooks-content')).toContainText('Run Status');
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
@@ -272,6 +279,44 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI play action attempts managed run and blocks non-runnable pipelines before creating runs', async () => {
+  const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
+  removeMachineHarness(pipelinePath);
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    (window as any).__orpadAlerts = [];
+    window.alert = (message?: any) => {
+      (window as any).__orpadAlerts.push(String(message ?? ''));
+    };
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('runnable adapter');
+  await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
+  await win.locator('[data-pipeline-run-menu]').click();
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="default"]').click();
+
+  await expect.poll(() => win.evaluate(() => ((window as any).__orpadAlerts || []).join('\n'))).toContain('run.machineHarness');
+  expect(fs.existsSync(path.join(pipelineDir, 'runs'))).toBe(false);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

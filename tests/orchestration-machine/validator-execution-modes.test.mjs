@@ -25,8 +25,10 @@ test('maintenance workstream keeps local MVP execution separate from Machine com
   assert.equal(result.ok, true);
   assert.equal(result.canExecute, false);
   assert.equal(result.canMachineExecute, true);
+  assert.equal(result.canMachineExecuteStep, false);
   assert.deepEqual(result.executionModes, ['machine', 'handoff']);
   assert.deepEqual(result.machineBlockedReasons, []);
+  assert.deepEqual(result.machineStepBlockedReasons, ['machine-harness-required']);
   assert.deepEqual(result.machineUnsupportedNodeTypes, []);
   assert.equal(result.handoffCompatibility.available, true);
   assert.equal(result.handoffCompatibility.mode, 'path-only-agent-handoff');
@@ -56,8 +58,10 @@ test('local MVP executable runbooks also advertise Machine execution mode', () =
   assert.equal(result.ok, true);
   assert.equal(result.canExecute, true);
   assert.equal(result.canMachineExecute, true);
+  assert.equal(result.canMachineExecuteStep, false);
   assert.deepEqual(result.executionModes, ['local', 'machine']);
   assert.deepEqual(result.machineBlockedReasons, []);
+  assert.deepEqual(result.machineStepBlockedReasons, ['pipeline-required']);
   assert.deepEqual(result.machineUnsupportedNodeTypes, []);
 });
 
@@ -80,6 +84,7 @@ test('Machine execution blocks unreviewed trust levels separately from validatio
   assert.equal(result.ok, true);
   assert.equal(result.canExecute, false);
   assert.equal(result.canMachineExecute, false);
+  assert.equal(result.canMachineExecuteStep, false);
   assert.deepEqual(result.executionModes, []);
   assert.deepEqual(result.machineBlockedReasons, ['trust-review-required']);
 });
