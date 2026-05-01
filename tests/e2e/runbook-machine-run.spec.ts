@@ -103,6 +103,18 @@ function requireMachineApproval(pipelinePath: string): void {
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
+async function enableMachineUi(win: any): Promise<void> {
+  await win.evaluate(() => {
+    localStorage.setItem('orpad-machine-ui-enabled', '1');
+  });
+}
+
+async function submitMachineCapabilityToken(win: any): Promise<void> {
+  await expect(win.locator('[data-machine-token-input]')).toBeVisible();
+  await win.locator('[data-machine-token-input]').fill('test-token');
+  await win.getByRole('button', { name: 'Use Token' }).click();
+}
+
 test('Machine UI creates a durable run and executes a dispatcher worker adapter step', async () => {
   const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
   const app = await launchElectron([], {
@@ -117,10 +129,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.reload();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-  await win.evaluate(() => {
-    localStorage.setItem('orpad-machine-ui-enabled', '1');
-    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
-  });
+  await enableMachineUi(win);
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
@@ -131,6 +140,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('button[data-runbook-action="agent-handoff"]')).toContainText('Prepare Handoff');
 
   await win.locator('button[data-runbook-action="run-machine"]').click();
+  await submitMachineCapabilityToken(win);
   await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
   await expect(win.locator('#runbooks-content')).toContainText('Latest-run export');
@@ -166,10 +176,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.reload();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-  await win.evaluate(() => {
-    localStorage.setItem('orpad-machine-ui-enabled', '1');
-    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
-  });
+  await enableMachineUi(win);
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
@@ -202,16 +209,14 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await win.reload();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-  await win.evaluate(() => {
-    localStorage.setItem('orpad-machine-ui-enabled', '1');
-    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
-  });
+  await enableMachineUi(win);
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await win.locator('button[data-runbook-action="run-machine"]').click();
+  await submitMachineCapabilityToken(win);
   await win.locator('button[data-runbook-action="machine-execute-step"]').click();
 
   await expect(win.locator('#runbooks-content')).toContainText('approval.requested');
@@ -256,16 +261,14 @@ test('Machine UI keeps denied approval runs terminal', async () => {
   await win.reload();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-  await win.evaluate(() => {
-    localStorage.setItem('orpad-machine-ui-enabled', '1');
-    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
-  });
+  await enableMachineUi(win);
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await win.locator('button[data-runbook-action="run-machine"]').click();
+  await submitMachineCapabilityToken(win);
   await win.locator('button[data-runbook-action="machine-execute-step"]').click();
   await win.locator('button[data-runbook-action="machine-deny-approval"]').click();
 
@@ -294,16 +297,14 @@ test('Machine UI renders failure evidence from a failed runtime node', async () 
   await win.reload();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-  await win.evaluate(() => {
-    localStorage.setItem('orpad-machine-ui-enabled', '1');
-    sessionStorage.setItem('orpad-machine-capability-token', 'test-token');
-  });
+  await enableMachineUi(win);
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await win.locator('button[data-runbook-action="run-machine"]').click();
+  await submitMachineCapabilityToken(win);
   await win.locator('button[data-runbook-action="machine-execute-step"]').click();
 
   await expect(win.locator('#runbooks-content')).toContainText('MACHINE_ARTIFACT_CONTRACT_MISSING');

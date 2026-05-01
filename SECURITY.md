@@ -341,7 +341,7 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
   list, and get-run actions still require the feature gate and sender/path/schema checks.
 - The renderer Machine run UI remains hidden unless `localStorage.orpad-machine-ui-enabled` is
   explicitly set to `1` for internal/dev rollout. The mutating capability token is entered or
-  supplied per desktop session and kept in `sessionStorage`/renderer memory, not localStorage.
+  supplied per desktop session and kept only in renderer process memory, not Web Storage.
 - Requests are typed objects; missing or incorrectly typed fields fail before calling Machine
   storage helpers.
 - `workspacePath` and `pipelinePath` must stay inside the renderer's approved workspace authority,

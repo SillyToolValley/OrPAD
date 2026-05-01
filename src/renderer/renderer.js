@@ -387,13 +387,12 @@ let lastRunRecord = null;
 let runbookScanRequestId = 0;
 const RUNBOOK_TASK_STORAGE_KEY = 'orpad-runbook-task';
 const MACHINE_UI_STORAGE_KEY = 'orpad-machine-ui-enabled';
-const MACHINE_CAPABILITY_SESSION_KEY = 'orpad-machine-capability-token';
 let runbookDraftTask = localStorage.getItem(RUNBOOK_TASK_STORAGE_KEY) || '';
 const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 let lastMachineRunRecord = null;
-let machineCapabilityToken = sessionStorage.getItem(MACHINE_CAPABILITY_SESSION_KEY) || '';
+let machineCapabilityToken = '';
 let gitRepoState = { isRepo: false, statuses: new Map(), branch: null, ahead: null, behind: null, slow: false };
 let gitStatusTimer = null;
 let gitRefreshToken = 0;
@@ -8064,9 +8063,6 @@ async function loadLatestMachineRunRecord(runbookPath) {
 }
 
 async function requestMachineCapabilityToken() {
-  if (!machineCapabilityToken) {
-    machineCapabilityToken = sessionStorage.getItem(MACHINE_CAPABILITY_SESSION_KEY) || '';
-  }
   if (machineCapabilityToken) return machineCapabilityToken;
   return new Promise((resolve) => {
     let settled = false;
@@ -8095,9 +8091,6 @@ async function requestMachineCapabilityToken() {
           onClick: () => {
             const token = body.querySelector('[data-machine-token-input]')?.value || '';
             machineCapabilityToken = token.trim();
-            if (machineCapabilityToken) {
-              try { sessionStorage.setItem(MACHINE_CAPABILITY_SESSION_KEY, machineCapabilityToken); } catch {}
-            }
             finish(machineCapabilityToken);
           },
         },
@@ -8128,7 +8121,6 @@ async function startSelectedMachineRun(runbookPath) {
   if (!created?.success) {
     if (created?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
     }
     alert(created?.error || 'Machine run could not be created.');
     return;
@@ -8165,7 +8157,6 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
   if (!executed?.success) {
     if (executed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
       alert(executed?.error || 'Machine execute step failed.');
       return;
     }
@@ -8202,7 +8193,6 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
   if (!resumed?.success) {
     if (resumed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
       alert(resumed?.error || 'Machine resume failed.');
       return;
     }
@@ -8242,7 +8232,6 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
   if (!cancelled?.success) {
     if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
       alert(cancelled?.error || 'Machine claim cancellation failed.');
       return;
     }
@@ -8279,7 +8268,6 @@ async function exportSelectedMachineRun(runbookPath, runId) {
   if (!exported?.success) {
     if (exported?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
     }
     alert(exported?.error || 'Machine latest-run export failed.');
     return;
@@ -8309,7 +8297,6 @@ async function decideSelectedMachineApproval(runbookPath, runId, approvalId, dec
   if (!decided?.success) {
     if (decided?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      try { sessionStorage.removeItem(MACHINE_CAPABILITY_SESSION_KEY); } catch {}
     }
     alert(decided?.error || 'Machine approval decision failed.');
     return;
