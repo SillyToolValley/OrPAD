@@ -29,6 +29,10 @@ async function createTestSymlink(testContext, target, linkPath, type = 'file') {
   }
 }
 
+async function readRunArtifactJson(runRoot, artifactPath) {
+  return JSON.parse(await fs.readFile(path.join(runRoot, ...String(artifactPath || '').split('/')), 'utf8'));
+}
+
 async function makeGraphHarnessWorkspace(runId = 'run_20260430_graph_harness') {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-graph-harness-'));
   const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/graph-harness-pipeline');
@@ -410,6 +414,7 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260502_live_adapter');
   const fakeCodexDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-codex-cli-'));
   const fakeCodexScript = await writeFakeCodexCliScript(fakeCodexDir);
+  const taskText = 'Find competitor gaps and improve Pipes.';
   const pipeline = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
   delete pipeline.run.machineHarness;
   pipeline.run.machineAdapter = {
@@ -434,6 +439,7 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
     pipelineDir,
     runRoot: run.runRoot,
     runId: run.runId,
+    taskText,
   });
 
   assert.equal(executed.worker.result.event.payload.status, 'done');
@@ -448,6 +454,14 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
 
   const proposalRequest = executed.events.find(event => event.eventType === 'adapter.requested' && event.payload?.adapter === 'codex-cli-proposal');
   assert.equal(proposalRequest.nodePath, 'main/probe');
+  const proposalResult = executed.events.find(event => event.eventType === 'adapter.result' && event.payload?.adapter === 'codex-cli-proposal');
+  const proposalTranscriptPath = proposalResult.artifactRefs.find(item => item.endsWith('.transcript.json'));
+  const proposalTranscript = await readRunArtifactJson(run.runRoot, proposalTranscriptPath);
+  assert.equal(proposalTranscript.command.args.at(-1).includes(taskText), true);
+  const workerResult = executed.events.find(event => event.eventType === 'worker.result');
+  const workerTranscriptPath = workerResult.artifactRefs.find(item => item.endsWith('.transcript.json'));
+  const workerTranscript = await readRunArtifactJson(run.runRoot, workerTranscriptPath);
+  assert.equal(workerTranscript.process.args.at(-1).includes(taskText), true);
   const workerVerification = executed.worker.result.event.payload.verification[0];
   assert.equal(workerVerification.cwdKind, 'overlay');
   assert.equal(workerVerification.expectedChangedFiles.includes('src/target.md'), true);

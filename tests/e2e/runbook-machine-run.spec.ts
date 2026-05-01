@@ -212,6 +212,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
+  const taskText = 'Find competitor gaps and improve Pipes.';
+  await win.locator('[data-runbook-task]').fill(taskText);
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await expect(win.locator('#runbooks-content .runbook-chip')).toHaveCount(0);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
@@ -223,9 +225,11 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toContainText('Start Managed Run');
   await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toContainText('Prepare Handoff');
   await win.locator('[data-pipeline-run-menu]').click();
-  await win.locator('button[data-pipeline-run-action="default"]').click();
+  await win.locator('[data-runbook-task]').focus();
+  await win.keyboard.press('Control+Enter');
   await submitMachineCapabilityToken(win);
   await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
 
   const runRoot = path.join(pipelineDir, 'runs');
@@ -261,6 +265,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   expect(fs.existsSync(path.join(runRoot, runDirs[0], 'run-state.json'))).toBe(true);
   expect(fs.existsSync(path.join(runRoot, runDirs[0], 'events.jsonl'))).toBe(true);
   expect(fs.readFileSync(path.join(runRoot, runDirs[0], 'events.jsonl'), 'utf-8')).toContain('run.created');
+  expect(fs.readFileSync(path.join(runRoot, runDirs[0], 'events.jsonl'), 'utf-8')).toContain(taskText);
   expect(pipelinePath.endsWith('pipeline.or-pipeline')).toBe(true);
 
   await win.reload();
@@ -272,6 +277,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');

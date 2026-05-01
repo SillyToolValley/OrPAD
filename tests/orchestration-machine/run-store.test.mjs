@@ -105,11 +105,13 @@ test('current maintenance pipeline latest-run refs resolve to durable run paths'
 test('createMachineRun writes durable run root and leaves latest-run as export-only', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath } = await makeWorkspace();
   const runId = 'run_20260430_000001';
+  const taskText = 'Find competitor gaps and improve Pipes.';
   const run = await createMachineRun({
     workspaceRoot,
     pipelinePath,
     runId,
     now: fixedNow,
+    taskText: `  ${taskText}\n`,
   });
 
   assert.equal(run.runRoot, path.join(pipelineDir, 'runs', runId));
@@ -119,12 +121,14 @@ test('createMachineRun writes durable run root and leaves latest-run as export-o
   assert.equal(events.length, 1);
   assert.equal(events[0].eventType, 'run.created');
   assert.equal(events[0].sequence, 0);
+  assert.equal(events[0].payload.metadata.taskText, taskText);
 
   const runState = await readRunState(run.runRoot);
   assert.equal(runState.runId, runId);
   assert.equal(runState.lifecycleStatus, 'created');
   assert.equal(runState.summaryStatus, 'pending');
   assert.equal(runState.eventSequence, 0);
+  assert.equal(runState.metadata.taskText, taskText);
 
   await assert.rejects(
     fs.stat(run.latestRunExportPath),

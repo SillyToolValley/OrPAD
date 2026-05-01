@@ -78,6 +78,10 @@ async function readRunState(runRoot) {
   return readJsonIfExists(runStatePath(runRoot), null);
 }
 
+function normalizeRunTaskText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 2000);
+}
+
 async function createMachineRun(options = {}) {
   const {
     workspaceRoot,
@@ -85,6 +89,7 @@ async function createMachineRun(options = {}) {
     runId = createRunId(),
     now = new Date(),
     canonicalStoreKind = 'jsonl',
+    taskText = '',
   } = options;
   const context = resolvePipelineContext({ workspaceRoot, pipelinePath });
   await assertNoSymlinkInWorkspacePath(context.workspaceRoot, context.pipelinePath, {
@@ -102,6 +107,13 @@ async function createMachineRun(options = {}) {
 
   await assertRunRootAvailable(targetRunRoot);
   await ensureRunLayout(targetRunRoot);
+  const normalizedTaskText = normalizeRunTaskText(taskText);
+  const metadata = {
+    pipelineKind: pipeline.kind || '',
+    pipelineVersion: pipeline.version || '',
+    entryGraph: pipeline.entryGraph || '',
+  };
+  if (normalizedTaskText) metadata.taskText = normalizedTaskText;
   const createdEvent = await appendMachineEvent(targetRunRoot, {
     runId,
     timestamp,
@@ -115,11 +127,7 @@ async function createMachineRun(options = {}) {
       lifecycleStatus: 'created',
       summaryStatus: 'pending',
       canonicalStoreKind,
-      metadata: {
-        pipelineKind: pipeline.kind || '',
-        pipelineVersion: pipeline.version || '',
-        entryGraph: pipeline.entryGraph || '',
-      },
+      metadata,
     },
   });
 

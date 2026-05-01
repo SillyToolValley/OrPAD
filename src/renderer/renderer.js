@@ -8113,6 +8113,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const activeWriteSetDetails = machineActiveWriteSetDetails(record);
   const auditDetails = machineAuditDetails(record);
   const artifactDetails = machineArtifactSummary(record);
+  const taskText = normalizeRunbookTask(runState.metadata?.taskText || record.metadata?.taskText || '');
   const validation = selectedPipelineValidation(runbookPath);
   const machineStepUnavailable = !!validation && !isMachineStartablePipeline(validation);
   const executeDetails = machineExecuteControlDetails(record, validation);
@@ -8140,6 +8141,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <span class="runbook-chip">${escapeHtml(runState.summaryStatus || 'pending')}</span>
         <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
       </div>
+      ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
       ${renderMachineRunHistory(runbookPath, runId)}
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
@@ -8530,11 +8532,15 @@ async function startSelectedMachineRun(runbookPath) {
   }
   const token = await requestMachineCapabilityToken();
   if (!token) return;
+  const taskText = currentRunbookTaskText();
   const created = await window.orpad.machine.createRun({
     workspacePath,
     pipelinePath: runbookPath,
     capabilityToken: token,
-    options: { trustLevel: 'local-authored' },
+    options: {
+      trustLevel: 'local-authored',
+      ...(taskText ? { taskText } : {}),
+    },
   });
   if (!created?.success) {
     if (created?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
@@ -8569,12 +8575,14 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
+  const taskText = currentRunbookTaskText();
   const executed = await window.orpad.machine.executeRunStep({
     workspacePath,
     pipelinePath: runbookPath,
     runId,
     capabilityToken: token,
     exportLatestRun: true,
+    options: taskText ? { taskText } : {},
   });
   if (!executed?.success) {
     if (executed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
@@ -8879,6 +8887,10 @@ function runbookSlug(value, fallback = 'orpad-pipeline') {
 
 function normalizeRunbookTask(value) {
   return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function currentRunbookTaskText() {
+  return normalizeRunbookTask(runbookDraftTask);
 }
 
 function extractMarkdownFence(text) {
@@ -9192,6 +9204,16 @@ runbooksContentEl?.addEventListener('input', (event) => {
 });
 
 runbooksContentEl?.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.altKey && !event.shiftKey) {
+    event.preventDefault();
+    const targetPath = selectedRunbookPath || '';
+    if (targetPath) {
+      runPipelinePreviewAction('default', targetPath).catch(err => notifyFormatError('Pipes', err));
+    } else {
+      createOrpadRunbookStarter().catch(err => notifyFormatError('Pipes', err));
+    }
+    return;
+  }
   const slot = event.target.closest?.('.runbook-item[data-runbook-path]');
   if (!slot || (event.key !== 'Enter' && event.key !== ' ')) return;
   event.preventDefault();

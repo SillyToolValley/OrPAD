@@ -190,8 +190,13 @@ function adapterProbeNodePaths(adapter) {
   return configured.filter(Boolean);
 }
 
+function normalizeRuntimeTaskText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 2000);
+}
+
 function liveProbePrompt(input = {}) {
   const { request, node, pipelinePath, pipeline, adapter } = input;
+  const taskText = normalizeRuntimeTaskText(input.taskText);
   const candidateLimit = Number.isFinite(Number(adapter.candidateLimit))
     ? Math.max(0, Math.min(5, Math.trunc(Number(adapter.candidateLimit))))
     : 1;
@@ -209,6 +214,15 @@ function liveProbePrompt(input = {}) {
     `nodePath: ${node.nodePath}`,
     `nodeType: ${node.nodeType}`,
     `nodeConfig: ${JSON.stringify(node.config || {})}`,
+    ...(taskText ? [
+      '',
+      'User requested work:',
+      '<user-task>',
+      taskText,
+      '</user-task>',
+      'Use this request as the primary prioritization context when ranking candidate proposals.',
+      'If the request needs external competitor research and this adapter has no approved browsing capability, do not invent external claims; propose only evidence-backed local work or report the research gap.',
+    ] : []),
     '',
     'Result contract:',
     JSON.stringify({
@@ -264,6 +278,7 @@ async function codexCliWorkerCommandSpec(input = {}) {
     workerNode,
     runRoot,
   } = input;
+  const taskText = normalizeRuntimeTaskText(input.taskText);
   const prompt = [
     'You are the OrPAD managed-run worker adapter.',
     'The current working directory is a temporary Machine overlay containing only the active write set.',
@@ -280,6 +295,14 @@ async function codexCliWorkerCommandSpec(input = {}) {
     `claimId: ${claim.claim.claimId}`,
     `itemId: ${claim.item.id}`,
     `allowedFiles: ${JSON.stringify(request.allowedFiles || [])}`,
+    ...(taskText ? [
+      '',
+      'User requested work:',
+      '<user-task>',
+      taskText,
+      '</user-task>',
+      'Use this request to preserve product intent while implementing the claimed work item. Do not expand beyond the Machine-approved write set.',
+    ] : []),
     '',
     'Claimed work item:',
     JSON.stringify(claim.item || candidate || {}, null, 2),
@@ -803,6 +826,7 @@ async function executeMachineRunStep(options = {}) {
     dangerousSandboxBypassApproval = null,
     allowDangerousSandboxBypass = false,
     timeoutMs = 60_000,
+    taskText = '',
   } = options;
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   if (!pipelinePath) throw new Error('pipelinePath is required.');
@@ -820,6 +844,7 @@ async function executeMachineRunStep(options = {}) {
   const hasHarness = Boolean(harnessSource);
   const hasLiveAdapter = isRunnableMachineAdapter(adapterSource);
   const usingLiveAdapter = !hasHarness && hasLiveAdapter;
+  const runtimeTaskText = normalizeRuntimeTaskText(taskText);
   if (!hasHarness && !hasLiveAdapter) {
     throw machineExecutionError(
       'MACHINE_EXECUTION_HARNESS_REQUIRED',
@@ -941,6 +966,7 @@ async function executeMachineRunStep(options = {}) {
               pipelinePath,
               pipeline,
               adapter,
+              taskText: runtimeTaskText,
             }),
           }),
         })));
@@ -1055,6 +1081,7 @@ async function executeMachineRunStep(options = {}) {
             workerNode,
             harness,
             patchConfig,
+            taskText: runtimeTaskText,
           })
           : (hasHarness
             ? nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable })
@@ -1066,6 +1093,7 @@ async function executeMachineRunStep(options = {}) {
               candidate: workerCandidate,
               workerNode,
               runRoot,
+              taskText: runtimeTaskText,
             }));
         adapterRequest.commandSpec = {
           command: commandSpec.command,
