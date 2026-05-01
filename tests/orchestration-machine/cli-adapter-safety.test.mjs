@@ -11,6 +11,7 @@ const {
   applyWorkerResult,
   claimNextQueuedItem,
   cliOverlayRoot,
+  codexCliInvocation,
   copyAllowedFilesToOverlay,
   createAdapterRequest,
   createCliAgentAdapter,
@@ -28,6 +29,29 @@ const {
 } = require('../../src/main/orchestration-machine');
 
 const fixedNow = new Date('2026-04-30T00:00:00.000Z');
+
+test('Codex CLI JavaScript entrypoints use a real Node executable instead of process.execPath', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-codex-invocation-'));
+  const fakeNode = path.join(tempRoot, process.platform === 'win32' ? 'node.exe' : 'node');
+  const fakeCodexScript = path.join(tempRoot, 'codex.js');
+  await fs.writeFile(fakeNode, '', 'utf8');
+  await fs.writeFile(fakeCodexScript, '', 'utf8');
+
+  const previousNodeExecPath = process.env.npm_node_execpath;
+  const previousMachineNode = process.env.ORPAD_MACHINE_NODE_EXEC_PATH;
+  try {
+    delete process.env.ORPAD_MACHINE_NODE_EXEC_PATH;
+    process.env.npm_node_execpath = fakeNode;
+    const invocation = codexCliInvocation(fakeCodexScript);
+    assert.equal(invocation.command, fakeNode);
+    assert.deepEqual(invocation.prefixArgs, [fakeCodexScript]);
+  } finally {
+    if (previousNodeExecPath === undefined) delete process.env.npm_node_execpath;
+    else process.env.npm_node_execpath = previousNodeExecPath;
+    if (previousMachineNode === undefined) delete process.env.ORPAD_MACHINE_NODE_EXEC_PATH;
+    else process.env.ORPAD_MACHINE_NODE_EXEC_PATH = previousMachineNode;
+  }
+});
 
 async function makeRun(runId = 'run_20260430_cli_adapter') {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-adapter-'));

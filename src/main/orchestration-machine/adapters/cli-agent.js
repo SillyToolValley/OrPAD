@@ -76,6 +76,27 @@ function codexScriptFromShim(command) {
   return fileExists(scriptPath) ? scriptPath : '';
 }
 
+function nodeExecutableForCli() {
+  const candidates = [
+    process.env.ORPAD_MACHINE_NODE_EXEC_PATH,
+    process.env.npm_node_execpath,
+    process.env.NODE,
+    findOnPath(process.platform === 'win32' ? 'node.exe' : 'node'),
+    findOnPath('node'),
+    process.versions?.electron ? '' : process.execPath,
+  ].filter(Boolean);
+  return candidates.find(fileExists) || '';
+}
+
+function nodeInvocationForScript(scriptPath) {
+  const nodeExecutable = nodeExecutableForCli();
+  if (nodeExecutable) return { command: nodeExecutable, prefixArgs: [scriptPath] };
+  const err = new Error('Codex CLI JavaScript entrypoint requires a Node.js executable, but none was found.');
+  err.code = 'MACHINE_CODEX_CLI_NODE_NOT_FOUND';
+  err.scriptPath = scriptPath;
+  throw err;
+}
+
 function codexCliInvocation(command = codexCliCommand(), prefixArgs = []) {
   const configured = String(command || '').trim() || codexCliCommand();
   const configuredPrefixArgs = Array.isArray(prefixArgs) ? prefixArgs.map(arg => String(arg)) : [];
@@ -83,13 +104,13 @@ function codexCliInvocation(command = codexCliCommand(), prefixArgs = []) {
     return { command: configured, prefixArgs: configuredPrefixArgs };
   }
   if (/\.js$/i.test(configured) && fileExists(configured)) {
-    return { command: process.execPath, prefixArgs: [configured] };
+    return nodeInvocationForScript(configured);
   }
   if (process.platform === 'win32') {
     const base = path.basename(configured).toLowerCase();
     if (['codex', 'codex.cmd', 'codex.ps1', 'codex.exe'].includes(base)) {
       const script = codexScriptFromShim(base === 'codex.exe' ? 'codex.cmd' : configured);
-      if (script) return { command: process.execPath, prefixArgs: [script] };
+      if (script) return nodeInvocationForScript(script);
     }
   }
   return { command: configured, prefixArgs: [] };
@@ -592,6 +613,7 @@ module.exports = {
   createCliAgentAdapter,
   createCliAgentProposalOnlyAdapter,
   createCodexCliProposalAdapter,
+  nodeExecutableForCli,
   readCodexAdapterResult,
   missingExpectedChangedFiles,
   prepareCliOverlayWorkspace,
