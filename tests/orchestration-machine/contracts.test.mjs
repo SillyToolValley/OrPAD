@@ -206,6 +206,27 @@ test('contract validator rejects unsafe artifact manifest paths', () => {
   }
 });
 
+test('contract validator rejects unsafe adapter request and result paths', () => {
+  const validator = createContractValidator();
+
+  assert.equal(validator.validate('adapterRequest', {
+    ...samples().adapterRequest,
+    adapterCallId: '../adapter',
+  }).ok, false);
+  assert.equal(validator.validate('adapterRequest', {
+    ...samples().adapterRequest,
+    inputArtifacts: ['artifacts\\queue\\x.md'],
+  }).ok, false);
+  assert.equal(validator.validate('adapterResult', {
+    ...samples().adapterResult,
+    artifacts: ['../outside.md'],
+  }).ok, false);
+  assert.equal(validator.validate('adapterResult', {
+    ...samples().adapterResult,
+    patchArtifact: 'artifacts/patches/../x.json',
+  }).ok, false);
+});
+
 test('adapter contracts require retry identity fields', () => {
   const validator = createContractValidator();
   const request = samples().adapterRequest;

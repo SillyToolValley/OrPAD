@@ -31,11 +31,13 @@
     },
     "adapterCallId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
     },
     "attemptId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
     },
     "idempotencyKey": {
       "type": "string",
@@ -77,12 +79,14 @@
     "inputArtifacts": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*\\\\)(?!.*(^|/)\\.($|/))(?!.*(^|/)\\.\\.($|/))(?!.*//).+"
       }
     },
     "adapterResultPath": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*\\\\)(?!.*(^|/)\\.($|/))(?!.*(^|/)\\.\\.($|/))(?!.*//).+"
     },
     "outputContract": {
       "type": "string",

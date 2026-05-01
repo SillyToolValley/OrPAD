@@ -1,7 +1,9 @@
 const path = require('path');
 
+const { assertRunRelativePath } = require('../artifacts');
 const { SCHEMA_VERSIONS, createContractValidator } = require('../contracts');
 const { appendMachineEvent, readMachineEvents } = require('../events');
+const { assertMachineStorageId } = require('../ids');
 const { repairRunStateFromEvents } = require('../run-store');
 const { ingestCandidateProposal, transitionQueueItem } = require('../queue-store');
 
@@ -29,8 +31,12 @@ function createAdapterRequest(options = {}) {
     attempt = 1,
   } = options;
   const callStem = `${idSegment(runId)}-${idSegment(nodePath)}-${idSegment(taskKind)}`;
-  const adapterCallId = options.adapterCallId || `${callStem}-call`;
-  const attemptId = options.attemptId || `${adapterCallId}-attempt-${attempt}`;
+  const adapterCallId = assertMachineStorageId(options.adapterCallId || `${callStem}-call`, 'adapterCallId');
+  const attemptId = assertMachineStorageId(options.attemptId || `${adapterCallId}-attempt-${attempt}`, 'attemptId');
+  const safeInputArtifacts = inputArtifacts.map(item => assertRunRelativePath(item));
+  const safeAdapterResultPath = assertRunRelativePath(
+    adapterResultPath || path.posix.join('adapters', `${adapterCallId}.result.json`),
+  );
   const request = {
     schemaVersion: SCHEMA_VERSIONS.adapterRequest,
     adapter,
@@ -45,8 +51,8 @@ function createAdapterRequest(options = {}) {
     allowedFiles: options.allowedFiles || [],
     approvalGrants: options.approvalGrants || [],
     baselineWorkspaceDigest: options.baselineWorkspaceDigest || '',
-    inputArtifacts,
-    adapterResultPath: adapterResultPath || path.posix.join('adapters', `${adapterCallId}.result.json`),
+    inputArtifacts: safeInputArtifacts,
+    adapterResultPath: safeAdapterResultPath,
     outputContract,
   };
   validator.assertValid('adapterRequest', request);

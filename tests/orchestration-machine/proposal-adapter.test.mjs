@@ -14,6 +14,7 @@ const {
   readMachineEvents,
   readQueueItems,
   readRunState,
+  recordAdapterRequest,
   runProposalOnlyAdapter,
   runProposalProbe,
   runProposalTriage,
@@ -97,6 +98,35 @@ test('proposal-only probe ingests candidates without letting adapter close the r
   assert.equal(events.some(event => event.eventType === 'adapter.requested'), true);
   assert.equal(events.some(event => event.eventType === 'adapter.result'), true);
   assert.equal(events.some(event => event.eventType === 'run.summary' && event.payload?.summaryStatus === 'partial'), true);
+});
+
+test('adapter requests reject unsafe ids and run-relative refs before Machine events', async () => {
+  const run = await makeRun();
+
+  assert.throws(
+    () => createAdapterRequest({
+      runId: run.runId,
+      nodePath: 'discovery/unsafe-probe',
+      taskKind: 'probe',
+      adapterCallId: '../adapter-call',
+    }),
+    error => error?.code === 'MACHINE_STORAGE_ID_INVALID' && error?.field === 'adapterCallId',
+  );
+
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/unsafe-probe',
+    taskKind: 'probe',
+  });
+  await assert.rejects(
+    recordAdapterRequest(run.runRoot, {
+      ...request,
+      adapterResultPath: '../outside.result.json',
+    }),
+    /Invalid Orchestration Machine adapterRequest contract/,
+  );
+
+  assert.equal((await readMachineEvents(run.runRoot)).some(event => event.eventType === 'adapter.requested'), false);
 });
 
 test('proposal-only triage performs Machine-owned queue transitions', async () => {

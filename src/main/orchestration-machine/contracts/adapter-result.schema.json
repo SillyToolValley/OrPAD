@@ -18,11 +18,13 @@
     },
     "adapterCallId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
     },
     "attemptId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
     },
     "idempotencyKey": {
       "type": "string",
@@ -43,7 +45,8 @@
       "minLength": 1
     },
     "patchArtifact": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^$|^(?!/)(?![A-Za-z]:/)(?!.*\\\\)(?!.*(^|/)\\.($|/))(?!.*(^|/)\\.\\.($|/))(?!.*//).+"
     },
     "changedFiles": {
       "type": "array",
@@ -62,7 +65,8 @@
       "type": "array",
       "items": {
         "type": "string",
-        "minLength": 1
+        "minLength": 1,
+        "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*\\\\)(?!.*(^|/)\\.($|/))(?!.*(^|/)\\.\\.($|/))(?!.*//).+"
       }
     },
     "candidateProposals": {
@@ -79,7 +83,8 @@
         "properties": {
           "itemId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
           },
           "toState": {
             "enum": ["queued", "blocked", "rejected"]
