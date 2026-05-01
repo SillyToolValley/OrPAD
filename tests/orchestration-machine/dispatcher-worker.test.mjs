@@ -23,6 +23,7 @@ const {
   readMachineEvents,
   readRunState,
   recoverStaleClaims,
+  registerArtifact,
   runSerialWorkerLoop,
   transitionQueueItem,
 } = require('../../src/main/orchestration-machine');
@@ -112,6 +113,22 @@ function workerResult(request, overrides = {}) {
     changedFiles: ['src/renderer/renderer.js'],
     ...overrides,
   };
+}
+
+async function registerWorkerResultArtifacts(run, result) {
+  const artifactPaths = [...new Set([
+    ...(result.artifacts || []),
+    ...(result.patchArtifact ? [result.patchArtifact] : []),
+  ].filter(Boolean))];
+  for (const artifactPath of artifactPaths) {
+    await registerArtifact(run.runRoot, {
+      runId: run.runId,
+      artifactPath,
+      content: `${result.summary}\n`,
+      producedBy: 'test.worker-result',
+      registeredBy: 'machine',
+    });
+  }
 }
 
 async function readJournal(runRoot) {
@@ -277,13 +294,15 @@ test('worker result closes a claimed item only after proof is accepted', async (
     now: '2026-04-30T00:00:20.000Z',
   });
   const request = workerRequest(run, claimed.claim.claimId);
+  const result = workerResult(request);
+  await registerWorkerResultArtifacts(run, result);
 
   const applied = await applyWorkerResult(run.runRoot, {
     runId: run.runId,
     claimId: claimed.claim.claimId,
     itemId,
     request,
-    result: workerResult(request),
+    result,
     now: '2026-04-30T00:00:30.000Z',
   });
   const duplicate = await applyWorkerResult(run.runRoot, {
@@ -291,7 +310,7 @@ test('worker result closes a claimed item only after proof is accepted', async (
     claimId: claimed.claim.claimId,
     itemId,
     request,
-    result: workerResult(request),
+    result,
     now: '2026-04-30T00:00:31.000Z',
   });
 
@@ -358,6 +377,33 @@ test('worker done result without artifact and verification proof is rejected bef
       now: '2026-04-30T00:00:30.000Z',
     }),
     error => error?.code === 'WORKER_DONE_RESULT_MISSING_PROOF',
+  );
+
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'active');
+  assert.equal((await readMachineEvents(run.runRoot)).some(event => event.eventType === 'worker.result'), false);
+});
+
+test('worker done result requires registered proof artifacts before close', async () => {
+  const run = await makeRun('run_20260430_worker_unregistered_proof');
+  const itemId = await queueProposal(run, proposal());
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-unregistered-proof',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+
+  await assert.rejects(
+    applyWorkerResult(run.runRoot, {
+      runId: run.runId,
+      claimId: claimed.claim.claimId,
+      itemId,
+      request,
+      result: workerResult(request),
+      now: '2026-04-30T00:00:30.000Z',
+    }),
+    error => error?.code === 'WORKER_RESULT_ARTIFACT_UNREGISTERED',
   );
 
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
@@ -550,10 +596,14 @@ test('serial worker loop processes queued items one at a time until queue-empty'
     runId: run.runId,
     maxItems: 5,
     now: '2026-04-30T00:00:20.000Z',
-    fixtureResult: ({ request, item }) => workerResult(request, {
-      artifacts: [`artifacts/work-items/${request.adapterCallId}/proof.md`],
-      changedFiles: item.sourceOfTruthTargets,
-    }),
+    fixtureResult: async ({ request, item }) => {
+      const result = workerResult(request, {
+        artifacts: [`artifacts/work-items/${request.adapterCallId}/proof.md`],
+        changedFiles: item.sourceOfTruthTargets,
+      });
+      await registerWorkerResultArtifacts(run, result);
+      return result;
+    },
   });
 
   assert.equal(result.steps.length, 2);

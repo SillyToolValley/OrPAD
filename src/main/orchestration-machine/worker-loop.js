@@ -78,6 +78,29 @@ function assertWorkerResultWithinWriteSet(result, lease) {
   throw err;
 }
 
+function workerResultArtifactRefs(result) {
+  return [...new Set([
+    ...(result.artifacts || []),
+    ...(result.patchArtifact ? [result.patchArtifact] : []),
+  ].filter(Boolean))];
+}
+
+async function assertWorkerResultArtifactsRegistered(runRoot, result) {
+  if (result.status !== 'done') return;
+  const refs = workerResultArtifactRefs(result);
+  if (!refs.length) return;
+  const events = await readMachineEvents(runRoot);
+  const registered = new Set(events
+    .filter(event => event.eventType === 'artifact.registered' && event.payload?.file?.path)
+    .map(event => event.payload.file.path));
+  const missing = refs.find(ref => !registered.has(ref));
+  if (!missing) return;
+  const err = new Error(`Worker result references an unregistered proof artifact: ${missing}`);
+  err.code = 'WORKER_RESULT_ARTIFACT_UNREGISTERED';
+  err.artifactPath = missing;
+  throw err;
+}
+
 async function appendRunStatus(runRoot, runId, toState, options = {}) {
   return appendRunLifecycleStatus(runRoot, {
     runId,
@@ -169,6 +192,7 @@ async function applyWorkerResult(runRoot, options = {}) {
   const { lease } = await assertClaimCanAcceptResult(runRoot, { claimId, itemId, now });
   assertWorkerResultWithinWriteSet(result, lease);
   const toState = assertWorkerResultTargetQueueState(options.toState || targetQueueStateForWorkerResult(result));
+  await assertWorkerResultArtifactsRegistered(runRoot, result);
   const workerEvent = await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
@@ -377,6 +401,7 @@ module.exports = {
   applyWorkerResult,
   assertClaimCanAcceptResult,
   assertDoneResultHasProof,
+  assertWorkerResultArtifactsRegistered,
   assertWorkerResultWithinWriteSet,
   cancelClaimedItem,
   assertCancellationTargetQueueState,
