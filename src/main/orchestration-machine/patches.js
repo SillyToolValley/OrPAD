@@ -37,6 +37,40 @@ async function readTextIfExists(filePath) {
   }
 }
 
+function unsafeWorkspaceSymlink(relativePath) {
+  const err = new Error(`Workspace path crosses a symbolic link: ${relativePath}`);
+  err.code = 'MACHINE_WORKSPACE_SYMLINK_UNSAFE';
+  err.path = relativePath;
+  return err;
+}
+
+async function assertNoSymlinkInWorkspacePath(root, relativePath, options = {}) {
+  const { includeLeaf = true } = options;
+  const normalized = normalizeWriteSetPath(relativePath);
+  const segments = normalized.split('/').filter(Boolean);
+  const limit = includeLeaf ? segments.length : Math.max(segments.length - 1, 0);
+  let current = path.resolve(root);
+  for (let index = 0; index < limit; index += 1) {
+    current = path.join(current, segments[index]);
+    let stat = null;
+    try {
+      stat = await fsp.lstat(current);
+    } catch (err) {
+      if (err?.code === 'ENOENT') break;
+      throw err;
+    }
+    if (stat.isSymbolicLink()) {
+      throw unsafeWorkspaceSymlink(segments.slice(0, index + 1).join('/'));
+    }
+  }
+  return normalized;
+}
+
+async function readWorkspaceTextIfExists(root, relativePath) {
+  await assertNoSymlinkInWorkspacePath(root, relativePath);
+  return readTextIfExists(resolveWorkspacePath(root, relativePath));
+}
+
 async function walkFiles(root) {
   const files = [];
   async function visit(dir) {
@@ -68,6 +102,7 @@ async function copyAllowedFilesToOverlay(options = {}) {
   if (!overlayRoot) throw new Error('overlayRoot is required.');
   const copied = [];
   for (const allowedFile of normalizeWriteSetPaths(allowedFiles)) {
+    await assertNoSymlinkInWorkspacePath(workspaceRoot, allowedFile);
     const source = resolveWorkspacePath(workspaceRoot, allowedFile);
     const stat = await fsp.stat(source).catch(err => (err?.code === 'ENOENT' ? null : Promise.reject(err)));
     if (!stat) continue;
@@ -109,7 +144,7 @@ async function collectOverlayPatch(options = {}) {
 
   for (const relPath of [...overlayRelPaths].sort()) {
     const allowedPath = isPathAllowedByWriteSet(relPath, allowed);
-    const before = await readTextIfExists(resolveWorkspacePath(workspaceRoot, relPath));
+    const before = await readWorkspaceTextIfExists(workspaceRoot, relPath);
     const after = await readTextIfExists(resolveWorkspacePath(overlayRoot, relPath));
     if (!allowedPath) {
       violations.push({
@@ -132,6 +167,7 @@ async function collectOverlayPatch(options = {}) {
 
   const deletionCandidates = [];
   for (const relPath of allowed) {
+    await assertNoSymlinkInWorkspacePath(workspaceRoot, relPath);
     const sourcePath = resolveWorkspacePath(workspaceRoot, relPath);
     const stat = await fsp.stat(sourcePath).catch(err => (err?.code === 'ENOENT' ? null : Promise.reject(err)));
     if (!stat) continue;
@@ -144,7 +180,7 @@ async function collectOverlayPatch(options = {}) {
   }
 
   for (const relPath of [...new Set(deletionCandidates)].sort()) {
-    const source = await readTextIfExists(resolveWorkspacePath(workspaceRoot, relPath));
+    const source = await readWorkspaceTextIfExists(workspaceRoot, relPath);
     if (source === null || overlayRelPaths.has(relPath)) continue;
     changes.push({
       path: relPath,
@@ -198,6 +234,7 @@ async function applyPatchArtifact(options = {}) {
 
   const applied = [];
   for (const change of patch.changes || []) {
+    await assertNoSymlinkInWorkspacePath(workspaceRoot, change.path);
     const target = resolveWorkspacePath(workspaceRoot, change.path);
     const current = await readTextIfExists(target);
     const currentSha = current === null ? '' : sha256Text(current);
@@ -235,6 +272,7 @@ async function registerPatchArtifact(runRoot, options = {}) {
 
 module.exports = {
   applyPatchArtifact,
+  assertNoSymlinkInWorkspacePath,
   assertPatchWithinWriteSet,
   collectOverlayPatch,
   copyAllowedFilesToOverlay,

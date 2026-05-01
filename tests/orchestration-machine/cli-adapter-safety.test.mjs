@@ -11,6 +11,7 @@ const {
   applyWorkerResult,
   claimNextQueuedItem,
   cliOverlayRoot,
+  copyAllowedFilesToOverlay,
   createAdapterRequest,
   createCliAgentAdapter,
   createCommandGrant,
@@ -77,6 +78,19 @@ async function queueAndClaim(run, claimId = 'claim-cli-write-set') {
     claimId,
     now: '2026-04-30T00:00:20.000Z',
   });
+}
+
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
 }
 
 test('exact command grants block unapproved or shell-like command specs', async () => {
@@ -549,6 +563,47 @@ test('Machine-applied patch rejects out-of-write-set paths and duplicate base ap
     applyPatchArtifact({ workspaceRoot, patch: validPatch }),
     error => error?.code === 'PATCH_BASE_MISMATCH',
   );
+});
+
+test('Machine patch helpers reject workspace symlink paths before copy or apply', async t => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-symlink-workspace-'));
+  const overlayRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-symlink-overlay-'));
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-symlink-outside-'));
+  await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+  const outsideFile = path.join(outsideRoot, 'outside.txt');
+  await fs.writeFile(outsideFile, 'outside-before\n', 'utf8');
+  const linkPath = path.join(workspaceRoot, 'src/link.txt');
+  if (!await createTestSymlink(t, outsideFile, linkPath, 'file')) return;
+
+  await assert.rejects(
+    copyAllowedFilesToOverlay({
+      workspaceRoot,
+      overlayRoot,
+      allowedFiles: ['src/link.txt'],
+    }),
+    error => error?.code === 'MACHINE_WORKSPACE_SYMLINK_UNSAFE',
+  );
+
+  const symlinkPatch = {
+    schemaVersion: 'orpad.patchArtifact.v1',
+    createdAt: '2026-04-30T00:00:00.000Z',
+    allowedFiles: ['src/link.txt'],
+    changes: [{
+      path: 'src/link.txt',
+      beforeExists: true,
+      afterExists: true,
+      beforeSha256: sha256Text('outside-before\n'),
+      afterSha256: sha256Text('outside-after\n'),
+      beforeContent: 'outside-before\n',
+      afterContent: 'outside-after\n',
+    }],
+    violations: [],
+  };
+  await assert.rejects(
+    applyPatchArtifact({ workspaceRoot, patch: symlinkPatch }),
+    error => error?.code === 'MACHINE_WORKSPACE_SYMLINK_UNSAFE',
+  );
+  assert.equal(await fs.readFile(outsideFile, 'utf8'), 'outside-before\n');
 });
 
 test('WorkerLoop rejects accepted results that claim changes outside the active write set', async () => {
