@@ -68,6 +68,18 @@ async function assertQueueJournalPathSafe(runRoot) {
   }
 }
 
+async function assertQueueItemPathSafe(filePath) {
+  try {
+    const stats = await fsp.lstat(filePath);
+    if (stats.isSymbolicLink()) {
+      throw queueStoreError('MACHINE_QUEUE_ITEM_SYMLINK_UNSAFE', 'Machine queue item snapshot must not be a symlink.');
+    }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+}
+
 function transitionAction(fromState, toState) {
   return TRANSITION_ACTIONS[`${fromState}->${toState}`] || '';
 }
@@ -79,6 +91,7 @@ async function ensureQueueLayout(runRoot) {
 }
 
 async function readJsonIfExists(filePath, fallback = null) {
+  await assertQueueItemPathSafe(filePath);
   try {
     return JSON.parse(await fsp.readFile(filePath, 'utf8'));
   } catch (err) {
@@ -118,6 +131,9 @@ async function readQueueItems(runRoot, options = {}) {
       if (err?.code !== 'ENOENT') throw err;
     }
     for (const entry of entries) {
+      if (entry.isSymbolicLink()) {
+        throw queueStoreError('MACHINE_QUEUE_ITEM_SYMLINK_UNSAFE', 'Machine queue item snapshot must not be a symlink.');
+      }
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const filePath = path.join(queueStateDir(runRoot, state), entry.name);
       const item = await readJsonIfExists(filePath, null);
@@ -301,6 +317,7 @@ function projectQueueStateFromEvents(events) {
 module.exports = {
   QUEUE_STATES,
   TRANSITION_ACTIONS,
+  assertQueueItemPathSafe,
   appendLegacyJournal,
   assertQueueJournalPathSafe,
   ensureQueueLayout,

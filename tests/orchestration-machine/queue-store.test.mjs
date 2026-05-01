@@ -240,6 +240,34 @@ test('queue journal rejects symlinked append targets before queue mutation', asy
   assert.equal(await findQueueItem(run.runRoot, 'journal-symlink-item'), null);
 });
 
+test('queue item reads reject symlinked canonical snapshots', async t => {
+  const run = await makeRun();
+  const itemId = 'graph-editor-graph-specific-node-types';
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    now: '2026-04-30T00:00:01.000Z',
+    transitionId: 'ingest:item',
+  });
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-queue-item-target-'));
+  const outsideItem = path.join(outsideRoot, 'item.json');
+  await fs.writeFile(outsideItem, JSON.stringify({
+    id: itemId,
+    state: 'candidate',
+    title: 'outside item',
+  }), 'utf8');
+  await fs.rm(queueItemPath(run.runRoot, 'candidate', itemId));
+  if (!await createTestSymlink(t, outsideItem, queueItemPath(run.runRoot, 'candidate', itemId), 'file')) return;
+
+  await assert.rejects(
+    findQueueItem(run.runRoot, itemId),
+    error => error?.code === 'MACHINE_QUEUE_ITEM_SYMLINK_UNSAFE',
+  );
+  await assert.rejects(
+    readQueueItems(run.runRoot),
+    error => error?.code === 'MACHINE_QUEUE_ITEM_SYMLINK_UNSAFE',
+  );
+});
+
 test('queue transition patches cannot rename the Machine-owned work item id', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {
