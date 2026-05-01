@@ -11,6 +11,7 @@ const {
   appendRunLifecycleStatus,
   applyWorkerResult,
   cancelClaimedItem,
+  claimLeasePath,
   claimNextQueuedItem,
   createAdapterRequest,
   createMachineRun,
@@ -22,10 +23,12 @@ const {
   readClaimLease,
   readMachineEvents,
   readRunState,
+  readWriteSetLock,
   recoverStaleClaims,
   registerArtifact,
   runSerialWorkerLoop,
   transitionQueueItem,
+  writeSetLockPath,
 } = require('../../src/main/orchestration-machine');
 
 const fixedNow = new Date('2026-04-30T00:00:00.000Z');
@@ -47,6 +50,19 @@ async function makeRun(runId = 'run_20260430_dispatcher_worker') {
     runId,
     now: fixedNow,
   });
+}
+
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
 }
 
 function proposal(overrides = {}) {
@@ -176,6 +192,46 @@ test('dispatcher claims the highest priority queued item and owns claim/write-se
   const journal = await readJournal(run.runRoot);
   assert.deepEqual(journal.map(entry => entry.action), ['ingest', 'triage', 'ingest', 'triage', 'claim']);
   assert.equal(journal.at(-1).actor, 'orpad.dispatcher');
+});
+
+test('dispatcher lock stores reject symlinked claim and write-set files', async t => {
+  const run = await makeRun('run_20260430_dispatcher_lock_symlink');
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'lock-symlink-work',
+    fingerprint: 'ux:lock-symlink-work',
+  }));
+  await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-lock-symlink-work',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-lock-symlink-target-'));
+  const outsideClaim = path.join(outsideRoot, 'claim.json');
+  const outsideWriteSet = path.join(outsideRoot, 'write-set.json');
+  await fs.writeFile(outsideClaim, JSON.stringify({ claimId: 'claim-lock-symlink-work', state: 'active' }), 'utf8');
+  await fs.writeFile(outsideWriteSet, JSON.stringify({ lockId: 'wset-claim-lock-symlink-work', state: 'active' }), 'utf8');
+  await fs.rm(claimLeasePath(run.runRoot, 'claim-lock-symlink-work'));
+  await fs.rm(writeSetLockPath(run.runRoot, 'wset-claim-lock-symlink-work'));
+  if (!await createTestSymlink(t, outsideClaim, claimLeasePath(run.runRoot, 'claim-lock-symlink-work'), 'file')) return;
+  if (!await createTestSymlink(t, outsideWriteSet, writeSetLockPath(run.runRoot, 'wset-claim-lock-symlink-work'), 'file')) return;
+
+  await assert.rejects(
+    readClaimLease(run.runRoot, 'claim-lock-symlink-work'),
+    error => error?.code === 'MACHINE_CLAIM_LEASE_SYMLINK_UNSAFE',
+  );
+  await assert.rejects(
+    readActiveClaimLeases(run.runRoot),
+    error => error?.code === 'MACHINE_CLAIM_LEASE_SYMLINK_UNSAFE',
+  );
+  await assert.rejects(
+    readWriteSetLock(run.runRoot, 'wset-claim-lock-symlink-work'),
+    error => error?.code === 'MACHINE_WRITE_SET_LOCK_SYMLINK_UNSAFE',
+  );
+  await assert.rejects(
+    readActiveWriteSetLocks(run.runRoot),
+    error => error?.code === 'MACHINE_WRITE_SET_LOCK_SYMLINK_UNSAFE',
+  );
 });
 
 test('dispatcher pauses on approval-required queued item without claiming it', async () => {

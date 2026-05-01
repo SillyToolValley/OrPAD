@@ -15,6 +15,24 @@ function writeSetLockPath(runRoot, lockId) {
   return path.join(writeSetRoot(runRoot), `${assertMachineStorageId(lockId, 'lockId')}.json`);
 }
 
+function writeSetStoreError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+async function assertWriteSetLockPathSafe(filePath) {
+  try {
+    const stats = await fsp.lstat(filePath);
+    if (stats.isSymbolicLink()) {
+      throw writeSetStoreError('MACHINE_WRITE_SET_LOCK_SYMLINK_UNSAFE', 'Machine write-set lock must not be a symlink.');
+    }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+}
+
 function idSegment(value) {
   return String(value || '')
     .trim()
@@ -45,7 +63,9 @@ function pathsOverlap(a, b) {
 }
 
 async function readWriteSetLock(runRoot, lockId) {
-  return readJsonIfExists(writeSetLockPath(runRoot, lockId), null);
+  const filePath = writeSetLockPath(runRoot, lockId);
+  await assertWriteSetLockPathSafe(filePath);
+  return readJsonIfExists(filePath, null);
 }
 
 async function readWriteSetLocks(runRoot) {
@@ -59,6 +79,9 @@ async function readWriteSetLocks(runRoot) {
 
   const locks = [];
   for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
+      throw writeSetStoreError('MACHINE_WRITE_SET_LOCK_SYMLINK_UNSAFE', 'Machine write-set lock must not be a symlink.');
+    }
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     const lock = await readJsonIfExists(path.join(root, entry.name), null);
     if (lock) locks.push(lock);
@@ -172,6 +195,7 @@ async function releaseWriteSetLocksForClaim(runRoot, claimId, options = {}) {
 
 module.exports = {
   acquireWriteSetLock,
+  assertWriteSetLockPathSafe,
   findConflictingWriteSetLock,
   normalizeWriteSetPath,
   normalizeWriteSetPaths,

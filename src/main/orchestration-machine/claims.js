@@ -17,6 +17,24 @@ function claimLeasePath(runRoot, claimId) {
   return path.join(claimRoot(runRoot), `${assertMachineStorageId(claimId, 'claimId')}.json`);
 }
 
+function claimStoreError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+async function assertClaimLeasePathSafe(filePath) {
+  try {
+    const stats = await fsp.lstat(filePath);
+    if (stats.isSymbolicLink()) {
+      throw claimStoreError('MACHINE_CLAIM_LEASE_SYMLINK_UNSAFE', 'Machine claim lease must not be a symlink.');
+    }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+}
+
 function idSegment(value) {
   return String(value || '')
     .trim()
@@ -49,7 +67,9 @@ function isClaimLeaseExpired(lease, now = new Date()) {
 }
 
 async function readClaimLease(runRoot, claimId) {
-  return readJsonIfExists(claimLeasePath(runRoot, claimId), null);
+  const filePath = claimLeasePath(runRoot, claimId);
+  await assertClaimLeasePathSafe(filePath);
+  return readJsonIfExists(filePath, null);
 }
 
 async function readClaimLeases(runRoot) {
@@ -63,6 +83,9 @@ async function readClaimLeases(runRoot) {
 
   const claims = [];
   for (const entry of entries) {
+    if (entry.isSymbolicLink()) {
+      throw claimStoreError('MACHINE_CLAIM_LEASE_SYMLINK_UNSAFE', 'Machine claim lease must not be a symlink.');
+    }
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     const lease = await readJsonIfExists(path.join(root, entry.name), null);
     if (lease) claims.push(lease);
@@ -194,6 +217,7 @@ async function markClaimLeaseReleased(runRoot, claimId, options = {}) {
 
 module.exports = {
   DEFAULT_CLAIM_LEASE_MS,
+  assertClaimLeasePathSafe,
   claimLeasePath,
   claimRoot,
   createClaimId,
