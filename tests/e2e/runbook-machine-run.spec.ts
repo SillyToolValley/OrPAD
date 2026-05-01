@@ -199,19 +199,19 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText('Machine-compatible');
-  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Show Machine Actions');
-  await expect(win.locator('#runbooks-content')).toContainText('This pipeline is Machine-compatible');
+  await expect(win.locator('#runbooks-content')).toContainText('Managed-run ready');
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Show Managed Run');
+  await expect(win.locator('#runbooks-content')).toContainText('This pipeline supports managed runs');
   await win.locator('button[data-runbook-action="toggle-machine-ui"]').click();
-  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Actions');
-  await expect(win.locator('#runbooks-content')).toContainText('Machine ready');
-  await expect(win.locator('#runbooks-content')).toContainText('Ready. Machine owns queue');
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Managed Run');
+  await expect(win.locator('#runbooks-content')).toContainText('Managed run ready');
+  await expect(win.locator('#runbooks-content')).toContainText('Ready. OrPAD will own the queue');
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="agent-handoff"]')).toContainText('Prepare Handoff');
 
   await win.locator('button[data-runbook-action="run-machine"]').click();
   await submitMachineCapabilityToken(win);
-  await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
+  await expect(win.locator('#runbooks-content')).toContainText('Managed Run');
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
   await expect(win.locator('#runbooks-content')).toContainText('Latest-run export');
   await expect(win.locator('#runbooks-content')).toContainText('Resume ready');
@@ -242,8 +242,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
   await expect(win.locator('button[data-runbook-action="machine-view-artifacts"]')).toBeEnabled();
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
-  await expect(win.locator('.tab-item.active')).toContainText('Machine Artifacts');
-  await expect(win.locator('.cm-content')).toContainText('Machine Artifact Manifest');
+  await expect(win.locator('.tab-item.active')).toContainText('Run Artifacts');
+  await expect(win.locator('.cm-content')).toContainText('Run Artifact Manifest');
   await win.locator('#btn-preview').click();
   await expect(win.locator('#content')).toContainText('artifacts/discovery/candidate-inventory.json');
   await expect(win.locator('#content')).toContainText('artifacts/patches');
@@ -260,9 +260,9 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
   await win.keyboard.press('Control+Shift+M');
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
-  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Actions');
-  await expect(win.locator('#runbooks-content')).toContainText('Machine ready');
-  await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Managed Run');
+  await expect(win.locator('#runbooks-content')).toContainText('Managed run ready');
+  await expect(win.locator('#runbooks-content')).toContainText('Managed Run');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
@@ -294,12 +294,12 @@ test('Machine UI keeps gated Machine actions in the selected Run panel', async (
 
   await expect(win.locator('#runbooks-content')).not.toContainText('Machine Runtime');
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText('Machine-compatible');
-  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Show Machine Actions');
+  await expect(win.locator('#runbooks-content')).toContainText('Managed-run ready');
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Show Managed Run');
   await win.locator('button[data-runbook-action="toggle-machine-ui"]').click();
-  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Actions');
-  await expect(win.locator('#runbooks-content')).toContainText('Machine unavailable');
-  await expect(win.locator('#runbooks-content')).toContainText('Relaunch OrPAD with ORPAD_MACHINE_IPC=1');
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Managed Run');
+  await expect(win.locator('#runbooks-content')).toContainText('Managed run unavailable');
+  await expect(win.locator('#runbooks-content')).toContainText('managed-run support enabled');
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toBeDisabled();
 
   await app.close();
@@ -396,7 +396,7 @@ test('Machine UI switches between durable run history snapshots', async () => {
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(2);
   const runIds = fs.readdirSync(runRoot);
   const secondRunId = runIds.find(runId => runId !== firstRunId) || '';
-  await expect(win.locator('#runbooks-content')).toContainText('Recent Machine Runs');
+  await expect(win.locator('#runbooks-content')).toContainText('Recent Runs');
   await expect(win.locator('#runbooks-content')).toContainText('2 recent runs');
   await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
 

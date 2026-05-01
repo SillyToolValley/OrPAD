@@ -7086,13 +7086,13 @@ function isMachineUiEnabled() {
 }
 
 function machineRuntimeBlockReason() {
-  if (!isMachineApiAvailable()) return 'Machine is unavailable in this build.';
+  if (!isMachineApiAvailable()) return 'Managed runs are unavailable in this build.';
   if (!machineRuntimeStatus) return '';
   if (machineRuntimeStatus.success === false || machineRuntimeStatus.ok === false) {
-    return machineRuntimeStatus.error || 'Machine IPC status check failed.';
+    return machineRuntimeStatus.error || 'Managed run status check failed.';
   }
-  if (machineRuntimeStatus.enabled === false) return 'Machine is unavailable in this session. Relaunch OrPAD with ORPAD_MACHINE_IPC=1 to start Machine runs.';
-  if (machineRuntimeStatus.mutatingCapabilityConfigured === false) return 'Machine runs need ORPAD_MACHINE_IPC_TOKEN before run-store mutations are allowed.';
+  if (machineRuntimeStatus.enabled === false) return 'Managed runs are unavailable in this session. Relaunch OrPAD with managed-run support enabled.';
+  if (machineRuntimeStatus.mutatingCapabilityConfigured === false) return 'Managed runs need a run authorization token before run-store mutations are allowed.';
   return '';
 }
 
@@ -7104,12 +7104,12 @@ function renderMachineRuntimeStatusChip(selected, selectedValidation) {
   if (!isRunbookPipelineFile(selected, selectedValidation) || !isMachineUiEnabled()) return '';
   const blockReason = machineRuntimeBlockReason();
   const statusText = !isMachineApiAvailable()
-    ? 'Machine unavailable'
+    ? 'Managed run unavailable'
     : !machineRuntimeStatus || machineRuntimeStatusLoading
-      ? 'Machine checking'
+      ? 'Managed run checking'
       : blockReason
-        ? 'Machine unavailable'
-        : 'Machine ready';
+        ? 'Managed run unavailable'
+        : 'Managed run ready';
   const statusClass = !machineRuntimeStatus || machineRuntimeStatusLoading ? '' : blockReason ? 'warn' : 'good';
   return `<span class="runbook-chip ${statusClass}">${escapeHtml(statusText)}</span>`;
 }
@@ -7121,17 +7121,17 @@ function renderMachineRuntimeInline(selected, selectedValidation) {
   if (!uiEnabled && !compatible) return '';
   const blockReason = machineRuntimeBlockReason();
   const compatibilityReason = selectedValidation
-    ? (selectedValidation.machineBlockedReasons || []).join(', ') || 'This pipeline is not Machine-compatible yet.'
-    : 'Check the pipeline before starting a Machine run.';
+    ? (selectedValidation.machineBlockedReasons || []).join(', ') || 'This pipeline is not ready for a managed run yet.'
+    : 'Check the pipeline before starting a managed run.';
   const text = !uiEnabled
-    ? 'This pipeline is Machine-compatible. Show Machine actions to check runtime availability and create durable runs.'
+    ? 'This pipeline supports managed runs. Show managed run actions to check availability and create durable runs.'
     : blockReason || (compatible
-      ? 'Ready. Machine owns queue, run state, and artifacts for Machine runs.'
+      ? 'Ready. OrPAD will own the queue, run state, and artifacts for this run.'
       : compatibilityReason);
   const stateClass = !uiEnabled ? '' : (blockReason || !compatible) ? 'warn' : 'good';
   return `
     <div class="runbook-guide ${stateClass}">
-      <strong>Machine</strong>
+      <strong>Managed run</strong>
       <span>${escapeHtml(text)}</span>
     </div>
   `;
@@ -7926,11 +7926,11 @@ function machineExecuteControlDetails(record) {
   const runId = runState.runId || record?.runId || '';
   const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
   const activeClaims = record?.activeClaims || [];
-  if (!runId) return 'Execute unavailable: no Machine run selected';
+  if (!runId) return 'Execute unavailable: no managed run selected';
   if (isMachineRunTerminal(runState)) return `Execute unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}`;
   if (pendingApprovals > 0) return `Execute blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first`;
   if (activeClaims.length) return `Execute guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing`;
-  return 'Execute the next Machine runtime step.';
+  return 'Execute the next managed run step.';
 }
 
 function machineResumeControlDetails(record) {
@@ -7940,10 +7940,10 @@ function machineResumeControlDetails(record) {
   const activeClaims = record?.activeClaims || [];
   const resume = record?.resume || null;
   if (!runId) {
-    return { state: 'warn', text: 'Resume unavailable: no Machine run selected' };
+    return { state: 'warn', text: 'Resume unavailable: no managed run selected' };
   }
   if (!window.orpad?.machine?.resumeRun) {
-    return { state: 'warn', text: 'Resume unavailable: Machine resume IPC is not enabled' };
+    return { state: 'warn', text: 'Resume unavailable in this session' };
   }
   if (isMachineRunTerminal(runState)) {
     return { state: 'warn', text: `Resume unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}` };
@@ -7965,7 +7965,7 @@ function machineResumeControlDetails(record) {
       text: `Last resume: ${machineCountLabel(repaired, 'queue repair')}; ${machineCountLabel(resume.staleClaimCount, 'stale claim')} recovered; ${machineQueueInventorySummary(resume.inventory)}`,
     };
   }
-  return { state: 'good', text: 'Resume ready: Machine will repair derived queue snapshots and recover stale claims before continuing' };
+  return { state: 'good', text: 'Resume ready: OrPAD will repair derived queue snapshots and recover stale claims before continuing' };
 }
 
 function machineCancellationControlDetails(record) {
@@ -8003,7 +8003,7 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
   return `
     <div class="runbook-machine-history">
       <div class="runbook-item-title">
-        <strong>Recent Machine Runs</strong>
+        <strong>Recent Runs</strong>
         <span class="runbook-chip">${escapeHtml(machineCountLabel(runs.length, 'recent run'))}</span>
       </div>
       <div class="runbook-action-row">
@@ -8055,7 +8055,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ` : '';
   return `
     <section class="runbook-panel-section">
-      <h3>Machine Run</h3>
+      <h3>Managed Run</h3>
       <div class="runbook-chip-row">
         <span class="runbook-chip good">${escapeHtml(runState.lifecycleStatus || 'created')}</span>
         <span class="runbook-chip">${escapeHtml(runState.summaryStatus || 'pending')}</span>
@@ -8071,7 +8071,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>View Artifacts</button>
       </div>
       <div class="runbook-replay-events">
-        ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No Machine events recorded.</div>'}
+        ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No run events recorded.</div>'}
       </div>
       <div class="runbook-machine-grid">
         <div class="runbook-guide ${record.candidateInventory ? 'good' : 'warn'}">
@@ -8107,7 +8107,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(exported ? (exported.targetRoot || exported.latestRunExportPath || 'exported') : 'Not exported')}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
-          <strong>Machine audit</strong>
+          <strong>Run audit</strong>
           <span><code>${escapeHtml(auditDetails.text)}</code></span>
         </div>
         <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
@@ -8138,7 +8138,7 @@ function renderRunbookActionButtons(selected, selectedValidation, selectedAgentR
   if (!isMachineUiEnabled()) {
     return `
       <button class="primary" data-runbook-action="${selectedAgentReady ? 'agent-handoff' : 'start-local'}" data-path="${escapeHtml(selected)}" ${selectedValidation?.canExecute || selectedAgentReady ? '' : 'disabled'} title="${selectedAgentReady ? 'Prepare a copyable path-only launch prompt for a supervised agent session.' : ''}">${selectedAgentReady ? 'Prepare Handoff' : 'Run locally'}</button>
-      ${isPipeline ? '<button data-runbook-action="toggle-machine-ui">Show Machine Actions</button>' : ''}
+      ${isPipeline ? '<button data-runbook-action="toggle-machine-ui">Show Managed Run</button>' : ''}
       <button data-runbook-action="validate" data-path="${escapeHtml(selected)}">Check</button>
     `;
   }
@@ -8147,13 +8147,13 @@ function renderRunbookActionButtons(selected, selectedValidation, selectedAgentR
   const runtimeBlockReason = machineRuntimeBlockReason();
   const canMachine = !runtimeBlockReason && isMachineCompatiblePipeline(selectedValidation);
   const machineReason = runtimeBlockReason || (selectedValidation
-    ? (selectedValidation.machineBlockedReasons || []).join(', ') || 'not Machine-compatible'
+    ? (selectedValidation.machineBlockedReasons || []).join(', ') || 'not ready for a managed run'
     : 'Check the pipeline first');
   return `
     <button class="${canLocal ? 'primary' : ''}" data-runbook-action="start-local" data-path="${escapeHtml(selected)}" ${canLocal ? '' : 'disabled'}>Run locally</button>
-    ${isPipeline ? `<button class="${!canLocal && canMachine ? 'primary' : ''}" data-runbook-action="run-machine" data-path="${escapeHtml(selected)}" ${canMachine ? '' : 'disabled'} title="${escapeHtml(canMachine ? 'Create a durable Machine run.' : machineReason)}">Run Machine</button>` : ''}
+    ${isPipeline ? `<button class="${!canLocal && canMachine ? 'primary' : ''}" data-runbook-action="run-machine" data-path="${escapeHtml(selected)}" ${canMachine ? '' : 'disabled'} title="${escapeHtml(canMachine ? 'Create a durable managed run.' : machineReason)}">Start Managed Run</button>` : ''}
     ${selectedAgentReady ? `<button data-runbook-action="agent-handoff" data-path="${escapeHtml(selected)}">Prepare Handoff</button>` : ''}
-    ${isPipeline ? '<button data-runbook-action="toggle-machine-ui">Hide Machine Actions</button>' : ''}
+    ${isPipeline ? '<button data-runbook-action="toggle-machine-ui">Hide Managed Run</button>' : ''}
     <button data-runbook-action="validate" data-path="${escapeHtml(selected)}">Check</button>
   `;
 }
@@ -8223,7 +8223,7 @@ function renderRunbooksPanel() {
         <div class="runbook-chip-row">
           ${runbookStatusChip(selectedValidation)}
           ${selectedValidation ? `<span class="runbook-chip">${selectedValidation.nodeCount || 0} nodes</span>` : ''}
-          ${isMachineCompatiblePipeline(selectedValidation) ? '<span class="runbook-chip good">Machine-compatible</span>' : ''}
+          ${isMachineCompatiblePipeline(selectedValidation) ? '<span class="runbook-chip good">Managed-run ready</span>' : ''}
           ${selectedValidation?.handoffCompatibility?.available ? '<span class="runbook-chip">handoff-compatible</span>' : ''}
           ${renderMachineRuntimeStatusChip(selected, selectedValidation)}
         </div>
@@ -8420,9 +8420,9 @@ async function requestMachineCapabilityToken() {
     const body = document.createElement('div');
     body.className = 'runbook-modal-body';
     body.innerHTML = `
-      <p>Enter the Machine capability token for this desktop session.</p>
+      <p>Enter the run authorization token for this desktop session.</p>
       <input class="runbook-task-input" type="password" data-machine-token-input autocomplete="off" placeholder="Capability token">
-      <div class="runbook-diagnostic warning">The token stays in session memory and is used only for Machine run-store mutations.</div>
+      <div class="runbook-diagnostic warning">The token stays in session memory and is used only for managed run-store mutations.</div>
     `;
     const finish = (value) => {
       if (settled) return;
@@ -8431,7 +8431,7 @@ async function requestMachineCapabilityToken() {
       resolve(value || '');
     };
     openFmtModal({
-      title: 'Machine Capability',
+      title: 'Run Authorization',
       body,
       onClose: () => finish(''),
       footer: [
@@ -8459,7 +8459,7 @@ async function startSelectedMachineRun(runbookPath) {
   }
   const validation = selectedRunbookValidation || getRunbookCache(runbookValidationCache, runbookPath);
   if (!isMachineCompatiblePipeline(validation)) {
-    alert('Pipeline must validate as Machine-compatible before starting a Machine run.');
+    alert('Pipeline must be ready for a managed run before starting.');
     return;
   }
   const token = await requestMachineCapabilityToken();
@@ -8474,7 +8474,7 @@ async function startSelectedMachineRun(runbookPath) {
     if (created?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
     }
-    alert(created?.error || 'Machine run could not be created.');
+    alert(created?.error || 'Managed run could not be created.');
     return;
   }
   const snapshot = await window.orpad.machine.getRun({
@@ -8511,7 +8511,7 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
   if (!executed?.success) {
     if (executed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      alert(executed?.error || 'Machine execute step failed.');
+      alert(executed?.error || 'Managed run step failed.');
       return;
     }
     lastMachineRunRecord = {
@@ -8552,7 +8552,7 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
   if (!resumed?.success) {
     if (resumed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      alert(resumed?.error || 'Machine resume failed.');
+      alert(resumed?.error || 'Resume failed.');
       return;
     }
     lastMachineRunRecord = {
@@ -8596,7 +8596,7 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
   if (!cancelled?.success) {
     if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      alert(cancelled?.error || 'Machine claim cancellation failed.');
+      alert(cancelled?.error || 'Claim cancellation failed.');
       return;
     }
     lastMachineRunRecord = {
@@ -8638,7 +8638,7 @@ async function exportSelectedMachineRun(runbookPath, runId) {
     if (exported?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
     }
-    alert(exported?.error || 'Machine latest-run export failed.');
+    alert(exported?.error || 'Latest-run export failed.');
     return;
   }
   const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || { runId, events: [] };
@@ -8669,7 +8669,7 @@ async function decideSelectedMachineApproval(runbookPath, runId, approvalId, dec
     if (decided?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
     }
-    alert(decided?.error || 'Machine approval decision failed.');
+    alert(decided?.error || 'Approval decision failed.');
     return;
   }
   selectedRunbookPath = runbookPath;
@@ -8700,7 +8700,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     record = await loadMachineRunRecord(runbookPath, runId);
   }
   if (!record) {
-    alert('Machine run snapshot could not be loaded.');
+    alert('Run snapshot could not be loaded.');
     return;
   }
 
@@ -8726,7 +8726,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
       machineMarkdownCell(file.sha256),
       '|',
     ].join(' ')),
-  ] : ['_No Machine artifacts registered yet._'];
+  ] : ['_No run artifacts registered yet._'];
   const metadataLines = [
     `Run: ${actualRunId}`,
     `Lifecycle: ${runState.lifecycleStatus || 'unknown'}`,
@@ -8738,7 +8738,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     manifest?.sourceEventSequence != null ? `Source event sequence: ${manifest.sourceEventSequence}` : '',
   ].filter(Boolean);
   const body = [
-    '# Machine Artifact Manifest',
+    '# Run Artifact Manifest',
     '',
     ...metadataLines,
     '',
@@ -8755,7 +8755,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   ].join('\n');
 
   createTab(null, null, body, '', {
-    title: `Machine Artifacts ${actualRunId}.md`,
+    title: `Run Artifacts ${actualRunId}.md`,
     viewType: 'markdown',
     forceUnsaved: true,
   });
@@ -9889,8 +9889,8 @@ function setupCommandRegistry() {
     { id: 'view.search', title: 'Search in Files', category: 'View', keybinding: 'Ctrl Shift F', run: () => showSidebar('search') },
     { id: 'view.backlinks', title: 'Toggle Backlinks', category: 'View', keybinding: 'Ctrl Shift B', run: () => showSidebar('backlinks') },
     { id: 'view.runbooks', title: 'Open Pipes', category: 'View', run: () => showSidebar('runbooks') },
-    { id: 'runbook.showMachineRuntime', title: 'Show Machine Actions', category: 'Pipeline', keybinding: 'Ctrl Shift M', keywords: ['machine', 'orchestration', 'runtime'], run: () => showMachineRuntimeControls() },
-    { id: 'runbook.toggleMachineRuntime', title: 'Toggle Machine Actions', category: 'Pipeline', keywords: ['machine', 'orchestration', 'runtime'], run: () => toggleMachineRuntimeControls() },
+    { id: 'runbook.showMachineRuntime', title: 'Show Managed Run', category: 'Pipeline', keybinding: 'Ctrl Shift M', keywords: ['managed run', 'orchestration', 'runtime'], run: () => showMachineRuntimeControls() },
+    { id: 'runbook.toggleMachineRuntime', title: 'Toggle Managed Run', category: 'Pipeline', keywords: ['managed run', 'orchestration', 'runtime'], run: () => toggleMachineRuntimeControls() },
     { id: 'runbook.validateActive', title: 'Check Active Pipeline', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); } },
     { id: 'runbook.createRunRecord', title: 'Save Evidence', category: 'Pipeline', enabled: ({ activeTab, workspacePath }) => !!workspacePath && !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await createSelectedRunRecord(activeTab.filePath); } },
     { id: 'runbook.inspectContext', title: 'AI Context', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await openRunbookContextInspector(activeTab.filePath, selectedRunbookValidation); } },
@@ -11716,7 +11716,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && e.shiftKey && key === 'f') { runShortcut('view.search'); return; }
   // Ctrl+Shift+B - backlinks
   if (mod && e.shiftKey && key === 'b') { runShortcut('view.backlinks'); return; }
-  // Ctrl+Shift+M - Machine actions
+  // Ctrl+Shift+M - managed run actions
   if (mod && e.shiftKey && key === 'm') { runShortcut('runbook.showMachineRuntime'); return; }
   if (key === 'escape') {
     if (document.body.classList.contains('zen-mode')) setZenMode(false);
