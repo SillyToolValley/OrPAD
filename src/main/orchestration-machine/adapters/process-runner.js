@@ -5,7 +5,8 @@ const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 function isSecretEnvName(name) {
-  return /(^SENTRY_DSN$|^GITHUB_TOKEN$|(^|_)(KEY|TOKEN|SECRET)$|PASSWORD)/i.test(String(name || ''));
+  return /(^SENTRY_DSN$|^GITHUB_TOKEN$|^DATABASE_URL$|CONNECTION_STRING|(^|_)(AUTH|COOKIE|CREDENTIALS?|KEY|PASSPHRASE|PRIVATE_KEY|SECRET|SESSION|TOKEN)(_|$)|PASSWORD)/i
+    .test(String(name || ''));
 }
 
 function sanitizeEnvironment(baseEnv = process.env, extraEnv = {}) {

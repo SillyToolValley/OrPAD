@@ -132,12 +132,21 @@ test('process runner uses sanitized environment and captures transcript output',
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-process-runner-'));
   const sanitized = sanitizeEnvironment({
     ...process.env,
+    DATABASE_URL: 'postgres://secret',
+    OPENAI_API_KEY: 'sk-test',
+    SESSION_COOKIE: 'cookie-secret',
     SECRET_TOKEN: 'do-not-inherit',
     SAFE_VALUE: 'visible',
   });
 
+  assert.equal(sanitized.env.DATABASE_URL, undefined);
+  assert.equal(sanitized.env.OPENAI_API_KEY, undefined);
+  assert.equal(sanitized.env.SESSION_COOKIE, undefined);
   assert.equal(sanitized.env.SECRET_TOKEN, undefined);
   assert.equal(sanitized.env.SAFE_VALUE, 'visible');
+  assert.equal(sanitized.masked.includes('DATABASE_URL'), true);
+  assert.equal(sanitized.masked.includes('OPENAI_API_KEY'), true);
+  assert.equal(sanitized.masked.includes('SESSION_COOKIE'), true);
   assert.equal(sanitized.masked.includes('SECRET_TOKEN'), true);
 
   const result = await runMachineProcess({
