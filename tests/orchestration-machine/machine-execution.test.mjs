@@ -11,7 +11,21 @@ const {
   executeMachineRunStep,
   findQueueItem,
   readMachineEvents,
+  validateArtifactContract,
 } = require('../../src/main/orchestration-machine');
+
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
+}
 
 async function makeGraphHarnessWorkspace(runId = 'run_20260430_graph_harness') {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-graph-harness-'));
@@ -374,6 +388,24 @@ test('ArtifactContract fail-run blocks completion when required artifacts are mi
   const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/artifact');
   assert.equal(failed.payload.code, 'MACHINE_ARTIFACT_CONTRACT_MISSING');
   assert.equal(events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
+});
+
+test('ArtifactContract rejects symlinked queue requirements before treating them as present', async t => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_artifact_contract_symlink');
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-contract-outside-'));
+  const outsideFile = path.join(outsideRoot, 'journal.jsonl');
+  await fs.writeFile(outsideFile, '{"outside":true}\n', 'utf8');
+  await fs.mkdir(path.join(run.runRoot, 'queue'), { recursive: true });
+  if (!await createTestSymlink(t, outsideFile, path.join(run.runRoot, 'queue/link.jsonl'), 'file')) return;
+
+  await assert.rejects(
+    validateArtifactContract(run.runRoot, {
+      queueRoot: 'queue',
+      requiredQueue: ['link.jsonl'],
+      onMissing: 'warn',
+    }),
+    error => error?.code === 'MACHINE_ARTIFACT_SYMLINK_UNSAFE',
+  );
 });
 
 test('Barrier fail policy rejects when declared dependencies have not completed', async () => {

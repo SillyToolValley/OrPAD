@@ -5,7 +5,7 @@ const path = require('path');
 const { createCliAgentAdapter, cliOverlayRoot } = require('./adapters/cli-agent');
 const { createAdapterRequest } = require('./adapters/proposal-adapter');
 const { summarizeApprovalsFromEvents } = require('./approvals');
-const { registerArtifact, writeArtifactManifest } = require('./artifacts');
+const { assertNoSymlinkInRunPath, registerArtifact, writeArtifactManifest } = require('./artifacts');
 const { claimNextQueuedItem } = require('./dispatcher');
 const { createCommandGrant } = require('./command-grants');
 const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
@@ -283,6 +283,7 @@ function contractExpectedPath(root, requiredPath, fallbackRoot) {
 
 async function runRelativeFileExists(runRoot, relativePath) {
   try {
+    await assertNoSymlinkInRunPath(runRoot, relativePath);
     const stats = await fsp.stat(path.join(path.resolve(runRoot), ...relativePath.split('/')));
     return stats.isFile();
   } catch (err) {
