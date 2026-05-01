@@ -4,6 +4,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { launchElectron } from '../helpers';
 
+const {
+  claimNextQueuedItem,
+  createMachineRun,
+  ingestCandidateProposal,
+  transitionQueueItem,
+} = require('../../src/main/orchestration-machine');
+
 function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
   fs.writeFileSync(path.join(userData, 'approved-workspace.json'), JSON.stringify({
     version: 1,
@@ -101,6 +108,44 @@ function requireMachineApproval(pipelinePath: string): void {
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
   pipeline.run.machineHarness.candidateProposal.approvalRequired = true;
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+}
+
+async function seedActiveClaimRun(workspace: string, pipelinePath: string): Promise<{ runId: string; runRoot: string; claimId: string; itemId: string }> {
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  const candidate = pipeline.run.machineHarness.candidateProposal;
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_active_claim',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const item = await ingestCandidateProposal(run.runRoot, candidate, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-active-claim',
+    now: '2026-05-01T00:00:01.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: item.item.id,
+    toState: 'queued',
+    reason: 'machine-ui.fixture.triage.accepted',
+    transitionId: 'triage:machine-ui-active-claim',
+    now: '2026-05-01T00:00:02.000Z',
+  });
+  const claim = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-machine-ui-smoke',
+    workerId: 'machine-ui-e2e-worker',
+    recoverStale: false,
+    leaseMs: 24 * 60 * 60 * 1000,
+    now: '2026-05-01T00:00:03.000Z',
+  });
+  return {
+    runId: run.runId,
+    runRoot: run.runRoot,
+    claimId: claim.claim.claimId,
+    itemId: claim.item.id,
+  };
 }
 
 async function enableMachineUi(win: any): Promise<void> {
@@ -308,6 +353,52 @@ test('Machine UI switches between durable run history snapshots', async () => {
   await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`).click();
   await expect(win.locator('#runbooks-content')).toContainText(secondRunId);
   await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI cancels an active claim and releases visible locks', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const seeded = await seedActiveClaimRun(workspace, pipelinePath);
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await enableMachineUi(win);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText(seeded.runId);
+  await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
+  await expect(win.locator('#runbooks-content')).toContainText('1 active write-set lock: src/smoke-target.md');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume guarded: 1 active claim still owns work');
+  await expect(win.locator('#runbooks-content')).toContainText('Cancel ready: claim claim-machine-ui-smoke owns machine-ui-smoke');
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toBeEnabled();
+
+  await win.locator('button[data-runbook-action="machine-cancel-claim"]').click();
+  await submitMachineCapabilityToken(win);
+  await expect(win.locator('#runbooks-content')).toContainText('Last cancellation: machine-ui-smoke moved to blocked; claim claim-machine-ui-smoke released');
+  await expect(win.locator('#runbooks-content')).toContainText('No active claims');
+  await expect(win.locator('#runbooks-content')).toContainText('No active write-set locks');
+  await expect(win.locator('#runbooks-content')).toContainText('cancelled');
+  await expect(win.locator('#runbooks-content')).toContainText('blocked');
+  await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveCount(0);
+  expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'queue', 'blocked', `${seeded.itemId}.json`), 'utf-8')).state).toBe('blocked');
+  expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'locks', 'claims', `${seeded.claimId}.json`), 'utf-8')).state).toBe('cancelled');
+  expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'locks', 'write-sets', `wset-${seeded.claimId}.json`), 'utf-8')).state).toBe('cancelled');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

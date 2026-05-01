@@ -7803,9 +7803,11 @@ function machineExecuteControlDetails(record) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
   const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
+  const activeClaims = record?.activeClaims || [];
   if (!runId) return 'Execute unavailable: no Machine run selected';
   if (isMachineRunTerminal(runState)) return `Execute unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}`;
   if (pendingApprovals > 0) return `Execute blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first`;
+  if (activeClaims.length) return `Execute guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing`;
   return 'Execute the next Machine runtime step.';
 }
 
@@ -7912,8 +7914,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const resumeDetails = machineResumeControlDetails(record);
   const cancellationDetails = machineCancellationControlDetails(record);
   const runId = runState.runId || record.runId || '';
-  const executeDisabled = !runId || runTerminal || approvalPending;
-  const resumeDisabled = !runId || runTerminal || approvalPending || !window.orpad?.machine?.resumeRun;
+  const hasActiveClaims = activeClaims.length > 0;
+  const executeDisabled = !runId || runTerminal || approvalPending || hasActiveClaims;
+  const resumeDisabled = !runId || runTerminal || approvalPending || hasActiveClaims || !window.orpad?.machine?.resumeRun;
   const cancelDisabled = runTerminal || !window.orpad?.machine?.cancelClaim;
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
