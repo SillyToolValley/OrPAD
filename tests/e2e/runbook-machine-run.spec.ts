@@ -210,8 +210,10 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content .runbook-chip')).toHaveCount(0);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('machine-workstream');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for managed run or supervised handoff.');
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
   await win.locator('[data-pipeline-run-menu]').click();
+  await expect(win.locator('button[data-pipeline-run-action="local"]')).toBeDisabled();
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toContainText('Start Managed Run');
   await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toContainText('Prepare Handoff');
   await win.locator('button[data-pipeline-run-action="managed"]').click();
@@ -304,9 +306,20 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
   await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toHaveCount(0);
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toHaveCount(0);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('managed run setup needed');
   await win.waitForTimeout(250);
   await win.locator('[data-pipeline-run-menu]').click();
-  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
+  await expect(win.locator('button[data-pipeline-run-action="local"]')).toBeDisabled();
+  const managedRun = win.locator('button[data-pipeline-run-action="managed"]');
+  await expect(managedRun).toBeEnabled();
+  await win.evaluate(() => {
+    (window as any).__orpadAlerts = [];
+    window.alert = (message?: any) => {
+      (window as any).__orpadAlerts.push(String(message ?? ''));
+    };
+  });
+  await managedRun.click();
+  await expect.poll(() => win.evaluate(() => ((window as any).__orpadAlerts || []).join('\n'))).toContain('Managed runs are unavailable in this session');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

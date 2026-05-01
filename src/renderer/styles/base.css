@@ -1804,12 +1804,28 @@ body.json-diff-mode #preview-pane {
   color: var(--text-primary);
   font-size: calc(13px * var(--us));
 }
-.pipeline-runbar-meta span {
+.pipeline-runbar-path,
+.pipeline-runbar-status {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pipeline-runbar-path {
   color: var(--text-tertiary);
   font-size: calc(11px * var(--us));
+}
+.pipeline-runbar-status {
+  color: var(--text-secondary);
+  font-size: calc(11px * var(--us));
+}
+.pipeline-runbar-status.good {
+  color: var(--syntax-string, #9ece6a);
+}
+.pipeline-runbar-status.warn {
+  color: var(--syntax-meta, #e0af68);
+}
+.pipeline-runbar-status.danger {
+  color: var(--danger-color, #ff7676);
 }
 .pipeline-runbar-actions {
   position: relative;

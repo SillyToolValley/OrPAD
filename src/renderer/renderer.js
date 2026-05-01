@@ -2547,6 +2547,24 @@ function selectedPipelineValidation(runbookPath) {
   return getRunbookCache(runbookValidationCache, runbookPath);
 }
 
+function pipelinePreviewRunStatus(validation, runtimeBlockReason) {
+  if (!validation) return { state: '', text: 'Not checked yet.' };
+  if (!validation.ok) {
+    const issue = (validation.diagnostics || []).find(isDiagnosticError) || (validation.diagnostics || [])[0];
+    return { state: 'danger', text: issue?.code ? `Check failed: ${issue.code}` : 'Check failed.' };
+  }
+  if (isAgentOrchestratedPipeline(validation)) {
+    if (runtimeBlockReason) {
+      return { state: 'warn', text: 'Workstream pipeline: local runner unavailable; managed run setup needed.' };
+    }
+    return { state: 'good', text: 'Ready for managed run or supervised handoff.' };
+  }
+  if (validation.canExecute) {
+    return { state: 'good', text: 'Ready for local run.' };
+  }
+  return { state: 'warn', text: 'Checked, but no executable run mode is available yet.' };
+}
+
 function renderPipelinePreviewRunBar(context = pipelineContextForPath()) {
   if (!context?.pipelinePath) return '';
   const runbookPath = context.pipelinePath;
@@ -2559,10 +2577,12 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath()) {
   const machineReason = runtimeBlockReason || (checked
     ? (validation.machineBlockedReasons || []).join(', ') || 'This pipeline is not ready for a managed run yet.'
     : 'Check and start a durable run with OrPAD-owned queue, state, and artifacts.');
-  const machineDisabled = !!runtimeBlockReason || (checked && !isMachineCompatiblePipeline(validation));
+  const machineCompatible = isMachineCompatiblePipeline(validation);
+  const machineDisabled = checked && !machineCompatible;
   const defaultTitle = agentReady
     ? 'Prepare a supervised agent handoff'
     : 'Run this pipeline';
+  const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason);
   const activeLabel = context.activeRelativePath || (context.isManifest ? 'pipeline.or-pipeline' : runbookRelativePath(runbookPath));
   if (isMachineApiAvailable() && !machineRuntimeStatus && !machineRuntimeStatusLoading) {
     void refreshMachineRuntimeStatus();
@@ -2571,7 +2591,8 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath()) {
     <div class="pipeline-runbar" data-pipeline-preview-runbar data-pipeline-path="${escapeHtml(runbookPath)}">
       <div class="pipeline-runbar-meta">
         <strong>${escapeHtml(context.pipelineName || 'Pipeline')}</strong>
-        <span>${escapeHtml(activeLabel)}</span>
+        <span class="pipeline-runbar-path">${escapeHtml(activeLabel)}</span>
+        <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
       </div>
       <div class="pipeline-runbar-actions">
         <button class="pipeline-run-primary" data-pipeline-run-action="default" data-path="${escapeHtml(runbookPath)}" title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
@@ -2583,7 +2604,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath()) {
           </summary>
           <div class="pipeline-run-menu" role="menu">
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline is not available for the local MVP runner.' : 'Run with the local MVP runner.')}">Run locally</button>
-            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineDisabled ? machineReason : 'Start a durable run with OrPAD-owned queue, state, and artifacts.')}">Start Managed Run</button>
+            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineReason || 'Start a durable run with OrPAD-owned queue, state, and artifacts.')}">Start Managed Run</button>
             <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No agent handoff is required for the checked pipeline.' : 'Prepare a path-only supervised agent handoff.')}">Prepare Handoff</button>
             <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}">Check</button>
           </div>
@@ -8412,7 +8433,11 @@ async function requestMachineCapabilityToken() {
 }
 
 async function startSelectedMachineRun(runbookPath) {
-  if (!workspacePath || !runbookPath || !window.orpad?.machine) return;
+  if (!workspacePath || !runbookPath) return;
+  if (!window.orpad?.machine) {
+    alert('Managed runs are unavailable in this build.');
+    return;
+  }
   if (!await ensureMachineRuntimeReady()) return;
   if (!selectedRunbookValidation || selectedRunbookPath !== runbookPath) {
     await validateSelectedRunbook(runbookPath);
