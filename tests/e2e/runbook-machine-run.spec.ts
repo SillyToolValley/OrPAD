@@ -144,6 +144,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
   await expect(win.locator('#runbooks-content')).toContainText('Latest-run export');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume ready');
+  await expect(win.locator('#runbooks-content')).toContainText('No active claim to cancel');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
@@ -158,6 +160,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume unavailable: terminal completed/done');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
@@ -231,6 +234,8 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('approval.requested');
   await expect(win.locator('#runbooks-content')).toContainText('Approval');
   await expect(win.locator('#runbooks-content')).toContainText('1 pending approval: machine-ui-smoke');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume blocked: 1 pending approval must be decided first');
+  await expect(win.locator('#runbooks-content')).toContainText('No active claim to cancel');
   await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
@@ -241,6 +246,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await win.locator('button[data-runbook-action="machine-approve-approval"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('approval.decided');
   await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: approved');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume ready');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
@@ -248,6 +254,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume unavailable: terminal completed/done');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 

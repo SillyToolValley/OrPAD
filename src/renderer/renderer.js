@@ -7716,6 +7716,17 @@ function machineActiveClaimDetails(record) {
   return `${machineCountLabel(activeClaims.length, 'active claim')}: ${label}`;
 }
 
+function machineActiveWriteSetDetails(record) {
+  const activeWriteSets = record?.activeWriteSets || [];
+  if (!activeWriteSets.length) return 'No active write-set locks';
+  const first = activeWriteSets[0];
+  const paths = (first.paths || [])
+    .slice(0, 3)
+    .join(', ');
+  const more = (first.paths || []).length > 3 ? `, +${first.paths.length - 3} more` : '';
+  return `${machineCountLabel(activeWriteSets.length, 'active write-set lock')}${paths ? `: ${paths}${more}` : ''}`;
+}
+
 function machineShellArg(value) {
   return `"${String(value || '').replace(/"/g, '\\"')}"`;
 }
@@ -7774,6 +7785,80 @@ function machineArtifactSummary(record) {
   return `${machineCountLabel(files.length, 'file')} from ${machineArtifactManifestSource(record)}${preview ? `: ${preview}${more}` : ''}`;
 }
 
+function machineQueueInventorySummary(inventory) {
+  const counts = inventory?.counts || {};
+  const labels = ['queued', 'claimed', 'blocked', 'done']
+    .map(state => counts[state] ? `${counts[state]} ${state}` : '')
+    .filter(Boolean);
+  return labels.length ? labels.join(', ') : 'no queue inventory';
+}
+
+function machineRunStatusLabel(runState) {
+  return [runState?.lifecycleStatus, runState?.summaryStatus]
+    .filter(Boolean)
+    .join('/');
+}
+
+function machineExecuteControlDetails(record) {
+  const runState = record?.runState || {};
+  const runId = runState.runId || record?.runId || '';
+  const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
+  if (!runId) return 'Execute unavailable: no Machine run selected';
+  if (isMachineRunTerminal(runState)) return `Execute unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}`;
+  if (pendingApprovals > 0) return `Execute blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first`;
+  return 'Execute the next Machine runtime step.';
+}
+
+function machineResumeControlDetails(record) {
+  const runState = record?.runState || {};
+  const runId = runState.runId || record?.runId || '';
+  const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
+  const activeClaims = record?.activeClaims || [];
+  const resume = record?.resume || null;
+  if (!runId) {
+    return { state: 'warn', text: 'Resume unavailable: no Machine run selected' };
+  }
+  if (!window.orpad?.machine?.resumeRun) {
+    return { state: 'warn', text: 'Resume unavailable: Machine resume IPC is not enabled' };
+  }
+  if (isMachineRunTerminal(runState)) {
+    return { state: 'warn', text: `Resume unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}` };
+  }
+  if (pendingApprovals > 0) {
+    return { state: 'warn', text: `Resume blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first` };
+  }
+  if (activeClaims.length) {
+    return { state: 'warn', text: `Resume guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before resuming` };
+  }
+  if (resume) {
+    const repaired = resume.queueRepair?.repaired?.length || 0;
+    return {
+      state: 'good',
+      text: `Last resume: ${machineCountLabel(repaired, 'queue repair')}; ${machineCountLabel(resume.staleClaimCount, 'stale claim')} recovered; ${machineQueueInventorySummary(resume.inventory)}`,
+    };
+  }
+  return { state: 'good', text: 'Resume ready: Machine will repair derived queue snapshots and recover stale claims before continuing' };
+}
+
+function machineCancellationControlDetails(record) {
+  const activeClaims = record?.activeClaims || [];
+  const cancellation = record?.cancellation || null;
+  if (cancellation) {
+    return {
+      state: 'good',
+      text: `Last cancellation: ${cancellation.itemId || 'item'} moved to ${cancellation.toState || 'blocked'}; claim ${cancellation.claimId || 'claim'} released`,
+    };
+  }
+  if (activeClaims.length) {
+    const first = activeClaims[0];
+    return {
+      state: 'warn',
+      text: `Cancel ready: claim ${first.claimId || 'claim'} owns ${first.itemId || 'work item'}; ${machineActiveWriteSetDetails(record)}`,
+    };
+  }
+  return { state: 'good', text: 'No active claim to cancel' };
+}
+
 function isMachineRunTerminal(runState) {
   return ['completed', 'cancelled', 'failed'].includes(runState?.lifecycleStatus)
     || runState?.summaryStatus === 'done';
@@ -7820,9 +7905,16 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const nodeCompletionDetails = machineNodeCompletionDetails(record);
   const approvalDetails = machineApprovalDetails(record);
   const activeClaimDetails = machineActiveClaimDetails(record);
+  const activeWriteSetDetails = machineActiveWriteSetDetails(record);
   const auditDetails = machineAuditDetails(record);
   const artifactDetails = machineArtifactSummary(record);
+  const executeDetails = machineExecuteControlDetails(record);
+  const resumeDetails = machineResumeControlDetails(record);
+  const cancellationDetails = machineCancellationControlDetails(record);
   const runId = runState.runId || record.runId || '';
+  const executeDisabled = !runId || runTerminal || approvalPending;
+  const resumeDisabled = !runId || runTerminal || approvalPending || !window.orpad?.machine?.resumeRun;
+  const cancelDisabled = runTerminal || !window.orpad?.machine?.cancelClaim;
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
           ${pendingApprovals.slice(0, 3).map(approval => `
@@ -7842,9 +7934,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ${renderMachineRunHistory(runbookPath, runId)}
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
-        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending ? 'disabled' : ''}>Execute Step</button>
-        <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending || !window.orpad?.machine?.resumeRun ? 'disabled' : ''}>Resume</button>
-        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${runTerminal || !window.orpad?.machine?.cancelClaim ? 'disabled' : ''}>Cancel Claim</button>` : ''}
+        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Execute Step</button>
+        <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Resume</button>
+        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Claim</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>View Artifacts</button>
       </div>
@@ -7866,7 +7958,15 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         </div>
         <div class="runbook-guide">
           <strong>Queue</strong>
-          <span>${escapeHtml([queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet', activeClaimDetails].join('; '))}</span>
+          <span>${escapeHtml([queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet', activeClaimDetails, activeWriteSetDetails].join('; '))}</span>
+        </div>
+        <div class="runbook-guide ${escapeHtml(resumeDetails.state)}">
+          <strong>Resume</strong>
+          <span>${escapeHtml(resumeDetails.text)}</span>
+        </div>
+        <div class="runbook-guide ${escapeHtml(cancellationDetails.state)}">
+          <strong>Cancellation</strong>
+          <span>${escapeHtml(cancellationDetails.text)}</span>
         </div>
         <div class="runbook-guide">
           <strong>Artifacts</strong>
