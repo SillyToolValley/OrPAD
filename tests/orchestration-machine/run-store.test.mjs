@@ -46,6 +46,19 @@ async function makeWorkspace() {
   return { workspaceRoot, pipelineDir, pipelinePath };
 }
 
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
+}
+
 test('path resolver treats legacy latest-run refs as durable run aliases', async () => {
   const { pipelineDir } = await makeWorkspace();
   const runRoot = durableRunRoot(pipelineDir, 'run_20260430_000001');
@@ -147,6 +160,31 @@ test('createMachineRun rejects pipeline paths outside the workspace root', async
       now: fixedNow,
     }),
     error => error?.code === 'MACHINE_PIPELINE_OUTSIDE_WORKSPACE',
+  );
+});
+
+test('createMachineRun rejects symlinked pipeline files before reading targets', async t => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-symlink-pipeline-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/symlink-machine-pipeline');
+  await fs.mkdir(pipelineDir, { recursive: true });
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-symlink-target-'));
+  const outsidePipelinePath = path.join(outsideRoot, 'pipeline.or-pipeline');
+  await fs.writeFile(outsidePipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'outside-pipeline',
+  }, null, 2), 'utf8');
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  if (!await createTestSymlink(t, outsidePipelinePath, pipelinePath, 'file')) return;
+
+  await assert.rejects(
+    createMachineRun({
+      workspaceRoot,
+      pipelinePath,
+      runId: 'run_20260430_symlink_pipeline',
+      now: fixedNow,
+    }),
+    error => error?.code === 'MACHINE_PIPELINE_SYMLINK_UNSAFE',
   );
 });
 

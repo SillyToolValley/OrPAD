@@ -214,6 +214,33 @@ test('Machine IPC rejects pipeline paths outside the approved workspace', async 
   assert.match(result.error, /outside workspace/i);
 });
 
+test('Machine IPC rejects symlinked pipeline files before validation', async t => {
+  const { workspaceRoot } = await makeWorkspace();
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/ipc-symlink-pipeline');
+  await fs.mkdir(pipelineDir, { recursive: true });
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-ipc-symlink-target-'));
+  const outsidePipeline = path.join(outsideRoot, 'pipeline.or-pipeline');
+  await fs.writeFile(outsidePipeline, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'outside-pipeline',
+  }, null, 2), 'utf8');
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  if (!await createTestSymlink(t, outsidePipeline, pipelinePath, 'file')) return;
+
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+
+  const result = await handlers.get(MACHINE_IPC_CHANNELS.validatePipeline)(event, {
+    workspacePath: workspaceRoot,
+    pipelinePath,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, 'MACHINE_PIPELINE_SYMLINK_UNSAFE');
+});
+
 test('Machine IPC validates, creates, reads, lists, and exports a Machine run with capability token', async () => {
   const { workspaceRoot, pipelinePath, pipelineDir } = await makeWorkspace();
   const event = senderEvent();

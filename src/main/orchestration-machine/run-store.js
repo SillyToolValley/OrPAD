@@ -5,7 +5,12 @@ const path = require('path');
 const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
 const { appendMachineEvent, projectRunStateFromEvents, readMachineEvents } = require('./events');
 const { ensureRunLayout, readJsonIfExists, writeJsonAtomic } = require('./metadata-store');
-const { durableRunRoot, latestRunExportRoot, resolvePipelineContext } = require('./path-resolver');
+const {
+  assertNoSymlinkInWorkspacePath,
+  durableRunRoot,
+  latestRunExportRoot,
+  resolvePipelineContext,
+} = require('./path-resolver');
 
 const fsp = fs.promises;
 const validator = createContractValidator();
@@ -62,6 +67,10 @@ async function createMachineRun(options = {}) {
     canonicalStoreKind = 'jsonl',
   } = options;
   const context = resolvePipelineContext({ workspaceRoot, pipelinePath });
+  await assertNoSymlinkInWorkspacePath(context.workspaceRoot, context.pipelinePath, {
+    code: 'MACHINE_PIPELINE_SYMLINK_UNSAFE',
+    label: 'Machine pipeline file',
+  });
   const pipeline = await readPipeline(context.pipelinePath);
   const targetRunRoot = durableRunRoot(context.pipelineDir, runId);
   const exportRoot = latestRunExportRoot(context.pipelineDir);

@@ -1,5 +1,7 @@
+const fs = require('fs');
 const path = require('path');
 
+const fsp = fs.promises;
 const LEGACY_LATEST_RUN_PREFIX = 'harness/generated/latest-run';
 
 function toPortablePath(value) {
@@ -39,6 +41,50 @@ function durableRunRoot(pipelineDir, runId) {
 function latestRunExportRoot(pipelineDir) {
   if (!pipelineDir) throw new Error('pipelineDir is required.');
   return path.join(path.resolve(pipelineDir), 'harness', 'generated', 'latest-run');
+}
+
+function pathResolverError(code, message, details = {}) {
+  const err = new Error(message);
+  err.code = code;
+  Object.assign(err, details);
+  return err;
+}
+
+async function assertNoSymlinkInWorkspacePath(workspaceRoot, targetPath, options = {}) {
+  const {
+    code = 'MACHINE_WORKSPACE_SYMLINK_UNSAFE',
+    label = 'Path',
+  } = options;
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const resolvedTarget = path.resolve(targetPath);
+  const relativeTarget = path.relative(resolvedWorkspaceRoot, resolvedTarget);
+  if (relativeTarget.startsWith('..') || path.isAbsolute(relativeTarget)) {
+    throw pathResolverError('MACHINE_PIPELINE_OUTSIDE_WORKSPACE', `${label} must stay inside the approved workspace root.`, {
+      workspaceRoot: resolvedWorkspaceRoot,
+      targetPath: resolvedTarget,
+    });
+  }
+
+  const segments = relativeTarget.split(path.sep).filter(Boolean);
+  let current = resolvedWorkspaceRoot;
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let stats = null;
+    try {
+      stats = await fsp.lstat(current);
+    } catch (err) {
+      if (err?.code === 'ENOENT') return false;
+      throw err;
+    }
+    if (stats.isSymbolicLink()) {
+      throw pathResolverError(code, `${label} crosses a symlink: ${targetPath}`, {
+        workspaceRoot: resolvedWorkspaceRoot,
+        targetPath: resolvedTarget,
+        symlinkPath: current,
+      });
+    }
+  }
+  return true;
 }
 
 function resolveRunRef({ pipelineDir, runRoot, ref }) {
@@ -96,6 +142,7 @@ function resolvePipelineContext({ workspaceRoot, pipelinePath }) {
 
 module.exports = {
   LEGACY_LATEST_RUN_PREFIX,
+  assertNoSymlinkInWorkspacePath,
   assertRunIdSegment,
   durableRunRoot,
   isLegacyLatestRunRef,

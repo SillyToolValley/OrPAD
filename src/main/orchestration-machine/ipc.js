@@ -15,7 +15,11 @@ const { assertNoSymlinkInRunPath, assertRunRelativePath } = require('./artifacts
 const { recoverStaleClaims } = require('./dispatcher');
 const { executeMachineRunStep } = require('./machine');
 const { resumeMachineRun } = require('./lifecycle');
-const { latestRunExportRoot, durableRunRoot } = require('./path-resolver');
+const {
+  assertNoSymlinkInWorkspacePath,
+  latestRunExportRoot,
+  durableRunRoot,
+} = require('./path-resolver');
 const { createMachineRun, readRunState } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { cancelClaimedItem } = require('./worker-loop');
@@ -235,6 +239,10 @@ async function resolveMachinePipelineContext(event, authority, request) {
   if (!/\.or-pipeline$/i.test(pipelinePath)) {
     throw machineError('MACHINE_IPC_SCHEMA_INVALID', 'Machine pipeline file must be an .or-pipeline file.');
   }
+  await assertNoSymlinkInWorkspacePath(workspaceRoot, pipelinePath, {
+    code: 'MACHINE_PIPELINE_SYMLINK_UNSAFE',
+    label: 'Machine pipeline file',
+  });
   return {
     workspaceRoot,
     pipelinePath,
