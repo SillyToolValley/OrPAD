@@ -291,6 +291,37 @@ test('Machine event append binds run.created to the durable run root id', async 
   );
 });
 
+test('Machine event log rejects symlinked append targets', async t => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId: 'run_20260430_event_log_symlink',
+    now: fixedNow,
+  });
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-event-log-target-'));
+  const outsideEvents = path.join(outsideRoot, 'events.jsonl');
+  await fs.writeFile(outsideEvents, '', 'utf8');
+  await fs.rm(eventsPath(run.runRoot));
+  if (!await createTestSymlink(t, outsideEvents, eventsPath(run.runRoot), 'file')) return;
+
+  await assert.rejects(
+    readMachineEvents(run.runRoot),
+    error => error?.code === 'MACHINE_EVENT_LOG_SYMLINK_UNSAFE',
+  );
+  await assert.rejects(
+    appendMachineEvent(run.runRoot, {
+      runId: run.runId,
+      timestamp: '2026-04-30T00:00:01.000Z',
+      actor: 'machine',
+      eventType: 'run.status',
+      toState: 'running',
+    }),
+    error => error?.code === 'MACHINE_EVENT_LOG_SYMLINK_UNSAFE',
+  );
+  assert.equal(await fs.readFile(outsideEvents, 'utf8'), '');
+});
+
 test('run-state can be repaired from committed Machine events', async () => {
   const { workspaceRoot, pipelinePath } = await makeWorkspace();
   const run = await createMachineRun({

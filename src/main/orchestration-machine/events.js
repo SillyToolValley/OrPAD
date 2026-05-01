@@ -11,12 +11,26 @@ function eventsPath(runRoot) {
   return path.join(path.resolve(runRoot), 'events.jsonl');
 }
 
+async function assertEventLogPathSafe(runRoot) {
+  const filePath = eventsPath(runRoot);
+  try {
+    const stats = await fsp.lstat(filePath);
+    if (stats.isSymbolicLink()) {
+      throw eventLogError('MACHINE_EVENT_LOG_SYMLINK_UNSAFE', 'Machine event log must not be a symlink.');
+    }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
 
 async function readMachineEvents(runRoot) {
   const filePath = eventsPath(runRoot);
+  await assertEventLogPathSafe(runRoot);
   try {
     const source = await fsp.readFile(filePath, 'utf8');
     return source
@@ -76,6 +90,7 @@ async function appendMachineEvent(runRoot, event) {
   };
   validator.assertValid('machineEvent', record);
   await ensureDir(path.resolve(runRoot));
+  await assertEventLogPathSafe(runRoot);
   await fsp.appendFile(eventsPath(runRoot), `${JSON.stringify(record)}\n`, 'utf8');
   return record;
 }
@@ -105,6 +120,7 @@ function projectRunStateFromEvents(events) {
 }
 
 module.exports = {
+  assertEventLogPathSafe,
   appendMachineEvent,
   eventsPath,
   nextSequence,
