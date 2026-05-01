@@ -129,6 +129,27 @@ test('createMachineRun writes durable run root and leaves latest-run as export-o
   assert.equal((await readMachineEvents(run.runRoot)).length, 1);
 });
 
+test('createMachineRun rejects pipeline paths outside the workspace root', async () => {
+  const { workspaceRoot } = await makeWorkspace();
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-outside-pipeline-'));
+  const outsidePipelinePath = path.join(outsideRoot, 'outside.or-pipeline');
+  await fs.writeFile(outsidePipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'outside-pipeline',
+  }, null, 2), 'utf8');
+
+  await assert.rejects(
+    createMachineRun({
+      workspaceRoot,
+      pipelinePath: outsidePipelinePath,
+      runId: 'run_20260430_outside_pipeline',
+      now: fixedNow,
+    }),
+    error => error?.code === 'MACHINE_PIPELINE_OUTSIDE_WORKSPACE',
+  );
+});
+
 test('Machine event append is monotonic and validates contract shape', async () => {
   const { workspaceRoot, pipelinePath } = await makeWorkspace();
   const run = await createMachineRun({

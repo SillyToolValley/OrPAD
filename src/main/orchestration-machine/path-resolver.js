@@ -79,6 +79,14 @@ function resolvePipelineContext({ workspaceRoot, pipelinePath }) {
   if (!pipelinePath) throw new Error('pipelinePath is required.');
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const resolvedPipelinePath = path.resolve(resolvedWorkspaceRoot, pipelinePath);
+  const relativePipelinePath = path.relative(resolvedWorkspaceRoot, resolvedPipelinePath);
+  if (relativePipelinePath.startsWith('..') || path.isAbsolute(relativePipelinePath)) {
+    const err = new Error('Pipeline path must stay inside the approved workspace root.');
+    err.code = 'MACHINE_PIPELINE_OUTSIDE_WORKSPACE';
+    err.workspaceRoot = resolvedWorkspaceRoot;
+    err.pipelinePath = resolvedPipelinePath;
+    throw err;
+  }
   return {
     workspaceRoot: resolvedWorkspaceRoot,
     pipelinePath: resolvedPipelinePath,
