@@ -103,6 +103,14 @@ test('exact command grants block unapproved or shell-like command specs', async 
     }, { now: '2026-04-30T00:00:00.000Z' }),
     error => error?.code === 'MACHINE_COMMAND_NOT_GRANTED',
   );
+  assert.throws(
+    () => require('../../src/main/orchestration-machine').assertCommandGranted([{
+      ...grant,
+      grantId: 'grant-invalid-expiry',
+      expiresAt: 'not-a-date',
+    }], spec, { now: '2026-04-30T00:00:00.000Z' }),
+    error => error?.code === 'MACHINE_COMMAND_NOT_GRANTED',
+  );
 });
 
 test('process runner uses sanitized environment and captures transcript output', async () => {

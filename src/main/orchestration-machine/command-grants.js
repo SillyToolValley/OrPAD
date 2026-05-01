@@ -53,7 +53,10 @@ function createCommandGrant(input = {}) {
 
 function isGrantExpired(grant, now = new Date()) {
   if (!grant?.expiresAt) return false;
-  return Date.parse(grant.expiresAt) <= Date.parse(now instanceof Date ? now.toISOString() : String(now));
+  const expiresAt = Date.parse(grant.expiresAt);
+  const nowMs = Date.parse(now instanceof Date ? now.toISOString() : String(now));
+  if (!Number.isFinite(expiresAt) || !Number.isFinite(nowMs)) return true;
+  return expiresAt <= nowMs;
 }
 
 function findMatchingCommandGrant(grants = [], commandSpec = {}, options = {}) {
