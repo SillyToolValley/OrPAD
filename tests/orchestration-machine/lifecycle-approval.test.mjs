@@ -185,6 +185,16 @@ test('approval decisions are accepted only once for a requested approval', async
       runId: run.runId,
       approvalId: paused.approval.approvalId,
       itemId,
+      decision: 'approved',
+      grants: [approvalGrantForItem(itemId, paused.approval.approvalId), true],
+    }),
+    error => error?.code === 'MACHINE_APPROVAL_GRANT_INVALID',
+  );
+  await assert.rejects(
+    recordApprovalDecision(run.runRoot, {
+      runId: run.runId,
+      approvalId: paused.approval.approvalId,
+      itemId,
       decision: 'denied',
       grants: [approvalGrantForItem(itemId, paused.approval.approvalId)],
     }),

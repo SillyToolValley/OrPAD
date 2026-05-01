@@ -5,6 +5,7 @@ const {
   appendRunSummaryStatus,
   assertRunLifecycleCanTransition,
 } = require('./lifecycle');
+const { assertMachineStorageId } = require('./ids');
 const { readRunState } = require('./run-store');
 
 function approvalIdForItem(itemId) {
@@ -27,7 +28,8 @@ async function requestApprovalForItem(runRoot, options = {}) {
   } = options;
   if (!runId) throw new Error('runId is required.');
   if (!item?.id) throw new Error('item is required.');
-  const approvalId = options.approvalId || approvalIdForItem(item.id);
+  const itemId = assertMachineStorageId(item.id, 'itemId');
+  const approvalId = assertMachineStorageId(options.approvalId || approvalIdForItem(itemId), 'approvalId');
   const events = await readMachineEvents(runRoot);
   const existingApproval = summarizeApprovalsFromEvents(events)
     .all
@@ -56,8 +58,8 @@ async function requestApprovalForItem(runRoot, options = {}) {
     schemaVersion: 'orpad.approvalRequest.v1',
     approvalId,
     runId,
-    itemId: item.id,
-    title: item.title || item.id,
+    itemId,
+    title: item.title || itemId,
     reason,
     requestedCapabilities,
     commandSpec,
@@ -77,7 +79,7 @@ async function requestApprovalForItem(runRoot, options = {}) {
     runId,
     actor: 'machine',
     eventType: 'approval.requested',
-    itemId: item.id,
+    itemId,
     reason,
     artifactRefs: [artifact.file.path],
     payload: {
@@ -91,13 +93,13 @@ async function requestApprovalForItem(runRoot, options = {}) {
     runId,
     toState: 'approval-required',
     reason,
-    payload: { approvalId, itemId: item.id },
+    payload: { approvalId, itemId },
   });
   await appendRunSummaryStatus(runRoot, {
     runId,
     summaryStatus: 'blocked',
     reason,
-    payload: { approvalId, itemId: item.id },
+    payload: { approvalId, itemId },
   });
   return {
     approvalId,
@@ -121,50 +123,66 @@ async function recordApprovalDecision(runRoot, options = {}) {
   } = options;
   if (!runId) throw new Error('runId is required.');
   if (!approvalId) throw new Error('approvalId is required.');
+  const safeApprovalId = assertMachineStorageId(approvalId, 'approvalId');
+  const safeItemId = itemId ? assertMachineStorageId(itemId, 'itemId') : '';
   if (!['approved', 'denied'].includes(decision)) {
     throw new Error(`Unsupported approval decision: ${decision}`);
   }
   const approval = summarizeApprovalsFromEvents(await readMachineEvents(runRoot))
     .all
-    .find(item => item.approvalId === approvalId);
+    .find(item => item.approvalId === safeApprovalId);
   if (!approval) {
-    const err = new Error(`Approval request not found: ${approvalId}`);
+    const err = new Error(`Approval request not found: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_NOT_REQUESTED';
-    err.approvalId = approvalId;
+    err.approvalId = safeApprovalId;
     throw err;
   }
   if (approval.status !== 'requested') {
-    const err = new Error(`Approval has already been decided: ${approvalId}`);
+    const err = new Error(`Approval has already been decided: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_ALREADY_DECIDED';
-    err.approvalId = approvalId;
+    err.approvalId = safeApprovalId;
     err.status = approval.status;
     throw err;
   }
-  if (approval.itemId && itemId && approval.itemId !== itemId) {
-    const err = new Error(`Approval decision item mismatch: ${approvalId}`);
+  if (approval.itemId && safeItemId && approval.itemId !== safeItemId) {
+    const err = new Error(`Approval decision item mismatch: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_ITEM_MISMATCH';
-    err.approvalId = approvalId;
+    err.approvalId = safeApprovalId;
     err.expectedItemId = approval.itemId;
-    err.actualItemId = itemId;
+    err.actualItemId = safeItemId;
     throw err;
   }
   const hasStructuredGrant = grants.some(grant => (
     grant?.approved === true
-    && grant?.itemId === itemId
-    && grant?.approvalId === approvalId
+    && grant?.itemId === safeItemId
+    && grant?.approvalId === safeApprovalId
   ));
   if (decision === 'approved' && !hasStructuredGrant) {
-    const err = new Error(`Approved decision must include a structured dispatch grant: ${approvalId}`);
+    const err = new Error(`Approved decision must include a structured dispatch grant: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_APPROVED_GRANT_MISSING';
-    err.approvalId = approvalId;
-    err.itemId = itemId;
+    err.approvalId = safeApprovalId;
+    err.itemId = safeItemId;
+    throw err;
+  }
+  const invalidGrant = decision === 'approved'
+    ? grants.find(grant => !(
+      grant?.approved === true
+      && grant?.itemId === safeItemId
+      && grant?.approvalId === safeApprovalId
+    ))
+    : null;
+  if (invalidGrant) {
+    const err = new Error(`Approved decision includes an invalid dispatch grant: ${safeApprovalId}`);
+    err.code = 'MACHINE_APPROVAL_GRANT_INVALID';
+    err.approvalId = safeApprovalId;
+    err.itemId = safeItemId;
     throw err;
   }
   if (decision === 'denied' && grants.length) {
-    const err = new Error(`Denied decision must not include dispatch grants: ${approvalId}`);
+    const err = new Error(`Denied decision must not include dispatch grants: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_DENIED_GRANT_PRESENT';
-    err.approvalId = approvalId;
-    err.itemId = itemId;
+    err.approvalId = safeApprovalId;
+    err.itemId = safeItemId;
     throw err;
   }
   await assertRunLifecycleCanTransition(
@@ -176,10 +194,10 @@ async function recordApprovalDecision(runRoot, options = {}) {
     runId,
     actor: 'machine',
     eventType: 'approval.decided',
-    itemId,
+    itemId: safeItemId,
     reason,
     payload: {
-      approvalId,
+      approvalId: safeApprovalId,
       decision,
       decidedBy,
       grants,
@@ -190,13 +208,13 @@ async function recordApprovalDecision(runRoot, options = {}) {
     runId,
     toState: decision === 'approved' ? 'waiting' : 'cancelled',
     reason,
-    payload: { approvalId, decision, itemId },
+    payload: { approvalId: safeApprovalId, decision, itemId: safeItemId },
   });
   const summary = await appendRunSummaryStatus(runRoot, {
     runId,
     summaryStatus: decision === 'approved' ? 'partial' : 'blocked',
     reason,
-    payload: { approvalId, decision, itemId },
+    payload: { approvalId: safeApprovalId, decision, itemId: safeItemId },
   });
   return {
     event,
@@ -207,8 +225,8 @@ async function recordApprovalDecision(runRoot, options = {}) {
 
 function approvalGrantForItem(itemId, approvalId) {
   return {
-    itemId,
-    approvalId,
+    itemId: assertMachineStorageId(itemId, 'itemId'),
+    approvalId: assertMachineStorageId(approvalId, 'approvalId'),
     approved: true,
   };
 }
