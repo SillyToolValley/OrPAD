@@ -2,7 +2,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { createCliAgentAdapter, cliOverlayRoot } = require('./adapters/cli-agent');
+const {
+  cliOverlayRoot,
+  codexCliCommand,
+  codexCliExecArgs,
+  codexCliInvocation,
+  createCliAgentAdapter,
+  createCodexCliProposalAdapter,
+} = require('./adapters/cli-agent');
 const { createAdapterRequest } = require('./adapters/proposal-adapter');
 const { summarizeApprovalsFromEvents } = require('./approvals');
 const { assertNoSymlinkInRunPath, registerArtifact, writeArtifactManifest } = require('./artifacts');
@@ -72,6 +79,20 @@ function harnessFromPipeline(pipeline) {
     : null;
 }
 
+function machineAdapterFromPipeline(pipeline) {
+  return pipeline?.run && typeof pipeline.run === 'object' && !Array.isArray(pipeline.run)
+    ? pipeline.run.machineAdapter
+    : null;
+}
+
+function isRunnableMachineAdapter(adapter) {
+  return adapter
+    && typeof adapter === 'object'
+    && !Array.isArray(adapter)
+    && adapter.enabled !== false
+    && adapter.type === 'codex-cli';
+}
+
 function nodeExecutableForHarness() {
   return process.env.ORPAD_MACHINE_NODE_EXEC_PATH
     || process.env.npm_node_execpath
@@ -133,6 +154,161 @@ function nodeCliPatchCommandSpec(patchConfig, cwd, options = {}) {
     args: ['-e', script],
     cwd,
     file,
+  };
+}
+
+function candidateProposalFromWorkItem(item) {
+  if (!item) return null;
+  return {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: `proposal-${item.id}`,
+    suggestedWorkItemId: item.id,
+    sourceNode: item.sourceNode,
+    title: item.title,
+    fingerprint: item.fingerprint,
+    contentArea: item.contentArea,
+    issueType: item.issueType,
+    severity: item.severity,
+    confidence: item.confidence,
+    evidence: item.evidence || [],
+    acceptanceCriteria: item.acceptanceCriteria || [],
+    sourceOfTruthTargets: item.sourceOfTruthTargets || [],
+    userImpact: item.userImpact,
+    reproSteps: item.reproSteps || [],
+    expectedBehavior: item.expectedBehavior,
+    actualBehavior: item.actualBehavior,
+    verificationPlan: item.verificationPlan,
+    coverageEvidenceIds: item.coverageEvidenceIds || [],
+    approvalRequired: item.approvalRequired === true,
+  };
+}
+
+function adapterProbeNodePaths(adapter) {
+  const configured = Array.isArray(adapter.probeNodePaths)
+    ? adapter.probeNodePaths
+    : (adapter.probeNodePath ? [adapter.probeNodePath] : []);
+  return configured.filter(Boolean);
+}
+
+function liveProbePrompt(input = {}) {
+  const { request, node, pipelinePath, pipeline, adapter } = input;
+  const candidateLimit = Number.isFinite(Number(adapter.candidateLimit))
+    ? Math.max(0, Math.min(5, Math.trunc(Number(adapter.candidateLimit))))
+    : 1;
+  return [
+    'You are the OrPAD managed-run proposal adapter.',
+    'Inspect the local workspace from the current working directory, but do not modify files.',
+    'Return exactly one JSON object and no markdown.',
+    '',
+    'Machine-owned fields for this call:',
+    `adapterCallId: ${request.adapterCallId}`,
+    `attemptId: ${request.attemptId}`,
+    `idempotencyKey: ${request.idempotencyKey}`,
+    `pipelinePath: ${pipelinePath}`,
+    `pipelineId: ${pipeline.id || ''}`,
+    `nodePath: ${node.nodePath}`,
+    `nodeType: ${node.nodeType}`,
+    `nodeConfig: ${JSON.stringify(node.config || {})}`,
+    '',
+    'Result contract:',
+    JSON.stringify({
+      schemaVersion: 'orpad.workerResult.v1',
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      status: 'done',
+      summary: 'short result summary',
+      artifacts: [],
+      candidateProposals: [{
+        schemaVersion: 'orpad.candidateProposal.v1',
+        proposalId: 'stable-proposal-id',
+        suggestedWorkItemId: 'stable-work-item-id',
+        sourceNode: node.nodePath,
+        title: 'bounded actionable finding',
+        fingerprint: 'stable-dedupe-fingerprint',
+        contentArea: 'product|ux|bug|security|test|pipeline',
+        issueType: 'specific issue type',
+        severity: 'P1|P2|P3',
+        confidence: 0.75,
+        evidence: [{ id: 'evidence-id', file: 'relative/path', summary: 'current evidence' }],
+        acceptanceCriteria: ['specific done criterion'],
+        sourceOfTruthTargets: ['relative/path/to/source'],
+        userImpact: 'why this matters',
+        reproSteps: ['how to observe it'],
+        expectedBehavior: 'expected behavior',
+        actualBehavior: 'actual behavior',
+        verificationPlan: 'focused verification command or check',
+        coverageEvidenceIds: ['evidence-id'],
+        approvalRequired: false,
+      }],
+      emptyPass: {
+        reason: 'required when candidateProposals is empty',
+        evidence: ['file, command, or inspected surface'],
+      },
+    }, null, 2),
+    '',
+    `Return at most ${candidateLimit} candidateProposals.`,
+    'Use current, concrete evidence only. Prefer a small user-visible, source-of-truth fix.',
+    'If no actionable current finding is visible for this node, return status "done", candidateProposals: [], and an evidence-backed emptyPass.',
+    'Do not create broad refactor candidates. Do not make generated latest-run artifacts the only sourceOfTruthTargets.',
+  ].join('\n');
+}
+
+async function codexCliWorkerCommandSpec(input = {}) {
+  const {
+    adapter,
+    request,
+    overlayRoot,
+    claim,
+    candidate,
+    workerNode,
+    runRoot,
+  } = input;
+  const prompt = [
+    'You are the OrPAD managed-run worker adapter.',
+    'The current working directory is a temporary Machine overlay containing only the active write set.',
+    'Modify only files that already exist in this overlay or are explicitly part of the active write set.',
+    'Do not access the canonical workspace. Do not run destructive commands. Do not install dependencies.',
+    'The Machine will collect the overlay diff and decide whether any canonical write is allowed.',
+    'Return exactly one JSON object and no markdown when finished.',
+    '',
+    'Machine-owned fields for this call:',
+    `adapterCallId: ${request.adapterCallId}`,
+    `attemptId: ${request.attemptId}`,
+    `idempotencyKey: ${request.idempotencyKey}`,
+    `nodePath: ${workerNode.nodePath}`,
+    `claimId: ${claim.claim.claimId}`,
+    `itemId: ${claim.item.id}`,
+    `allowedFiles: ${JSON.stringify(request.allowedFiles || [])}`,
+    '',
+    'Claimed work item:',
+    JSON.stringify(claim.item || candidate || {}, null, 2),
+    '',
+    'Return this shape:',
+    JSON.stringify({
+      schemaVersion: 'orpad.workerResult.v1',
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      status: 'done',
+      summary: 'short implementation summary, or why the item is blocked',
+      artifacts: [],
+    }, null, 2),
+    '',
+    'Use status "done" only if you changed the overlay toward the acceptance criteria.',
+    'Use status "blocked" if the allowed files are insufficient or the change is unsafe.',
+  ].join('\n');
+  const invocation = codexCliInvocation(adapter.command || codexCliCommand(), adapter.commandPrefixArgs);
+  return {
+    command: invocation.command,
+    args: codexCliExecArgs({
+      prefixArgs: invocation.prefixArgs,
+      sandbox: adapter.workerSandbox || adapter.sandbox || 'workspace-write',
+      approvalPolicy: adapter.approvalPolicy || 'never',
+      prompt,
+      ephemeral: adapter.ephemeral,
+    }),
+    cwd: overlayRoot,
   };
 }
 
@@ -499,7 +675,11 @@ async function executeSupportNode(runRoot, node, options = {}) {
     attempt,
     completedPayload: result => result,
   }, async () => {
-    const config = node.config || {};
+    const config = { ...(node.config || {}) };
+    if (options.supportMode === 'live-adapter') {
+      if (node.nodeType === 'orpad.gate' && !config.onFail) config.onFail = 'warn';
+      if (node.nodeType === 'orpad.artifactContract' && !config.onMissing) config.onMissing = 'mark-partial';
+    }
     if (node.nodeType === 'orpad.context') {
       return {
         summary: config.summary || '',
@@ -636,29 +816,39 @@ async function executeMachineRunStep(options = {}) {
   const orderedNodes = flattenTraversalNodes(plan);
   const pipeline = graphSet.pipeline || await readJsonFile(pipelinePath, 'Machine pipeline');
   const harnessSource = harnessFromPipeline(pipeline);
-  if (!harnessSource) {
+  const adapterSource = machineAdapterFromPipeline(pipeline);
+  const hasHarness = Boolean(harnessSource);
+  const hasLiveAdapter = isRunnableMachineAdapter(adapterSource);
+  const usingLiveAdapter = !hasHarness && hasLiveAdapter;
+  if (!hasHarness && !hasLiveAdapter) {
     throw machineExecutionError(
       'MACHINE_EXECUTION_HARNESS_REQUIRED',
-      'This MVP execute step requires a local deterministic run.machineHarness fixture.',
+      'This execute step requires a deterministic run.machineHarness fixture or a runnable run.machineAdapter.',
     );
   }
-  const harness = assertPlainObject(harnessSource, 'run.machineHarness');
-  const candidates = candidateProposalsFromHarness(harness);
-  const candidate = candidates[0];
-  const expectedChangedFiles = expectedChangedFilesFromHarness(harness, candidates);
-  const patchConfig = assertPlainObject(harness.nodeCliPatch, 'machineHarness.nodeCliPatch');
-  const patchFile = normalizeWriteSetPath(requiredString(patchConfig.file, 'machineHarness.nodeCliPatch.file'));
-  if (!expectedChangedFiles.includes(patchFile)) {
-    throw machineExecutionError(
-      'MACHINE_EXECUTION_HARNESS_INVALID',
-      'machineHarness.nodeCliPatch.file must be listed in expectedChangedFiles or candidate.sourceOfTruthTargets.',
-    );
+  const harness = hasHarness ? assertPlainObject(harnessSource, 'run.machineHarness') : null;
+  const adapter = hasLiveAdapter ? assertPlainObject(adapterSource, 'run.machineAdapter') : null;
+  const candidates = hasHarness ? candidateProposalsFromHarness(harness) : [];
+  let expectedChangedFiles = hasHarness ? expectedChangedFilesFromHarness(harness, candidates) : [];
+  const patchConfig = hasHarness ? assertPlainObject(harness.nodeCliPatch, 'machineHarness.nodeCliPatch') : null;
+  if (hasHarness) {
+    const patchFile = normalizeWriteSetPath(requiredString(patchConfig.file, 'machineHarness.nodeCliPatch.file'));
+    if (!expectedChangedFiles.includes(patchFile)) {
+      throw machineExecutionError(
+        'MACHINE_EXECUTION_HARNESS_INVALID',
+        'machineHarness.nodeCliPatch.file must be listed in expectedChangedFiles or candidate.sourceOfTruthTargets.',
+      );
+    }
   }
 
-  const probeNodes = selectNodes(orderedNodes, 'orpad.probe', harness.probeNodePaths || harness.probeNodePath);
-  const triageNode = selectNode(orderedNodes, 'orpad.triage', harness.triageNodePath);
-  const dispatcherNode = selectNode(orderedNodes, 'orpad.dispatcher', harness.dispatcherNodePath);
-  const workerNode = selectNode(orderedNodes, 'orpad.workerLoop', harness.workerNodePath);
+  const probeNodes = selectNodes(
+    orderedNodes,
+    'orpad.probe',
+    hasHarness ? (harness.probeNodePaths || harness.probeNodePath) : adapterProbeNodePaths(adapter),
+  );
+  const triageNode = selectNode(orderedNodes, 'orpad.triage', hasHarness ? harness.triageNodePath : adapter.triageNodePath);
+  const dispatcherNode = selectNode(orderedNodes, 'orpad.dispatcher', hasHarness ? harness.dispatcherNodePath : adapter.dispatcherNodePath);
+  const workerNode = selectNode(orderedNodes, 'orpad.workerLoop', hasHarness ? harness.workerNodePath : adapter.workerNodePath);
   if (!probeNodes.length) {
     throw machineExecutionError('MACHINE_EXECUTION_NODE_NOT_FOUND', 'Machine graph harness could not find probeNode.');
   }
@@ -700,7 +890,9 @@ async function executeMachineRunStep(options = {}) {
     const attempt = nextNodeAttempt(initialEvents, node.nodePath);
     if (probeNodes.some(probeEntry => probeEntry.nodePath === node.nodePath)) {
       const currentProbeNode = node;
-      const probeCandidates = candidatesForProbeNode(currentProbeNode, probeNodes, candidates);
+      const harnessProbeCandidates = hasHarness
+        ? candidatesForProbeNode(currentProbeNode, probeNodes, candidates)
+        : [];
       const probeResult = await withNodeLifecycle(runRoot, currentProbeNode, {
         runId,
         attempt,
@@ -708,24 +900,53 @@ async function executeMachineRunStep(options = {}) {
           proposalCount: result.proposals?.length || 0,
           summaryStatus: result.summaryStatus,
         }),
-      }, () => runProposalProbe({
-        runRoot,
-        runId,
-        nodePath: currentProbeNode.nodePath,
-        workspaceRoot,
-        fixtureResult: request => proposalResultForRequest(request, {
-          summary: probeCandidates.length
-            ? 'Machine graph probe produced harness candidate proposal.'
-            : 'Machine graph probe completed with no harness candidate for this node.',
-          candidateProposals: probeCandidates,
-          ...(probeCandidates.length ? {} : {
-            emptyPass: {
-              reason: 'No deterministic harness candidate was assigned to this probe node.',
-              evidence: [`node:${currentProbeNode.nodePath}`],
-            },
+      }, () => (hasHarness
+        ? runProposalProbe({
+          runRoot,
+          runId,
+          nodePath: currentProbeNode.nodePath,
+          workspaceRoot,
+          fixtureResult: request => proposalResultForRequest(request, {
+            summary: harnessProbeCandidates.length
+              ? 'Machine graph probe produced harness candidate proposal.'
+              : 'Machine graph probe completed with no harness candidate for this node.',
+            candidateProposals: harnessProbeCandidates,
+            ...(harnessProbeCandidates.length ? {} : {
+              emptyPass: {
+                reason: 'No deterministic harness candidate was assigned to this probe node.',
+                evidence: [`node:${currentProbeNode.nodePath}`],
+              },
+            }),
           }),
-        }),
-      }));
+        })
+        : runProposalProbe({
+          runRoot,
+          runId,
+          nodePath: currentProbeNode.nodePath,
+          workspaceRoot,
+          adapter: createCodexCliProposalAdapter({
+            runRoot,
+            runId,
+            workspaceRoot,
+            command: adapter.command,
+            commandPrefixArgs: adapter.commandPrefixArgs,
+            sandbox: adapter.proposalSandbox || adapter.sandbox || 'read-only',
+            approvalPolicy: adapter.approvalPolicy || 'never',
+            timeoutMs: adapter.proposalTimeoutMs || timeoutMs,
+            maxOutputBytes: 64 * 1024,
+            ephemeral: adapter.ephemeral,
+            prompt: request => liveProbePrompt({
+              request,
+              node: currentProbeNode,
+              pipelinePath,
+              pipeline,
+              adapter,
+            }),
+          }),
+        })));
+      const probeCandidates = hasHarness
+        ? harnessProbeCandidates
+        : (probeResult.proposals || []).map(entry => candidateProposalFromWorkItem(entry.item)).filter(Boolean);
       probes.push({
         nodePath: currentProbeNode.nodePath,
         candidateProposals: probeCandidates,
@@ -737,6 +958,9 @@ async function executeMachineRunStep(options = {}) {
         runId,
         probes,
       });
+      const triageCandidates = hasHarness
+        ? candidates
+        : probes.flatMap(entry => entry.candidateProposals || []);
       triage = await withNodeLifecycle(runRoot, triageNode, {
         runId,
         attempt,
@@ -751,13 +975,23 @@ async function executeMachineRunStep(options = {}) {
         workspaceRoot,
         inputArtifacts: [candidateInventory.artifact.file.path],
         fixtureResult: request => proposalResultForRequest(request, {
-          summary: 'Machine graph triage accepted harness candidate.',
+          summary: hasHarness
+            ? 'Machine graph triage accepted harness candidate.'
+            : 'Machine graph triage queued live adapter candidates.',
           artifacts: [candidateInventory.artifact.file.path],
-          triageTransitions: candidates.map(candidateProposal => ({
+          triageTransitions: triageCandidates.map(candidateProposal => ({
             itemId: candidateProposal.suggestedWorkItemId,
             toState: 'queued',
-            reason: 'machine-graph-harness.triage.accepted',
+            reason: hasHarness
+              ? 'machine-graph-harness.triage.accepted'
+              : 'machine-adapter.triage.accepted',
           })),
+          ...(triageCandidates.length ? {} : {
+            emptyPass: {
+              reason: 'No live adapter candidates were available for triage.',
+              evidence: [candidateInventory.artifact.file.path],
+            },
+          }),
         }),
       }));
     } else if (node.nodePath === dispatcherNode.nodePath) {
@@ -771,7 +1005,8 @@ async function executeMachineRunStep(options = {}) {
         }),
       }, () => claimNextQueuedItem(runRoot, {
         runId,
-        claimId: options.claimId || `claim-${candidate.suggestedWorkItemId}`,
+        claimId: options.claimId || (hasHarness ? `claim-${candidates[0].suggestedWorkItemId}` : undefined),
+        leaseMs: usingLiveAdapter ? (adapter.claimLeaseMs || adapter.workerTimeoutMs || undefined) : undefined,
         approvalGrants,
       }));
       if (claim?.stopReason === 'approval-required') break;
@@ -786,6 +1021,8 @@ async function executeMachineRunStep(options = {}) {
         }),
       }, async () => {
         const adapterCallId = options.adapterCallId || `${claim.claim.claimId}-graph-cli`;
+        const workerCandidate = hasHarness ? candidates[0] : candidateProposalFromWorkItem(claim.item);
+        const workerExpectedChangedFiles = hasHarness ? expectedChangedFiles : (claim.writeSet?.paths || []);
         const adapterRequest = createAdapterRequest({
           adapter: 'cli-agent-overlay',
           runId,
@@ -800,7 +1037,7 @@ async function executeMachineRunStep(options = {}) {
           attemptId: `${adapterCallId}-attempt-1`,
           idempotencyKey: `${adapterCallId}:attempt-1`,
         });
-        adapterRequest.expectedChangedFiles = expectedChangedFiles;
+        adapterRequest.expectedChangedFiles = workerExpectedChangedFiles;
         adapterRequest.overlayRootMode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
         adapterRequest.overlayRoot = overlayRoot
           || (adapterRequest.overlayRootMode === 'system-temp'
@@ -814,12 +1051,22 @@ async function executeMachineRunStep(options = {}) {
             request: adapterRequest,
             overlayRoot: adapterRequest.overlayRoot,
             claim,
-            candidate,
+            candidate: workerCandidate,
             workerNode,
             harness,
             patchConfig,
           })
-          : nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable });
+          : (hasHarness
+            ? nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable })
+            : await codexCliWorkerCommandSpec({
+              adapter,
+              request: adapterRequest,
+              overlayRoot: adapterRequest.overlayRoot,
+              claim,
+              candidate: workerCandidate,
+              workerNode,
+              runRoot,
+            }));
         adapterRequest.commandSpec = {
           command: commandSpec.command,
           args: commandSpec.args,
@@ -844,7 +1091,7 @@ async function executeMachineRunStep(options = {}) {
             runRoot,
             workspaceRoot,
             allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
-            timeoutMs,
+            timeoutMs: hasHarness ? timeoutMs : (adapter.workerTimeoutMs || timeoutMs),
             maxOutputBytes: 64 * 1024,
           }),
         });
@@ -853,7 +1100,11 @@ async function executeMachineRunStep(options = {}) {
       support.push({
         nodePath: node.nodePath,
         nodeType: node.nodeType,
-        result: await executeSupportNode(runRoot, node, { runId, attempt }),
+        result: await executeSupportNode(runRoot, node, {
+          runId,
+          attempt,
+          supportMode: usingLiveAdapter ? 'live-adapter' : 'harness',
+        }),
       });
     }
   }

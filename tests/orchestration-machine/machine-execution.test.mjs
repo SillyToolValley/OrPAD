@@ -259,6 +259,65 @@ async function updateMainNodeConfig(pipelineDir, nodeId, config) {
   await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
 }
 
+async function writeFakeCodexCliScript(dir) {
+  const scriptPath = path.join(dir, 'fake-codex-cli.mjs');
+  await fs.writeFile(scriptPath, [
+    'import fs from "node:fs";',
+    'import path from "node:path";',
+    'const args = process.argv.slice(2);',
+    'const outputIndex = args.indexOf("--output-last-message");',
+    'const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : "";',
+    'const prompt = args.at(-1) || "";',
+    'function field(name) {',
+    '  const match = prompt.match(new RegExp(`${name}:\\\\s*([^\\\\n]+)`));',
+    '  return match ? match[1].trim() : "";',
+    '}',
+    'const adapterCallId = field("adapterCallId");',
+    'const attemptId = field("attemptId");',
+    'const idempotencyKey = field("idempotencyKey");',
+    'let result;',
+    'if (prompt.includes("managed-run worker adapter")) {',
+    '  fs.mkdirSync(path.join(process.cwd(), "src"), { recursive: true });',
+    '  fs.writeFileSync(path.join(process.cwd(), "src/target.md"), "after from live adapter\\n", "utf8");',
+    '  result = {',
+    '    schemaVersion: "orpad.workerResult.v1",',
+    '    adapterCallId,',
+    '    attemptId,',
+    '    idempotencyKey,',
+    '    status: "done",',
+    '    summary: "Fake Codex worker changed the overlay target.",',
+    '    artifacts: []',
+    '  };',
+    '} else {',
+    '  result = {',
+    '    schemaVersion: "orpad.workerResult.v1",',
+    '    adapterCallId,',
+    '    attemptId,',
+    '    idempotencyKey,',
+    '    status: "done",',
+    '    summary: "Fake Codex proposal found a target.",',
+    '    artifacts: [],',
+    '    candidateProposals: [{',
+    '      schemaVersion: "orpad.candidateProposal.v1",',
+    '      proposalId: "proposal-live-adapter-target",',
+    '      suggestedWorkItemId: "live-adapter-target",',
+    '      sourceNode: "main/probe",',
+    '      title: "Exercise live adapter execution",',
+    '      fingerprint: "live-adapter:src/target.md",',
+    '      evidence: [{ id: "live-target-before", file: "src/target.md" }],',
+    '      acceptanceCriteria: ["Patch artifact records src/target.md."],',
+    '      sourceOfTruthTargets: ["src/target.md"]',
+    '    }]',
+    '  };',
+    '}',
+    'if (outputPath) {',
+    '  fs.mkdirSync(path.dirname(outputPath), { recursive: true });',
+    '  fs.writeFileSync(outputPath, `${JSON.stringify(result)}\\n`, "utf8");',
+    '}',
+  ].join('\n'), 'utf8');
+  return scriptPath;
+}
+
 test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes in graph order', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace();
 
@@ -345,6 +404,56 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
     error => error?.code === 'MACHINE_RUN_TERMINAL',
   );
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCountAfterCompletion);
+});
+
+test('graph-driven execute step runs a live Codex CLI adapter declaration through worker overlay', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260502_live_adapter');
+  const fakeCodexDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-codex-cli-'));
+  const fakeCodexScript = await writeFakeCodexCliScript(fakeCodexDir);
+  const pipeline = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  delete pipeline.run.machineHarness;
+  pipeline.run.machineAdapter = {
+    type: 'codex-cli',
+    enabled: true,
+    command: process.execPath,
+    commandPrefixArgs: [fakeCodexScript],
+    proposalSandbox: 'read-only',
+    workerSandbox: 'workspace-write',
+    approvalPolicy: 'never',
+    probeNodePaths: ['main/probe'],
+    candidateLimit: 1,
+    proposalTimeoutMs: 30_000,
+    workerTimeoutMs: 30_000,
+    claimLeaseMs: 123_456,
+  };
+  await fs.writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`, 'utf8');
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+  });
+
+  assert.equal(executed.worker.result.event.payload.status, 'done');
+  assert.deepEqual(executed.candidateInventory, {
+    artifactPath: 'artifacts/discovery/candidate-inventory.json',
+    candidateCount: 1,
+    emptyPassCount: 0,
+  });
+  assert.equal((await findQueueItem(run.runRoot, 'live-adapter-target')).state, 'done');
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/target.md'), 'utf8'), 'before\n');
+  assert.equal(executed.finalization.summaryStatus, 'done');
+
+  const proposalRequest = executed.events.find(event => event.eventType === 'adapter.requested' && event.payload?.adapter === 'codex-cli-proposal');
+  assert.equal(proposalRequest.nodePath, 'main/probe');
+  const workerVerification = executed.worker.result.event.payload.verification[0];
+  assert.equal(workerVerification.cwdKind, 'overlay');
+  assert.equal(workerVerification.expectedChangedFiles.includes('src/target.md'), true);
+  assert.equal(workerVerification.missingExpectedChanges.length, 0);
+  const leaseCreated = executed.events.find(event => event.eventType === 'claim.lease-created');
+  assert.equal(leaseCreated.payload.leaseMs, 123_456);
 });
 
 test('graph-driven execute step rejects pipelines without a deterministic MVP harness', async () => {

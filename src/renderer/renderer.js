@@ -7270,7 +7270,7 @@ function machineStartBlockReason(validation) {
   }
   const reasons = validation.machineStepBlockedReasons || [];
   if (reasons.includes('machine-harness-required')) {
-    return 'Managed run cannot start yet: this MVP needs run.machineHarness or a live adapter for this pipeline.';
+    return 'Managed run cannot start yet: this pipeline needs run.machineHarness or run.machineAdapter.';
   }
   if (reasons.length) return `Managed run cannot start yet: ${reasons.join(', ')}.`;
   return '';

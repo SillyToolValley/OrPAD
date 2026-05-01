@@ -25,10 +25,10 @@ test('maintenance workstream keeps local MVP execution separate from Machine com
   assert.equal(result.ok, true);
   assert.equal(result.canExecute, false);
   assert.equal(result.canMachineExecute, true);
-  assert.equal(result.canMachineExecuteStep, false);
+  assert.equal(result.canMachineExecuteStep, true);
   assert.deepEqual(result.executionModes, ['machine', 'handoff']);
   assert.deepEqual(result.machineBlockedReasons, []);
-  assert.deepEqual(result.machineStepBlockedReasons, ['machine-harness-required']);
+  assert.deepEqual(result.machineStepBlockedReasons, []);
   assert.deepEqual(result.machineUnsupportedNodeTypes, []);
   assert.equal(result.handoffCompatibility.available, true);
   assert.equal(result.handoffCompatibility.mode, 'path-only-agent-handoff');

@@ -47,7 +47,7 @@ process is fully sandboxed with no direct Node.js access.
 | `searchFiles(dirPath, query, options)` | workspace search | MEDIUM |
 | `buildLinkIndex` / `resolveWikiLink` / `getBacklinks` / `getFileNames` | wiki-link graph | MEDIUM |
 | `pipelines.*` / `runbooks.*` validation, scan, run-record, and local-run APIs | `.or-pipeline`, `.or-graph`, `.or-tree`, and legacy `.orch-*` validation plus local MVP run evidence | HIGH (future execution substrate) |
-| `machine.*` validation, run-store, readback, listing, resume, claim cancellation, approval decision, execute-step harness, and latest-run export APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic MVP harness execution | HIGH (execution substrate) |
+| `machine.*` validation, run-store, readback, listing, resume, claim cancellation, approval decision, execute-step adapter, and latest-run export APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic harness and recognized Codex CLI adapter execution | HIGH (execution substrate) |
 | `revealInExplorer(targetPath)` | `shell.showItemInFolder` | LOW |
 | `saveBinary` / `saveText` | save-dialog before write | LOW |
 | `svgToPng(svg, w, h, bg)` | offscreen BrowserWindow render | LOW |
@@ -327,8 +327,8 @@ MCP, URL, or file-write pipeline steps.
 ## OrPAD Orchestration Machine IPC security model
 
 The Orchestration Machine IPC surface is a typed, feature-gated bridge for durable run metadata
-and a deterministic MVP execute-step harness. It does not expose arbitrary adapter execution,
-terminal commands, MCP tools, provider calls, or source workspace edits from the renderer.
+and managed execute-step adapters. It does not expose arbitrary adapter execution, terminal
+commands, MCP tools, provider calls, or source workspace edits from the renderer.
 
 - The preload surface exposes one method per action under `window.orpad.machine`; there is no
   generic Machine `invoke(channel, args)` wrapper.
@@ -356,14 +356,19 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
   `<pipelineDir>/runs/<runId>`.
 - `machine-create-run` validates `canMachineExecute` first and writes only the durable Machine run
   layout under the pipeline's `runs/` directory.
-- `machine-execute-run-step` is limited to a local deterministic `run.machineHarness` fixture in
-  this MVP. Main process loads the pipeline graph, expands inline nested graph containers, selects
-  reachable Probe/Triage/Dispatcher/WorkerLoop nodes, executes Machine-owned support nodes such as
-  WorkQueue/Gate/Barrier/ArtifactContract lifecycle markers, ingests deterministic harness
-  candidates, registers a Machine-owned candidate inventory artifact for triage input, claims via
-  the dispatcher, runs one WorkerLoop step, finalizes run status from Machine queue inventory, and
+- `machine-execute-run-step` supports either a local deterministic `run.machineHarness` fixture or
+  a recognized `run.machineAdapter` declaration. Main process loads the pipeline graph, expands
+  inline nested graph containers, selects reachable Probe/Triage/Dispatcher/WorkerLoop nodes,
+  executes Machine-owned support nodes such as WorkQueue/Gate/Barrier/ArtifactContract lifecycle
+  markers, registers a Machine-owned candidate inventory artifact for triage input, claims via the
+  dispatcher, runs one WorkerLoop step, finalizes run status from Machine queue inventory, and
   constructs the exact CLI overlay command itself. The renderer cannot pass an arbitrary command,
   args, cwd, or dangerous Codex bypass flag through this channel.
+- The initial live adapter is restricted to declared `codex-cli` adapters. Proposal calls run with
+  Codex `read-only` sandbox and parse only the `--output-last-message` JSON file because CLI
+  stdout/stderr may contain plugin or network noise. Worker calls run from a Machine-owned overlay
+  cwd with Codex `workspace-write`; canonical workspace path arguments are rejected, overlay diffs
+  are collected as patch artifacts, and canonical source files are not written by this step.
 - Runtime node failures return the refreshed durable run snapshot, including post-failure
   `node.failed` events, rather than trusting a renderer-supplied status or stale pre-run snapshot.
 - `machine-resume-run` repairs derived queue snapshots from canonical Machine events and recovers
@@ -512,7 +517,7 @@ features that intentionally launch configured/user-requested child processes.
 | `machine-create-run` | handle | Create a durable Machine run root after `canMachineExecute` validation | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
 | `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
 | `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/` only |
-| `machine-execute-run-step` | handle | Run one deterministic MVP harness step: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled CLI overlay adapter, optional latest-run export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, overlay-only process cwd |
+| `machine-execute-run-step` | handle | Run one managed step through deterministic harness or recognized Codex CLI adapter: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled overlay adapter, optional latest-run export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, proposal read-only, worker overlay-only process cwd |
 | `machine-resume-run` | handle | Repair derived queue snapshots, recover stale claims, mark a non-terminal non-approval-pending run waiting, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
 | `machine-cancel-claim` | handle | Cancel an active Machine-owned claim, release its write-set, block or requeue the item, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque claim/item ids only |
 | `machine-decide-approval` | handle | Record a Machine-owned approval decision for a pending approval, optionally exporting latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, pending approval event only |
@@ -559,10 +564,10 @@ feature gate only for the current process and only with an in-memory session cap
 events before recording a decision and grant. `machine-resume-run` projects approval state from
 Machine events before repairing derived queue files or recovering claims. `machine-cancel-claim`
 requires an active Machine claim lease before it releases claim/write-set ownership.
-`machine-execute-run-step` reaches the CLI adapter
-only through a deterministic main-process harness command and overlay cwd containment. Arbitrary
-adapter execution, provider calls, terminal commands, MCP tools, and source workspace writes
-remain out of scope for renderer IPC.
+`machine-execute-run-step` reaches CLI adapters only through Machine-selected harness commands or
+recognized `run.machineAdapter` declarations. Worker execution remains overlay-cwd contained,
+proposal execution is read-only, and arbitrary adapter execution, provider calls, terminal
+commands, MCP tools, and source workspace writes remain out of scope for renderer IPC.
 
 **Command execution boundaries:** General filesystem/editor IPC still does not expose arbitrary
 shell execution. P1-3 MCP uses the official SDK `StdioClientTransport`, which spawns the

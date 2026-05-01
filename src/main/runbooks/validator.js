@@ -398,7 +398,16 @@ function summarizeMachineStepExecution(machineExecution, pipeline) {
   const harness = pipeline?.run && typeof pipeline.run === 'object' && !Array.isArray(pipeline.run)
     ? pipeline.run.machineHarness
     : null;
-  if (!harness || typeof harness !== 'object' || Array.isArray(harness)) {
+  const adapter = pipeline?.run && typeof pipeline.run === 'object' && !Array.isArray(pipeline.run)
+    ? pipeline.run.machineAdapter
+    : null;
+  const hasHarness = harness && typeof harness === 'object' && !Array.isArray(harness);
+  const hasRunnableAdapter = adapter
+    && typeof adapter === 'object'
+    && !Array.isArray(adapter)
+    && adapter.type === 'codex-cli'
+    && adapter.enabled !== false;
+  if (!hasHarness && !hasRunnableAdapter) {
     blockedReasons.push('machine-harness-required');
   }
   return {
