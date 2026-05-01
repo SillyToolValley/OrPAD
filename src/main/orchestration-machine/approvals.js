@@ -8,12 +8,20 @@ const {
 const { assertMachineStorageId } = require('./ids');
 const { readRunState } = require('./run-store');
 
+const APPROVAL_DISPATCH_GRANT_KEYS = new Set(['approved', 'itemId', 'approvalId']);
+
 function approvalIdForItem(itemId) {
   return `approval-${String(itemId || '')
     .trim()
     .replace(/[^a-zA-Z0-9_.-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 96) || 'item'}`;
+}
+
+function isExactApprovalDispatchGrant(grant, itemId, approvalId) {
+  if (!grant || typeof grant !== 'object' || Array.isArray(grant)) return false;
+  if (grant.approved !== true || grant.itemId !== itemId || grant.approvalId !== approvalId) return false;
+  return Object.keys(grant).every(key => APPROVAL_DISPATCH_GRANT_KEYS.has(key));
 }
 
 async function requestApprovalForItem(runRoot, options = {}) {
@@ -160,9 +168,7 @@ async function recordApprovalDecision(runRoot, options = {}) {
     throw err;
   }
   const hasStructuredGrant = grants.some(grant => (
-    grant?.approved === true
-    && grant?.itemId === decisionItemId
-    && grant?.approvalId === safeApprovalId
+    isExactApprovalDispatchGrant(grant, decisionItemId, safeApprovalId)
   ));
   if (decision === 'approved' && !hasStructuredGrant) {
     const err = new Error(`Approved decision must include a structured dispatch grant: ${safeApprovalId}`);
@@ -172,11 +178,7 @@ async function recordApprovalDecision(runRoot, options = {}) {
     throw err;
   }
   const invalidGrant = decision === 'approved'
-    ? grants.find(grant => !(
-      grant?.approved === true
-      && grant?.itemId === decisionItemId
-      && grant?.approvalId === safeApprovalId
-    ))
+    ? grants.find(grant => !isExactApprovalDispatchGrant(grant, decisionItemId, safeApprovalId))
     : null;
   if (invalidGrant) {
     const err = new Error(`Approved decision includes an invalid dispatch grant: ${safeApprovalId}`);
@@ -290,8 +292,10 @@ function summarizeApprovalsFromEvents(events = []) {
 }
 
 module.exports = {
+  APPROVAL_DISPATCH_GRANT_KEYS,
   approvalGrantForItem,
   approvalIdForItem,
+  isExactApprovalDispatchGrant,
   recordApprovalDecision,
   requestApprovalForItem,
   summarizeApprovalsFromEvents,
