@@ -59,6 +59,19 @@ async function makeRun() {
   });
 }
 
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
+}
+
 async function readJournal(runRoot) {
   const source = await fs.readFile(queueJournalPath(runRoot), 'utf8');
   return source.trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
@@ -203,6 +216,28 @@ test('unsafe queue transition ids are rejected before mutating state', async () 
 
   assert.equal((await findQueueItem(run.runRoot, 'graph-editor-graph-specific-node-types')).state, 'candidate');
   assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'queue.transition').length, 1);
+});
+
+test('queue journal rejects symlinked append targets before queue mutation', async t => {
+  const run = await makeRun();
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-queue-journal-target-'));
+  const outsideJournal = path.join(outsideRoot, 'journal.jsonl');
+  await fs.writeFile(outsideJournal, '', 'utf8');
+  await fs.mkdir(path.dirname(queueJournalPath(run.runRoot)), { recursive: true });
+  if (!await createTestSymlink(t, outsideJournal, queueJournalPath(run.runRoot), 'file')) return;
+
+  await assert.rejects(
+    ingestCandidateProposal(run.runRoot, proposal({ suggestedWorkItemId: 'journal-symlink-item' }), {
+      runId: run.runId,
+      now: '2026-04-30T00:00:01.000Z',
+      transitionId: 'ingest:journal-symlink-item',
+    }),
+    error => error?.code === 'MACHINE_QUEUE_JOURNAL_SYMLINK_UNSAFE',
+  );
+
+  assert.equal(await fs.readFile(outsideJournal, 'utf8'), '');
+  assert.equal((await readMachineEvents(run.runRoot)).some(event => event.payload?.transitionId === 'ingest:journal-symlink-item'), false);
+  assert.equal(await findQueueItem(run.runRoot, 'journal-symlink-item'), null);
 });
 
 test('queue transition patches cannot rename the Machine-owned work item id', async () => {

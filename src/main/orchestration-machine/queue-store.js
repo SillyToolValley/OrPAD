@@ -50,6 +50,24 @@ function queueJournalPath(runRoot) {
   return path.join(queueRoot(runRoot), 'journal.jsonl');
 }
 
+function queueStoreError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+async function assertQueueJournalPathSafe(runRoot) {
+  try {
+    const stats = await fsp.lstat(queueJournalPath(runRoot));
+    if (stats.isSymbolicLink()) {
+      throw queueStoreError('MACHINE_QUEUE_JOURNAL_SYMLINK_UNSAFE', 'Machine queue journal must not be a symlink.');
+    }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+}
+
 function transitionAction(fromState, toState) {
   return TRANSITION_ACTIONS[`${fromState}->${toState}`] || '';
 }
@@ -124,6 +142,7 @@ async function appendLegacyJournal(runRoot, event) {
   const action = event.payload?.action || transitionAction(event.fromState, event.toState);
   if (!action) return null;
   const record = legacyJournalFromEvent(event);
+  await assertQueueJournalPathSafe(runRoot);
   await fsp.appendFile(queueJournalPath(runRoot), `${JSON.stringify(record)}\n`, 'utf8');
   return record;
 }
@@ -143,6 +162,7 @@ async function writeQueueItem(runRoot, item) {
 
 async function ingestCandidateProposal(runRoot, proposal, options = {}) {
   await ensureQueueLayout(runRoot);
+  await assertQueueJournalPathSafe(runRoot);
   const item = normalizeCandidateProposal(proposal, { now: options.now });
   const transitionId = options.transitionId || `ingest:${item.id}`;
   const duplicateEvent = await findEventByTransitionId(runRoot, transitionId);
@@ -198,6 +218,7 @@ async function ingestCandidateProposal(runRoot, proposal, options = {}) {
 
 async function transitionQueueItem(runRoot, options = {}) {
   await ensureQueueLayout(runRoot);
+  await assertQueueJournalPathSafe(runRoot);
   const {
     runId,
     itemId,
@@ -266,6 +287,7 @@ module.exports = {
   QUEUE_STATES,
   TRANSITION_ACTIONS,
   appendLegacyJournal,
+  assertQueueJournalPathSafe,
   ensureQueueLayout,
   findQueueItem,
   ingestCandidateProposal,
