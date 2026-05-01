@@ -198,13 +198,14 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Enable Machine Runtime');
-  await expect(win.locator('#runbooks-content')).toContainText('IPC ready');
-  await win.locator('button[data-runbook-action="toggle-machine-ui"]').click();
-  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Runtime');
-  await expect(win.locator('#runbooks-content')).toContainText('UI on');
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await expect(win.locator('#runbooks-content')).toContainText('Machine-compatible');
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Show Machine Actions');
+  await expect(win.locator('#runbooks-content')).toContainText('This pipeline is Machine-compatible');
+  await win.locator('button[data-runbook-action="toggle-machine-ui"]').click();
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Actions');
+  await expect(win.locator('#runbooks-content')).toContainText('Machine ready');
+  await expect(win.locator('#runbooks-content')).toContainText('Ready. Machine owns queue');
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="agent-handoff"]')).toContainText('Prepare Handoff');
 
@@ -258,9 +259,9 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
   await win.keyboard.press('Control+Shift+M');
-  await expect(win.locator('#runbooks-content')).toContainText('Machine Runtime');
-  await expect(win.locator('#runbooks-content')).toContainText('UI on');
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Actions');
+  await expect(win.locator('#runbooks-content')).toContainText('Machine ready');
   await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
@@ -269,6 +270,37 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI keeps gated Machine actions in the selected Run panel', async () => {
+  const { workspace } = writeMachineWorkspace();
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '0',
+    ORPAD_MACHINE_IPC_TOKEN: '',
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await expect(win.locator('#runbooks-content')).not.toContainText('Machine Runtime');
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText('Machine-compatible');
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Show Machine Actions');
+  await win.locator('button[data-runbook-action="toggle-machine-ui"]').click();
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Actions');
+  await expect(win.locator('#runbooks-content')).toContainText('Machine unavailable');
+  await expect(win.locator('#runbooks-content')).toContainText('Relaunch OrPAD with ORPAD_MACHINE_IPC=1');
+  await expect(win.locator('button[data-runbook-action="run-machine"]')).toBeDisabled();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

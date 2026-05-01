@@ -7086,40 +7086,54 @@ function isMachineUiEnabled() {
 }
 
 function machineRuntimeBlockReason() {
-  if (!isMachineApiAvailable()) return 'Machine IPC is unavailable in this build.';
+  if (!isMachineApiAvailable()) return 'Machine is unavailable in this build.';
   if (!machineRuntimeStatus) return '';
   if (machineRuntimeStatus.success === false || machineRuntimeStatus.ok === false) {
     return machineRuntimeStatus.error || 'Machine IPC status check failed.';
   }
-  if (machineRuntimeStatus.enabled === false) return 'Machine IPC is behind ORPAD_MACHINE_IPC=1.';
-  if (machineRuntimeStatus.mutatingCapabilityConfigured === false) return 'Machine IPC needs ORPAD_MACHINE_IPC_TOKEN.';
+  if (machineRuntimeStatus.enabled === false) return 'Machine is unavailable in this session. Relaunch OrPAD with ORPAD_MACHINE_IPC=1 to start Machine runs.';
+  if (machineRuntimeStatus.mutatingCapabilityConfigured === false) return 'Machine runs need ORPAD_MACHINE_IPC_TOKEN before run-store mutations are allowed.';
   return '';
 }
 
-function renderMachineRuntimeControls() {
-  const uiEnabled = isMachineUiEnabled();
+function isRunbookPipelineFile(selected, selectedValidation = null) {
+  return selectedValidation?.format === 'or-pipeline' || /\.or-pipeline$/i.test(selected || '');
+}
+
+function renderMachineRuntimeStatusChip(selected, selectedValidation) {
+  if (!isRunbookPipelineFile(selected, selectedValidation) || !isMachineUiEnabled()) return '';
   const blockReason = machineRuntimeBlockReason();
-  const statusKnown = !!machineRuntimeStatus;
   const statusText = !isMachineApiAvailable()
-    ? 'IPC unavailable'
-    : !statusKnown || machineRuntimeStatusLoading
-      ? 'IPC checking'
+    ? 'Machine unavailable'
+    : !machineRuntimeStatus || machineRuntimeStatusLoading
+      ? 'Machine checking'
       : blockReason
-        ? 'IPC gated'
-        : 'IPC ready';
-  const statusClass = !statusKnown || machineRuntimeStatusLoading ? '' : blockReason ? 'warn' : 'good';
+        ? 'Machine unavailable'
+        : 'Machine ready';
+  const statusClass = !machineRuntimeStatus || machineRuntimeStatusLoading ? '' : blockReason ? 'warn' : 'good';
+  return `<span class="runbook-chip ${statusClass}">${escapeHtml(statusText)}</span>`;
+}
+
+function renderMachineRuntimeInline(selected, selectedValidation) {
+  if (!isRunbookPipelineFile(selected, selectedValidation)) return '';
+  const compatible = isMachineCompatiblePipeline(selectedValidation);
+  const uiEnabled = isMachineUiEnabled();
+  if (!uiEnabled && !compatible) return '';
+  const blockReason = machineRuntimeBlockReason();
+  const compatibilityReason = selectedValidation
+    ? (selectedValidation.machineBlockedReasons || []).join(', ') || 'This pipeline is not Machine-compatible yet.'
+    : 'Check the pipeline before starting a Machine run.';
+  const text = !uiEnabled
+    ? 'This pipeline is Machine-compatible. Show Machine actions to check runtime availability and create durable runs.'
+    : blockReason || (compatible
+      ? 'Ready. Machine owns queue, run state, and artifacts for Machine runs.'
+      : compatibilityReason);
+  const stateClass = !uiEnabled ? '' : (blockReason || !compatible) ? 'warn' : 'good';
   return `
-    <section class="runbook-panel-section">
-      <h3>Machine Runtime</h3>
-      <div class="runbook-chip-row">
-        <span class="runbook-chip ${uiEnabled ? 'good' : 'warn'}">${uiEnabled ? 'UI on' : 'UI off'}</span>
-        <span class="runbook-chip ${statusClass}">${escapeHtml(statusText)}</span>
-      </div>
-      <div class="runbook-action-row">
-        <button class="${uiEnabled ? 'primary' : ''}" data-runbook-action="toggle-machine-ui" title="Toggle Machine Runtime controls">${uiEnabled ? 'Hide Machine Runtime' : 'Enable Machine Runtime'}</button>
-      </div>
-      ${blockReason && uiEnabled ? `<div class="runbook-diagnostic warning">${escapeHtml(blockReason)}</div>` : ''}
-    </section>
+    <div class="runbook-guide ${stateClass}">
+      <strong>Machine</strong>
+      <span>${escapeHtml(text)}</span>
+    </div>
   `;
 }
 
@@ -8120,15 +8134,16 @@ function renderRunbookPrimaryIssue(validation) {
 }
 
 function renderRunbookActionButtons(selected, selectedValidation, selectedAgentReady) {
+  const isPipeline = isRunbookPipelineFile(selected, selectedValidation);
   if (!isMachineUiEnabled()) {
     return `
       <button class="primary" data-runbook-action="${selectedAgentReady ? 'agent-handoff' : 'start-local'}" data-path="${escapeHtml(selected)}" ${selectedValidation?.canExecute || selectedAgentReady ? '' : 'disabled'} title="${selectedAgentReady ? 'Prepare a copyable path-only launch prompt for a supervised agent session.' : ''}">${selectedAgentReady ? 'Prepare Handoff' : 'Run locally'}</button>
+      ${isPipeline ? '<button data-runbook-action="toggle-machine-ui">Show Machine Actions</button>' : ''}
       <button data-runbook-action="validate" data-path="${escapeHtml(selected)}">Check</button>
     `;
   }
 
   const canLocal = selectedValidation?.canExecute === true;
-  const isPipeline = selectedValidation?.format === 'or-pipeline' || /\.or-pipeline$/i.test(selected || '');
   const runtimeBlockReason = machineRuntimeBlockReason();
   const canMachine = !runtimeBlockReason && isMachineCompatiblePipeline(selectedValidation);
   const machineReason = runtimeBlockReason || (selectedValidation
@@ -8138,6 +8153,7 @@ function renderRunbookActionButtons(selected, selectedValidation, selectedAgentR
     <button class="${canLocal ? 'primary' : ''}" data-runbook-action="start-local" data-path="${escapeHtml(selected)}" ${canLocal ? '' : 'disabled'}>Run locally</button>
     ${isPipeline ? `<button class="${!canLocal && canMachine ? 'primary' : ''}" data-runbook-action="run-machine" data-path="${escapeHtml(selected)}" ${canMachine ? '' : 'disabled'} title="${escapeHtml(canMachine ? 'Create a durable Machine run.' : machineReason)}">Run Machine</button>` : ''}
     ${selectedAgentReady ? `<button data-runbook-action="agent-handoff" data-path="${escapeHtml(selected)}">Prepare Handoff</button>` : ''}
+    ${isPipeline ? '<button data-runbook-action="toggle-machine-ui">Hide Machine Actions</button>' : ''}
     <button data-runbook-action="validate" data-path="${escapeHtml(selected)}">Check</button>
   `;
 }
@@ -8178,7 +8194,6 @@ function renderRunbooksPanel() {
       </div>
       <p class="runbook-muted">${escapeHtml(runbookRelativePath(workspacePath))} - ${pipelineCount} pipelines${legacyCount ? ` - ${legacyCount} legacy graphs` : ''} - ${summary.fileCount} files</p>
     </section>
-    ${renderMachineRuntimeControls()}
     <section class="runbook-panel-section">
       <h3>Pipelines</h3>
       ${pipelineItems.length ? `
@@ -8208,12 +8223,14 @@ function renderRunbooksPanel() {
         <div class="runbook-chip-row">
           ${runbookStatusChip(selectedValidation)}
           ${selectedValidation ? `<span class="runbook-chip">${selectedValidation.nodeCount || 0} nodes</span>` : ''}
-          ${isMachineUiEnabled() && isMachineCompatiblePipeline(selectedValidation) ? '<span class="runbook-chip good">Machine-compatible</span>' : ''}
-          ${isMachineUiEnabled() && selectedValidation?.handoffCompatibility?.available ? '<span class="runbook-chip">handoff-compatible</span>' : ''}
+          ${isMachineCompatiblePipeline(selectedValidation) ? '<span class="runbook-chip good">Machine-compatible</span>' : ''}
+          ${selectedValidation?.handoffCompatibility?.available ? '<span class="runbook-chip">handoff-compatible</span>' : ''}
+          ${renderMachineRuntimeStatusChip(selected, selectedValidation)}
         </div>
         <div class="runbook-action-row">
           ${renderRunbookActionButtons(selected, selectedValidation, selectedAgentReady)}
         </div>
+        ${renderMachineRuntimeInline(selected, selectedValidation)}
         ${renderRunbookPrimaryIssue(selectedValidation)}
         ${selectedAgentReady ? `
           <div class="runbook-diagnostic warning">
@@ -9872,8 +9889,8 @@ function setupCommandRegistry() {
     { id: 'view.search', title: 'Search in Files', category: 'View', keybinding: 'Ctrl Shift F', run: () => showSidebar('search') },
     { id: 'view.backlinks', title: 'Toggle Backlinks', category: 'View', keybinding: 'Ctrl Shift B', run: () => showSidebar('backlinks') },
     { id: 'view.runbooks', title: 'Open Pipes', category: 'View', run: () => showSidebar('runbooks') },
-    { id: 'runbook.showMachineRuntime', title: 'Show Machine Runtime', category: 'Pipeline', keybinding: 'Ctrl Shift M', keywords: ['machine', 'orchestration', 'runtime'], run: () => showMachineRuntimeControls() },
-    { id: 'runbook.toggleMachineRuntime', title: 'Toggle Machine Runtime Controls', category: 'Pipeline', keywords: ['machine', 'orchestration', 'runtime'], run: () => toggleMachineRuntimeControls() },
+    { id: 'runbook.showMachineRuntime', title: 'Show Machine Actions', category: 'Pipeline', keybinding: 'Ctrl Shift M', keywords: ['machine', 'orchestration', 'runtime'], run: () => showMachineRuntimeControls() },
+    { id: 'runbook.toggleMachineRuntime', title: 'Toggle Machine Actions', category: 'Pipeline', keywords: ['machine', 'orchestration', 'runtime'], run: () => toggleMachineRuntimeControls() },
     { id: 'runbook.validateActive', title: 'Check Active Pipeline', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); } },
     { id: 'runbook.createRunRecord', title: 'Save Evidence', category: 'Pipeline', enabled: ({ activeTab, workspacePath }) => !!workspacePath && !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await createSelectedRunRecord(activeTab.filePath); } },
     { id: 'runbook.inspectContext', title: 'AI Context', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await openRunbookContextInspector(activeTab.filePath, selectedRunbookValidation); } },
@@ -11699,7 +11716,7 @@ document.addEventListener('keydown', (e) => {
   if (mod && e.shiftKey && key === 'f') { runShortcut('view.search'); return; }
   // Ctrl+Shift+B - backlinks
   if (mod && e.shiftKey && key === 'b') { runShortcut('view.backlinks'); return; }
-  // Ctrl+Shift+M - Machine Runtime controls
+  // Ctrl+Shift+M - Machine actions
   if (mod && e.shiftKey && key === 'm') { runShortcut('runbook.showMachineRuntime'); return; }
   if (key === 'escape') {
     if (document.body.classList.contains('zen-mode')) setZenMode(false);
