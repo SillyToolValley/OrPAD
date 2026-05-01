@@ -17,7 +17,8 @@
     },
     "runId": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
     },
     "sequence": {
       "type": "integer",
@@ -39,7 +40,8 @@
       "minLength": 1
     },
     "itemId": {
-      "type": "string"
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
     },
     "fromState": {
       "type": "string"
@@ -54,7 +56,8 @@
       "type": "array",
       "items": {
         "type": "string",
-        "minLength": 1
+        "minLength": 1,
+        "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*\\\\)(?!.*(^|/)\\.($|/))(?!.*(^|/)\\.\\.($|/))(?!.*//).+"
       },
       "default": []
     },

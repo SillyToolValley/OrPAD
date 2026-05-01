@@ -178,6 +178,23 @@ test('contract validator rejects missing required Machine event fields', () => {
   assert.equal(result.errors.some(error => error.keyword === 'required'), true);
 });
 
+test('contract validator rejects unsafe Machine event identity refs', () => {
+  const validator = createContractValidator();
+
+  assert.equal(validator.validate('machineEvent', {
+    ...samples().machineEvent,
+    runId: '../run',
+  }).ok, false);
+  assert.equal(validator.validate('machineEvent', {
+    ...samples().machineEvent,
+    itemId: '../item',
+  }).ok, false);
+  assert.equal(validator.validate('machineEvent', {
+    ...samples().machineEvent,
+    artifactRefs: ['artifacts\\queue\\triage-log.md'],
+  }).ok, false);
+});
+
 test('contract validator rejects unsafe work item storage ids', () => {
   const validator = createContractValidator();
 

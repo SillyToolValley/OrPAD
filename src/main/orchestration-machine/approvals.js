@@ -152,22 +152,29 @@ async function recordApprovalDecision(runRoot, options = {}) {
     err.actualItemId = safeItemId;
     throw err;
   }
+  const decisionItemId = safeItemId || approval.itemId || '';
+  if (!decisionItemId) {
+    const err = new Error(`Approval decision item is required: ${safeApprovalId}`);
+    err.code = 'MACHINE_APPROVAL_ITEM_REQUIRED';
+    err.approvalId = safeApprovalId;
+    throw err;
+  }
   const hasStructuredGrant = grants.some(grant => (
     grant?.approved === true
-    && grant?.itemId === safeItemId
+    && grant?.itemId === decisionItemId
     && grant?.approvalId === safeApprovalId
   ));
   if (decision === 'approved' && !hasStructuredGrant) {
     const err = new Error(`Approved decision must include a structured dispatch grant: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_APPROVED_GRANT_MISSING';
     err.approvalId = safeApprovalId;
-    err.itemId = safeItemId;
+    err.itemId = decisionItemId;
     throw err;
   }
   const invalidGrant = decision === 'approved'
     ? grants.find(grant => !(
       grant?.approved === true
-      && grant?.itemId === safeItemId
+      && grant?.itemId === decisionItemId
       && grant?.approvalId === safeApprovalId
     ))
     : null;
@@ -175,14 +182,14 @@ async function recordApprovalDecision(runRoot, options = {}) {
     const err = new Error(`Approved decision includes an invalid dispatch grant: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_GRANT_INVALID';
     err.approvalId = safeApprovalId;
-    err.itemId = safeItemId;
+    err.itemId = decisionItemId;
     throw err;
   }
   if (decision === 'denied' && grants.length) {
     const err = new Error(`Denied decision must not include dispatch grants: ${safeApprovalId}`);
     err.code = 'MACHINE_APPROVAL_DENIED_GRANT_PRESENT';
     err.approvalId = safeApprovalId;
-    err.itemId = safeItemId;
+    err.itemId = decisionItemId;
     throw err;
   }
   await assertRunLifecycleCanTransition(
@@ -194,7 +201,7 @@ async function recordApprovalDecision(runRoot, options = {}) {
     runId,
     actor: 'machine',
     eventType: 'approval.decided',
-    itemId: safeItemId,
+    itemId: decisionItemId,
     reason,
     payload: {
       approvalId: safeApprovalId,
@@ -208,13 +215,13 @@ async function recordApprovalDecision(runRoot, options = {}) {
     runId,
     toState: decision === 'approved' ? 'waiting' : 'cancelled',
     reason,
-    payload: { approvalId: safeApprovalId, decision, itemId: safeItemId },
+    payload: { approvalId: safeApprovalId, decision, itemId: decisionItemId },
   });
   const summary = await appendRunSummaryStatus(runRoot, {
     runId,
     summaryStatus: decision === 'approved' ? 'partial' : 'blocked',
     reason,
-    payload: { approvalId: safeApprovalId, decision, itemId: safeItemId },
+    payload: { approvalId: safeApprovalId, decision, itemId: decisionItemId },
   });
   return {
     event,
