@@ -167,6 +167,14 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('harness');
   await expect(win.locator('#runbooks-content')).toContainText('audit:orpad-machine-run');
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
+  await expect(win.locator('button[data-runbook-action="machine-view-artifacts"]')).toBeEnabled();
+  await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
+  await expect(win.locator('.tab-item.active')).toContainText('Machine Artifacts');
+  await expect(win.locator('.cm-content')).toContainText('Machine Artifact Manifest');
+  await win.locator('#btn-preview').click();
+  await expect(win.locator('#content')).toContainText('artifacts/discovery/candidate-inventory.json');
+  await expect(win.locator('#content')).toContainText('artifacts/patches');
+  await expect(win.locator('#content')).toContainText('audit:orpad-machine-run');
 
   const runDirs = fs.readdirSync(runRoot);
   expect(fs.existsSync(path.join(runRoot, runDirs[0], 'run-state.json'))).toBe(true);

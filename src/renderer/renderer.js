@@ -7737,6 +7737,43 @@ function machineAuditDetails(record) {
   };
 }
 
+function machineArtifactManifestFiles(record) {
+  const exportedFiles = record?.exported?.metadata?.artifactManifest?.files;
+  if (Array.isArray(exportedFiles)) {
+    return exportedFiles
+      .filter(file => file?.path)
+      .map(file => ({ ...file }))
+      .sort((a, b) => String(a.path).localeCompare(String(b.path)));
+  }
+  const filesByPath = new Map();
+  for (const event of record?.events || []) {
+    if (event?.eventType !== 'artifact.registered') continue;
+    const file = event.payload?.file;
+    if (!file?.path) continue;
+    filesByPath.set(file.path, { ...file });
+  }
+  return [...filesByPath.values()]
+    .sort((a, b) => String(a.path).localeCompare(String(b.path)));
+}
+
+function machineArtifactManifestSource(record) {
+  return Array.isArray(record?.exported?.metadata?.artifactManifest?.files)
+    ? 'latest export'
+    : 'run events';
+}
+
+function machineArtifactSummary(record) {
+  const files = machineArtifactManifestFiles(record);
+  if (!files.length) return 'No artifact manifest files yet';
+  const preview = files
+    .slice(0, 3)
+    .map(file => file.path)
+    .filter(Boolean)
+    .join(', ');
+  const more = files.length > 3 ? `, +${files.length - 3} more` : '';
+  return `${machineCountLabel(files.length, 'file')} from ${machineArtifactManifestSource(record)}${preview ? `: ${preview}${more}` : ''}`;
+}
+
 function isMachineRunTerminal(runState) {
   return ['completed', 'cancelled', 'failed'].includes(runState?.lifecycleStatus)
     || runState?.summaryStatus === 'done';
@@ -7773,7 +7810,6 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const events = record.events || [];
   const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
   const exported = record.exported || null;
-  const exportedFiles = exported?.metadata?.artifactManifest?.files || [];
   const runTerminal = isMachineRunTerminal(runState);
   const pendingApprovals = record.approvals?.pending || [];
   const approvalPending = (record.approvals?.pendingCount || 0) > 0;
@@ -7785,6 +7821,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const approvalDetails = machineApprovalDetails(record);
   const activeClaimDetails = machineActiveClaimDetails(record);
   const auditDetails = machineAuditDetails(record);
+  const artifactDetails = machineArtifactSummary(record);
   const runId = runState.runId || record.runId || '';
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
@@ -7809,6 +7846,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} ${runTerminal || approvalPending || !window.orpad?.machine?.resumeRun ? 'disabled' : ''}>Resume</button>
         ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${runTerminal || !window.orpad?.machine?.cancelClaim ? 'disabled' : ''}>Cancel Claim</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
+        <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>View Artifacts</button>
       </div>
       <div class="runbook-replay-events">
         ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No Machine events recorded.</div>'}
@@ -7832,7 +7870,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         </div>
         <div class="runbook-guide">
           <strong>Artifacts</strong>
-          <span>${escapeHtml(exportedFiles.length ? `${exportedFiles.length} files in latest export` : 'No artifact manifest files yet')}</span>
+          <span>${escapeHtml(artifactDetails)}</span>
         </div>
         <div class="runbook-guide ${exported ? 'good' : 'warn'}">
           <strong>Latest-run export</strong>
@@ -8405,6 +8443,82 @@ async function decideSelectedMachineApproval(runbookPath, runId, approvalId, dec
   void refreshWorkspaceRunbookSummary();
 }
 
+function machineMarkdownCell(value) {
+  return String(value ?? '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim();
+}
+
+async function openMachineArtifactViewer(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId) return;
+  let record = getRunbookCache(machineRunRecordCache, runbookPath) || lastMachineRunRecord;
+  const recordRunId = record?.runState?.runId || record?.runId || '';
+  if (!record || recordRunId !== runId) {
+    record = await loadMachineRunRecord(runbookPath, runId);
+  }
+  if (!record) {
+    alert('Machine run snapshot could not be loaded.');
+    return;
+  }
+
+  const runState = record.runState || {};
+  const files = machineArtifactManifestFiles(record);
+  const exported = record.exported || null;
+  const manifest = exported?.metadata?.artifactManifest || null;
+  const auditDetails = machineAuditDetails(record);
+  const actualRunId = runState.runId || record.runId || runId;
+  const table = files.length ? [
+    '| Path | Size | Produced by | Registered by | SHA-256 |',
+    '| --- | ---: | --- | --- | --- |',
+    ...files.map(file => [
+      '|',
+      machineMarkdownCell(file.path),
+      '|',
+      machineMarkdownCell(file.size),
+      '|',
+      machineMarkdownCell(file.producedBy),
+      '|',
+      machineMarkdownCell(file.registeredBy),
+      '|',
+      machineMarkdownCell(file.sha256),
+      '|',
+    ].join(' ')),
+  ] : ['_No Machine artifacts registered yet._'];
+  const metadataLines = [
+    `Run: ${actualRunId}`,
+    `Lifecycle: ${runState.lifecycleStatus || 'unknown'}`,
+    `Summary: ${runState.summaryStatus || 'unknown'}`,
+    `Manifest source: ${machineArtifactManifestSource(record)}`,
+    `Artifacts: ${machineCountLabel(files.length, 'file')}`,
+    record.runRoot ? `Run root: ${record.runRoot}` : '',
+    exported?.targetRoot || exported?.latestRunExportPath ? `Latest-run export: ${exported.targetRoot || exported.latestRunExportPath}` : '',
+    manifest?.sourceEventSequence != null ? `Source event sequence: ${manifest.sourceEventSequence}` : '',
+  ].filter(Boolean);
+  const body = [
+    '# Machine Artifact Manifest',
+    '',
+    ...metadataLines,
+    '',
+    '## Audit',
+    '',
+    auditDetails.state === 'good'
+      ? ['```sh', auditDetails.text, '```'].join('\n')
+      : auditDetails.text,
+    '',
+    '## Files',
+    '',
+    ...table,
+    '',
+  ].join('\n');
+
+  createTab(null, null, body, '', {
+    title: `Machine Artifacts ${actualRunId}.md`,
+    viewType: 'markdown',
+    forceUnsaved: true,
+  });
+}
+
 function openWorkspaceDashboardNote() {
   const summary = workspaceRunbookSummary || buildWorkspaceRunbookSummary();
   const body = [
@@ -8739,6 +8853,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-approve-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved');
     else if (action === 'machine-deny-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'denied');
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    else if (action === 'machine-view-artifacts') await openMachineArtifactViewer(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-select-run') await selectMachineRunRecord(targetPath, button.dataset.runId || '');
   } catch (err) {
     notifyFormatError('Runbooks', err);
