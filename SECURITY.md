@@ -401,7 +401,8 @@ harness command assembled by main process.
 - The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
   and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
 - Stdout/stderr are captured with output limits and written only as Machine artifacts when a
-  run root is supplied.
+  run root is supplied. Secret-looking command arguments are redacted before transcript and
+  verification metadata are written.
 - Overlay diffs become Machine patch artifacts. The adapter does not apply them to the canonical
   workspace.
 - Machine patch application checks the active write set and the pre-image hash before writing.

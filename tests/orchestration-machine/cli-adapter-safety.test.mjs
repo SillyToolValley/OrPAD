@@ -19,6 +19,7 @@ const {
   findQueueItem,
   ingestCandidateProposal,
   prepareCliOverlayWorkspace,
+  redactCommandArgs,
   readMachineEvents,
   runMachineProcess,
   sanitizeEnvironment,
@@ -138,6 +139,10 @@ test('exact command grants block unapproved or shell-like command specs', async 
 
 test('process runner uses sanitized environment and captures transcript output', async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-process-runner-'));
+  assert.deepEqual(
+    redactCommandArgs(['--api-key', 'sk-test-secret-value', '--token=ghp_testsecret', 'plain']).args,
+    ['--api-key', '[redacted]', '--token=[redacted]', 'plain'],
+  );
   const sanitized = sanitizeEnvironment({
     ...process.env,
     DATABASE_URL: 'postgres://secret',
@@ -171,6 +176,16 @@ test('process runner uses sanitized environment and captures transcript output',
   assert.equal(result.code, 0);
   assert.equal(result.stdout, 'missing');
   assert.equal(result.maskedEnvNames.includes('SECRET_TOKEN'), true);
+
+  const secretArgResult = await runMachineProcess({
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("ok")', '--', '--api-key', 'sk-test-secret-value'],
+    cwd,
+    timeoutMs: 5000,
+  });
+  assert.equal(secretArgResult.stdout, 'ok');
+  assert.deepEqual(secretArgResult.args.slice(-2), ['--api-key', '[redacted]']);
+  assert.equal(secretArgResult.redactedArgCount, 1);
 });
 
 test('process runner times out long-running adapter commands', async () => {
