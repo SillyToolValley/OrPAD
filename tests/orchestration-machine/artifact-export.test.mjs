@@ -53,6 +53,19 @@ function proposal() {
   };
 }
 
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
+}
+
 test('artifact registry records producedBy and registeredBy provenance', async () => {
   const run = await makeRun();
   const result = await registerArtifact(run.runRoot, {
@@ -103,6 +116,31 @@ test('artifact registry rejects absolute or normalized parent paths before writi
     fs.stat(path.join(run.runRoot, 'outside.md')),
     error => error?.code === 'ENOENT',
   );
+  await assert.rejects(
+    readArtifactManifest(run.runRoot),
+    error => error?.code === 'ENOENT',
+  );
+});
+
+test('artifact registry rejects symlinked run artifact paths before writing', async t => {
+  const run = await makeRun();
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-artifact-outside-'));
+  const outsideFile = path.join(outsideRoot, 'outside.md');
+  await fs.writeFile(outsideFile, 'outside-before\n', 'utf8');
+  await fs.mkdir(path.join(run.runRoot, 'artifacts/queue'), { recursive: true });
+  const linkPath = path.join(run.runRoot, 'artifacts/queue/link.md');
+  if (!await createTestSymlink(t, outsideFile, linkPath, 'file')) return;
+
+  await assert.rejects(
+    registerArtifact(run.runRoot, {
+      runId: run.runId,
+      artifactPath: 'artifacts/queue/link.md',
+      content: 'outside-after\n',
+      producedBy: 'test',
+    }),
+    error => error?.code === 'MACHINE_ARTIFACT_SYMLINK_UNSAFE',
+  );
+  assert.equal(await fs.readFile(outsideFile, 'utf8'), 'outside-before\n');
   await assert.rejects(
     readArtifactManifest(run.runRoot),
     error => error?.code === 'ENOENT',

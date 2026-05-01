@@ -41,6 +41,33 @@ function artifactManifestPath(runRoot) {
   return path.join(path.resolve(runRoot), 'artifacts', 'manifest.json');
 }
 
+function unsafeArtifactSymlink(relativePath) {
+  const err = new Error(`Artifact path crosses a symbolic link: ${relativePath}`);
+  err.code = 'MACHINE_ARTIFACT_SYMLINK_UNSAFE';
+  err.path = relativePath;
+  return err;
+}
+
+async function assertNoSymlinkInRunPath(runRoot, relativePath) {
+  const safePath = assertRunRelativePath(relativePath);
+  const segments = safePath.split('/').filter(Boolean);
+  let current = path.resolve(runRoot);
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]);
+    let stat = null;
+    try {
+      stat = await fsp.lstat(current);
+    } catch (err) {
+      if (err?.code === 'ENOENT') break;
+      throw err;
+    }
+    if (stat.isSymbolicLink()) {
+      throw unsafeArtifactSymlink(segments.slice(0, index + 1).join('/'));
+    }
+  }
+  return safePath;
+}
+
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
@@ -81,11 +108,13 @@ async function buildArtifactManifest(runRoot) {
 
 async function writeArtifactManifest(runRoot) {
   const manifest = await buildArtifactManifest(runRoot);
+  await assertNoSymlinkInRunPath(runRoot, 'artifacts/manifest.json');
   await writeJsonAtomic(artifactManifestPath(runRoot), manifest);
   return manifest;
 }
 
 async function readArtifactManifest(runRoot) {
+  await assertNoSymlinkInRunPath(runRoot, 'artifacts/manifest.json');
   return JSON.parse(await fsp.readFile(artifactManifestPath(runRoot), 'utf8'));
 }
 
@@ -102,6 +131,7 @@ async function registerArtifact(runRoot, options = {}) {
   if (!producedBy) throw new Error('producedBy is required.');
 
   const relativePath = assertRunRelativePath(artifactPath);
+  await assertNoSymlinkInRunPath(runRoot, relativePath);
   const absolutePath = path.join(path.resolve(runRoot), ...relativePath.split('/'));
   if (content !== undefined) {
     await ensureDir(path.dirname(absolutePath));
@@ -129,6 +159,7 @@ async function registerArtifact(runRoot, options = {}) {
 
 module.exports = {
   artifactManifestPath,
+  assertNoSymlinkInRunPath,
   assertRunRelativePath,
   buildArtifactManifest,
   fileDigest,
