@@ -28,6 +28,24 @@ function normalizeGraphRef(value, label = 'graphRef') {
   return normalized;
 }
 
+async function assertNoSymlinkInPipelinePath(pipelineDir, relativePath) {
+  const segments = normalizeGraphRef(relativePath).split('/').filter(Boolean);
+  let current = path.resolve(pipelineDir);
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let stats = null;
+    try {
+      stats = await fsp.lstat(current);
+    } catch (err) {
+      if (err?.code === 'ENOENT') return;
+      throw err;
+    }
+    if (stats.isSymbolicLink()) {
+      throw graphLoaderError('MACHINE_GRAPH_REF_SYMLINK_UNSAFE', `Graph ref crosses a symlink: ${relativePath}`);
+    }
+  }
+}
+
 function graphNodes(graphDoc) {
   if (Array.isArray(graphDoc?.nodes)) return graphDoc.nodes;
   if (Array.isArray(graphDoc?.graph?.nodes)) return graphDoc.graph.nodes;
@@ -74,6 +92,7 @@ async function loadPipelineGraphSet({ pipelinePath }) {
     const portableRef = toPortablePath(path.relative(pipelineDir, graphPath));
     if (seenFiles.has(portableRef)) continue;
     seenFiles.add(portableRef);
+    await assertNoSymlinkInPipelinePath(pipelineDir, graphRef);
     const graphDoc = await readJson(graphPath);
     graphs.push({
       graphKey,
@@ -127,6 +146,7 @@ function buildNodeInventory(graphSet) {
 }
 
 module.exports = {
+  assertNoSymlinkInPipelinePath,
   buildNodeInventory,
   graphNodes,
   graphRefsFromPipeline,

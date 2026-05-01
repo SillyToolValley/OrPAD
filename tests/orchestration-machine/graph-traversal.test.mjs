@@ -26,6 +26,19 @@ const maintenancePipelinePath = path.join(
   '.orpad/pipelines/orpad-maintenance-quality-workstream-20260429/pipeline.or-pipeline',
 );
 
+async function createTestSymlink(testContext, target, linkPath, type = 'file') {
+  try {
+    await fs.symlink(target, linkPath, type);
+    return true;
+  } catch (err) {
+    if (['EACCES', 'EPERM', 'ENOTSUP', 'EINVAL'].includes(err?.code)) {
+      testContext.skip(`symlink creation is unavailable in this environment: ${err.code}`);
+      return false;
+    }
+    throw err;
+  }
+}
+
 test('graph loader reads the current maintenance pipeline graph set', async () => {
   const graphSet = await loadPipelineGraphSet({ pipelinePath: maintenancePipelinePath });
   const inventory = buildNodeInventory(graphSet);
@@ -69,6 +82,27 @@ test('graph loader rejects graph refs outside the pipeline directory', async () 
   await assert.rejects(
     loadPipelineGraphSet({ pipelinePath }),
     error => error?.code === 'MACHINE_GRAPH_REF_INVALID',
+  );
+});
+
+test('graph loader rejects symlinked graph refs before reading targets', async t => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-graph-ref-symlink-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/ref-symlink');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const outsideGraph = path.join(workspaceRoot, 'outside.or-graph');
+  await fs.writeFile(outsideGraph, JSON.stringify({ id: 'outside', nodes: [] }, null, 2), 'utf8');
+  if (!await createTestSymlink(t, outsideGraph, path.join(pipelineDir, 'graphs/main.or-graph'), 'file')) return;
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'ref-symlink',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+
+  await assert.rejects(
+    loadPipelineGraphSet({ pipelinePath }),
+    error => error?.code === 'MACHINE_GRAPH_REF_SYMLINK_UNSAFE',
   );
 });
 
