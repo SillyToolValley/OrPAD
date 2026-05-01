@@ -73,6 +73,10 @@ async function createMachineRun(options = {}) {
   });
   const pipeline = await readPipeline(context.pipelinePath);
   const targetRunRoot = durableRunRoot(context.pipelineDir, runId);
+  await assertNoSymlinkInWorkspacePath(context.workspaceRoot, targetRunRoot, {
+    code: 'MACHINE_RUN_ROOT_SYMLINK_UNSAFE',
+    label: 'Machine run root',
+  });
   const exportRoot = latestRunExportRoot(context.pipelineDir);
   const timestamp = now.toISOString();
 

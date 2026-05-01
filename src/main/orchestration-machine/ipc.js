@@ -296,6 +296,23 @@ async function listRunSummaries(pipelineDir) {
   return summaries.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
 }
 
+async function assertMachineRunStorePath(context, targetPath, label) {
+  await assertNoSymlinkInWorkspacePath(context.workspaceRoot, targetPath, {
+    code: 'MACHINE_RUN_ROOT_SYMLINK_UNSAFE',
+    label,
+  });
+}
+
+async function resolveMachineRunRoot(context, runId) {
+  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const runsRoot = path.join(context.pipelineDir, 'runs');
+  if (!isInsidePath(runRoot, runsRoot)) {
+    throw machineError('MACHINE_IPC_PATH_DENIED', 'Machine run must stay inside the pipeline runs directory.');
+  }
+  await assertMachineRunStorePath(context, runRoot, 'Machine run root');
+  return runRoot;
+}
+
 async function validatePipelineHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const options = assertPlainObject(request.options == null ? {} : request.options, 'options');
@@ -346,11 +363,7 @@ async function createRunHandler(event, authority, request) {
 async function getRunHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
-  const runRoot = durableRunRoot(context.pipelineDir, runId);
-  const runsRoot = path.join(context.pipelineDir, 'runs');
-  if (!isInsidePath(runRoot, runsRoot)) {
-    throw machineError('MACHINE_IPC_PATH_DENIED', 'Machine run must stay inside the pipeline runs directory.');
-  }
+  const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
@@ -372,6 +385,7 @@ async function getRunHandler(event, authority, request) {
 
 async function listRunsHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
+  await assertMachineRunStorePath(context, path.join(context.pipelineDir, 'runs'), 'Machine runs directory');
   return {
     success: true,
     ok: true,
@@ -382,7 +396,7 @@ async function listRunsHandler(event, authority, request) {
 async function exportLatestRunHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
-  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
@@ -407,7 +421,7 @@ async function decideApprovalHandler(event, authority, request) {
   const runId = assertRunId(request.runId);
   const approvalId = requiredString(request.approvalId, 'approvalId').trim();
   const decision = assertApprovalDecision(request.decision);
-  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
@@ -457,7 +471,7 @@ async function decideApprovalHandler(event, authority, request) {
 async function resumeRunHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
-  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
@@ -524,7 +538,7 @@ async function cancelClaimHandler(event, authority, request) {
   const claimId = assertOpaqueId(request.claimId, 'claimId');
   const itemId = assertOpaqueId(request.itemId, 'itemId');
   const toState = assertCancelToState(request.toState);
-  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
@@ -591,7 +605,7 @@ async function cancelClaimHandler(event, authority, request) {
 async function executeRunStepWithHarnessHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
-  const runRoot = durableRunRoot(context.pipelineDir, runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');

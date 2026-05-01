@@ -188,6 +188,23 @@ test('createMachineRun rejects symlinked pipeline files before reading targets',
   );
 });
 
+test('createMachineRun rejects symlinked run roots before creating state', async t => {
+  const { workspaceRoot, pipelineDir, pipelinePath } = await makeWorkspace();
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-symlink-runs-target-'));
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  if (!await createTestSymlink(t, outsideRoot, path.join(pipelineDir, 'runs'), linkType)) return;
+
+  await assert.rejects(
+    createMachineRun({
+      workspaceRoot,
+      pipelinePath,
+      runId: 'run_20260430_symlink_runs',
+      now: fixedNow,
+    }),
+    error => error?.code === 'MACHINE_RUN_ROOT_SYMLINK_UNSAFE',
+  );
+});
+
 test('Machine event append is monotonic and validates contract shape', async () => {
   const { workspaceRoot, pipelinePath } = await makeWorkspace();
   const run = await createMachineRun({
