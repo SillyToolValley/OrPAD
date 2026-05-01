@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -29,6 +30,7 @@ const fsp = fs.promises;
 
 const MACHINE_IPC_CHANNELS = Object.freeze({
   status: 'machine-status',
+  enableSession: 'machine-enable-session',
   validatePipeline: 'machine-validate-pipeline',
   createRun: 'machine-create-run',
   getRun: 'machine-get-run',
@@ -51,6 +53,7 @@ function normalizeFeatureGate(featureGate = featureGateFromEnv()) {
   return {
     enabled: featureGate.enabled === true,
     mutatingCapabilityToken: String(featureGate.mutatingCapabilityToken || ''),
+    enabledBy: featureGate.enabled === true ? 'environment' : 'disabled',
   };
 }
 
@@ -668,11 +671,22 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
   }
 }
 
-function registerMachineHandlers({ ipcMain, authority, featureGate = featureGateFromEnv() }) {
+function createSessionCapabilityToken() {
+  return `orpad-session-${crypto.randomBytes(18).toString('base64url')}`;
+}
+
+function registerMachineHandlers({
+  ipcMain,
+  authority,
+  featureGate = featureGateFromEnv(),
+  allowSessionEnable = false,
+} = {}) {
   if (!ipcMain?.handle) throw new Error('ipcMain.handle is required.');
   if (!authority) throw new Error('Machine IPC requires an authority manager.');
 
   const gate = normalizeFeatureGate(featureGate);
+  const sessionEnableAllowed = allowSessionEnable === true;
+  let sessionCapabilityToken = '';
 
   function handle(channel, handler, { mutating = false } = {}) {
     ipcMain.handle(channel, async (event, request = {}) => {
@@ -696,6 +710,36 @@ function registerMachineHandlers({ ipcMain, authority, featureGate = featureGate
         ok: true,
         enabled: gate.enabled,
         mutatingCapabilityConfigured: !!gate.mutatingCapabilityToken,
+        sessionEnableAvailable: sessionEnableAllowed,
+        enabledBy: gate.enabledBy,
+      };
+    } catch (err) {
+      return rejectResponse(err);
+    }
+  });
+  ipcMain.handle(MACHINE_IPC_CHANNELS.enableSession, async (event) => {
+    try {
+      assertSenderFrame(event);
+      if (!sessionEnableAllowed) {
+        throw machineError(
+          'MACHINE_IPC_SESSION_ENABLE_UNAVAILABLE',
+          'Managed runs cannot be enabled from this session. Relaunch OrPAD with managed-run support enabled.',
+        );
+      }
+      gate.enabled = true;
+      gate.enabledBy = 'session';
+      if (!gate.mutatingCapabilityToken) {
+        sessionCapabilityToken = createSessionCapabilityToken();
+        gate.mutatingCapabilityToken = sessionCapabilityToken;
+      }
+      return {
+        success: true,
+        ok: true,
+        enabled: gate.enabled,
+        mutatingCapabilityConfigured: !!gate.mutatingCapabilityToken,
+        sessionEnableAvailable: sessionEnableAllowed,
+        enabledBy: gate.enabledBy,
+        capabilityToken: sessionCapabilityToken || undefined,
       };
     } catch (err) {
       return rejectResponse(err);

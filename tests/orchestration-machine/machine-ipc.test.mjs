@@ -37,7 +37,7 @@ function runMachineAudit(runRoot, latestRunExportRoot = '') {
   };
 }
 
-function createIpcHarness(featureGate = { enabled: true, mutatingCapabilityToken: 'test-token' }) {
+function createIpcHarness(featureGate = { enabled: true, mutatingCapabilityToken: 'test-token' }, options = {}) {
   const handlers = new Map();
   const ipcMain = {
     handle(channel, handler) {
@@ -45,7 +45,7 @@ function createIpcHarness(featureGate = { enabled: true, mutatingCapabilityToken
     },
   };
   const authority = createAuthorityManager();
-  registerMachineHandlers({ ipcMain, authority, featureGate });
+  registerMachineHandlers({ ipcMain, authority, featureGate, ...options });
   return { handlers, authority };
 }
 
@@ -165,6 +165,7 @@ test('Machine IPC registers only typed channels and preload exposes no generic m
   const preloadSource = await fs.readFile(path.join(repoRoot, 'src/main/preload.js'), 'utf8');
 
   assert.deepEqual([...handlers.keys()].sort(), Object.values(MACHINE_IPC_CHANNELS).sort());
+  assert.equal(preloadSource.includes('machine-enable-session'), true);
   assert.equal(preloadSource.includes('machine-validate-pipeline'), true);
   assert.equal(preloadSource.includes('machine-resume-run'), true);
   assert.equal(preloadSource.includes('machine-cancel-claim'), true);
@@ -193,6 +194,41 @@ test('Machine IPC rejects disabled feature gates, invalid sender frames, and inv
   const invalidSchema = await enabled.handlers.get(MACHINE_IPC_CHANNELS.validatePipeline)(senderEvent(), null);
   assert.equal(invalidSchema.success, false);
   assert.equal(invalidSchema.code, 'MACHINE_IPC_SCHEMA_INVALID');
+});
+
+test('Machine IPC can enable managed runs for an unpackaged session', async () => {
+  const { handlers } = createIpcHarness(
+    { enabled: false, mutatingCapabilityToken: '' },
+    { allowSessionEnable: true },
+  );
+
+  const before = await handlers.get(MACHINE_IPC_CHANNELS.status)(senderEvent());
+  assert.equal(before.success, true);
+  assert.equal(before.enabled, false);
+  assert.equal(before.mutatingCapabilityConfigured, false);
+  assert.equal(before.sessionEnableAvailable, true);
+
+  const enabled = await handlers.get(MACHINE_IPC_CHANNELS.enableSession)(senderEvent());
+  assert.equal(enabled.success, true);
+  assert.equal(enabled.enabled, true);
+  assert.equal(enabled.enabledBy, 'session');
+  assert.equal(enabled.mutatingCapabilityConfigured, true);
+  assert.match(enabled.capabilityToken, /^orpad-session-/);
+
+  const after = await handlers.get(MACHINE_IPC_CHANNELS.status)(senderEvent());
+  assert.equal(after.success, true);
+  assert.equal(after.enabled, true);
+  assert.equal(after.enabledBy, 'session');
+  assert.equal(after.mutatingCapabilityConfigured, true);
+
+  const envTokenHarness = createIpcHarness(
+    { enabled: false, mutatingCapabilityToken: 'env-token' },
+    { allowSessionEnable: true },
+  );
+  const envTokenEnabled = await envTokenHarness.handlers.get(MACHINE_IPC_CHANNELS.enableSession)(senderEvent());
+  assert.equal(envTokenEnabled.success, true);
+  assert.equal(envTokenEnabled.mutatingCapabilityConfigured, true);
+  assert.equal(envTokenEnabled.capabilityToken, undefined);
 });
 
 test('Machine IPC rejects pipeline paths outside the approved workspace', async () => {

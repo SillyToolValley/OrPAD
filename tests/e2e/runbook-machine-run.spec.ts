@@ -306,7 +306,7 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
   await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toHaveCount(0);
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toHaveCount(0);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
-  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('managed run setup needed');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('approve this session');
   await win.waitForTimeout(250);
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="local"]')).toBeDisabled();
@@ -314,12 +314,20 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
   await expect(managedRun).toBeEnabled();
   await win.evaluate(() => {
     (window as any).__orpadAlerts = [];
+    (window as any).__orpadConfirms = [];
     window.alert = (message?: any) => {
       (window as any).__orpadAlerts.push(String(message ?? ''));
     };
+    window.confirm = (message?: any) => {
+      (window as any).__orpadConfirms.push(String(message ?? ''));
+      return true;
+    };
   });
   await managedRun.click();
-  await expect.poll(() => win.evaluate(() => ((window as any).__orpadAlerts || []).join('\n'))).toContain('Managed runs are unavailable in this session');
+  await expect.poll(() => win.evaluate(() => ((window as any).__orpadConfirms || []).join('\n'))).toContain('Enable managed runs');
+  await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText('run.created');
+  await expect.poll(() => win.evaluate(() => ((window as any).__orpadAlerts || []).join('\n'))).toBe('');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

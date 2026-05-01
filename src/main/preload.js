@@ -115,6 +115,7 @@ contextBridge.exposeInMainWorld('orpad', {
   },
   machine: {
     status: () => ipcRenderer.invoke('machine-status'),
+    enableSession: () => ipcRenderer.invoke('machine-enable-session'),
     validatePipeline: (request) => ipcRenderer.invoke('machine-validate-pipeline', request),
     createRun: (request) => ipcRenderer.invoke('machine-create-run', request),
     getRun: (request) => ipcRenderer.invoke('machine-get-run', request),

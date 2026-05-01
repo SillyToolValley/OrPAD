@@ -465,7 +465,11 @@ ipcMain.handle('get-app-info', () => ({
 registerAiKeyHandlers({ ipcMain, app, safeStorage });
 registerAiConversationHandlers({ ipcMain, authority });
 registerMcpHandlers({ ipcMain, app, authority });
-registerMachineHandlers({ ipcMain, authority });
+registerMachineHandlers({
+  ipcMain,
+  authority,
+  allowSessionEnable: !app.isPackaged,
+});
 registerRunbookHandlers({ ipcMain, app, authority });
 registerTerminalHandlers({ ipcMain, app, authority });
 

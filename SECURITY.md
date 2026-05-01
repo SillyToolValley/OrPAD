@@ -334,14 +334,20 @@ terminal commands, MCP tools, provider calls, or source workspace edits from the
   generic Machine `invoke(channel, args)` wrapper.
 - Main process handlers require `event.sender`, `event.senderFrame.url`, and a `file://`
   renderer frame before doing any path or filesystem work.
-- The feature gate is off by default. Handlers reject until `ORPAD_MACHINE_IPC=1` is present
-  when handlers are registered.
+- The feature gate is off by default. Runtime handlers reject until `ORPAD_MACHINE_IPC=1` is
+  present when handlers are registered, or until an unpackaged/dev session explicitly enables
+  managed runs through the typed `machine-enable-session` IPC.
+- `machine-enable-session` is unavailable in packaged builds. In unpackaged/dev sessions it is
+  reached from an explicit renderer confirmation, flips only the in-memory gate for the current
+  process, and generates an in-memory session capability token when no environment token exists.
+  It returns only that generated session token; environment-provided tokens still require user or
+  process-level provisioning and are not reflected back through this IPC.
 - Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-cancel-claim`, `machine-decide-approval`, `machine-export-latest-run`) require
-  `ORPAD_MACHINE_IPC_TOKEN` and a matching `capabilityToken` in the request. Read-only validate,
-  list, and get-run actions still require the feature gate and sender/path/schema checks.
-- The renderer Machine run UI remains hidden unless `localStorage.orpad-machine-ui-enabled` is
-  explicitly set to `1` for internal/dev rollout. The mutating capability token is entered or
-  supplied per desktop session and kept only in renderer process memory, not Web Storage.
+  either `ORPAD_MACHINE_IPC_TOKEN` or the generated session token and a matching
+  `capabilityToken` in the request. Read-only validate, list, and get-run actions still require
+  the feature gate and sender/path/schema checks.
+- The mutating capability token is entered, environment-supplied, or generated per desktop
+  session and kept only in renderer process memory, not Web Storage.
 - Requests are typed objects; missing or incorrectly typed fields fail before calling Machine
   storage helpers.
 - `workspacePath` and `pipelinePath` must stay inside the renderer's approved workspace authority,
@@ -500,10 +506,12 @@ features that intentionally launch configured/user-requested child processes.
 | `pipeline-create-run-record` / `runbook-create-run-record` | handle | Create minimal run evidence under `.orpad/pipelines/<pipeline>/runs/{runId}` or legacy `.orch-runs/{runId}` | — | Authority guard / workspace only |
 | `pipeline-start-local-run` / `runbook-start-local-run` | handle | Create a local MVP run record, context manifest, approval events, and claim artifact under the target run directory | — | Authority guard / workspace only |
 | `pipeline-read-run-record` / `runbook-read-run-record` | handle | Read `run.or-run` or legacy `run.json` plus `events.jsonl` from allowed run directories | — | Authority guard / `.orpad/pipelines/*/runs`, recorded workspace-local `.or-pipeline` sibling `runs`, or `.orch-runs` only |
-| `machine-validate-pipeline` | handle | Validate an `.or-pipeline` and report Machine execution compatibility | Yes, requires `event.senderFrame.url` `file://` | Authority guard / workspace `.or-pipeline` only |
+| `machine-status` | handle | Report managed-run IPC gate and mutating capability readiness | Yes, requires `event.senderFrame.url` `file://` | No filesystem path |
+| `machine-enable-session` | handle | Enable managed runs for the current unpackaged/dev process and return an in-memory session capability token | Yes, requires `event.senderFrame.url` `file://`; unavailable in packaged builds | No filesystem path |
+| `machine-validate-pipeline` | handle | Validate an `.or-pipeline` and report Machine execution compatibility | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / workspace `.or-pipeline` only |
 | `machine-create-run` | handle | Create a durable Machine run root after `canMachineExecute` validation | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
-| `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
-| `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` | Authority guard / `.orpad/pipelines/*/runs/` only |
+| `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
+| `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/` only |
 | `machine-execute-run-step` | handle | Run one deterministic MVP harness step: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled CLI overlay adapter, optional latest-run export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, overlay-only process cwd |
 | `machine-resume-run` | handle | Repair derived queue snapshots, recover stale claims, mark a non-terminal non-approval-pending run waiting, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
 | `machine-cancel-claim` | handle | Cancel an active Machine-owned claim, release its write-set, block or requeue the item, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque claim/item ids only |
@@ -545,7 +553,9 @@ pipeline/runbook write or execution surface must treat path authority tests as r
 
 **Machine IPC update:** Orchestration Machine handlers also route through the authority manager
 and add `senderFrame`, feature-gate, typed request, `runId`, and mutating capability-token
-checks before touching storage. `machine-decide-approval` projects pending approvals from Machine
+checks before touching storage. In unpackaged/dev sessions, `machine-enable-session` can open the
+feature gate only for the current process and only with an in-memory session capability token.
+`machine-decide-approval` projects pending approvals from Machine
 events before recording a decision and grant. `machine-resume-run` projects approval state from
 Machine events before repairing derived queue files or recovering claims. `machine-cancel-claim`
 requires an active Machine claim lease before it releases claim/write-set ownership.

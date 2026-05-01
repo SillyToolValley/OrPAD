@@ -2555,6 +2555,9 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason) {
   }
   if (isAgentOrchestratedPipeline(validation)) {
     if (runtimeBlockReason) {
+      if (canEnableManagedRunsForSession()) {
+        return { state: 'warn', text: 'Workstream pipeline: approve this session to start a managed run.' };
+      }
       return { state: 'warn', text: 'Workstream pipeline: local runner unavailable; managed run setup needed.' };
     }
     return { state: 'good', text: 'Ready for managed run or supervised handoff.' };
@@ -7155,8 +7158,16 @@ function machineRuntimeBlockReason() {
   if (machineRuntimeStatus.success === false || machineRuntimeStatus.ok === false) {
     return machineRuntimeStatus.error || 'Managed run status check failed.';
   }
-  if (machineRuntimeStatus.enabled === false) return 'Managed runs are unavailable in this session. Relaunch OrPAD with managed-run support enabled.';
-  if (machineRuntimeStatus.mutatingCapabilityConfigured === false) return 'Managed runs need a run authorization token before run-store mutations are allowed.';
+  if (machineRuntimeStatus.enabled === false) {
+    return machineRuntimeStatus.sessionEnableAvailable
+      ? 'Managed runs need your approval for this OrPAD session.'
+      : 'Managed runs are unavailable in this session. Relaunch OrPAD with managed-run support enabled.';
+  }
+  if (machineRuntimeStatus.mutatingCapabilityConfigured === false) {
+    return machineRuntimeStatus.sessionEnableAvailable
+      ? 'Managed runs need your approval for this OrPAD session.'
+      : 'Managed runs need a run authorization token before run-store mutations are allowed.';
+  }
   return '';
 }
 
@@ -7169,6 +7180,7 @@ async function refreshMachineRuntimeStatus({ force = false } = {}) {
       ok: isMachineApiAvailable(),
       enabled: isMachineApiAvailable(),
       mutatingCapabilityConfigured: null,
+      sessionEnableAvailable: false,
     };
     if (sidebarActivePanel === 'runbooks') renderRunbooksPanel();
     rerenderPipelinePreviewIfActive(selectedRunbookPath);
@@ -7191,10 +7203,47 @@ async function refreshMachineRuntimeStatus({ force = false } = {}) {
   return machineRuntimeStatus;
 }
 
+function canEnableManagedRunsForSession() {
+  return !!window.orpad?.machine?.enableSession
+    && machineRuntimeStatus?.sessionEnableAvailable === true
+    && (machineRuntimeStatus.enabled === false || machineRuntimeStatus.mutatingCapabilityConfigured === false);
+}
+
+async function enableManagedRunsForSession() {
+  if (!canEnableManagedRunsForSession()) return false;
+  const approved = confirm(
+    'Enable managed runs for this OrPAD session?\n\n'
+    + 'OrPAD will own queue state, run status, and run artifacts for this pipeline. '
+    + 'Source files are not changed unless an approved adapter step applies a patch.',
+  );
+  if (!approved) return null;
+  const enabled = await window.orpad.machine.enableSession();
+  if (!enabled?.success) {
+    alert(enabled?.error || 'Managed runs could not be enabled for this session.');
+    return false;
+  }
+  machineRuntimeStatus = {
+    success: true,
+    ok: true,
+    enabled: enabled.enabled === true,
+    mutatingCapabilityConfigured: enabled.mutatingCapabilityConfigured === true,
+    sessionEnableAvailable: enabled.sessionEnableAvailable === true,
+    enabledBy: enabled.enabledBy || 'session',
+  };
+  if (enabled.capabilityToken) machineCapabilityToken = enabled.capabilityToken;
+  if (sidebarActivePanel === 'runbooks') renderRunbooksPanel();
+  rerenderPipelinePreviewIfActive(selectedRunbookPath);
+  return !machineRuntimeBlockReason();
+}
+
 async function ensureMachineRuntimeReady() {
   await refreshMachineRuntimeStatus({ force: !machineRuntimeStatus });
-  const blockReason = machineRuntimeBlockReason();
+  let blockReason = machineRuntimeBlockReason();
   if (!blockReason) return true;
+  const enabledForSession = await enableManagedRunsForSession();
+  if (enabledForSession === true) return true;
+  if (enabledForSession === null) return false;
+  blockReason = machineRuntimeBlockReason() || blockReason;
   alert(blockReason);
   return false;
 }
