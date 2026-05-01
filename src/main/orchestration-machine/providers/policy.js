@@ -10,6 +10,10 @@ const TELEMETRY_CAPABILITIES = Object.freeze([
   'export.telemetry',
 ]);
 
+const TOOL_POLICIES = Object.freeze([
+  'none',
+]);
+
 function normalizeProviderSelection(input = {}) {
   const providerId = String(input.providerId || input.provider || '').trim();
   const model = String(input.model || '').trim();
@@ -19,12 +23,18 @@ function normalizeProviderSelection(input = {}) {
   if (!SESSION_STRATEGIES.includes(sessionStrategy)) {
     throw new Error(`Unsupported API adapter session strategy: ${sessionStrategy}`);
   }
+  const toolPolicy = input.toolPolicy || 'none';
+  if (!TOOL_POLICIES.includes(toolPolicy)) {
+    const err = new Error(`Unsupported API adapter tool policy: ${toolPolicy}`);
+    err.code = 'API_TOOL_POLICY_UNAPPROVED';
+    throw err;
+  }
   return {
     providerId,
     model,
     qualityTier: input.qualityTier || 'standard',
     sessionStrategy,
-    toolPolicy: input.toolPolicy || 'none',
+    toolPolicy,
   };
 }
 
@@ -115,6 +125,7 @@ function createNonAuthoritativeTraceRecord(input = {}) {
 module.exports = {
   SESSION_STRATEGIES,
   TELEMETRY_CAPABILITIES,
+  TOOL_POLICIES,
   assertProviderKeySourceAllowed,
   assertTelemetryPolicy,
   createApiSessionEnvelope,

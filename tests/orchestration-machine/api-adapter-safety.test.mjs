@@ -13,6 +13,7 @@ const {
   createApiAgentAdapter,
   createApiSessionEnvelope,
   createMachineRun,
+  normalizeProviderSelection,
   parseStructuredAdapterResult,
   readMachineEvents,
 } = require('../../src/main/orchestration-machine');
@@ -161,6 +162,17 @@ test('provider key policy rejects localStorage and requires web IndexedDB consen
       keySource: 'indexeddb-consented',
       keyReadable: true,
     },
+  );
+});
+
+test('API provider selection rejects side-effecting tool policies', () => {
+  assert.throws(
+    () => normalizeProviderSelection({
+      providerId: 'test-provider',
+      model: 'test-model',
+      toolPolicy: 'execute-shell',
+    }),
+    error => error?.code === 'API_TOOL_POLICY_UNAPPROVED',
   );
 });
 
