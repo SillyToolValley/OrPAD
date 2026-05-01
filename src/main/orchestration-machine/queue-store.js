@@ -87,15 +87,28 @@ async function readJsonIfExists(filePath, fallback = null) {
   }
 }
 
-async function findQueueItem(runRoot, itemId) {
+async function findQueueItem(runRoot, itemId, options = {}) {
+  const safeItemId = assertMachineStorageId(itemId, 'itemId');
+  const canonicalOnly = options.canonicalOnly !== false;
+  if (canonicalOnly) {
+    const projectedState = projectQueueStateFromEvents(await readMachineEvents(runRoot)).get(safeItemId);
+    if (!projectedState) return null;
+    const item = await readJsonIfExists(queueItemPath(runRoot, projectedState, safeItemId), null);
+    if (!item || item.id !== safeItemId || item.state !== projectedState) return null;
+    return { item, state: projectedState, path: queueItemPath(runRoot, projectedState, safeItemId) };
+  }
   for (const state of QUEUE_STATES) {
-    const item = await readJsonIfExists(queueItemPath(runRoot, state, itemId), null);
-    if (item) return { item, state, path: queueItemPath(runRoot, state, itemId) };
+    const item = await readJsonIfExists(queueItemPath(runRoot, state, safeItemId), null);
+    if (item) return { item, state, path: queueItemPath(runRoot, state, safeItemId) };
   }
   return null;
 }
 
-async function readQueueItems(runRoot) {
+async function readQueueItems(runRoot, options = {}) {
+  const canonicalOnly = options.canonicalOnly !== false;
+  const projected = canonicalOnly
+    ? projectQueueStateFromEvents(await readMachineEvents(runRoot))
+    : null;
   const items = [];
   for (const state of QUEUE_STATES) {
     let entries = [];
@@ -108,6 +121,8 @@ async function readQueueItems(runRoot) {
       if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
       const filePath = path.join(queueStateDir(runRoot, state), entry.name);
       const item = await readJsonIfExists(filePath, null);
+      if (canonicalOnly && projected.get(item?.id) !== state) continue;
+      if (canonicalOnly && item?.state !== state) continue;
       if (item) items.push({ item, state, path: filePath });
     }
   }

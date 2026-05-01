@@ -374,7 +374,8 @@ test('resume repairs derived queue directories from canonical transition events'
     queueItemPath(run.runRoot, 'candidate', itemId),
   );
 
-  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'candidate');
+  assert.equal((await findQueueItem(run.runRoot, itemId, { canonicalOnly: false })).state, 'candidate');
+  assert.equal(await findQueueItem(run.runRoot, itemId), null);
 
   const resumed = await resumeMachineRun(run.runRoot, {
     runId: run.runId,

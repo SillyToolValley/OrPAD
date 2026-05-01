@@ -293,13 +293,25 @@ test('transition ids are idempotent and do not mutate state twice', async () => 
 
 test('direct queue file writes are not canonical without Machine events', async () => {
   const run = await makeRun();
-  await fs.mkdir(path.dirname(queueItemPath(run.runRoot, 'done', 'rogue-item')), { recursive: true });
-  await fs.writeFile(queueItemPath(run.runRoot, 'done', 'rogue-item'), JSON.stringify({
+  await fs.mkdir(path.dirname(queueItemPath(run.runRoot, 'candidate', 'rogue-item')), { recursive: true });
+  await fs.writeFile(queueItemPath(run.runRoot, 'candidate', 'rogue-item'), JSON.stringify({
     id: 'rogue-item',
-    state: 'done',
+    state: 'candidate',
   }), 'utf8');
 
   const projection = projectQueueStateFromEvents(await readMachineEvents(run.runRoot));
 
   assert.equal(projection.has('rogue-item'), false);
+  assert.equal(await findQueueItem(run.runRoot, 'rogue-item'), null);
+  assert.equal((await readQueueItems(run.runRoot)).length, 0);
+  await assert.rejects(
+    transitionQueueItem(run.runRoot, {
+      runId: run.runId,
+      itemId: 'rogue-item',
+      toState: 'queued',
+      transitionId: 'triage:rogue-item',
+    }),
+    /Queue item not found: rogue-item/,
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).some(event => event.payload?.transitionId === 'triage:rogue-item'), false);
 });

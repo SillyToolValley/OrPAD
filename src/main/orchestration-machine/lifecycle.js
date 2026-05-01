@@ -194,7 +194,7 @@ async function repairDerivedQueueFilesFromEvents(runRoot) {
   const missing = [];
 
   for (const [itemId, projectedState] of projected.entries()) {
-    const current = await findQueueItem(runRoot, itemId);
+    const current = await findQueueItem(runRoot, itemId, { canonicalOnly: false });
     if (!current) {
       missing.push({ itemId, projectedState, reason: 'missing-item-snapshot' });
       continue;
