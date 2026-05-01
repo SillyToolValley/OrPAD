@@ -7799,6 +7799,14 @@ function machineRunStatusLabel(runState) {
     .join('/');
 }
 
+function machineStaleActiveClaims(record) {
+  const now = Date.now();
+  return (record?.activeClaims || []).filter(claim => {
+    const expiresAt = Date.parse(claim?.expiresAt || '');
+    return !Number.isFinite(expiresAt) || expiresAt <= now;
+  });
+}
+
 function machineExecuteControlDetails(record) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
@@ -7830,6 +7838,10 @@ function machineResumeControlDetails(record) {
     return { state: 'warn', text: `Resume blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first` };
   }
   if (activeClaims.length) {
+    const staleClaims = machineStaleActiveClaims(record);
+    if (staleClaims.length === activeClaims.length) {
+      return { state: 'good', text: `Resume ready: ${machineCountLabel(staleClaims.length, 'stale claim')} can be recovered before continuing` };
+    }
     return { state: 'warn', text: `Resume guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before resuming` };
   }
   if (resume) {
@@ -7915,8 +7927,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const cancellationDetails = machineCancellationControlDetails(record);
   const runId = runState.runId || record.runId || '';
   const hasActiveClaims = activeClaims.length > 0;
+  const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
   const executeDisabled = !runId || runTerminal || approvalPending || hasActiveClaims;
-  const resumeDisabled = !runId || runTerminal || approvalPending || hasActiveClaims || !window.orpad?.machine?.resumeRun;
+  const resumeDisabled = !runId || runTerminal || approvalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
   const cancelDisabled = runTerminal || !window.orpad?.machine?.cancelClaim;
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">

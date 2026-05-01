@@ -7,8 +7,10 @@ import { launchElectron } from '../helpers';
 const {
   claimNextQueuedItem,
   createMachineRun,
+  findQueueItem,
   ingestCandidateProposal,
   transitionQueueItem,
+  writeQueueItem,
 } = require('../../src/main/orchestration-machine');
 
 function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
@@ -110,13 +112,17 @@ function requireMachineApproval(pipelinePath: string): void {
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
-async function seedActiveClaimRun(workspace: string, pipelinePath: string): Promise<{ runId: string; runRoot: string; claimId: string; itemId: string }> {
+async function seedActiveClaimRun(
+  workspace: string,
+  pipelinePath: string,
+  options: { runId?: string; leaseMs?: number } = {},
+): Promise<{ runId: string; runRoot: string; claimId: string; itemId: string }> {
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
   const candidate = pipeline.run.machineHarness.candidateProposal;
   const run = await createMachineRun({
     workspaceRoot: workspace,
     pipelinePath,
-    runId: 'run_machine_ui_active_claim',
+    runId: options.runId || 'run_machine_ui_active_claim',
     now: new Date('2026-05-01T00:00:00.000Z'),
   });
   const item = await ingestCandidateProposal(run.runRoot, candidate, {
@@ -137,7 +143,7 @@ async function seedActiveClaimRun(workspace: string, pipelinePath: string): Prom
     claimId: 'claim-machine-ui-smoke',
     workerId: 'machine-ui-e2e-worker',
     recoverStale: false,
-    leaseMs: 24 * 60 * 60 * 1000,
+    leaseMs: options.leaseMs ?? 24 * 60 * 60 * 1000,
     now: '2026-05-01T00:00:03.000Z',
   });
   return {
@@ -146,6 +152,20 @@ async function seedActiveClaimRun(workspace: string, pipelinePath: string): Prom
     claimId: claim.claim.claimId,
     itemId: claim.item.id,
   };
+}
+
+async function seedStaleClaimRun(workspace: string, pipelinePath: string): Promise<{ runId: string; runRoot: string; claimId: string; itemId: string }> {
+  const seeded = await seedActiveClaimRun(workspace, pipelinePath, {
+    runId: 'run_machine_ui_stale_claim',
+    leaseMs: 1000,
+  });
+  const current = await findQueueItem(seeded.runRoot, seeded.itemId, { canonicalOnly: false });
+  await writeQueueItem(seeded.runRoot, {
+    ...current.item,
+    state: 'queued',
+    updatedAt: '2026-05-01T00:00:04.000Z',
+  });
+  return seeded;
 }
 
 async function enableMachineUi(win: any): Promise<void> {
@@ -399,6 +419,50 @@ test('Machine UI cancels an active claim and releases visible locks', async () =
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'queue', 'blocked', `${seeded.itemId}.json`), 'utf-8')).state).toBe('blocked');
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'locks', 'claims', `${seeded.claimId}.json`), 'utf-8')).state).toBe('cancelled');
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'locks', 'write-sets', `wset-${seeded.claimId}.json`), 'utf-8')).state).toBe('cancelled');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI resumes stale claims and reports queue repair', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const seeded = await seedStaleClaimRun(workspace, pipelinePath);
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await enableMachineUi(win);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText(seeded.runId);
+  await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume ready: 1 stale claim can be recovered before continuing');
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toBeEnabled();
+
+  await win.locator('button[data-runbook-action="machine-resume-run"]').click();
+  await submitMachineCapabilityToken(win);
+  await expect(win.locator('#runbooks-content')).toContainText('Last resume: 1 queue repair; 1 stale claim recovered; 1 queued');
+  await expect(win.locator('#runbooks-content')).toContainText('No active claims');
+  await expect(win.locator('#runbooks-content')).toContainText('No active write-set locks');
+  await expect(win.locator('#runbooks-content')).toContainText('waiting');
+  await expect(win.locator('#runbooks-content')).toContainText('partial');
+  await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveCount(0);
+  expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'queue', 'queued', `${seeded.itemId}.json`), 'utf-8')).state).toBe('queued');
+  expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'locks', 'claims', `${seeded.claimId}.json`), 'utf-8')).state).toBe('expired');
+  expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'locks', 'write-sets', `wset-${seeded.claimId}.json`), 'utf-8')).state).toBe('expired');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
