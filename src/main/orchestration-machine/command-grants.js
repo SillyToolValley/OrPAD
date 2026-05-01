@@ -1,6 +1,13 @@
 const path = require('path');
 
 const SHELL_TOKENS = new Set(['&&', '||', ';', '|', '>', '>>', '<', '&']);
+const SHELL_COMMANDS = new Set(['cmd', 'command', 'powershell', 'pwsh', 'sh', 'bash', 'zsh', 'fish', 'wsl']);
+
+function commandBasename(command) {
+  const normalized = String(command || '').replace(/\\/g, '/');
+  const base = normalized.split('/').pop() || normalized;
+  return base.toLowerCase().replace(/\.exe$/i, '');
+}
 
 function normalizeArgs(args = []) {
   if (!Array.isArray(args)) throw new Error('Command args must be an array.');
@@ -12,6 +19,11 @@ function normalizeCommandSpec(input = {}) {
   if (!command) throw new Error('Command is required.');
   if (SHELL_TOKENS.has(command)) {
     throw new Error('Shell operators are not valid commands. Use an exact command plus args array.');
+  }
+  if (SHELL_COMMANDS.has(commandBasename(command))) {
+    const err = new Error('Shell commands are not valid Machine adapter commands. Use a concrete executable plus args array.');
+    err.code = 'MACHINE_COMMAND_SHELL_BLOCKED';
+    throw err;
   }
   const args = normalizeArgs(input.args || []);
   const operator = args.find(arg => SHELL_TOKENS.has(arg));

@@ -112,6 +112,14 @@ test('exact command grants block unapproved or shell-like command specs', async 
     /Shell operators are not valid commands/,
   );
   assert.throws(
+    () => createCommandGrant({ command: 'cmd.exe', args: ['/c', 'echo ok'], cwd }),
+    error => error?.code === 'MACHINE_COMMAND_SHELL_BLOCKED',
+  );
+  assert.throws(
+    () => createCommandGrant({ command: 'powershell.exe', args: ['-NoProfile', '-Command', 'Write-Output ok'], cwd }),
+    error => error?.code === 'MACHINE_COMMAND_SHELL_BLOCKED',
+  );
+  assert.throws(
     () => require('../../src/main/orchestration-machine').assertCommandGranted([grant], {
       ...spec,
       args: ['-e', 'process.stdout.write("different")'],

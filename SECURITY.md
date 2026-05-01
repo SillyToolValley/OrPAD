@@ -385,7 +385,8 @@ harness command assembled by main process.
 - The child process cwd is the overlay, not the canonical workspace. Direct writes to canonical
   queue/state/run files are therefore impossible through the adapter process.
 - Commands are represented as `{ command, args[] }` and launched with `spawn(shell:false)`. Shell
-  operators are rejected by the command grant layer.
+  operators and direct shell executables such as `cmd.exe`, PowerShell, and POSIX shells are
+  rejected by the command grant layer.
 - Each process launch must match an exact command grant, including command, args, and cwd. A
   mismatched or expired grant blocks before process launch.
 - The adapter containment gate requires command cwd to be exactly the overlay root and rejects
