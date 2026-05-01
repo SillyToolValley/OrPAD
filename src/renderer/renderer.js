@@ -394,6 +394,8 @@ const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
 let lastMachineRunRecord = null;
 let machineCapabilityToken = '';
+let machineRuntimeStatus = null;
+let machineRuntimeStatusLoading = false;
 let gitRepoState = { isRepo: false, statuses: new Map(), branch: null, ahead: null, behind: null, slow: false };
 let gitStatusTimer = null;
 let gitRefreshToken = 0;
@@ -7075,8 +7077,106 @@ function isAgentOrchestratedPipeline(validation) {
   return (validation.renderOnlyNodeTypes || []).some(type => String(type || '').startsWith('orpad.'));
 }
 
+function isMachineApiAvailable() {
+  return !!window.orpad?.machine;
+}
+
 function isMachineUiEnabled() {
-  return !!window.orpad?.machine && localStorage.getItem(MACHINE_UI_STORAGE_KEY) === '1';
+  return localStorage.getItem(MACHINE_UI_STORAGE_KEY) === '1';
+}
+
+function machineRuntimeBlockReason() {
+  if (!isMachineApiAvailable()) return 'Machine IPC is unavailable in this build.';
+  if (!machineRuntimeStatus) return '';
+  if (machineRuntimeStatus.success === false || machineRuntimeStatus.ok === false) {
+    return machineRuntimeStatus.error || 'Machine IPC status check failed.';
+  }
+  if (machineRuntimeStatus.enabled === false) return 'Machine IPC is behind ORPAD_MACHINE_IPC=1.';
+  if (machineRuntimeStatus.mutatingCapabilityConfigured === false) return 'Machine IPC needs ORPAD_MACHINE_IPC_TOKEN.';
+  return '';
+}
+
+function renderMachineRuntimeControls() {
+  const uiEnabled = isMachineUiEnabled();
+  const blockReason = machineRuntimeBlockReason();
+  const statusKnown = !!machineRuntimeStatus;
+  const statusText = !isMachineApiAvailable()
+    ? 'IPC unavailable'
+    : !statusKnown || machineRuntimeStatusLoading
+      ? 'IPC checking'
+      : blockReason
+        ? 'IPC gated'
+        : 'IPC ready';
+  const statusClass = !statusKnown || machineRuntimeStatusLoading ? '' : blockReason ? 'warn' : 'good';
+  return `
+    <section class="runbook-panel-section">
+      <h3>Machine Runtime</h3>
+      <div class="runbook-chip-row">
+        <span class="runbook-chip ${uiEnabled ? 'good' : 'warn'}">${uiEnabled ? 'UI on' : 'UI off'}</span>
+        <span class="runbook-chip ${statusClass}">${escapeHtml(statusText)}</span>
+      </div>
+      <div class="runbook-action-row">
+        <button class="${uiEnabled ? 'primary' : ''}" data-runbook-action="toggle-machine-ui" title="Toggle Machine Runtime controls">${uiEnabled ? 'Hide Machine Runtime' : 'Enable Machine Runtime'}</button>
+      </div>
+      ${blockReason && uiEnabled ? `<div class="runbook-diagnostic warning">${escapeHtml(blockReason)}</div>` : ''}
+    </section>
+  `;
+}
+
+async function refreshMachineRuntimeStatus({ force = false } = {}) {
+  if (machineRuntimeStatusLoading) return machineRuntimeStatus;
+  if (machineRuntimeStatus && !force) return machineRuntimeStatus;
+  if (!window.orpad?.machine?.status) {
+    machineRuntimeStatus = {
+      success: isMachineApiAvailable(),
+      ok: isMachineApiAvailable(),
+      enabled: isMachineApiAvailable(),
+      mutatingCapabilityConfigured: null,
+    };
+    if (sidebarActivePanel === 'runbooks') renderRunbooksPanel();
+    return machineRuntimeStatus;
+  }
+  machineRuntimeStatusLoading = true;
+  try {
+    machineRuntimeStatus = await window.orpad.machine.status();
+  } catch (err) {
+    machineRuntimeStatus = {
+      success: false,
+      ok: false,
+      error: err?.message || String(err),
+    };
+  } finally {
+    machineRuntimeStatusLoading = false;
+  }
+  if (sidebarActivePanel === 'runbooks') renderRunbooksPanel();
+  return machineRuntimeStatus;
+}
+
+async function setMachineUiEnabled(enabled) {
+  if (enabled) localStorage.setItem(MACHINE_UI_STORAGE_KEY, '1');
+  else localStorage.removeItem(MACHINE_UI_STORAGE_KEY);
+  ensureSidebar('runbooks');
+  renderRunbooksPanel();
+  await refreshMachineRuntimeStatus({ force: enabled });
+  if (enabled && selectedRunbookPath) {
+    await validateSelectedRunbook(selectedRunbookPath);
+  }
+}
+
+async function showMachineRuntimeControls() {
+  await setMachineUiEnabled(true);
+}
+
+async function toggleMachineRuntimeControls() {
+  await setMachineUiEnabled(!isMachineUiEnabled());
+}
+
+async function ensureMachineRuntimeReady() {
+  await refreshMachineRuntimeStatus({ force: !machineRuntimeStatus });
+  const blockReason = machineRuntimeBlockReason();
+  if (!blockReason) return true;
+  alert(blockReason);
+  return false;
 }
 
 function isMachineCompatiblePipeline(validation) {
@@ -8029,10 +8129,11 @@ function renderRunbookActionButtons(selected, selectedValidation, selectedAgentR
 
   const canLocal = selectedValidation?.canExecute === true;
   const isPipeline = selectedValidation?.format === 'or-pipeline' || /\.or-pipeline$/i.test(selected || '');
-  const canMachine = isMachineCompatiblePipeline(selectedValidation);
-  const machineReason = selectedValidation
+  const runtimeBlockReason = machineRuntimeBlockReason();
+  const canMachine = !runtimeBlockReason && isMachineCompatiblePipeline(selectedValidation);
+  const machineReason = runtimeBlockReason || (selectedValidation
     ? (selectedValidation.machineBlockedReasons || []).join(', ') || 'not Machine-compatible'
-    : 'Check the pipeline first';
+    : 'Check the pipeline first');
   return `
     <button class="${canLocal ? 'primary' : ''}" data-runbook-action="start-local" data-path="${escapeHtml(selected)}" ${canLocal ? '' : 'disabled'}>Run locally</button>
     ${isPipeline ? `<button class="${!canLocal && canMachine ? 'primary' : ''}" data-runbook-action="run-machine" data-path="${escapeHtml(selected)}" ${canMachine ? '' : 'disabled'} title="${escapeHtml(canMachine ? 'Create a durable Machine run.' : machineReason)}">Run Machine</button>` : ''}
@@ -8066,6 +8167,7 @@ function renderRunbooksPanel() {
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
   const selectedMachineRunRecord = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, selected);
   const selectedKey = runbookNormalizePath(selected).toLowerCase();
+  void refreshMachineRuntimeStatus();
   runbooksContentEl.innerHTML = `
     <section class="runbook-panel-section">
       <h3>Describe the work</h3>
@@ -8076,6 +8178,7 @@ function renderRunbooksPanel() {
       </div>
       <p class="runbook-muted">${escapeHtml(runbookRelativePath(workspacePath))} - ${pipelineCount} pipelines${legacyCount ? ` - ${legacyCount} legacy graphs` : ''} - ${summary.fileCount} files</p>
     </section>
+    ${renderMachineRuntimeControls()}
     <section class="runbook-panel-section">
       <h3>Pipelines</h3>
       ${pipelineItems.length ? `
@@ -8333,6 +8436,7 @@ async function requestMachineCapabilityToken() {
 
 async function startSelectedMachineRun(runbookPath) {
   if (!workspacePath || !runbookPath || !window.orpad?.machine) return;
+  if (!await ensureMachineRuntimeReady()) return;
   if (!selectedRunbookValidation || selectedRunbookPath !== runbookPath) {
     await validateSelectedRunbook(runbookPath);
   }
@@ -8377,6 +8481,7 @@ async function startSelectedMachineRun(runbookPath) {
 
 async function executeSelectedMachineRunStep(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) return;
+  if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const executed = await window.orpad.machine.executeRunStep({
@@ -8417,6 +8522,7 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
 
 async function resumeSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.resumeRun) return;
+  if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const resumed = await window.orpad.machine.resumeRun({
@@ -8457,6 +8563,7 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
 
 async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
   if (!workspacePath || !runbookPath || !runId || !claimId || !itemId || !window.orpad?.machine?.cancelClaim) return;
+  if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const cancelled = await window.orpad.machine.cancelClaim({
@@ -8500,6 +8607,7 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
 
 async function exportSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine) return;
+  if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const exported = await window.orpad.machine.exportLatestRun({
@@ -8528,6 +8636,7 @@ async function exportSelectedMachineRun(runbookPath, runId) {
 
 async function decideSelectedMachineApproval(runbookPath, runId, approvalId, decision) {
   if (!workspacePath || !runbookPath || !runId || !approvalId || !window.orpad?.machine?.decideApproval) return;
+  if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const decided = await window.orpad.machine.decideApproval({
@@ -8939,6 +9048,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
   try {
     if (action === 'open-folder') await openFolder();
     else if (action === 'refresh') { await loadFileTree(); updateWorkspaceRunbookSummary(); }
+    else if (action === 'toggle-machine-ui') await toggleMachineRuntimeControls();
     else if (action === 'starter') {
       const previousLabel = button.textContent;
       button.disabled = true;
@@ -9762,6 +9872,8 @@ function setupCommandRegistry() {
     { id: 'view.search', title: 'Search in Files', category: 'View', keybinding: 'Ctrl Shift F', run: () => showSidebar('search') },
     { id: 'view.backlinks', title: 'Toggle Backlinks', category: 'View', keybinding: 'Ctrl Shift B', run: () => showSidebar('backlinks') },
     { id: 'view.runbooks', title: 'Open Pipes', category: 'View', run: () => showSidebar('runbooks') },
+    { id: 'runbook.showMachineRuntime', title: 'Show Machine Runtime', category: 'Pipeline', keybinding: 'Ctrl Shift M', keywords: ['machine', 'orchestration', 'runtime'], run: () => showMachineRuntimeControls() },
+    { id: 'runbook.toggleMachineRuntime', title: 'Toggle Machine Runtime Controls', category: 'Pipeline', keywords: ['machine', 'orchestration', 'runtime'], run: () => toggleMachineRuntimeControls() },
     { id: 'runbook.validateActive', title: 'Check Active Pipeline', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); } },
     { id: 'runbook.createRunRecord', title: 'Save Evidence', category: 'Pipeline', enabled: ({ activeTab, workspacePath }) => !!workspacePath && !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await createSelectedRunRecord(activeTab.filePath); } },
     { id: 'runbook.inspectContext', title: 'AI Context', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await openRunbookContextInspector(activeTab.filePath, selectedRunbookValidation); } },
@@ -11587,6 +11699,8 @@ document.addEventListener('keydown', (e) => {
   if (mod && e.shiftKey && key === 'f') { runShortcut('view.search'); return; }
   // Ctrl+Shift+B - backlinks
   if (mod && e.shiftKey && key === 'b') { runShortcut('view.backlinks'); return; }
+  // Ctrl+Shift+M - Machine Runtime controls
+  if (mod && e.shiftKey && key === 'm') { runShortcut('runbook.showMachineRuntime'); return; }
   if (key === 'escape') {
     if (document.body.classList.contains('zen-mode')) setZenMode(false);
     if (!themePanel.classList.contains('hidden')) themePanel.classList.add('hidden');

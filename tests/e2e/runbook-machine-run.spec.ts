@@ -194,11 +194,15 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.reload();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-  await enableMachineUi(win);
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Enable Machine Runtime');
+  await expect(win.locator('#runbooks-content')).toContainText('IPC ready');
+  await win.locator('button[data-runbook-action="toggle-machine-ui"]').click();
+  await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toContainText('Hide Machine Runtime');
+  await expect(win.locator('#runbooks-content')).toContainText('UI on');
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await expect(win.locator('#runbooks-content')).toContainText('Machine-compatible');
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toBeEnabled();
@@ -253,10 +257,9 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.reload();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-  await enableMachineUi(win);
-  await win.evaluate(async () => {
-    await (window as any).orpadCommands.runCommand('view.runbooks');
-  });
+  await win.keyboard.press('Control+Shift+M');
+  await expect(win.locator('#runbooks-content')).toContainText('Machine Runtime');
+  await expect(win.locator('#runbooks-content')).toContainText('UI on');
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await expect(win.locator('#runbooks-content')).toContainText('Machine Run');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');

@@ -28,6 +28,7 @@ const { readActiveWriteSetLocks } = require('./write-sets');
 const fsp = fs.promises;
 
 const MACHINE_IPC_CHANNELS = Object.freeze({
+  status: 'machine-status',
   validatePipeline: 'machine-validate-pipeline',
   createRun: 'machine-create-run',
   getRun: 'machine-get-run',
@@ -687,6 +688,19 @@ function registerMachineHandlers({ ipcMain, authority, featureGate = featureGate
     });
   }
 
+  ipcMain.handle(MACHINE_IPC_CHANNELS.status, async (event) => {
+    try {
+      assertSenderFrame(event);
+      return {
+        success: true,
+        ok: true,
+        enabled: gate.enabled,
+        mutatingCapabilityConfigured: !!gate.mutatingCapabilityToken,
+      };
+    } catch (err) {
+      return rejectResponse(err);
+    }
+  });
   handle(MACHINE_IPC_CHANNELS.validatePipeline, validatePipelineHandler);
   handle(MACHINE_IPC_CHANNELS.createRun, createRunHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.getRun, getRunHandler);
