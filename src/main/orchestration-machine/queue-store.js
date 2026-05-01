@@ -228,6 +228,7 @@ async function transitionQueueItem(runRoot, options = {}) {
   const nextItem = {
     ...current.item,
     ...itemPatch,
+    id: current.item.id,
     state: safeToState,
     updatedAt: options.now || new Date().toISOString(),
   };

@@ -205,6 +205,33 @@ test('unsafe queue transition ids are rejected before mutating state', async () 
   assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'queue.transition').length, 1);
 });
 
+test('queue transition patches cannot rename the Machine-owned work item id', async () => {
+  const run = await makeRun();
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:item',
+  });
+  const transition = await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:item:rename-attempt',
+    itemPatch: {
+      id: '../renamed-item',
+      claimId: 'claim-fixture',
+    },
+  });
+
+  assert.equal(transition.item.id, 'graph-editor-graph-specific-node-types');
+  assert.equal(transition.item.claimId, 'claim-fixture');
+  assert.equal((await findQueueItem(run.runRoot, 'graph-editor-graph-specific-node-types')).state, 'queued');
+  await assert.rejects(
+    findQueueItem(run.runRoot, '../renamed-item'),
+    error => error?.code === 'MACHINE_STORAGE_ID_INVALID',
+  );
+  assert.equal((await readQueueItems(run.runRoot)).length, 1);
+});
+
 test('transition ids are idempotent and do not mutate state twice', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {
