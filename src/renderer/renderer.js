@@ -8529,6 +8529,7 @@ async function startSelectedMachineRun(runbookPath) {
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
   void refreshWorkspaceRunbookSummary();
+  await executeSelectedMachineRunStep(runbookPath, created.runId);
 }
 
 async function executeSelectedMachineRunStep(runbookPath, runId) {
