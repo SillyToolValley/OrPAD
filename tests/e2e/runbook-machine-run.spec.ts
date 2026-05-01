@@ -165,6 +165,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
 
   await win.locator('button[data-runbook-action="machine-export"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('harness');
+  await expect(win.locator('#runbooks-content')).toContainText('audit:orpad-machine-run');
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
 
   const runDirs = fs.readdirSync(runRoot);

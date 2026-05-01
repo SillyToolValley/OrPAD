@@ -7716,6 +7716,27 @@ function machineActiveClaimDetails(record) {
   return `${machineCountLabel(activeClaims.length, 'active claim')}: ${label}`;
 }
 
+function machineShellArg(value) {
+  return `"${String(value || '').replace(/"/g, '\\"')}"`;
+}
+
+function machineAuditDetails(record) {
+  const runRoot = record?.runRoot || '';
+  const exportRoot = record?.exported?.targetRoot
+    || record?.exported?.latestRunExportPath
+    || '';
+  if (!runRoot) {
+    return { state: 'warn', text: 'Run root unavailable' };
+  }
+  if (!exportRoot) {
+    return { state: 'warn', text: 'Export Latest before auditing this run' };
+  }
+  return {
+    state: 'good',
+    text: `npm run audit:orpad-machine-run -- ${machineShellArg(runRoot)} ${machineShellArg(exportRoot)}`,
+  };
+}
+
 function isMachineRunTerminal(runState) {
   return ['completed', 'cancelled', 'failed'].includes(runState?.lifecycleStatus)
     || runState?.summaryStatus === 'done';
@@ -7763,6 +7784,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const nodeCompletionDetails = machineNodeCompletionDetails(record);
   const approvalDetails = machineApprovalDetails(record);
   const activeClaimDetails = machineActiveClaimDetails(record);
+  const auditDetails = machineAuditDetails(record);
   const runId = runState.runId || record.runId || '';
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
@@ -7815,6 +7837,10 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <div class="runbook-guide ${exported ? 'good' : 'warn'}">
           <strong>Latest-run export</strong>
           <span>${escapeHtml(exported ? (exported.targetRoot || exported.latestRunExportPath || 'exported') : 'Not exported')}</span>
+        </div>
+        <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
+          <strong>Machine audit</strong>
+          <span><code>${escapeHtml(auditDetails.text)}</code></span>
         </div>
         <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
           <strong>Approval</strong>
@@ -8223,7 +8249,9 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
     return;
   }
   selectedRunbookPath = runbookPath;
+  const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
   lastMachineRunRecord = {
+    ...cached,
     ...executed,
     exported: executed.exported || executed.export,
   };
@@ -8261,7 +8289,9 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
     return;
   }
   selectedRunbookPath = runbookPath;
+  const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
   lastMachineRunRecord = {
+    ...cached,
     ...resumed,
     exported: resumed.exported || resumed.export,
   };
@@ -8302,7 +8332,9 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
     return;
   }
   selectedRunbookPath = runbookPath;
+  const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
   lastMachineRunRecord = {
+    ...cached,
     ...cancelled,
     exported: cancelled.exported || cancelled.export,
   };
@@ -8361,7 +8393,9 @@ async function decideSelectedMachineApproval(runbookPath, runId, approvalId, dec
     return;
   }
   selectedRunbookPath = runbookPath;
+  const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
   lastMachineRunRecord = {
+    ...cached,
     ...decided,
     exported: decided.exported || decided.export,
   };

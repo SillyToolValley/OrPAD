@@ -1609,6 +1609,10 @@ body.json-diff-mode #preview-pane {
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
+.runbook-guide code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .runbook-guide.good { border-left-color: var(--syntax-string, #9ece6a); }
 .runbook-guide.warn { border-left-color: var(--syntax-meta, #e0af68); }
 .runbook-guide.danger { border-left-color: var(--danger-color, #ff7676); }
