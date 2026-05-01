@@ -1781,6 +1781,112 @@ body.json-diff-mode #preview-pane {
   cursor: not-allowed;
   opacity: 0.55;
 }
+.pipeline-runbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(12px * var(--us));
+  margin: 0 0 calc(12px * var(--us));
+  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border-radius: calc(8px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
+}
+.pipeline-runbar-meta {
+  min-width: 0;
+  display: grid;
+  gap: calc(2px * var(--us));
+}
+.pipeline-runbar-meta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: calc(13px * var(--us));
+}
+.pipeline-runbar-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--us));
+}
+.pipeline-runbar-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: calc(4px * var(--us));
+}
+.pipeline-run-primary,
+.pipeline-run-menu-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: calc(32px * var(--us));
+  height: calc(32px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(7px * var(--us));
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.pipeline-run-primary {
+  border-color: color-mix(in srgb, var(--accent-color) 66%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
+}
+.pipeline-run-primary:hover,
+.pipeline-run-menu-trigger:hover {
+  background: var(--hover-bg);
+  color: var(--text-primary);
+}
+.pipeline-run-primary:hover {
+  color: var(--accent-color);
+}
+.pipeline-run-primary:disabled,
+.pipeline-run-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.pipeline-run-menu-wrap {
+  position: relative;
+}
+.pipeline-run-menu-wrap > summary {
+  list-style: none;
+}
+.pipeline-run-menu-trigger::-webkit-details-marker {
+  display: none;
+}
+.pipeline-run-menu {
+  position: absolute;
+  top: calc(38px * var(--us));
+  right: 0;
+  z-index: 40;
+  min-width: calc(180px * var(--us));
+  display: grid;
+  gap: calc(3px * var(--us));
+  padding: calc(5px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(8px * var(--us));
+  background: var(--bg-primary);
+  box-shadow: 0 calc(12px * var(--us)) calc(28px * var(--us)) rgba(0, 0, 0, 0.24);
+}
+.pipeline-run-menu button {
+  min-height: calc(30px * var(--us));
+  padding: calc(6px * var(--us)) calc(8px * var(--us));
+  border: 0;
+  border-radius: calc(6px * var(--us));
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: calc(11px * var(--us));
+  text-align: left;
+  cursor: pointer;
+}
+.pipeline-run-menu button:hover:not(:disabled) {
+  background: var(--hover-bg);
+  color: var(--text-primary);
+}
 .orch-tool-btn {
   display: inline-grid;
   place-items: center;
