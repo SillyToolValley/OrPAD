@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 const {
   SCHEMA_VERSIONS,
   artifactManifestPath,
+  assertRunRelativePath,
   createContractValidator,
   fileDigest,
   legacyJournalRecordsFromEvents,
@@ -27,7 +28,12 @@ function diagnostic(code, message, details = {}) {
 }
 
 function runRelativePath(runRoot, relativePath) {
-  return path.join(path.resolve(runRoot), ...String(relativePath || '').replace(/\\/g, '/').split('/'));
+  const source = String(relativePath || '');
+  const portable = assertRunRelativePath(source);
+  if (source !== portable) {
+    throw new Error(`Artifact path must already be normalized run-relative: ${relativePath}`);
+  }
+  return path.join(path.resolve(runRoot), ...portable.split('/'));
 }
 
 async function readJsonIfExists(filePath, fallback = null) {
@@ -613,7 +619,16 @@ async function auditArtifactManifest(runRoot) {
   }
 
   for (const file of Array.isArray(manifest.files) ? manifest.files : []) {
-    const filePath = runRelativePath(runRoot, file.path);
+    let filePath = '';
+    try {
+      filePath = runRelativePath(runRoot, file.path);
+    } catch (err) {
+      diagnostics.push(diagnostic('MACHINE_ARTIFACT_PATH_INVALID', 'Artifact manifest file paths must be normalized run-relative paths.', {
+        path: file.path,
+        error: err.message,
+      }));
+      continue;
+    }
     try {
       const digest = await fileDigest(filePath);
       if (digest.sha256 !== file.sha256) {
@@ -699,7 +714,16 @@ async function auditCandidateInventory(runRoot, manifest, events) {
 
   let itemCount = 0;
   for (const file of files) {
-    const filePath = runRelativePath(runRoot, file.path);
+    let filePath = '';
+    try {
+      filePath = runRelativePath(runRoot, file.path);
+    } catch (err) {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_PATH_INVALID', 'Candidate inventory artifact path must be a normalized run-relative path.', {
+        path: file.path,
+        error: err.message,
+      }));
+      continue;
+    }
     let inventory = null;
     try {
       inventory = JSON.parse(await fs.readFile(filePath, 'utf8'));

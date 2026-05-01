@@ -182,6 +182,20 @@ test('audit-orpad-machine-run fails when artifact manifest violates schema', asy
   assert.equal(codes.has('MACHINE_ARTIFACT_MANIFEST_SCHEMA_INVALID'), true);
 });
 
+test('audit-orpad-machine-run fails without reading unsafe artifact manifest paths', async () => {
+  const run = await makeAuditableRun();
+  const manifestPath = path.join(run.runRoot, 'artifacts/manifest.json');
+  const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  manifest.files[0].path = '../outside.md';
+  await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+
+  const result = runAudit(run.runRoot, run.latestRunExportRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_ARTIFACT_PATH_INVALID'), true);
+});
+
 test('audit-orpad-machine-run fails when latest-run export is stale', async () => {
   const run = await makeAuditableRun();
   const metadataPath = path.join(run.latestRunExportRoot, 'run-metadata.json');

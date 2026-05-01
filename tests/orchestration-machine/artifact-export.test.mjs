@@ -76,6 +76,39 @@ test('artifact registry records producedBy and registeredBy provenance', async (
   assert.equal(manifest.files[0].path, result.file.path);
 });
 
+test('artifact registry rejects absolute or normalized parent paths before writing', async () => {
+  const run = await makeRun();
+  const unsafePaths = [
+    '/tmp/outside.md',
+    'C:/tmp/outside.md',
+    'artifacts/queue/../outside.md',
+    'artifacts/queue/..',
+    'artifacts/./queue.md',
+    'artifacts//queue.md',
+  ];
+
+  for (const artifactPath of unsafePaths) {
+    await assert.rejects(
+      registerArtifact(run.runRoot, {
+        runId: run.runId,
+        artifactPath,
+        content: 'unsafe\n',
+        producedBy: 'test',
+      }),
+      /Artifact path must be run-relative/,
+    );
+  }
+
+  await assert.rejects(
+    fs.stat(path.join(run.runRoot, 'outside.md')),
+    error => error?.code === 'ENOENT',
+  );
+  await assert.rejects(
+    readArtifactManifest(run.runRoot),
+    error => error?.code === 'ENOENT',
+  );
+});
+
 test('legacy journal exporter projects Machine queue transition events', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {

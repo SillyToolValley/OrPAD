@@ -14,11 +14,27 @@ function toPortablePath(value) {
 }
 
 function assertRunRelativePath(artifactPath) {
-  const portable = toPortablePath(artifactPath);
-  if (!portable || portable.startsWith('/') || portable.includes('../') || portable === '..') {
+  const portable = toPortablePath(artifactPath).trim();
+  const segments = portable.split('/');
+  const hasUnsafeSegment = segments.some(segment => (
+    !segment
+    || segment === '.'
+    || segment === '..'
+    || /^[a-zA-Z]:$/.test(segment)
+  ));
+  const normalized = path.posix.normalize(portable);
+  if (
+    !portable
+    || portable.startsWith('/')
+    || /^[a-zA-Z]:\//.test(portable)
+    || hasUnsafeSegment
+    || normalized === '.'
+    || normalized === '..'
+    || normalized.startsWith('../')
+  ) {
     throw new Error(`Artifact path must be run-relative: ${artifactPath}`);
   }
-  return portable;
+  return normalized;
 }
 
 function artifactManifestPath(runRoot) {

@@ -195,6 +195,17 @@ test('contract validator rejects unsafe work item storage ids', () => {
   }).ok, false);
 });
 
+test('contract validator rejects unsafe artifact manifest paths', () => {
+  const validator = createContractValidator();
+  for (const artifactPath of ['../outside.md', '/tmp/outside.md', 'C:/tmp/outside.md', 'artifacts/queue/../x.md', 'artifacts\\queue\\x.md']) {
+    const manifest = {
+      ...samples().artifactManifest,
+      files: [{ ...samples().artifactManifest.files[0], path: artifactPath }],
+    };
+    assert.equal(validator.validate('artifactManifest', manifest).ok, false, artifactPath);
+  }
+});
+
 test('adapter contracts require retry identity fields', () => {
   const validator = createContractValidator();
   const request = samples().adapterRequest;
