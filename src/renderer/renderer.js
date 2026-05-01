@@ -5180,8 +5180,8 @@ function renderOrchPipelinePreview(content) {
           </div>
         </div>
       </div>
-      ${renderPipelineEditorTabs(pipelineContext, 'manifest', entryGraphPath)}
       ${renderPipelinePreviewRunBar(pipelineContext)}
+      ${renderPipelineEditorTabs(pipelineContext, 'manifest', entryGraphPath)}
       <div class="orch-graph-layout">
         <div class="orch-graph-main">
           <section class="runbook-panel-section">
@@ -5501,8 +5501,8 @@ function renderOrchGraphPreview(content) {
           </div>
         </div>
       </div>
-      ${renderPipelineEditorTabs(pipelineContext, 'graph', getActiveTab()?.filePath || '')}
       ${renderPipelinePreviewRunBar(pipelineContext)}
+      ${renderPipelineEditorTabs(pipelineContext, 'graph', getActiveTab()?.filePath || '')}
       ${renderOrchGraphLayerBar(doc)}
       <div class="orch-graph-layout orch-graph-layout-internal-inspector">
         <div class="orch-graph-main">
