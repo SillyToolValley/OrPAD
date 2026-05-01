@@ -40,6 +40,66 @@ function cliOverlayRoot(runRoot, request) {
   return path.join(path.resolve(runRoot), 'adapters', 'overlays', idSegment(request?.adapterCallId));
 }
 
+function comparablePath(filePath) {
+  const resolved = path.resolve(String(filePath || ''));
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function sameResolvedPath(left, right) {
+  return comparablePath(left) === comparablePath(right);
+}
+
+function isInsideResolvedPath(parent, child) {
+  const parentPath = comparablePath(parent);
+  const childPath = comparablePath(child);
+  const relative = path.relative(parentPath, childPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function unsafeOverlayRoot(overlayRoot, reason) {
+  const err = new Error(`CLI overlay root is not Machine-owned: ${reason}`);
+  err.code = 'MACHINE_CLI_OVERLAY_ROOT_UNSAFE';
+  err.overlayRoot = overlayRoot;
+  return err;
+}
+
+function assertCliOverlayRootAllowed(options = {}) {
+  const {
+    overlayRoot,
+    overlayRootMode = 'run-root',
+    runRoot = '',
+    workspaceRoot = '',
+  } = options;
+  if (!overlayRoot) throw unsafeOverlayRoot('', 'overlay root is required');
+  const resolvedOverlayRoot = path.resolve(overlayRoot);
+  const mode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
+
+  if (mode === 'system-temp') {
+    const tempRoot = path.resolve(os.tmpdir());
+    if (
+      sameResolvedPath(resolvedOverlayRoot, tempRoot)
+      || !isInsideResolvedPath(tempRoot, resolvedOverlayRoot)
+      || !path.basename(resolvedOverlayRoot).startsWith('orpad-machine-')
+    ) {
+      throw unsafeOverlayRoot(resolvedOverlayRoot, 'system-temp overlays must be isolated orpad-machine-* temp directories');
+    }
+    if (workspaceRoot && isInsideResolvedPath(workspaceRoot, resolvedOverlayRoot)) {
+      throw unsafeOverlayRoot(resolvedOverlayRoot, 'system-temp overlays must stay outside the canonical workspace');
+    }
+    return resolvedOverlayRoot;
+  }
+
+  if (!runRoot) throw unsafeOverlayRoot(resolvedOverlayRoot, 'run-root overlays require runRoot');
+  const overlayParent = path.join(path.resolve(runRoot), 'adapters', 'overlays');
+  if (
+    sameResolvedPath(resolvedOverlayRoot, overlayParent)
+    || !isInsideResolvedPath(overlayParent, resolvedOverlayRoot)
+  ) {
+    throw unsafeOverlayRoot(resolvedOverlayRoot, 'run-root overlays must live below runRoot/adapters/overlays');
+  }
+  return resolvedOverlayRoot;
+}
+
 async function prepareCliOverlayWorkspace(options = {}) {
   const {
     runRoot = '',
@@ -48,13 +108,25 @@ async function prepareCliOverlayWorkspace(options = {}) {
   } = options;
   if (!request) throw new Error('adapter request is required.');
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
-  const overlayRoot = options.overlayRoot
-    || request.overlayRoot
-    || (options.overlayRootMode === 'system-temp' || request.overlayRootMode === 'system-temp'
-      ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
-      : '')
-    || cliOverlayRoot(runRoot, request)
-    || await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'));
+  const requestedOverlayMode = options.overlayRootMode || request.overlayRootMode || 'run-root';
+  let overlayRootMode = requestedOverlayMode === 'system-temp' ? 'system-temp' : 'run-root';
+  let overlayRoot = options.overlayRoot || request.overlayRoot || '';
+  if (!overlayRoot && overlayRootMode === 'system-temp') {
+    overlayRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'));
+  }
+  if (!overlayRoot && runRoot) {
+    overlayRoot = cliOverlayRoot(runRoot, request);
+  }
+  if (!overlayRoot) {
+    overlayRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'));
+    overlayRootMode = 'system-temp';
+  }
+  overlayRoot = assertCliOverlayRootAllowed({
+    overlayRoot,
+    overlayRootMode,
+    runRoot,
+    workspaceRoot,
+  });
 
   await fsp.rm(overlayRoot, { recursive: true, force: true });
   await fsp.mkdir(overlayRoot, { recursive: true });
@@ -120,6 +192,7 @@ function createCliAgentAdapter(options = {}) {
         request,
         workspaceRoot: options.workspaceRoot || request.workspaceRoot,
         overlayRoot: options.overlayRoot,
+        overlayRootMode: options.overlayRootMode,
       });
       const commandSpec = {
         ...(options.commandSpec || request.commandSpec || {}),
@@ -217,6 +290,7 @@ function createCliAgentAdapter(options = {}) {
 }
 
 module.exports = {
+  assertCliOverlayRootAllowed,
   cliOverlayRoot,
   createCliAgentAdapter,
   createCliAgentProposalOnlyAdapter,

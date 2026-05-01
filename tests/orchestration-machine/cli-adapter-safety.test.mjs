@@ -17,6 +17,7 @@ const {
   createMachineRun,
   findQueueItem,
   ingestCandidateProposal,
+  prepareCliOverlayWorkspace,
   readMachineEvents,
   runMachineProcess,
   sanitizeEnvironment,
@@ -270,6 +271,36 @@ test('CLI overlay adapter refuses to run without an exact command grant', async 
     }).invoke(request),
     error => error?.code === 'MACHINE_COMMAND_NOT_GRANTED',
   );
+});
+
+test('CLI overlay workspace rejects untrusted overlay roots before cleanup', async () => {
+  const run = await makeRun('run_20260430_cli_overlay_root_guard');
+  const sentinelPath = path.join(run.workspaceRoot, 'sentinel.txt');
+  await fs.writeFile(sentinelPath, 'keep\n', 'utf8');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: [],
+    adapterCallId: 'cli-overlay-root-guard-call',
+    attemptId: 'cli-overlay-root-guard-attempt-1',
+    idempotencyKey: 'cli-overlay-root-guard-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.overlayRoot = run.workspaceRoot;
+
+  await assert.rejects(
+    prepareCliOverlayWorkspace({
+      runRoot: run.runRoot,
+      request,
+      workspaceRoot: run.workspaceRoot,
+    }),
+    error => error?.code === 'MACHINE_CLI_OVERLAY_ROOT_UNSAFE',
+  );
+  assert.equal(await fs.readFile(sentinelPath, 'utf8'), 'keep\n');
 });
 
 test('CLI overlay adapter blocks successful no-op when expected changed files are missing', async () => {
