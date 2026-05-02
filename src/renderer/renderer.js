@@ -2533,7 +2533,7 @@ function renderPipelineEditorTabs(context, active, graphPath = '') {
   const resolvedGraphPath = graphPath || pipelineEditorCurrentGraphPath(context);
   return `
     <div class="pipeline-editor-tabs" aria-label="Pipeline setup tabs">
-      <button class="${active === 'graph' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(resolvedGraphPath)}" ${resolvedGraphPath ? '' : 'disabled'}>Graph</button>
+      <button class="${active === 'graph' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(resolvedGraphPath)}" ${resolvedGraphPath ? '' : 'disabled'}>Flow</button>
       <button class="${active === 'manifest' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(manifestPath)}">Manifest</button>
     </div>
   `;
@@ -2581,7 +2581,7 @@ function pipelinePreviewTitle(context, pipelineDoc = null) {
 function pipelinePreviewLocationLabel(context) {
   if (!context) return '';
   if (context.isManifest) return 'Manifest';
-  if (context.isGraph) return `Graph: ${runbookBaseName(context.activePath, 'main.or-graph')}`;
+  if (context.isGraph) return `Flow: ${runbookBaseName(context.activePath, 'main.or-graph')}`;
   if (context.activeRelativePath) return context.activeRelativePath;
   return 'Pipeline package';
 }
@@ -2650,7 +2650,7 @@ function bindPipelineEditorTabs() {
 
 const ORCH_PIPELINE_TRUST_LEVELS = ['local-authored', 'signed-template', 'imported-review', 'generated-draft', 'unknown'];
 const ORCH_PIPELINE_REF_SECTIONS = [
-  { key: 'graphs', label: 'Graphs', singular: 'graph', defaultId: 'main', defaultFile: 'graphs/main.or-graph' },
+  { key: 'graphs', label: 'Flows', singular: 'flow', defaultId: 'main', defaultFile: 'graphs/main.or-graph' },
   { key: 'trees', label: 'Trees', singular: 'tree', defaultId: 'implementation', defaultFile: 'trees/implementation.or-tree' },
   { key: 'skills', label: 'Skills', singular: 'skill', defaultId: 'implement', defaultFile: 'skills/implement.md' },
   { key: 'rules', label: 'Rules', singular: 'rule', defaultId: 'context', defaultFile: 'rules/context.or-rule' },
@@ -3144,7 +3144,7 @@ function orchNodeDefaultLabel(type) {
     'orpad.gate': 'New gate',
     'orpad.skill': 'New skill',
     'orpad.tree': 'New tree reference',
-    'orpad.graph': 'New graph reference',
+    'orpad.graph': 'New flow reference',
     'orpad.rule': 'New rule',
     'orpad.artifactContract': 'New evidence contract',
     'orpad.probe': 'New probe',
@@ -3439,7 +3439,7 @@ function applyOrchTreeMutation(mutator) {
   try {
     doc = JSON.parse(editor.state.doc.toString());
   } catch (err) {
-    notifyFormatError('Pipeline graph', err);
+    notifyFormatError('Pipeline flow', err);
     return;
   }
   const before = captureOrchHistorySnapshot();
@@ -3666,7 +3666,7 @@ function collectOrchStateGraph(doc) {
   const maxX = Math.max(...nodes.map(item => item.x + ORCH_NODE_WIDTH + ORCH_GRAPH_MARGIN), 760);
   const maxY = Math.max(...nodes.map(item => item.y + ORCH_NODE_HEIGHT + ORCH_GRAPH_MARGIN), 520);
   return {
-    tree: { id: graphDoc.id || 'orch-graph', label: graphDoc.label || 'State graph' },
+    tree: { id: graphDoc.id || 'orch-graph', label: graphDoc.label || 'Main flow' },
     treeIndex: 0,
     nodes,
     edges,
@@ -3922,7 +3922,7 @@ function insertOrchSubtree(draft, path) {
 
 function ensureOrchGraphDoc(draft) {
   if (!draft.graph || typeof draft.graph !== 'object' || Array.isArray(draft.graph)) {
-    draft.graph = { id: 'orch-graph', label: 'State graph', nodes: [], transitions: [] };
+    draft.graph = { id: 'orch-graph', label: 'Main flow', nodes: [], transitions: [] };
   }
   if (!Array.isArray(draft.graph.nodes)) draft.graph.nodes = [];
   if (!Array.isArray(draft.graph.transitions)) draft.graph.transitions = [];
@@ -4246,11 +4246,11 @@ function renderOrchGraphLayerBar(doc) {
   const stack = currentOrchGraphLayerStack();
   const activePath = activeOrchGraphLayerPath();
   const crumbs = [
-    `<button class="${activePath ? '' : 'active'}" data-orch-layer-index="-1">State graph</button>`,
+    `<button class="${activePath ? '' : 'active'}" data-orch-layer-index="-1">Main flow</button>`,
     ...stack.map((entry, index) => `<button class="${index === stack.length - 1 ? 'active' : ''}" data-orch-layer-index="${index}">${escapeHtml(orchLayerNodeLabel(doc, entry.path))}</button>`),
   ];
   return `
-    <div class="orch-layer-bar" aria-label="Current graph layer">
+    <div class="orch-layer-bar" aria-label="Current flow layer">
       <div class="orch-layer-crumbs">${crumbs.join('<span>/</span>')}</div>
       ${stack.length ? `<button class="orch-layer-up" data-orch-layer-up="true">Up</button>` : ''}
     </div>
@@ -4267,7 +4267,7 @@ function renderOrchTypeField(path, node) {
   const types = orchNodeTypesForPath(path);
   const currentType = String(node?.type || '');
   const typeAllowed = types.includes(currentType);
-  const scopeLabel = isOrchGraphNodeTypeTarget(path) ? 'graph' : 'tree';
+  const scopeLabel = isOrchGraphNodeTypeTarget(path) ? 'flow' : 'tree';
   const options = [
     typeAllowed ? '' : `<option value="" disabled selected>Select ${scopeLabel} node type</option>`,
     ...types.map(type => `<option value="${type}" ${currentType === type ? 'selected' : ''}>${type}</option>`),
@@ -4310,7 +4310,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
     return `
       <aside class="orch-inspector">
         <h3>Node</h3>
-        <div class="runbook-empty">Select a node in the graph.</div>
+        <div class="runbook-empty">Select a step in the flow.</div>
       </aside>
     `;
   }
@@ -4337,7 +4337,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
       ${node.type === 'Skill' ? `<label><span>Skill file</span><input data-orch-edit="file" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.file || '')}"></label>` : ''}
       ${node.type === 'orpad.skill' ? `<label><span>Skill ref</span><input data-orch-edit="config.skillRef" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.config?.skillRef || '')}"></label>` : ''}
       ${node.type === 'orpad.tree' ? `<label><span>Tree ref</span><input data-orch-edit="config.treeRef" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.config?.treeRef || node.config?.ref || '')}"></label>` : ''}
-      ${node.type === 'orpad.graph' ? `<label><span>Graph ref</span><input data-orch-edit="config.graphRef" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.config?.graphRef || '')}"></label>` : ''}
+      ${node.type === 'orpad.graph' ? `<label><span>Flow ref</span><input data-orch-edit="config.graphRef" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.config?.graphRef || '')}"></label>` : ''}
       <div class="orch-inspector-actions">
         ${canOpenOrchSubtree(selectedOrchNodePath, doc) ? `<button data-orch-action="open-subtree" data-orch-path="${escapeHtml(selectedOrchNodePath)}">Open</button>` : ''}
         ${!canOpenOrchSubtree(selectedOrchNodePath, doc) && orchNodeFileTarget(selectedOrchNodePath, doc, baseFilePath) ? `<button data-orch-action="open-file" data-orch-path="${escapeHtml(selectedOrchNodePath)}">Open file</button>` : ''}
@@ -5235,10 +5235,10 @@ function renderOrchPipelinePreview(content) {
                 <h3>${escapeHtml(doc.title || doc.id || 'OrPAD Pipeline')}</h3>
                 <p>${escapeHtml(doc.description || 'Pipeline package for an OrPAD orchestration run.')}</p>
               </div>
-              ${entryGraphPath ? `<button class="primary" data-pipeline-editor-target="${escapeHtml(entryGraphPath)}">Open Graph</button>` : ''}
+              ${entryGraphPath ? `<button class="primary" data-pipeline-editor-target="${escapeHtml(entryGraphPath)}">Open Flow</button>` : ''}
             </header>
             <div class="runbook-chip-row">
-              <span class="runbook-chip">${graphRefs.length || (entryGraph ? 1 : 0)} graphs</span>
+              <span class="runbook-chip">${graphRefs.length || (entryGraph ? 1 : 0)} flows</span>
               <span class="runbook-chip">${treeRefs.length} trees</span>
               <span class="runbook-chip">${skillRefs.length} skills</span>
               <span class="runbook-chip">${ruleRefs.length} rules</span>
@@ -5529,15 +5529,15 @@ function renderOrchGraphPreview(content) {
       ? '<div class="runbook-empty">Loading linked OrPAD layer...</div>'
       : linkedLayer?.error
         ? `<div class="preview-error">Linked OrPAD layer could not be loaded: ${escapeHtml(linkedLayer.error)}</div>`
-        : '<div class="runbook-empty">No graph nodes found.</div>';
-  const layerKindLabel = linkedGraphLayer ? 'Graph layer' : layerPath ? 'OrchTree layer' : 'state graph';
-  const layerSourceLabel = linkedGraphLayer ? 'linked .or-graph' : linkedLayer ? 'linked .or-tree' : layerPath ? 'embedded in orch-graph' : 'OrchTree subflow nodes';
+        : '<div class="runbook-empty">No flow steps found.</div>';
+  const layerKindLabel = linkedGraphLayer ? 'Flow layer' : layerPath ? 'Tree layer' : 'main flow';
+  const layerSourceLabel = linkedGraphLayer ? 'linked flow file' : linkedLayer ? 'linked tree file' : layerPath ? 'embedded flow' : 'tree subflow steps';
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">
-        <strong>${pipelineContext ? 'Pipeline setup' : (linkedGraphLayer || !layerPath ? 'Graph setup' : 'Tree setup')}</strong>
+        <strong>${pipelineContext ? 'Pipeline setup' : (linkedGraphLayer || !layerPath ? 'Flow setup' : 'Tree setup')}</strong>
         <div class="orch-toolbar-actions">
-          ${pipelineContext ? `<span class="runbook-chip">Graph</span>` : ''}
+          ${pipelineContext ? `<span class="runbook-chip">Flow</span>` : ''}
           <span class="runbook-chip good">${layerKindLabel}</span>
           <span class="runbook-chip">${layerSourceLabel}</span>
           <div class="jedit-seg">

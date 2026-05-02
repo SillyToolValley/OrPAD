@@ -105,7 +105,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(fs.readFileSync(path.join(runbookDir, 'skills', skillFiles[0]), 'utf-8')).toContain('Make the Pipes panel obvious');
   await win.locator('#btn-preview').click();
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
-  await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Graph');
+  await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
   await expect(win.locator('.orch-graph-node')).toHaveCount(8);

@@ -559,7 +559,7 @@ test('web opens OrPAD graph files with visual graph preview', async ({ page }) =
     expect(opened).toBe(true);
     await expect(page.locator('.tab-item')).toContainText('web-preview.or-graph');
     await page.locator('#btn-preview').click();
-    await expect(page.locator('.orch-preview')).toContainText('Graph setup');
+    await expect(page.locator('.orch-preview')).toContainText('Flow setup');
     await expect(page.locator('.orch-graph-node')).toHaveCount(2);
     await expect(page.locator('.orch-graph-node')).toContainText(['Collect web facts', 'Review web graph']);
     await expect(page.locator('.orch-transition')).toHaveCount(1);
