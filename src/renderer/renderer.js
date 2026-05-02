@@ -8118,7 +8118,7 @@ function machineCandidateInventoryDetails(record) {
 
 function machineWorkerProofDetails(record) {
   const event = record?.worker?.event || latestMachineEvent(record?.events, 'worker.result');
-  if (!event) return 'No worker proof yet';
+  if (!event) return 'No work result yet';
   const payload = event.payload || {};
   const artifacts = event.artifactRefs || [];
   const verification = payload.verification || [];
@@ -8430,8 +8430,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <strong>Work found</strong>
           <span>${escapeHtml(candidateDetails)}</span>
         </div>
-        <div class="runbook-guide ${workerProofDetails === 'No worker proof yet' ? 'warn' : 'good'}">
-          <strong>Worker proof</strong>
+        <div class="runbook-guide ${workerProofDetails === 'No work result yet' ? 'warn' : 'good'}">
+          <strong>Work result</strong>
           <span>${escapeHtml(workerProofDetails)}</span>
         </div>
         <div class="runbook-guide">

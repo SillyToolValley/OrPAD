@@ -241,7 +241,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Work item moved');
   await expect(win.locator('#runbooks-content')).toContainText('Work found');
   await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
-  await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
+  await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
@@ -447,7 +447,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('1 approval needed: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery blocked: 1 approval must be decided first');
   await expect(win.locator('#runbooks-content')).toContainText('No active claim to cancel');
-  await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
+  await expect(win.locator('#runbooks-content')).toContainText('No work result yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
@@ -463,7 +463,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
 
   await win.locator('button[data-runbook-action="machine-execute-step"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
-  await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
+  await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
