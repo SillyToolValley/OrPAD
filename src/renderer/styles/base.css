@@ -1429,6 +1429,16 @@ body.json-diff-mode #preview-pane {
   font-size: calc(12px * var(--us));
   font-weight: 700;
 }
+.runbook-section-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(8px * var(--us));
+}
+.runbook-section-heading .runbook-chip {
+  flex: 0 0 auto;
+}
 .runbook-panel-section p { margin: 0; line-height: 1.45; }
 .runbook-muted {
   color: var(--text-tertiary);

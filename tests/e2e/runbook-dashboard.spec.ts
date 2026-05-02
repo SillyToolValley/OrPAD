@@ -135,6 +135,14 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(win.locator('#runbooks-content')).toContainText('Generate Pipeline');
   await expect(win.locator('#runbooks-content')).toContainText('Pipelines');
   await expect(win.locator('#runbooks-content')).toContainText('.orch-tree.json');
+  const pipelinesSection = win.locator('[data-runbook-section="pipelines"]');
+  const legacySection = win.locator('[data-runbook-section="legacy"]');
+  await expect(pipelinesSection).toContainText('agent-workstream');
+  await expect(pipelinesSection).toContainText('1 pipeline');
+  await expect(pipelinesSection).not.toContainText('.orch-tree.json');
+  await expect(legacySection).toContainText('Legacy Workflows');
+  await expect(legacySection).toContainText('.orch-tree.json');
+  await expect(legacySection).toContainText('1 legacy graph');
   const workspaceMeta = win.locator('[data-runbook-workspace-meta]');
   await expect(workspaceMeta).toContainText(path.basename(workspace));
   await expect(workspaceMeta).toContainText('1 pipeline');

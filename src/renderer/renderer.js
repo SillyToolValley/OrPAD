@@ -6968,6 +6968,38 @@ function runbookBaseName(filePath, fallback = 'Workspace') {
   return base || fallback;
 }
 
+function runbookListItemTitle(item) {
+  return item.displayName
+    || (item.format === 'or-pipeline' ? runbookDirname(item.path).split('/').pop() : item.name)
+    || item.name
+    || 'Pipeline';
+}
+
+function runbookListItemSubtitle(item) {
+  const relative = runbookRelativePath(item.path);
+  if (item.format === 'or-pipeline' && relative.endsWith('/pipeline.or-pipeline')) {
+    return relative.slice(0, -'/pipeline.or-pipeline'.length);
+  }
+  return relative;
+}
+
+function renderRunbookListItems(items, selectedKey) {
+  return items.map(item => {
+    const relativePath = runbookRelativePath(item.path);
+    const itemSelected = runbookNormalizePath(item.path).toLowerCase() === selectedKey;
+    const title = runbookListItemTitle(item);
+    const subtitle = runbookListItemSubtitle(item);
+    return `
+      <div class="runbook-item ${itemSelected ? 'selected' : ''}" data-runbook-path="${escapeHtml(item.path)}" data-runbook-format="${escapeHtml(item.format || '')}" data-selected="${itemSelected ? 'true' : 'false'}" role="button" tabindex="0" aria-pressed="${itemSelected ? 'true' : 'false'}" title="${escapeHtml(relativePath)}">
+        <div class="runbook-item-title">
+          <strong>${escapeHtml(title)}</strong>
+        </div>
+        <small>${escapeHtml(subtitle || relativePath)}</small>
+      </div>
+    `;
+  }).join('');
+}
+
 function runbookStateKeys(filePath) {
   const full = runbookNormalizePath(filePath).toLowerCase();
   const relative = runbookRelativePath(filePath).toLowerCase();
@@ -8243,9 +8275,10 @@ function renderRunbooksPanel() {
   }
 
   const summary = workspaceRunbookSummary || buildWorkspaceRunbookSummary();
-  const pipelineItems = summary.runbooks || [];
+  const pipelineItems = summary.pipelines || [];
+  const legacyItems = summary.legacyRunbooks || [];
   const pipelineCount = (summary.pipelines || []).length;
-  const legacyCount = (summary.legacyRunbooks || []).length;
+  const legacyCount = legacyItems.length;
   const selected = selectedRunbookPath || '';
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
   const selectedMachineRunRecord = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, selected);
@@ -8270,25 +8303,28 @@ function renderRunbooksPanel() {
         </span>
       </div>
     </section>
-    <section class="runbook-panel-section">
-      <h3>Pipelines</h3>
+    <section class="runbook-panel-section" data-runbook-section="pipelines">
+      <div class="runbook-section-heading">
+        <h3>Pipelines</h3>
+        <span class="runbook-chip">${escapeHtml(machineCountLabel(pipelineCount, 'pipeline'))}</span>
+      </div>
       ${pipelineItems.length ? `
         <div class="runbook-list">
-          ${pipelineItems.map(item => {
-            const itemSelected = runbookNormalizePath(item.path).toLowerCase() === selectedKey;
-            const title = item.displayName || (item.format === 'or-pipeline' ? runbookDirname(item.path).split('/').pop() : item.name) || item.name;
-            return `
-            <div class="runbook-item ${itemSelected ? 'selected' : ''}" data-runbook-path="${escapeHtml(item.path)}" data-selected="${itemSelected ? 'true' : 'false'}" role="button" tabindex="0" aria-pressed="${itemSelected ? 'true' : 'false'}">
-              <div class="runbook-item-title">
-                <strong>${escapeHtml(title)}</strong>
-              </div>
-              <small>${escapeHtml(runbookRelativePath(item.path))}</small>
-            </div>
-          `;
-          }).join('')}
+          ${renderRunbookListItems(pipelineItems, selectedKey)}
         </div>
       ` : '<div class="runbook-empty">No OrPAD pipelines found yet. Describe the work, then generate one.</div>'}
     </section>
+    ${legacyItems.length ? `
+      <section class="runbook-panel-section" data-runbook-section="legacy">
+        <div class="runbook-section-heading">
+          <h3>Legacy Workflows</h3>
+          <span class="runbook-chip">${escapeHtml(machineCountLabel(legacyCount, 'legacy graph'))}</span>
+        </div>
+        <div class="runbook-list">
+          ${renderRunbookListItems(legacyItems, selectedKey)}
+        </div>
+      </section>
+    ` : ''}
     ${renderRunRecordPanel(selected ? selectedRunRecord : null)}
     ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null, selected)}
   `;
