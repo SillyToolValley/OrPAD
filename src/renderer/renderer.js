@@ -8196,12 +8196,12 @@ function machineExecuteControlDetails(record, validation = null) {
   const runId = runState.runId || record?.runId || '';
   const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
   const activeClaims = record?.activeClaims || [];
-  if (!runId) return 'Execute unavailable: no managed run selected';
+  if (!runId) return 'Continue unavailable: no run selected';
   if (validation && !isMachineStartablePipeline(validation)) return machineStartBlockReason(validation);
-  if (isMachineRunTerminal(runState)) return `Execute unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}`;
-  if (pendingApprovals > 0) return `Execute blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first`;
-  if (activeClaims.length) return `Execute guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing`;
-  return 'Execute the next managed run step.';
+  if (isMachineRunTerminal(runState)) return `Continue unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished`;
+  if (pendingApprovals > 0) return `Continue blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first`;
+  if (activeClaims.length) return `Continue paused: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing`;
+  return 'Continue this run.';
 }
 
 function machineResumeControlDetails(record) {
@@ -8351,7 +8351,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ${renderMachineRunHistory(runbookPath, runId)}
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
-        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Execute Step</button>
+        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Resume</button>
         ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Claim</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
