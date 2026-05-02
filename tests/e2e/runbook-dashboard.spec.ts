@@ -168,11 +168,11 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(pipelinesSection).not.toContainText('.orch-tree.json');
   await expect(legacySection).toContainText('Legacy Workflows');
   await expect(legacySection).toContainText('.orch-tree.json');
-  await expect(legacySection).toContainText('1 legacy graph');
+  await expect(legacySection).toContainText('1 legacy flow');
   const workspaceMeta = win.locator('[data-runbook-workspace-meta]');
   await expect(workspaceMeta).toContainText(path.basename(workspace));
   await expect(workspaceMeta).toContainText('1 pipeline');
-  await expect(workspaceMeta).toContainText('1 legacy graph');
+  await expect(workspaceMeta).toContainText('1 legacy flow');
   await expect(workspaceMeta).not.toContainText(workspace);
   await expect(workspaceMeta).toHaveAttribute('title', workspace.replace(/\\/g, '/'));
   const cacheDir = path.join(userData, 'workspace-index');

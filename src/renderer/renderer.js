@@ -3061,7 +3061,7 @@ async function loadExternalOrchGraphLayer(entry, target) {
     const isGraphLayer = /\.or-graph$/i.test(target.filePath) || /\.orch-graph\.json$/i.test(target.filePath);
     const treeEntry = isGraphLayer ? null : firstOrchTreeEntryFromDoc(parsed);
     if (isGraphLayer && (!parsed?.graph || !Array.isArray(parsed.graph.nodes))) {
-      throw new Error('Linked OrPAD graph file does not include graph.nodes.');
+      throw new Error('Linked OrPAD flow file does not include graph.nodes.');
     }
     if (!isGraphLayer && !treeEntry?.tree?.root) throw new Error('Linked OrPAD tree file does not include a root node.');
     entry.doc = parsed;
@@ -5298,7 +5298,7 @@ function renderOrchPipelinePreview(content) {
             <header class="pipeline-section-header">
               <div>
                 <h3>Manifest Fields</h3>
-                <p>Core identity, trust, schema, and entry graph settings.</p>
+                <p>Core identity, trust, schema, and entry flow settings.</p>
               </div>
             </header>
             <div class="pipeline-field-grid">
@@ -5542,7 +5542,7 @@ function renderOrchGraphPreview(content) {
   try {
     doc = JSON.parse(content);
   } catch (err) {
-    contentEl.innerHTML = '<div class="preview-error">Invalid orch-graph JSON: ' + escapeHtml(err.message || String(err)) + '</div>';
+    contentEl.innerHTML = '<div class="preview-error">Invalid flow JSON: ' + escapeHtml(err.message || String(err)) + '</div>';
     return;
   }
   const readwrite = orchTreeGraphMode === 'readwrite';
@@ -7780,7 +7780,7 @@ async function openRunbookContextInspector(runbookPath, validation) {
     <h3>Excluded By Default</h3>
     ${renderContextRows(context.excluded, 'No filename risk hits detected.')}
     <pre class="runbook-context-preview">${escapeHtml([
-      'default policy: include selected pipeline/graph/tree, declared skill files, and workspace facts',
+      'default policy: include selected pipeline/flow/tree, declared skill files, and workspace facts',
       'redaction: exclude .env, key-like files, and secret-like filenames',
       'terminal attachments: none by default',
       'MCP resources: none by default',
@@ -8610,7 +8610,7 @@ function renderRunbooksPanel() {
   const selectedKey = runbookNormalizePath(selected).toLowerCase();
   const workspaceMeta = [
     machineCountLabel(pipelineCount, 'pipeline'),
-    legacyCount ? machineCountLabel(legacyCount, 'legacy graph') : '',
+    legacyCount ? machineCountLabel(legacyCount, 'legacy flow') : '',
     machineCountLabel(summary.fileCount, 'file'),
   ].filter(Boolean);
   runbooksContentEl.innerHTML = `
@@ -8654,7 +8654,7 @@ function renderRunbooksPanel() {
       <section class="runbook-panel-section" data-runbook-section="legacy">
         <div class="runbook-section-heading">
           <h3>Legacy Workflows</h3>
-          <span class="runbook-chip">${escapeHtml(machineCountLabel(legacyCount, 'legacy graph'))}</span>
+          <span class="runbook-chip">${escapeHtml(machineCountLabel(legacyCount, 'legacy flow'))}</span>
         </div>
         <div class="runbook-list">
           ${renderRunbookListItems(legacyItems, selectedKey)}
@@ -9273,7 +9273,7 @@ function openWorkspaceDashboardNote() {
     '',
     '## Default Context Policy',
     '',
-    '- Include selected pipeline, entry graph, declared skill files, rules, and workspace index facts.',
+    '- Include selected pipeline, entry flow, declared skill files, rules, and workspace index facts.',
     '- Exclude `.env`, key-like files, and secret-like paths by default.',
     '- Require exact permission before command, write, URL, MCP, or provider-send actions.',
   ].join('\n');
@@ -9325,7 +9325,7 @@ function defaultOrpadRunbookSkill(taskText) {
     '',
     '- README.md',
     '- package metadata',
-    '- existing pipeline, graph, tree, and harness files',
+    '- existing pipeline, flow, tree, and harness files',
     '- relevant source files',
     '- tests and harness summaries when relevant',
     '- Markdown notes already inside this workspace when they clarify the task',
@@ -9338,8 +9338,8 @@ function defaultOrpadRunbookSkill(taskText) {
     '## Acceptance Criteria',
     '',
     '- Generate or update the `.orpad/pipelines/<pipeline>/` package needed for the requested work.',
-    '- Keep graph flow in `.or-graph` using workstream nodes that OrPAD can run with owned work state, progress, and evidence files.',
-    '- Validate the graph before running implementation work.',
+    '- Keep the flow definition in `.or-graph` using workstream nodes that OrPAD can run with owned work state, progress, and evidence files.',
+    '- Validate the flow before running implementation work.',
     '- Run the approved managed pipeline flow and write evidence under the pipeline `runs/` folder.',
     '- Keep source edits focused on the requested OrPAD behavior.',
     '',
