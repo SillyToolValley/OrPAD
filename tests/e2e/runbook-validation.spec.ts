@@ -1006,11 +1006,11 @@ test('run audit enforces latest-run metadata and discovery coverage contracts', 
           {
             id: 'ux-manifest-editor-code',
             type: 'code-or-test',
-            target: 'manifest editor',
+            target: 'details editor',
             file: 'src/renderer/renderer.js',
             observedAt: '2026-04-30T00:00:40.000Z',
             observationKind: 'source-read',
-            summary: 'Manifest editor implementation inspected in source.',
+            summary: 'Details editor implementation inspected in source.',
           },
         ],
         scenarios: [
@@ -1019,7 +1019,7 @@ test('run audit enforces latest-run metadata and discovery coverage contracts', 
           { id: 'inspect-graph-editor', status: 'pass', evidenceIds: ['ux-graph-editor-code'] },
         ],
         candidatesStaged: ['ux-actionability-link'],
-        emptyPassReason: 'All required UI targets had current evidence in this fixture, including runbook list, pipeline editor, graph editor, and manifest editor.',
+        emptyPassReason: 'All required UI targets had current evidence in this fixture, including runbook list, pipeline editor, graph editor, and details editor.',
       },
     },
   }, null, 2));
@@ -1041,7 +1041,7 @@ test('run audit enforces latest-run metadata and discovery coverage contracts', 
         minimumLensEvidence: {
           'ux-ui-probe': {
             minimumEvidenceItems: 4,
-            requiredTargets: ['runbook list', 'pipeline editor', 'graph editor', 'manifest editor'],
+            requiredTargets: ['runbook list', 'pipeline editor', 'graph editor', 'details editor'],
             requiredScenarios: ['open-pipes-list', 'edit-pipeline-manifest', 'inspect-graph-editor'],
           },
         },
@@ -1161,11 +1161,11 @@ test('run audit enforces latest-run metadata and discovery coverage contracts', 
           {
             id: 'ux-manifest-editor-code',
             type: 'code-or-test',
-            target: 'manifest editor',
+            target: 'details editor',
             file: 'src/renderer/renderer.js',
             observedAt: '2026-04-30T00:00:40.000Z',
             observationKind: 'source-read',
-            summary: 'Manifest editor implementation inspected in source.',
+            summary: 'Details editor implementation inspected in source.',
           },
         ],
         scenarios: [
@@ -1174,7 +1174,7 @@ test('run audit enforces latest-run metadata and discovery coverage contracts', 
           { id: 'inspect-graph-editor', status: 'pass', evidenceIds: ['ux-graph-editor-code'] },
         ],
         candidatesStaged: ['ux-actionability-link'],
-        emptyPassReason: 'All required UI targets had current evidence in this fixture, including runbook list, pipeline editor, graph editor, and manifest editor.',
+        emptyPassReason: 'All required UI targets had current evidence in this fixture, including runbook list, pipeline editor, graph editor, and details editor.',
       },
     },
   }, null, 2));
@@ -1235,7 +1235,7 @@ test('run audit enforces latest-run metadata and discovery coverage contracts', 
   expect(weakEmptyPass.ok).toBe(false);
   expect(weakEmptyPass.diagnostics.map((item: { code: string }) => item.code)).toContain('DISCOVERY_LENS_EMPTY_PASS_REASON_WEAK');
 
-  coverageForEmptyPass.lenses['ux-ui-probe'].emptyPassReason = 'All required UI targets had current evidence in this fixture, including runbook list, pipeline editor, graph editor, and manifest editor.';
+  coverageForEmptyPass.lenses['ux-ui-probe'].emptyPassReason = 'All required UI targets had current evidence in this fixture, including runbook list, pipeline editor, graph editor, and details editor.';
   coverageForEmptyPass.lenses['ux-ui-probe'].candidatesStaged = ['missing-candidate'];
   fs.writeFileSync(path.join(discoveryRoot, 'coverage-manifest.json'), JSON.stringify(coverageForEmptyPass, null, 2));
   writeMetadata();
@@ -1367,7 +1367,7 @@ test('run audit rejects boilerplate empty-pass candidate inventory rows', async 
     coverageEvidenceIds: new Set(['graph-editor-suite']),
     coverageEvidenceById: new Map([['graph-editor-suite', {
       file: 'tests/e2e/runbook-pipeline-editor.spec.ts',
-      command: 'npm run test:electron -- --workers=1 --grep "pipeline manifest preview"',
+      command: 'npm run test:electron -- --workers=1 --grep "pipeline details preview"',
     }]]),
     scenariosByLens: new Map([['ux-ui-probe', new Set(['inspect-graph-editor'])]]),
   };
@@ -1383,7 +1383,7 @@ test('run audit rejects boilerplate empty-pass candidate inventory rows', async 
   concreteInventory.items[0].title = 'Graph editor type filtering passed with focused DOM evidence';
   concreteInventory.items[0].reason = 'The Type select in tests/e2e/runbook-pipeline-editor.spec.ts was checked against the graph editor surface, and src/renderer/renderer.js maps graph editing to validator-supported graph node types.';
   concreteInventory.items[0].negativeCheck = {
-    method: 'Ran npm run test:electron -- --workers=1 --grep "pipeline manifest preview" and inspected tests/e2e/runbook-pipeline-editor.spec.ts assertions for graph editor Type select options.',
+    method: 'Ran npm run test:electron -- --workers=1 --grep "pipeline details preview" and inspected tests/e2e/runbook-pipeline-editor.spec.ts assertions for graph editor Type select options.',
     expected: 'The graph editor Type select should offer validator-supported graph node types and exclude tree-only legacy node types on the graph surface.',
     observed: 'tests/e2e/runbook-pipeline-editor.spec.ts asserted the graph editor shows State, Tool, Human, and Wait options while src/renderer/renderer.js keeps tree-only Action/Sequence choices off the graph surface.',
   };

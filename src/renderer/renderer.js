@@ -2534,7 +2534,7 @@ function renderPipelineEditorTabs(context, active, graphPath = '') {
   return `
     <div class="pipeline-editor-tabs" aria-label="Pipeline setup tabs">
       <button class="${active === 'graph' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(resolvedGraphPath)}" ${resolvedGraphPath ? '' : 'disabled'}>Flow</button>
-      <button class="${active === 'manifest' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(manifestPath)}">Manifest</button>
+      <button class="${active === 'manifest' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(manifestPath)}">Details</button>
     </div>
   `;
 }
@@ -2580,7 +2580,7 @@ function pipelinePreviewTitle(context, pipelineDoc = null) {
 
 function pipelinePreviewLocationLabel(context) {
   if (!context) return '';
-  if (context.isManifest) return 'Manifest';
+  if (context.isManifest) return 'Details';
   if (context.isGraph) return `Flow: ${pipelineDisplayTitle(context.activePath, 'Flow')}`;
   if (context.activeRelativePath) return context.activeRelativePath;
   return 'Pipeline package';
@@ -2802,7 +2802,7 @@ function applyOrchPipelineMutation(mutator) {
   try {
     doc = JSON.parse(editor.state.doc.toString());
   } catch (err) {
-    notifyFormatError('Pipeline manifest', err);
+    notifyFormatError('Pipeline details', err);
     return;
   }
   mutator(doc);
@@ -5264,7 +5264,7 @@ function renderOrchPipelinePreview(content) {
       <div class="orch-toolbar">
         <strong>Pipeline setup</strong>
         <div class="orch-toolbar-actions">
-          <span class="runbook-chip">Manifest</span>
+          <span class="runbook-chip">Details</span>
           <span class="runbook-chip good">${escapeHtml(doc.trustLevel || 'local-authored')}</span>
           <span class="runbook-chip">${escapeHtml(doc.version || 'unversioned')}</span>
           <div class="jedit-seg">
@@ -5297,7 +5297,7 @@ function renderOrchPipelinePreview(content) {
           <section class="runbook-panel-section">
             <header class="pipeline-section-header">
               <div>
-                <h3>Manifest Fields</h3>
+                <h3>Pipeline Details</h3>
                 <p>Core identity, trust, schema, and entry flow settings.</p>
               </div>
             </header>
