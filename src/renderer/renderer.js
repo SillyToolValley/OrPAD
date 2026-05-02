@@ -8251,7 +8251,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ` : '';
   return `
     <section class="runbook-panel-section">
-      <h3>Run Status</h3>
+      <h3>Latest Run</h3>
       <div class="runbook-chip-row">
         <span class="runbook-chip good">${escapeHtml(runState.lifecycleStatus || 'created')}</span>
         <span class="runbook-chip">${escapeHtml(runState.summaryStatus || 'pending')}</span>

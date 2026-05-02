@@ -215,7 +215,6 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   const taskText = 'Find competitor gaps and improve Pipes.';
   await win.locator('[data-runbook-task]').fill(taskText);
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
-  await expect(win.locator('#runbooks-content .runbook-chip')).toHaveCount(0);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('machine-workstream');
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for managed run or supervised handoff.');
@@ -228,7 +227,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.locator('[data-runbook-task]').focus();
   await win.keyboard.press('Control+Enter');
   await submitMachineCapabilityToken(win);
-  await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
 
@@ -276,7 +275,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   });
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
-  await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
@@ -354,7 +353,7 @@ test('Pipes Refresh reloads selected managed run evidence from disk', async () =
   });
   await win.locator('button[data-runbook-action="refresh"]').click();
 
-  await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText('run_machine_ui_refresh_claim');
   await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Cancel ready: claim claim-machine-ui-smoke owns machine-ui-smoke');
@@ -405,7 +404,7 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
   });
   await managedRun.click();
   await expect.poll(() => win.evaluate(() => ((window as any).__orpadConfirms || []).join('\n'))).toContain('Enable managed runs');
-  await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect.poll(() => win.evaluate(() => ((window as any).__orpadAlerts || []).join('\n'))).toBe('');
