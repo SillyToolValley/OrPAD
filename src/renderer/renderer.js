@@ -8211,32 +8211,32 @@ function machineResumeControlDetails(record) {
   const activeClaims = record?.activeClaims || [];
   const resume = record?.resume || null;
   if (!runId) {
-    return { state: 'warn', text: 'Resume unavailable: no managed run selected' };
+    return { state: 'warn', text: 'Recovery unavailable: no run selected' };
   }
   if (!window.orpad?.machine?.resumeRun) {
-    return { state: 'warn', text: 'Resume unavailable in this session' };
+    return { state: 'warn', text: 'Recovery unavailable in this session' };
   }
   if (isMachineRunTerminal(runState)) {
-    return { state: 'warn', text: `Resume unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}` };
+    return { state: 'warn', text: `Recovery unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished` };
   }
   if (pendingApprovals > 0) {
-    return { state: 'warn', text: `Resume blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first` };
+    return { state: 'warn', text: `Recovery blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first` };
   }
   if (activeClaims.length) {
     const staleClaims = machineStaleActiveClaims(record);
     if (staleClaims.length === activeClaims.length) {
-      return { state: 'good', text: `Resume ready: ${machineCountLabel(staleClaims.length, 'stale claim')} can be recovered before continuing` };
+      return { state: 'good', text: `Recovery ready: ${machineCountLabel(staleClaims.length, 'stale claim')} can be recovered before continuing` };
     }
-    return { state: 'warn', text: `Resume guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before resuming` };
+    return { state: 'warn', text: `Recovery paused: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing` };
   }
   if (resume) {
     const repaired = resume.queueRepair?.repaired?.length || 0;
     return {
       state: 'good',
-      text: `Last resume: ${machineCountLabel(repaired, 'queue repair')}; ${machineCountLabel(resume.staleClaimCount, 'stale claim')} recovered; ${machineQueueInventorySummary(resume.inventory)}`,
+      text: `Last recovery: ${machineCountLabel(repaired, 'queue repair')}; ${machineCountLabel(resume.staleClaimCount, 'stale claim')} recovered; ${machineQueueInventorySummary(resume.inventory)}`,
     };
   }
-  return { state: 'good', text: 'Resume ready: OrPAD will repair derived queue snapshots and recover stale claims before continuing' };
+  return { state: 'good', text: 'Recovery ready: OrPAD can repair queue snapshots and recover stale claims before continuing' };
 }
 
 function machineCancellationControlDetails(record) {
@@ -8352,7 +8352,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ${machineFailureDetails(record)}
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>
-        <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Resume</button>
+        <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
         ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Claim</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>View Artifacts</button>
@@ -8378,7 +8378,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml([queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet', activeClaimDetails, activeWriteSetDetails].join('; '))}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(resumeDetails.state)}">
-          <strong>Resume</strong>
+          <strong>Recovery</strong>
           <span>${escapeHtml(resumeDetails.text)}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(cancellationDetails.state)}">
@@ -8861,7 +8861,7 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
   if (!resumed?.success) {
     if (resumed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      alert(resumed?.error || 'Resume failed.');
+      alert(resumed?.error || 'Recovery failed.');
       return;
     }
     lastMachineRunRecord = {

@@ -242,7 +242,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
-  await expect(win.locator('#runbooks-content')).toContainText('Resume unavailable: terminal completed/done');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
@@ -443,7 +443,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('approval.requested');
   await expect(win.locator('#runbooks-content')).toContainText('Approval');
   await expect(win.locator('#runbooks-content')).toContainText('1 approval needed: machine-ui-smoke');
-  await expect(win.locator('#runbooks-content')).toContainText('Resume blocked: 1 approval must be decided first');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery blocked: 1 approval must be decided first');
   await expect(win.locator('#runbooks-content')).toContainText('No active claim to cancel');
   await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
@@ -455,7 +455,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await win.locator('button[data-runbook-action="machine-approve-approval"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('approval.decided');
   await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: approved');
-  await expect(win.locator('#runbooks-content')).toContainText('Resume ready');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery ready');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
@@ -463,7 +463,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done');
-  await expect(win.locator('#runbooks-content')).toContainText('Resume unavailable: terminal completed/done');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 
@@ -547,7 +547,7 @@ test('Machine UI cancels an active claim and releases visible locks', async () =
   await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('1 active write-set lock: src/smoke-target.md');
-  await expect(win.locator('#runbooks-content')).toContainText('Resume guarded: 1 active claim still owns work');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery paused: 1 active claim still owns work');
   await expect(win.locator('#runbooks-content')).toContainText('Cancel ready: claim claim-machine-ui-smoke owns machine-ui-smoke');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
@@ -592,14 +592,14 @@ test('Machine UI resumes stale claims and reports queue repair', async () => {
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
   await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
-  await expect(win.locator('#runbooks-content')).toContainText('Resume ready: 1 stale claim can be recovered before continuing');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery ready: 1 stale claim can be recovered before continuing');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toBeEnabled();
 
   await win.locator('button[data-runbook-action="machine-resume-run"]').click();
   await submitMachineCapabilityToken(win);
-  await expect(win.locator('#runbooks-content')).toContainText('Last resume: 1 queue repair; 1 stale claim recovered; 1 queued');
+  await expect(win.locator('#runbooks-content')).toContainText('Last recovery: 1 queue repair; 1 stale claim recovered; 1 queued');
   await expect(win.locator('#runbooks-content')).toContainText('No active claims');
   await expect(win.locator('#runbooks-content')).toContainText('No active write-set locks');
   await expect(win.locator('#runbooks-content')).toContainText('Waiting');
