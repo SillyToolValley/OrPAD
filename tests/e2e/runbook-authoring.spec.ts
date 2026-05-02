@@ -109,7 +109,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
   await expect(win.locator('.orch-graph-node')).toHaveCount(8);
-  await expect(win.locator('.orch-graph-node')).toContainText(['Load request and workspace context', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
+  await expect(win.locator('.orch-graph-node')).toContainText(['Prepare workspace', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
   await expect(win.locator('button[data-orch-tool="select"]')).toHaveClass(/active/);
   await expect(win.locator('.orch-graph-tools .ogi')).toHaveCount(8);
 
@@ -336,7 +336,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Edited graph context');
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await win.keyboard.press('Control+Z');
-  await expect(win.locator('.orch-graph-node.selected')).toContainText('Load request and workspace context');
+  await expect(win.locator('.orch-graph-node.selected')).toContainText('Prepare workspace');
   await win.keyboard.press('Control+Y');
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Edited graph context');
   const approvalBeforeMove = await graphApprovalNode.evaluate((el) => ({

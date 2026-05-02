@@ -997,7 +997,7 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
     diagnostics.push(diagnostic(
       'warning',
       'PIPELINE_AGENT_ORCHESTRATED',
-      'This pipeline validates for a path-launched agent; the local MVP runner does not execute workstream node-pack semantics.',
+      'This pipeline validates for a path-launched agent; the local MVP runner does not execute advanced workstream steps.',
       { nodeTypes: agentOrchestratedTypes },
     ));
   }

@@ -218,6 +218,11 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(win.locator('#fmt-modal-body')).toContainText('Required Checks');
   await expect(win.locator('#fmt-modal-body')).toContainText('audit:orpad-node-schemas');
   await expect(win.locator('#fmt-modal-body')).toContainText('audit:orpad-run');
+  await expect(win.locator('#fmt-modal-body')).toContainText('agent-only steps');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Work queue');
+  await expect(win.locator('#fmt-modal-body')).not.toContainText('orpad.context');
+  await expect(win.locator('#fmt-modal-body')).not.toContainText('orpad.workQueue');
+  await expect(win.locator('#fmt-modal-body')).not.toContainText('node-pack semantics');
   await expect(win.locator('#fmt-modal-body')).toContainText('agent-workstream/pipeline.or-pipeline');
   await expect(win.locator('#fmt-modal-body')).toContainText('custom-evidence/latest-summary.md');
   await expect(win.locator('#fmt-modal-body')).not.toContainText('harness/generated/latest-run/summary.md');

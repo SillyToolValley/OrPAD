@@ -2295,6 +2295,13 @@ function orchNodeTypeLabel(type) {
   return ORCH_NODE_TYPE_LABELS[raw] || raw;
 }
 
+function orchNodeTypeListLabels(types) {
+  return [...new Set((types || [])
+    .map(type => orchNodeTypeLabel(type))
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
 function isOrchSkillType(type) {
   return type === 'Skill' || type === 'orpad.skill';
 }
@@ -7907,6 +7914,7 @@ async function openAgentHandoffModal(runbookPath, validation) {
   const issue = agentOrchestratedPipelineIssue(validation || selectedRunbookValidation);
   const renderOnlyTypes = [...new Set((validation?.renderOnlyNodeTypes || selectedRunbookValidation?.renderOnlyNodeTypes || [])
     .filter(type => String(type || '').startsWith('orpad.')))].sort();
+  const renderOnlyTypeLabels = orchNodeTypeListLabels(renderOnlyTypes);
   const pipelineDoc = await readRendererJson(runbookPath);
   const launchPrompt = agentHandoffLaunchPrompt(runbookPath, pipelineDoc);
   const auditCommand = agentHandoffAuditCommand(runbookPath);
@@ -7920,7 +7928,7 @@ async function openAgentHandoffModal(runbookPath, validation) {
     <div class="runbook-chip-row">
       <span class="runbook-chip good">agent handoff</span>
       <span class="runbook-chip warn">local runner unsupported</span>
-      ${renderOnlyTypes.length ? `<span class="runbook-chip">${renderOnlyTypes.length} node-pack semantics</span>` : ''}
+      ${renderOnlyTypeLabels.length ? `<span class="runbook-chip">${renderOnlyTypeLabels.length} agent-only steps</span>` : ''}
     </div>
     ${issue ? `<div class="runbook-diagnostic warning">${escapeHtml(issue.code || 'PIPELINE_AGENT_ORCHESTRATED')} - ${escapeHtml(issue.message || '')}</div>` : ''}
     <h3>Launch Prompt</h3>
@@ -7935,7 +7943,7 @@ async function openAgentHandoffModal(runbookPath, validation) {
       `evidence check: ${auditCommand}`,
       `required checks: ${auditCommands.length}`,
       'latest-run is the most recent cycle snapshot, not proof that the maintenance pipeline is finished; trust it only after the evidence check passes.',
-      renderOnlyTypes.length ? `agent-only node types: ${renderOnlyTypes.join(', ')}` : '',
+      renderOnlyTypeLabels.length ? `agent-only steps: ${renderOnlyTypeLabels.join(', ')}` : '',
     ].filter(Boolean).join('\n'))}</pre>
   `;
   openFmtModal({
@@ -9451,7 +9459,7 @@ async function createOrpadRunbookStarter() {
       label: taskText.slice(0, 96),
       start: 'context',
       nodes: [
-        { id: 'context', type: 'orpad.context', label: 'Load request and workspace context', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
+        { id: 'context', type: 'orpad.context', label: 'Prepare workspace', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
         { id: 'probe', type: 'orpad.probe', label: 'Find evidence-backed candidate work', config: { lens: 'request-focused', userTask: taskText, skillRef: 'request-context' } },
         { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
         { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
