@@ -8010,10 +8010,10 @@ function machineRunDateLabel(value) {
 
 function machineRunLabelFromId(runId) {
   const text = String(runId || '').trim();
-  const timestamp = text.match(/^run_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:_|$)/);
+  const timestamp = text.match(/^(?:run_)?(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:_|$)/);
   if (timestamp) {
     const [, year, month, day, hour, minute, second] = timestamp;
-    const parsed = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+    const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
     return machineRunDateLabel(parsed);
   }
   const acronyms = new Set(['ai', 'api', 'id', 'ipc', 'mcp', 'mvp', 'ui', 'url', 'ux']);
