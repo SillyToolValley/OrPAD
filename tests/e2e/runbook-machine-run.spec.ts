@@ -439,8 +439,8 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
 
   await expect(win.locator('#runbooks-content')).toContainText('approval.requested');
   await expect(win.locator('#runbooks-content')).toContainText('Approval');
-  await expect(win.locator('#runbooks-content')).toContainText('1 pending approval: machine-ui-smoke');
-  await expect(win.locator('#runbooks-content')).toContainText('Resume blocked: 1 pending approval must be decided first');
+  await expect(win.locator('#runbooks-content')).toContainText('1 approval needed: machine-ui-smoke');
+  await expect(win.locator('#runbooks-content')).toContainText('Resume blocked: 1 approval must be decided first');
   await expect(win.locator('#runbooks-content')).toContainText('No active claim to cancel');
   await expect(win.locator('#runbooks-content')).toContainText('No worker proof yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();

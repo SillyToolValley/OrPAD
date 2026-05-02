@@ -6524,7 +6524,7 @@ function appendGitBadge(itemEl, filePath) {
     A: 'Added',
     D: 'Deleted',
     U: 'Untracked',
-    '?': 'Git status pending',
+    '?': 'Git status loading',
   }[badge] || 'Git status';
   itemEl.appendChild(node);
 }
@@ -7901,7 +7901,7 @@ function renderRunRecordPanel(record = lastRunRecord) {
     <section class="runbook-panel-section">
       <h3>Replay</h3>
       <div class="runbook-chip-row">
-        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(runStatus))}" title="${escapeHtml(`Status: ${runStatus}`)}">${escapeHtml(machineLifecycleStatusLabel(runStatus))}</span>
+        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(runStatus))}" title="${escapeHtml(`Status: ${machineLifecycleStatusLabel(runStatus)}`)}">${escapeHtml(machineLifecycleStatusLabel(runStatus))}</span>
         <span class="runbook-chip">${escapeHtml(record.run?.runId || '')}</span>
       </div>
       <div class="runbook-replay-events">
@@ -7975,7 +7975,7 @@ function machineLifecycleStatusLabel(status) {
 
 function machineSummaryStatusLabel(status) {
   const labels = {
-    pending: 'Proof pending',
+    pending: 'Needs evidence',
     partial: 'Partial proof',
     done: 'Proof complete',
     completed: 'Proof complete',
@@ -8051,13 +8051,13 @@ function machineApprovalDetails(record) {
       .filter(Boolean)
       .slice(0, 3)
       .join(', ');
-    return `${machineCountLabel(pending.length, 'pending approval')}${names ? `: ${names}` : ''}`;
+    return `${machineCountLabel(pending.length, 'approval')} needed${names ? `: ${names}` : ''}`;
   }
   const decisions = (approvals.all || []).filter(item => item.status && item.status !== 'requested');
   if (decisions.length) {
     return `${machineCountLabel(decisions.length, 'approval decision')}: ${decisions.map(item => item.status).join(', ')}`;
   }
-  return 'No pending approvals';
+  return 'No approvals needed';
 }
 
 function machineActiveClaimDetails(record) {
@@ -8167,7 +8167,7 @@ function machineExecuteControlDetails(record, validation = null) {
   if (!runId) return 'Execute unavailable: no managed run selected';
   if (validation && !isMachineStartablePipeline(validation)) return machineStartBlockReason(validation);
   if (isMachineRunTerminal(runState)) return `Execute unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}`;
-  if (pendingApprovals > 0) return `Execute blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first`;
+  if (pendingApprovals > 0) return `Execute blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first`;
   if (activeClaims.length) return `Execute guarded: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing`;
   return 'Execute the next managed run step.';
 }
@@ -8188,7 +8188,7 @@ function machineResumeControlDetails(record) {
     return { state: 'warn', text: `Resume unavailable: terminal ${machineRunStatusLabel(runState) || 'run'}` };
   }
   if (pendingApprovals > 0) {
-    return { state: 'warn', text: `Resume blocked: ${machineCountLabel(pendingApprovals, 'pending approval')} must be decided first` };
+    return { state: 'warn', text: `Resume blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first` };
   }
   if (activeClaims.length) {
     const staleClaims = machineStaleActiveClaims(record);
@@ -8301,8 +8301,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     <section class="runbook-panel-section">
       <h3>Latest Run</h3>
       <div class="runbook-chip-row">
-        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(lifecycleStatus))}" title="${escapeHtml(`Lifecycle: ${lifecycleStatus}`)}">${escapeHtml(machineLifecycleStatusLabel(lifecycleStatus))}</span>
-        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(summaryStatus, 'summary'))}" title="${escapeHtml(`Summary: ${summaryStatus}`)}">${escapeHtml(machineSummaryStatusLabel(summaryStatus))}</span>
+        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(lifecycleStatus))}" title="${escapeHtml(`Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`)}">${escapeHtml(machineLifecycleStatusLabel(lifecycleStatus))}</span>
+        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(summaryStatus, 'summary'))}" title="${escapeHtml(`Summary: ${machineSummaryStatusLabel(summaryStatus)}`)}">${escapeHtml(machineSummaryStatusLabel(summaryStatus))}</span>
         <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
       </div>
       ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
