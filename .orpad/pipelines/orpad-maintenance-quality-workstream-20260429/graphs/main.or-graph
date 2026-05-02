@@ -41,7 +41,7 @@
       {
         "id": "reference-context",
         "type": "orpad.context",
-        "label": "Load reference and workspace context",
+        "label": "Prepare workspace",
         "config": {
           "skillRef": "../skills/reference-context.md",
           "ruleRefs": ["authority-boundaries", "quality-bar", "self-improvement"],
