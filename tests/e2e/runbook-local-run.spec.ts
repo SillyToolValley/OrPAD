@@ -125,11 +125,11 @@ test('pipeline local MVP run records context, approval, replay, and claim artifa
 
   await win.locator('[data-pipeline-run-menu]').click();
   await win.locator('button[data-pipeline-run-action="local"]').click();
-  await expect(win.locator('#fmt-modal')).toContainText('Approve Local Run');
+  await expect(win.locator('#fmt-modal')).toContainText('Allow Local Run');
   await expect(win.locator('#fmt-modal')).toContainText('scope: this run only');
   await expect(win.locator('#fmt-modal')).toContainText('skills/release-claim-audit.md');
   await expect(win.locator('#fmt-modal')).toContainText('.env');
-  await win.getByRole('button', { name: 'Approve Once' }).click();
+  await win.getByRole('button', { name: 'Allow Once' }).click();
 
   await expect(win.locator('#runbooks-content')).toContainText('Replay');
   await expect(win.locator('#runbooks-content')).toContainText('context.bundle.created');
@@ -209,8 +209,8 @@ test('denying local run approval does not create a run directory', async () => {
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for local run.');
   await win.locator('[data-pipeline-run-menu]').click();
   await win.locator('button[data-pipeline-run-action="local"]').click();
-  await expect(win.locator('#fmt-modal')).toContainText('Approve Local Run');
-  await win.getByRole('button', { name: 'Deny' }).click();
+  await expect(win.locator('#fmt-modal')).toContainText('Allow Local Run');
+  await win.getByRole('button', { name: 'Decline' }).click();
   await expect(win.locator('#fmt-modal')).toBeHidden();
 
   const runRoot = path.join(workspace, '.orpad', 'pipelines', 'release-audit', 'runs');

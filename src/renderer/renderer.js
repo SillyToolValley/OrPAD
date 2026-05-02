@@ -7271,12 +7271,12 @@ function machineRuntimeBlockReason() {
   }
   if (machineRuntimeStatus.enabled === false) {
     return machineRuntimeStatus.sessionEnableAvailable
-      ? 'Managed runs need your approval for this OrPAD session.'
+      ? 'Managed runs need your permission for this OrPAD session.'
       : 'Managed runs are unavailable in this session. Relaunch OrPAD with managed-run support enabled.';
   }
   if (machineRuntimeStatus.mutatingCapabilityConfigured === false) {
     return machineRuntimeStatus.sessionEnableAvailable
-      ? 'Managed runs need your approval for this OrPAD session.'
+      ? 'Managed runs need your permission for this OrPAD session.'
       : 'Managed runs need a run authorization token before run-store mutations are allowed.';
   }
   return '';
@@ -7325,7 +7325,7 @@ async function enableManagedRunsForSession() {
   const approved = confirm(
     'Enable managed runs for this OrPAD session?\n\n'
     + 'OrPAD will own work state, run status, and evidence files for this pipeline. '
-    + 'Source files are not changed unless an approved adapter step applies a patch.',
+    + 'Source files are not changed unless an allowed adapter step applies a patch.',
   );
   if (!approved) return null;
   const enabled = await window.orpad.machine.enableSession();
@@ -7854,7 +7854,7 @@ async function requestRunbookApproval(runbookPath, validation) {
     const body = document.createElement('div');
     body.className = 'runbook-modal-body';
     body.innerHTML = `
-      <p>Approve one local MVP run for <strong>${escapeHtml(runbookRelativePath(runbookPath))}</strong>.</p>
+      <p>Allow one local MVP run for <strong>${escapeHtml(runbookRelativePath(runbookPath))}</strong>.</p>
       <pre class="runbook-context-preview">${escapeHtml([
         `target: ${runbookRelativePath(runbookPath)}`,
         'action: provider-send gated local run',
@@ -7865,21 +7865,21 @@ async function requestRunbookApproval(runbookPath, validation) {
       ].join('\n'))}</pre>
     `;
     openFmtModal({
-      title: 'Approve Local Run',
+      title: 'Allow Local Run',
       body,
       onClose: () => {
         if (!settled) {
           settled = true;
-          resolve({ allowed: false, reason: 'Approval modal closed.' });
+          resolve({ allowed: false, reason: 'Permission modal closed.' });
         }
       },
       footer: [
         {
-          label: 'Deny',
-          onClick: () => finish({ allowed: false, reason: 'User denied local run approval.' }),
+          label: 'Decline',
+          onClick: () => finish({ allowed: false, reason: 'User declined local run permission.' }),
         },
         {
-          label: 'Approve Once',
+          label: 'Allow Once',
           primary: true,
           onClick: () => finish({
             allowed: true,
@@ -7941,10 +7941,10 @@ function machineEventLabel(event) {
     case 'artifact.registered':
       return 'Evidence file saved';
     case 'approval.requested':
-      return 'Approval requested';
+      return 'Permission requested';
     case 'approval.decided': {
       const decision = payload.decision || event?.decision || payload.status;
-      return decision ? `Approval ${decision}` : 'Approval decided';
+      return decision ? `Permission ${machinePermissionDecisionLabel(decision)}` : 'Permission decided';
     }
     case 'claim.lease-created':
       return 'Work started';
@@ -8057,6 +8057,8 @@ function machineLifecycleStatusLabel(status) {
     cancelled: 'Cancelled',
     canceled: 'Cancelled',
     blocked: 'Blocked',
+    'approval-required': 'Needs permission',
+    approval_required: 'Needs permission',
   };
   return labels[String(status || '').toLowerCase()] || machineStatusFallbackLabel(status);
 }
@@ -8069,10 +8071,17 @@ function machineSummaryStatusLabel(status) {
     completed: 'Proof complete',
     blocked: 'Blocked',
     failed: 'Failed',
-    'approval-required': 'Needs approval',
-    approval_required: 'Needs approval',
+    'approval-required': 'Needs permission',
+    approval_required: 'Needs permission',
   };
   return labels[String(status || '').toLowerCase()] || machineStatusFallbackLabel(status);
+}
+
+function machinePermissionDecisionLabel(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'approved') return 'allowed';
+  if (value === 'denied') return 'declined';
+  return machineStatusFallbackLabel(status);
 }
 
 function machineStatusChipClass(status, kind = 'lifecycle') {
@@ -8171,13 +8180,13 @@ function machineApprovalDetails(record) {
       .filter(Boolean)
       .slice(0, 3)
       .join(', ');
-    return `${machineCountLabel(pending.length, 'approval')} needed${names ? `: ${names}` : ''}`;
+    return `${machineCountLabel(pending.length, 'permission request')} waiting${names ? `: ${names}` : ''}`;
   }
   const decisions = (approvals.all || []).filter(item => item.status && item.status !== 'requested');
   if (decisions.length) {
-    return `${machineCountLabel(decisions.length, 'approval decision')}: ${decisions.map(item => item.status).join(', ')}`;
+    return `${machineCountLabel(decisions.length, 'permission decision')}: ${decisions.map(item => machinePermissionDecisionLabel(item.status)).join(', ')}`;
   }
-  return 'No approvals needed';
+  return 'No permission needed';
 }
 
 function machineActiveClaimDetails(record) {
@@ -8284,7 +8293,7 @@ function machineExecuteControlDetails(record, validation = null) {
   if (!runId) return 'Continue unavailable: no run selected';
   if (validation && !isMachineStartablePipeline(validation)) return machineStartBlockReason(validation);
   if (isMachineRunTerminal(runState)) return `Continue unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished`;
-  if (pendingApprovals > 0) return `Continue blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first`;
+  if (pendingApprovals > 0) return `Continue blocked: decide ${machineCountLabel(pendingApprovals, 'permission request')} first`;
   if (activeClaims.length) return `Continue paused: ${machineWorkInProgressLabel(activeClaims.length)}; cancel or wait before continuing`;
   return 'Continue this run.';
 }
@@ -8305,7 +8314,7 @@ function machineResumeControlDetails(record) {
     return { state: 'warn', text: `Recovery unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished` };
   }
   if (pendingApprovals > 0) {
-    return { state: 'warn', text: `Recovery blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first` };
+    return { state: 'warn', text: `Recovery blocked: decide ${machineCountLabel(pendingApprovals, 'permission request')} first` };
   }
   if (activeClaims.length) {
     const staleClaims = machineStaleActiveClaims(record);
@@ -8419,8 +8428,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
           ${pendingApprovals.slice(0, 3).map(approval => `
-            <button data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Approval')}">Approve</button>
-            <button data-runbook-action="machine-deny-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Approval')}">Deny</button>
+            <button data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Permission request')}">Allow</button>
+            <button data-runbook-action="machine-deny-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Permission request')}">Decline</button>
           `).join('')}
         </div>
       ` : '';
@@ -8486,7 +8495,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(auditDetails.text)}</span>
         </div>
         <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
-          <strong>Approval</strong>
+          <strong>Permission</strong>
           <span>${escapeHtml(approvalDetails)}</span>
           ${approvalActions}
         </div>
@@ -9066,7 +9075,7 @@ async function decideSelectedMachineApproval(runbookPath, runId, approvalId, dec
     if (decided?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
     }
-    alert(decided?.error || 'Approval decision failed.');
+    alert(decided?.error || 'Permission decision failed.');
     return;
   }
   selectedRunbookPath = runbookPath;
@@ -9187,7 +9196,7 @@ function openWorkspaceDashboardNote() {
     '',
     '- Include selected pipeline, entry graph, declared skill files, rules, and workspace index facts.',
     '- Exclude `.env`, key-like files, and secret-like paths by default.',
-    '- Require exact approval before command, write, URL, MCP, or provider-send actions.',
+    '- Require exact permission before command, write, URL, MCP, or provider-send actions.',
   ].join('\n');
   createTab(null, null, body, '', { title: 'Workspace Dashboard.md', viewType: 'markdown', forceUnsaved: true });
 }

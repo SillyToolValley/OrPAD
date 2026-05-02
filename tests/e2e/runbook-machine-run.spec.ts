@@ -451,10 +451,11 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await startManagedRunFromPreview(win);
   await submitMachineCapabilityToken(win);
 
-  await expect(win.locator('#runbooks-content')).toContainText('Approval requested');
-  await expect(win.locator('#runbooks-content')).toContainText('Approval');
-  await expect(win.locator('#runbooks-content')).toContainText('1 approval needed: machine-ui-smoke');
-  await expect(win.locator('#runbooks-content')).toContainText('Recovery blocked: 1 approval must be decided first');
+  await expect(win.locator('#runbooks-content')).toContainText('Permission requested');
+  await expect(win.locator('#runbooks-content')).toContainText('Permission');
+  await expect(win.locator('#runbooks-content')).toContainText('1 permission request waiting: machine-ui-smoke');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery blocked: decide 1 permission request first');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Approval');
   await expect(win.locator('#runbooks-content')).toContainText('No work to stop');
   await expect(win.locator('#runbooks-content')).not.toContainText('No active claim to cancel');
   await expect(win.locator('#runbooks-content')).toContainText('No work result yet');
@@ -462,12 +463,12 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
-  await expect(win.locator('button[data-runbook-action="machine-approve-approval"]')).toBeEnabled();
-  await expect(win.locator('button[data-runbook-action="machine-deny-approval"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-approve-approval"]')).toHaveText('Allow');
+  await expect(win.locator('button[data-runbook-action="machine-deny-approval"]')).toHaveText('Decline');
 
   await win.locator('button[data-runbook-action="machine-approve-approval"]').click();
-  await expect(win.locator('#runbooks-content')).toContainText('Approval approved');
-  await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: approved');
+  await expect(win.locator('#runbooks-content')).toContainText('Permission allowed');
+  await expect(win.locator('#runbooks-content')).toContainText('1 permission decision: allowed');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery ready');
   await expect(win.locator('#runbooks-content')).not.toContainText('Resume ready');
   await expect(win.locator('#runbooks-content')).not.toContainText('derived queue snapshots');
@@ -661,8 +662,8 @@ test('Machine UI keeps denied approval runs terminal', async () => {
   await submitMachineCapabilityToken(win);
   await win.locator('button[data-runbook-action="machine-deny-approval"]').click();
 
-  await expect(win.locator('#runbooks-content')).toContainText('Approval denied');
-  await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: denied');
+  await expect(win.locator('#runbooks-content')).toContainText('Permission declined');
+  await expect(win.locator('#runbooks-content')).toContainText('1 permission decision: declined');
   await expect(win.locator('#runbooks-content')).toContainText('Cancelled');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
