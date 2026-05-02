@@ -4422,7 +4422,6 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
         <h3>${escapeHtml(node.label || node.id || 'Node')}</h3>
         <dl>
           <dt>Kind</dt><dd title="${escapeHtml(node.type || '')}">${escapeHtml(orchNodeTypeLabel(node.type))}</dd>
-          <dt>Step key</dt><dd>${escapeHtml(node.id || '')}</dd>
           ${node.file ? `<dt>File</dt><dd>${escapeHtml(node.file)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.id ? `<dt>Tree</dt><dd>${escapeHtml(node.tree.id)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.root ? `<dt>Tree nodes</dt><dd>${countOrchNestedNodes(node.tree.root)}</dd>` : ''}

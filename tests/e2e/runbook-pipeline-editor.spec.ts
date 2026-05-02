@@ -24,12 +24,12 @@ function writePipelineWorkspace(): { workspace: string; pipelinePath: string } {
     graph: {
       id: 'editor-fixture',
       nodes: [
-        { id: 'context', type: 'Context', label: 'Collect context' },
+        { id: 'reference-context', type: 'Context', label: 'Collect context' },
         { id: 'implementation', type: 'OrchTree', label: 'Implementation', config: { ref: '../trees/implementation.or-tree' } },
         { id: 'quality-graph', type: 'orpad.graph', label: 'Quality graph', config: { graphRef: 'quality.or-graph' } },
       ],
       transitions: [
-        { from: 'context', to: 'implementation' },
+        { from: 'reference-context', to: 'implementation' },
         { from: 'implementation', to: 'quality-graph' },
       ],
     },
@@ -144,6 +144,8 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-graph-main .orch-floating-inspector .orch-inspector')).toBeVisible();
   await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).toContainText('Kind');
   await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).not.toContainText('Type');
+  await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).not.toContainText('Step key');
+  await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).not.toContainText('reference-context');
   await win.locator('button[data-orch-mode="readwrite"]').click();
   const kindField = win.locator('.orch-floating-inspector label', { has: win.locator('select[data-orch-edit="type"]') });
   await expect(kindField).toContainText('Kind');

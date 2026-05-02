@@ -108,7 +108,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
-  await expect(win.locator('.orch-inspector')).toContainText('Step key');
+  await expect(win.locator('.orch-inspector')).not.toContainText('Step key');
   await expect(win.locator('.orch-inspector')).not.toContainText(/\bID\b/);
   await expect(win.locator('.orch-graph-node')).toHaveCount(8);
   await expect(win.locator('.orch-graph-node')).toContainText(['Prepare workspace', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
