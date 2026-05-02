@@ -80,6 +80,76 @@ async function fileDigest(filePath) {
   };
 }
 
+function artifactIntegrityError(diagnostics) {
+  const err = new Error('Registered artifact files no longer match Machine evidence events.');
+  err.code = 'MACHINE_ARTIFACT_INTEGRITY_FAILED';
+  err.diagnostics = diagnostics;
+  return err;
+}
+
+async function registeredArtifactFileDiagnostics(runRoot) {
+  const events = await readMachineEvents(runRoot);
+  const filesByPath = new Map();
+  const diagnostics = [];
+  for (const event of events) {
+    if (event.eventType !== 'artifact.registered' || !event.payload?.file) continue;
+    filesByPath.set(event.payload.file.path, event.payload.file);
+  }
+
+  for (const file of filesByPath.values()) {
+    let relativePath = '';
+    try {
+      relativePath = await assertNoSymlinkInRunPath(runRoot, file.path);
+    } catch (err) {
+      diagnostics.push({
+        code: err?.code === 'MACHINE_ARTIFACT_SYMLINK_UNSAFE'
+          ? 'MACHINE_ARTIFACT_SYMLINK_UNSAFE'
+          : 'MACHINE_ARTIFACT_PATH_INVALID',
+        message: 'Registered artifact path is not safe to read.',
+        path: file.path,
+        error: err.message,
+      });
+      continue;
+    }
+    try {
+      const absolutePath = path.join(path.resolve(runRoot), ...relativePath.split('/'));
+      const digest = await fileDigest(absolutePath);
+      if (digest.sha256 !== file.sha256) {
+        diagnostics.push({
+          code: 'MACHINE_ARTIFACT_HASH_MISMATCH',
+          message: 'Registered artifact sha256 no longer matches the current file.',
+          path: file.path,
+          expected: file.sha256,
+          actual: digest.sha256,
+        });
+      }
+      if (digest.size !== file.size) {
+        diagnostics.push({
+          code: 'MACHINE_ARTIFACT_SIZE_MISMATCH',
+          message: 'Registered artifact size no longer matches the current file.',
+          path: file.path,
+          expected: file.size,
+          actual: digest.size,
+        });
+      }
+    } catch (err) {
+      diagnostics.push({
+        code: 'MACHINE_ARTIFACT_FILE_MISSING',
+        message: 'Registered artifact file is missing or unreadable.',
+        path: file.path,
+        error: err.message,
+      });
+    }
+  }
+  return diagnostics;
+}
+
+async function assertRegisteredArtifactFilesUnchanged(runRoot) {
+  const diagnostics = await registeredArtifactFileDiagnostics(runRoot);
+  if (diagnostics.length) throw artifactIntegrityError(diagnostics);
+  return true;
+}
+
 async function buildArtifactManifest(runRoot) {
   const events = await readMachineEvents(runRoot);
   const filesByPath = new Map();
@@ -107,6 +177,7 @@ async function buildArtifactManifest(runRoot) {
 }
 
 async function writeArtifactManifest(runRoot) {
+  await assertRegisteredArtifactFilesUnchanged(runRoot);
   const manifest = await buildArtifactManifest(runRoot);
   await assertNoSymlinkInRunPath(runRoot, 'artifacts/manifest.json');
   await writeJsonAtomic(artifactManifestPath(runRoot), manifest);
@@ -130,6 +201,7 @@ async function registerArtifact(runRoot, options = {}) {
   if (!runId) throw new Error('runId is required.');
   if (!producedBy) throw new Error('producedBy is required.');
 
+  await assertRegisteredArtifactFilesUnchanged(runRoot);
   const relativePath = assertRunRelativePath(artifactPath);
   await assertNoSymlinkInRunPath(runRoot, relativePath);
   const absolutePath = path.join(path.resolve(runRoot), ...relativePath.split('/'));
@@ -160,10 +232,12 @@ async function registerArtifact(runRoot, options = {}) {
 module.exports = {
   artifactManifestPath,
   assertNoSymlinkInRunPath,
+  assertRegisteredArtifactFilesUnchanged,
   assertRunRelativePath,
   buildArtifactManifest,
   fileDigest,
   readArtifactManifest,
+  registeredArtifactFileDiagnostics,
   registerArtifact,
   sha256,
   writeArtifactManifest,

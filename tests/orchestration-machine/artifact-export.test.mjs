@@ -201,6 +201,62 @@ test('evidence snapshot materializes provenance from durable run state', async (
   assert.equal((await fs.stat(path.join(exported.targetRoot, 'queue/journal.jsonl'))).isFile(), true);
 });
 
+test('artifact registry refuses to continue after registered evidence changes', async () => {
+  const run = await makeRun();
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/queue/triage-log.md',
+    content: '# Triage log\n',
+    producedBy: 'adapter:proposal-only',
+    registeredBy: 'machine',
+  });
+  await fs.writeFile(path.join(run.runRoot, 'artifacts/queue/triage-log.md'), '# changed\n', 'utf8');
+
+  await assert.rejects(
+    registerArtifact(run.runRoot, {
+      runId: run.runId,
+      artifactPath: 'artifacts/queue/next.md',
+      content: '# next\n',
+      producedBy: 'adapter:proposal-only',
+      registeredBy: 'machine',
+    }),
+    error => (
+      error?.code === 'MACHINE_ARTIFACT_INTEGRITY_FAILED'
+      && error.diagnostics?.some(item => item.code === 'MACHINE_ARTIFACT_HASH_MISMATCH')
+      && error.diagnostics?.some(item => item.code === 'MACHINE_ARTIFACT_SIZE_MISMATCH')
+    ),
+  );
+  await assert.rejects(
+    fs.stat(path.join(run.runRoot, 'artifacts/queue/next.md')),
+    error => error?.code === 'ENOENT',
+  );
+});
+
+test('evidence snapshot refuses to export changed registered evidence', async () => {
+  const run = await makeRun();
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/queue/triage-log.md',
+    content: '# Triage log\n',
+    producedBy: 'adapter:proposal-only',
+    registeredBy: 'machine',
+  });
+  await fs.writeFile(path.join(run.runRoot, 'artifacts/queue/triage-log.md'), '# changed\n', 'utf8');
+
+  await assert.rejects(
+    exportLatestRun({
+      runRoot: run.runRoot,
+      pipelineDir: run.pipelineDir,
+      exportedAt: '2026-04-30T00:00:10.000Z',
+    }),
+    error => error?.code === 'MACHINE_ARTIFACT_INTEGRITY_FAILED',
+  );
+  await assert.rejects(
+    fs.stat(latestRunExportRoot(run.pipelineDir)),
+    error => error?.code === 'ENOENT',
+  );
+});
+
 test('evidence snapshot refuses to overwrite an existing export unless explicitly allowed', async () => {
   const run = await makeRun();
   const targetRoot = latestRunExportRoot(run.pipelineDir);
