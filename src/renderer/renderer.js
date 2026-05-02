@@ -8330,17 +8330,17 @@ function machineCancellationControlDetails(record) {
   if (cancellation) {
     return {
       state: 'good',
-      text: `Last cancellation: ${cancellation.itemId || 'work item'} was stopped; work reservation released`,
+      text: `Stopped: ${cancellation.itemId || 'work item'}; work reservation released`,
     };
   }
   if (activeClaims.length) {
     const first = activeClaims[0];
     return {
       state: 'warn',
-      text: `Cancel ready: ${first.itemId || 'work item'} is in progress; ${machineActiveWriteSetDetails(record)}`,
+      text: `Ready to stop: ${first.itemId || 'work item'} is in progress; ${machineActiveWriteSetDetails(record)}`,
     };
   }
-  return { state: 'good', text: 'No work to cancel' };
+  return { state: 'good', text: 'No work to stop' };
 }
 
 function isMachineRunTerminal(runState) {
@@ -8438,7 +8438,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
-        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Work</button>` : ''}
+        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Stop Work</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
@@ -8470,7 +8470,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(resumeDetails.text)}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(cancellationDetails.state)}">
-          <strong>Cancellation</strong>
+          <strong>Stop work</strong>
           <span>${escapeHtml(cancellationDetails.text)}</span>
         </div>
         <div class="runbook-guide">
@@ -8993,7 +8993,7 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
   if (!cancelled?.success) {
     if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      alert(cancelled?.error || 'Claim cancellation failed.');
+      alert(cancelled?.error || 'Could not stop work.');
       return;
     }
     lastMachineRunRecord = {

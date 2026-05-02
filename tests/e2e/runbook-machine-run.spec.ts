@@ -363,7 +363,7 @@ test('Pipes Refresh reloads selected managed run evidence from disk', async () =
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).not.toContainText('run_machine_ui_refresh_claim');
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
-  await expect(win.locator('#runbooks-content')).toContainText('Cancel ready: machine-ui-smoke is in progress');
+  await expect(win.locator('#runbooks-content')).toContainText('Ready to stop: machine-ui-smoke is in progress');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -448,7 +448,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('Approval');
   await expect(win.locator('#runbooks-content')).toContainText('1 approval needed: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery blocked: 1 approval must be decided first');
-  await expect(win.locator('#runbooks-content')).toContainText('No work to cancel');
+  await expect(win.locator('#runbooks-content')).toContainText('No work to stop');
   await expect(win.locator('#runbooks-content')).toContainText('No work result yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
@@ -555,14 +555,17 @@ test('Machine UI cancels work in progress and releases visible locks', async () 
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('1 reserved file: src/smoke-target.md');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery paused: 1 work item in progress');
-  await expect(win.locator('#runbooks-content')).toContainText('Cancel ready: machine-ui-smoke is in progress');
+  await expect(win.locator('#runbooks-content')).toContainText('Ready to stop: machine-ui-smoke is in progress');
+  await expect(win.locator('#runbooks-content')).toContainText('Stop work');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Cancellation');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveText('Stop Work');
 
   await win.locator('button[data-runbook-action="machine-cancel-claim"]').click();
   await submitMachineCapabilityToken(win);
-  await expect(win.locator('#runbooks-content')).toContainText('Last cancellation: machine-ui-smoke was stopped; work reservation released');
+  await expect(win.locator('#runbooks-content')).toContainText('Stopped: machine-ui-smoke; work reservation released');
   await expect(win.locator('#runbooks-content')).toContainText('No work in progress');
   await expect(win.locator('#runbooks-content')).toContainText('No reserved files');
   await expect(win.locator('#runbooks-content')).toContainText('Cancelled');
