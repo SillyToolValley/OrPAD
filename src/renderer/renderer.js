@@ -393,6 +393,7 @@ const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
 const machineRunPendingActions = new Set();
 const machineRunProgressTimers = new Map();
+const machinePatchReviewShown = new Set();
 let lastMachineRunRecord = null;
 let machineCapabilityToken = '';
 let machineRuntimeStatus = null;
@@ -9324,6 +9325,7 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
+  await maybeOpenMachinePatchReviewModal(runbookPath, lastMachineRunRecord);
 }
 
 async function resumeSelectedMachineRun(runbookPath, runId) {
@@ -9482,7 +9484,10 @@ function machineMarkdownCell(value) {
 }
 
 function machineSafeRunArtifactPath(record, artifactPath) {
-  const runRoot = runbookNormalizePath(record?.runRoot || '');
+  const rawRunRoot = runbookNormalizePath(record?.runRoot || '');
+  const runRoot = (/^[a-z]:\//i.test(rawRunRoot) || rawRunRoot.startsWith('/'))
+    ? rawRunRoot
+    : normalizeRunbookFilePath(`${runbookNormalizePath(workspacePath || '')}/${rawRunRoot}`);
   const ref = runbookNormalizePath(artifactPath || '');
   if (!runRoot || !ref || /^[a-z]:\//i.test(ref) || ref.startsWith('/')) return '';
   const normalized = normalizeRunbookFilePath(`${runRoot}/${ref}`);
@@ -9582,6 +9587,125 @@ function machinePatchArtifactMarkdown(summary) {
     lines.push('', `Write-set violations: ${summary.violations.join(', ')}`);
   }
   return lines;
+}
+
+function machinePatchReviewKey(runbookPath, runId, patchArtifact) {
+  return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId}::${patchArtifact}`;
+}
+
+async function applyMachinePatchSelection(runbookPath, runId, workerReview, selectedFiles) {
+  if (!workspacePath || !runbookPath || !runId || !workerReview?.patchArtifact || !window.orpad?.machine?.applyPatch) return null;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return null;
+  const applied = await window.orpad.machine.applyPatch({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    capabilityToken: token,
+    patchArtifact: workerReview.patchArtifact,
+    selectedFiles,
+    exportLatestRun: true,
+  });
+  if (!applied?.success) {
+    if (applied?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+    alert(applied?.error || 'Patch could not be applied.');
+    return null;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = machineUpdateRunRecord(runbookPath, applied);
+  await refreshMachineRunList(runbookPath);
+  renderRunbooksPanel();
+  await loadFileTree();
+  void refreshWorkspaceRunbookSummary();
+  return applied;
+}
+
+function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary) {
+  if (!workerReview?.patchArtifact || !patchSummary || patchSummary.error || !patchSummary.changes?.length) return;
+  const body = document.createElement('div');
+  body.className = 'runbook-modal-body';
+  const changeRows = patchSummary.changes.map((change, index) => `
+    <label class="runbook-diagnostic" style="display:block; margin:8px 0;">
+      <input type="checkbox" data-machine-patch-file value="${escapeHtml(change.path)}" ${index < 20 ? 'checked' : ''}>
+      <strong>${escapeHtml(change.path)}</strong><br>
+      <span>${escapeHtml(String(change.action))}; ${escapeHtml(String(change.beforeLines))} -> ${escapeHtml(String(change.afterLines))} lines (${escapeHtml(String(change.deltaLabel))}); SHA ${escapeHtml(change.beforeSha || 'none')} -> ${escapeHtml(change.afterSha || 'none')}</span>
+    </label>
+  `).join('');
+  body.innerHTML = `
+    <p>The run produced a patch in evidence. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.</p>
+    <div class="runbook-diagnostic warning"><strong>Workspace not changed yet.</strong> Applying writes the selected files to your workspace after base SHA checks.</div>
+    <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
+    <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
+    <div style="max-height:280px; overflow:auto; margin-top:8px;">${changeRows}</div>
+    <label style="display:block; margin-top:12px;">
+      Follow-up prompt
+      <textarea class="runbook-task-input" data-machine-patch-prompt rows="3" placeholder="Optional: tell OrPAD what to do in the next Continue run."></textarea>
+    </label>
+  `;
+  const selectedFiles = () => [...body.querySelectorAll('[data-machine-patch-file]:checked')]
+    .map(input => input.value)
+    .filter(Boolean);
+  openFmtModal({
+    title: 'Review Patch',
+    body,
+    footer: [
+      { label: 'Cancel', onClick: () => closeFmtModal() },
+      {
+        label: 'Continue with Prompt',
+        onClick: async () => {
+          const prompt = body.querySelector('[data-machine-patch-prompt]')?.value || '';
+          if (prompt.trim()) {
+            runbookDraftTask = prompt;
+            localStorage.setItem(RUNBOOK_TASK_STORAGE_KEY, runbookDraftTask);
+          }
+          closeFmtModal();
+          await executeSelectedMachineRunStep(runbookPath, runId);
+        },
+      },
+      {
+        label: 'Apply Selected',
+        primary: true,
+        onClick: async () => {
+          const files = selectedFiles();
+          if (!files.length) {
+            alert('Select at least one file to apply.');
+            return;
+          }
+          const applied = await applyMachinePatchSelection(runbookPath, runId, workerReview, files);
+          if (applied) closeFmtModal();
+        },
+      },
+    ],
+  });
+}
+
+async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
+  const runId = record?.runState?.runId || record?.runId || '';
+  const workerReview = machineWorkerReviewInfo(record);
+  if (!runbookPath || !runId || !workerReview?.patchArtifact) return;
+  if (isMachineRunInProgress(record, runbookPath)) return;
+  const key = machinePatchReviewKey(runbookPath, runId, workerReview.patchArtifact);
+  if (machinePatchReviewShown.has(key)) return;
+  let patchSummary = await machinePatchArtifactSummary(record, workerReview);
+  if (!patchSummary || patchSummary.error || !patchSummary.changes?.length) {
+    const changedFiles = workerReview.changedFiles || [];
+    if (!changedFiles.length) return;
+    patchSummary = {
+      changeCount: changedFiles.length,
+      violationCount: 0,
+      changes: changedFiles.map(path => ({
+        path,
+        action: 'Changed',
+        beforeLines: '?',
+        afterLines: '?',
+        deltaLabel: '?',
+        beforeSha: '',
+        afterSha: '',
+      })),
+    };
+  }
+  machinePatchReviewShown.add(key);
+  openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary);
 }
 
 async function openMachineArtifactViewer(runbookPath, runId) {

@@ -13,8 +13,10 @@ const { readActiveClaimLeases } = require('./claims');
 const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
 const { assertNoSymlinkInRunPath, assertRunRelativePath } = require('./artifacts');
+const { applyPatchArtifact } = require('./patches');
 const { recoverStaleClaims } = require('./dispatcher');
 const { executeMachineRunStep } = require('./machine');
+const { appendMachineEvent } = require('./events');
 const { resumeMachineRun } = require('./lifecycle');
 const {
   assertNoSymlinkInWorkspacePath,
@@ -40,6 +42,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   cancelClaim: 'machine-cancel-claim',
   decideApproval: 'machine-decide-approval',
   exportLatestRun: 'machine-export-latest-run',
+  applyPatch: 'machine-apply-patch',
 });
 
 function featureGateFromEnv(env = process.env) {
@@ -427,6 +430,82 @@ async function exportLatestRunHandler(event, authority, request) {
   };
 }
 
+async function applyPatchHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const patchArtifact = requiredString(request.patchArtifact, 'patchArtifact').trim();
+  const selectedFiles = Array.isArray(request.selectedFiles)
+    ? [...new Set(request.selectedFiles.map(item => optionalString(item, 'selectedFiles[]').trim()).filter(Boolean))]
+    : [];
+  if (!selectedFiles.length) {
+    throw machineError('MACHINE_PATCH_SELECTION_REQUIRED', 'Select at least one patch file to apply.');
+  }
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  const artifactPath = await runRelativeArtifactPath(runRoot, patchArtifact);
+  if (!artifactPath) {
+    throw machineError('MACHINE_PATCH_ARTIFACT_DENIED', 'Patch artifact path is not readable for this run.');
+  }
+  const patch = JSON.parse(await fsp.readFile(artifactPath, 'utf8'));
+  if (patch?.schemaVersion !== 'orpad.patchArtifact.v1') {
+    throw machineError('MACHINE_PATCH_SCHEMA_INVALID', 'Patch artifact schema is not recognized.');
+  }
+  const wanted = new Set(selectedFiles);
+  const available = new Set((patch.changes || []).map(change => change?.path).filter(Boolean));
+  const missing = selectedFiles.filter(file => !available.has(file));
+  if (missing.length) {
+    throw machineError('MACHINE_PATCH_SELECTION_INVALID', `Patch selection includes unknown files: ${missing.join(', ')}`);
+  }
+  const selectedPatch = {
+    ...patch,
+    changes: (patch.changes || []).filter(change => wanted.has(change?.path)),
+  };
+  const result = await applyPatchArtifact({
+    workspaceRoot: context.workspaceRoot,
+    patch: selectedPatch,
+    allowedFiles: patch.allowedFiles || [],
+  });
+  const appliedEvent = await appendMachineEvent(runRoot, {
+    runId,
+    actor: 'renderer',
+    eventType: 'patch.applied',
+    reason: 'machine-ui.patch-review.apply',
+    artifactRefs: [patchArtifact],
+    payload: {
+      patchArtifact,
+      selectedFiles,
+      applied: result.applied,
+    },
+  });
+  const updated = await readRunSnapshot(runRoot);
+  const exported = request.exportLatestRun === false
+    ? null
+    : await exportLatestRun({
+      runRoot,
+      pipelineDir: context.pipelineDir,
+      allowOverwrite: true,
+    });
+  return {
+    success: true,
+    ok: true,
+    runId,
+    patchArtifact,
+    applied: result.applied,
+    appliedEvent,
+    runState: updated.runState,
+    events: updated.events,
+    candidateInventory: updated.candidateInventory,
+    worker: updated.worker,
+    approvals: updated.approvals,
+    activeClaims: updated.activeClaims,
+    activeWriteSets: updated.activeWriteSets,
+    exported,
+  };
+}
+
 async function decideApprovalHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
@@ -764,6 +843,7 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.cancelClaim, cancelClaimHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.exportLatestRun, exportLatestRunHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.applyPatch, applyPatchHandler, { mutating: true });
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };
 }

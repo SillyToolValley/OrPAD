@@ -249,6 +249,12 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
   await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
+  await expect(win.getByText('Review Patch')).toBeVisible();
+  await expect(win.locator('[data-machine-patch-file]')).toBeChecked();
+  expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
+  await win.getByRole('button', { name: 'Apply Selected' }).click();
+  await expect(win.getByText('Review Patch')).not.toBeVisible();
+  expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('after from Machine UI harness\n');
   await expect(win.locator('#runbooks-content')).toContainText('Snapshot saved');
   await expect(win.locator('#runbooks-content')).toContainText('No permission needed');
   await expect(win.locator('#runbooks-content')).not.toContainText('No pending approvals');
@@ -260,7 +266,6 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toHaveText('Recover');
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
-  expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
 
   await win.locator('button[data-runbook-action="machine-export"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('Evidence snapshot');
