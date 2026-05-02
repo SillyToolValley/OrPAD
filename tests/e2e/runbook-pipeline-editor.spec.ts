@@ -142,7 +142,12 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('#toc-source-label')).not.toContainText('orch-graph');
   await expect(win.locator('.orch-graph-layout > .orch-inspector')).toHaveCount(0);
   await expect(win.locator('.orch-graph-main .orch-floating-inspector .orch-inspector')).toBeVisible();
+  await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).toContainText('Kind');
+  await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).not.toContainText('Type');
   await win.locator('button[data-orch-mode="readwrite"]').click();
+  const kindField = win.locator('.orch-floating-inspector label', { has: win.locator('select[data-orch-edit="type"]') });
+  await expect(kindField).toContainText('Kind');
+  await expect(kindField).not.toContainText('Type');
   const graphTypeOptions = await win.locator('.orch-floating-inspector select[data-orch-edit="type"] option').evaluateAll(options =>
     options.map(option => (option as HTMLOptionElement).value).filter(Boolean)
   );

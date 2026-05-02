@@ -4368,7 +4368,7 @@ function renderOrchTypeField(path, node) {
     ...types.map(type => `<option value="${type}" ${currentType === type ? 'selected' : ''}>${escapeHtml(orchNodeTypeLabel(type))}</option>`),
   ].join('');
   return `
-    <label><span>Type</span><select data-orch-edit="type" data-orch-path="${escapeHtml(path)}">${options}</select></label>
+    <label><span>Kind</span><select data-orch-edit="type" data-orch-path="${escapeHtml(path)}">${options}</select></label>
     ${currentType && !typeAllowed ? `<div class="runbook-empty">Current type ${escapeHtml(orchNodeTypeLabel(currentType))} is not addable in this ${scopeLabel} editor. Choose a listed type to convert it.</div>` : ''}
   `;
 }
@@ -4414,7 +4414,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
       <aside class="orch-inspector">
         <h3>${escapeHtml(node.label || node.id || 'Node')}</h3>
         <dl>
-          <dt>Type</dt><dd title="${escapeHtml(node.type || '')}">${escapeHtml(orchNodeTypeLabel(node.type))}</dd>
+          <dt>Kind</dt><dd title="${escapeHtml(node.type || '')}">${escapeHtml(orchNodeTypeLabel(node.type))}</dd>
           <dt>ID</dt><dd>${escapeHtml(node.id || '')}</dd>
           ${node.file ? `<dt>File</dt><dd>${escapeHtml(node.file)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.id ? `<dt>Tree</dt><dd>${escapeHtml(node.tree.id)}</dd>` : ''}
