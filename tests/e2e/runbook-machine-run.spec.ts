@@ -466,6 +466,13 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   await expect(win.locator('#runbooks-content')).toContainText('2 required evidence files missing; 1 required queue file missing');
   await expect(win.locator('#runbooks-content')).toContainText('Work needs review');
   await expect(win.locator('#runbooks-content')).toContainText('review needed; 2 evidence files; 1 check; 1 changed file');
+  await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
+  await expect(win.locator('.tab-item.active')).toContainText('Run Evidence');
+  await expect(win.locator('.cm-content')).toContainText('Patch Review');
+  await expect(win.locator('.cm-content')).toContainText('Workspace changed: no, review the run evidence before applying anything manually');
+  await expect(win.locator('.cm-content')).toContainText('Patch artifact: artifacts/patches/worker.patch.json');
+  await expect(win.locator('.cm-content')).toContainText('Changed files staged in evidence: src/smoke-target.md');
+  await expect(win.locator('.cm-content')).toContainText('Missing expected changes: src/main/runbooks/validator.js');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

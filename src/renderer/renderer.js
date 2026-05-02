@@ -8181,30 +8181,39 @@ function machineLatestPartialArtifactContract(record) {
   });
 }
 
+function machineWorkerReviewInfo(record) {
+  const event = machineLatestWorkerEvent(record);
+  if (!event) return null;
+  const payload = event.payload || {};
+  const verification = payload.verification || [];
+  return {
+    status: String(payload.status || ''),
+    patchArtifact: payload.patchArtifact || '',
+    changedFiles: payload.changedFiles || [],
+    evidenceArtifacts: event.artifactRefs || [],
+    missingExpectedChanges: [...new Set(verification.flatMap(item => item.missingExpectedChanges || []))],
+    message: machineLatestWorkerSummary(record)?.payload?.message || '',
+  };
+}
+
 function machineRunAttentionDetails(record) {
   if (!record) return '';
   const notices = [];
-  const workerEvent = machineLatestWorkerEvent(record);
-  const workerPayload = workerEvent?.payload || {};
-  const workerStatus = String(workerPayload.status || '').toLowerCase();
+  const workerReview = machineWorkerReviewInfo(record);
+  const workerStatus = String(workerReview?.status || '').toLowerCase();
   if (workerStatus === 'blocked') {
-    const changedFiles = workerPayload.changedFiles || [];
-    const verification = workerPayload.verification || [];
-    const missingExpectedChanges = [...new Set(verification.flatMap(item => item.missingExpectedChanges || []))];
-    const summaryPayload = machineLatestWorkerSummary(record)?.payload || {};
-    const patchArtifact = workerPayload.patchArtifact || '';
     notices.push({
       state: 'warning',
       title: 'Review required',
       text: [
-        changedFiles.length
-          ? `${machineCountLabel(changedFiles.length, 'changed file')} staged in run evidence; workspace files were not changed.`
+        workerReview.changedFiles.length
+          ? `${machineCountLabel(workerReview.changedFiles.length, 'changed file')} staged in run evidence; workspace files were not changed.`
           : 'Work stopped before producing an applicable workspace change.',
-        patchArtifact ? `Patch evidence: ${patchArtifact}.` : '',
-        missingExpectedChanges.length
-          ? `Missing expected change: ${missingExpectedChanges.slice(0, 3).join(', ')}${missingExpectedChanges.length > 3 ? `, +${missingExpectedChanges.length - 3} more` : ''}.`
+        workerReview.patchArtifact ? `Patch evidence: ${workerReview.patchArtifact}.` : '',
+        workerReview.missingExpectedChanges.length
+          ? `Missing expected change: ${workerReview.missingExpectedChanges.slice(0, 3).join(', ')}${workerReview.missingExpectedChanges.length > 3 ? `, +${workerReview.missingExpectedChanges.length - 3} more` : ''}.`
           : '',
-        summaryPayload.message || '',
+        workerReview.message || '',
       ].filter(Boolean).join(' '),
     });
   }
@@ -9490,6 +9499,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   const manifest = exported?.metadata?.artifactManifest || null;
   const auditDetails = machineAuditDetails(record);
   const actualRunId = runState.runId || record.runId || runId;
+  const workerReview = machineWorkerReviewInfo(record);
   const actualRunLabel = machineRunDisplayLabel({
     runId: actualRunId,
     createdAt: runState.createdAt || record.createdAt,
@@ -9513,6 +9523,18 @@ async function openMachineArtifactViewer(runbookPath, runId) {
       '|',
     ].join(' ')),
   ] : ['_No evidence files recorded yet._'];
+  const patchReview = workerReview ? [
+    '## Patch Review',
+    '',
+    `Status: ${machineWorkerStatusLabel(workerReview.status)}`,
+    `Workspace changed: ${String(workerReview.status).toLowerCase() === 'done' ? 'yes' : 'no, review the run evidence before applying anything manually'}`,
+    workerReview.patchArtifact ? `Patch artifact: ${workerReview.patchArtifact}` : '',
+    workerReview.changedFiles.length ? `Changed files staged in evidence: ${workerReview.changedFiles.join(', ')}` : '',
+    workerReview.missingExpectedChanges.length ? `Missing expected changes: ${workerReview.missingExpectedChanges.join(', ')}` : '',
+    workerReview.evidenceArtifacts.length ? `Worker evidence: ${workerReview.evidenceArtifacts.join(', ')}` : '',
+    workerReview.message ? `Message: ${workerReview.message}` : '',
+    '',
+  ].filter(Boolean) : [];
   const metadataLines = [
     `Run: ${actualRunLabel}`,
     `Lifecycle: ${runState.lifecycleStatus || 'unknown'}`,
@@ -9532,6 +9554,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     '',
     auditDetails.text,
     '',
+    ...patchReview,
     '## Files',
     '',
     ...table,
