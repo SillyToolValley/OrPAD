@@ -460,6 +460,9 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('Approval approved');
   await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: approved');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery ready');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Resume ready');
+  await expect(win.locator('#runbooks-content')).not.toContainText('derived queue snapshots');
+  await expect(win.locator('#runbooks-content')).not.toContainText('stale claims');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
@@ -598,6 +601,8 @@ test('Machine UI recovers interrupted work and reports work state repair', async
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery ready: 1 interrupted work item can be recovered before continuing');
   await expect(win.locator('#runbooks-content')).not.toContainText(/\bResume\b/);
+  await expect(win.locator('#runbooks-content')).not.toContainText('derived queue snapshots');
+  await expect(win.locator('#runbooks-content')).not.toContainText('stale claims');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toHaveText('Recover');
