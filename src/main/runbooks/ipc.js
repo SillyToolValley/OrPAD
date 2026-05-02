@@ -62,19 +62,45 @@ function isRunbookFile(name) {
   return isPipelineFile(name) || isLegacyRunbookFile(name);
 }
 
+function humanizePipelineDisplayName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const stem = raw
+    .replace(/\.or-pipeline$/i, '')
+    .replace(/[-_]+(?:19|20)\d{6}$/i, '');
+  if (!/[-_]/.test(stem)) return stem;
+  const acronyms = new Map([
+    ['api', 'API'],
+    ['cli', 'CLI'],
+    ['ipc', 'IPC'],
+    ['json', 'JSON'],
+    ['llm', 'LLM'],
+    ['mcp', 'MCP'],
+    ['mvp', 'MVP'],
+    ['orpad', 'OrPAD'],
+    ['ui', 'UI'],
+    ['ux', 'UX'],
+  ]);
+  return stem
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(part => acronyms.get(part.toLowerCase()) || `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+}
+
 async function readPipelineManifestSummary(filePath) {
   const fallback = path.basename(path.dirname(filePath));
   try {
     const parsed = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
     return {
-      displayName: parsed.title || parsed.name || parsed.id || fallback,
+      displayName: parsed.title || parsed.name || humanizePipelineDisplayName(parsed.id || fallback),
       pipelineId: parsed.id || fallback,
       description: parsed.description || '',
       template: parsed.template === true || parsed.executionPolicy?.copyBeforeRun === true,
     };
   } catch {
     return {
-      displayName: fallback,
+      displayName: humanizePipelineDisplayName(fallback),
       pipelineId: fallback,
       description: '',
       template: false,

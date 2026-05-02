@@ -895,6 +895,53 @@ function webIsPipelineFile(name) {
   return String(name || '').toLowerCase().endsWith('.or-pipeline');
 }
 
+function webHumanizePipelineDisplayName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const stem = raw
+    .replace(/\.or-pipeline$/i, '')
+    .replace(/[-_]+(?:19|20)\d{6}$/i, '');
+  if (!/[-_]/.test(stem)) return stem;
+  const acronyms = new Map([
+    ['api', 'API'],
+    ['cli', 'CLI'],
+    ['ipc', 'IPC'],
+    ['json', 'JSON'],
+    ['llm', 'LLM'],
+    ['mcp', 'MCP'],
+    ['mvp', 'MVP'],
+    ['orpad', 'OrPAD'],
+    ['ui', 'UI'],
+    ['ux', 'UX'],
+  ]);
+  return stem
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(part => acronyms.get(part.toLowerCase()) || `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+}
+
+async function readWebPipelineManifestSummary(entry, fullPath) {
+  const fallback = dirOf(fullPath).split('/').pop() || entry.name || 'Pipeline';
+  try {
+    const file = await entry.getFile();
+    const parsed = JSON.parse(await file.text());
+    return {
+      displayName: parsed.title || parsed.name || webHumanizePipelineDisplayName(parsed.id || fallback),
+      pipelineId: parsed.id || fallback,
+      description: parsed.description || '',
+      template: parsed.template === true || parsed.executionPolicy?.copyBeforeRun === true,
+    };
+  } catch {
+    return {
+      displayName: webHumanizePipelineDisplayName(fallback),
+      pipelineId: fallback,
+      description: '',
+      template: false,
+    };
+  }
+}
+
 function webIsLegacyRunbookFile(name) {
   const lower = String(name || '').toLowerCase();
   return lower.endsWith('.orch-graph.json') || lower.endsWith('.orch-tree.json') || lower.endsWith('.orch');
@@ -965,8 +1012,12 @@ async function scanRunbookWorkspaceWeb() {
         const item = { name, path: fullPath, kind: 'file' };
         extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
         if (webIsPipelineFile(name)) {
+          const manifestSummary = await readWebPipelineManifestSummary(entry, fullPath);
           item.format = 'or-pipeline';
-          item.displayName = dirOf(fullPath).split('/').pop() || name;
+          item.displayName = manifestSummary.displayName;
+          item.pipelineId = manifestSummary.pipelineId;
+          item.description = manifestSummary.description;
+          item.template = manifestSummary.template;
           pipelines.push(item);
           runbooks.push(item);
         } else if (webIsLegacyRunbookFile(name)) {

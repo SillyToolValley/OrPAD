@@ -292,6 +292,7 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
   });
 
   await expect(win.locator('#runbooks-content')).toContainText('OrPAD Maintenance Quality Workstream');
+  await expect(win.locator('[data-runbook-section="pipelines"]')).not.toContainText('orpad-maintenance-quality-workstream-20260429');
   await win.locator('.runbook-item').filter({ hasText: 'OrPAD Maintenance Quality Workstream' }).click();
   await win.locator('#btn-preview').click();
 

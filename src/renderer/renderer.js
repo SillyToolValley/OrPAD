@@ -6985,9 +6985,39 @@ function runbookBaseName(filePath, fallback = 'Workspace') {
   return base || fallback;
 }
 
+function runbookPipelineDisplayName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const stem = raw
+    .replace(/\.or-pipeline$/i, '')
+    .replace(/[-_]+(?:19|20)\d{6}$/i, '');
+  if (!/[-_]/.test(stem)) return stem;
+  const acronyms = new Map([
+    ['api', 'API'],
+    ['cli', 'CLI'],
+    ['ipc', 'IPC'],
+    ['json', 'JSON'],
+    ['llm', 'LLM'],
+    ['mcp', 'MCP'],
+    ['mvp', 'MVP'],
+    ['orpad', 'OrPAD'],
+    ['ui', 'UI'],
+    ['ux', 'UX'],
+  ]);
+  return stem
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(part => acronyms.get(part.toLowerCase()) || `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+}
+
 function runbookListItemTitle(item) {
+  if (item.format === 'or-pipeline') {
+    return runbookPipelineDisplayName(item.displayName || runbookDirname(item.path).split('/').pop() || item.name)
+      || item.name
+      || 'Pipeline';
+  }
   return item.displayName
-    || (item.format === 'or-pipeline' ? runbookDirname(item.path).split('/').pop() : item.name)
     || item.name
     || 'Pipeline';
 }
@@ -7122,9 +7152,10 @@ function buildWorkspaceRunbookSummary() {
     extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
     if (isOrpadPipelineFile(file.name)) {
       const isWorkspacePipeline = isWorkspacePipelinePackagePath(file.path);
-      const displayName = isWorkspacePipeline
+      const displayNameSource = isWorkspacePipeline
         ? runbookDirname(file.path).split('/').pop() || file.name
         : file.name.replace(/\.or-pipeline$/i, '') || file.name;
+      const displayName = runbookPipelineDisplayName(displayNameSource);
       const item = { ...file, format: 'or-pipeline', displayName, template: !isWorkspacePipeline };
       if (item.template) templatePipelines.push(item);
       else pipelines.push(item);
@@ -7466,9 +7497,9 @@ function summaryWithSelectedRunbook(summary, selectedPath) {
     kind: 'file',
     format: isPipeline ? 'or-pipeline' : lower.endsWith('.orch-graph.json') ? 'orch-graph' : 'orch-tree',
     displayName: isPipeline && isWorkspacePipeline
-      ? runbookDirname(selectedPath).split('/').pop() || name
+      ? runbookPipelineDisplayName(runbookDirname(selectedPath).split('/').pop() || name)
       : isPipeline
-        ? name.replace(/\.or-pipeline$/i, '') || name
+        ? runbookPipelineDisplayName(name.replace(/\.or-pipeline$/i, '') || name)
         : name,
     description: isPipeline ? 'OrPAD pipeline' : '',
     template: isPipeline && !isWorkspacePipeline,

@@ -156,12 +156,12 @@ async function installStoppedMcpMock(page: Page): Promise<void> {
 
 async function installWorkspacePickerMock(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    function fileHandle(name: string) {
+    function fileHandle(name: string, content = 'fixture') {
       return {
         kind: 'file',
         name,
         async getFile() {
-          return new File(['fixture'], name, { type: 'text/plain' });
+          return new File([content], name, { type: 'text/plain' });
         },
       };
     }
@@ -189,12 +189,22 @@ async function installWorkspacePickerMock(page: Page): Promise<void> {
       }),
     });
 
+    const pipeline = JSON.stringify({
+      kind: 'orpad.pipeline',
+      version: '1.0',
+      id: 'fixture-quality-workstream-20260502',
+      title: 'Fixture Quality Workstream',
+      description: 'A web scanner fixture pipeline.',
+      trustLevel: 'local-authored',
+      entryGraph: 'graphs/main.or-graph',
+    });
+
     const workspace = dirHandle('workspace', {
       'README.md': fileHandle('README.md'),
       '.orpad': dirHandle('.orpad', {
         pipelines: dirHandle('pipelines', {
           fixture: dirHandle('fixture', {
-            'pipeline.or-pipeline': fileHandle('pipeline.or-pipeline'),
+            'pipeline.or-pipeline': fileHandle('pipeline.or-pipeline', pipeline),
             harness: dirHandle('harness', { generated }),
           }),
         }),
@@ -456,6 +466,8 @@ test('web pipeline scanner excludes generated harness evidence', async ({ page }
   expect(scan.markdownCount).toBe(1);
   expect(scan.dataCount).toBe(0);
   expect(scan.pipelines.map((item: { path: string }) => item.path)).toContain('/.orpad/pipelines/fixture/pipeline.or-pipeline');
+  expect(scan.pipelines.map((item: { displayName: string }) => item.displayName)).toContain('Fixture Quality Workstream');
+  expect(scan.pipelines.map((item: { displayName: string }) => item.displayName)).not.toContain('fixture-quality-workstream-20260502');
 
   await close();
 });
