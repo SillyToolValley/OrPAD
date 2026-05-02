@@ -239,8 +239,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Agent request prepared');
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
   await expect(win.locator('#runbooks-content')).toContainText('Work item moved');
-  await expect(win.locator('#runbooks-content')).toContainText('Candidate inventory');
-  await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
+  await expect(win.locator('#runbooks-content')).toContainText('Work found');
+  await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
@@ -284,8 +284,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
   await expect(win.locator('#runbooks-content')).not.toContainText(runDirs[0]);
-  await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
-  await expect(win.locator('#runbooks-content')).toContainText('artifacts/discovery/candidate-inventory.json');
+  await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
+  await expect(win.locator('#runbooks-content')).toContainText('Discovery evidence saved');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
@@ -462,7 +462,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
   await win.locator('button[data-runbook-action="machine-execute-step"]').click();
-  await expect(win.locator('#runbooks-content')).toContainText('1 candidate');
+  await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
   await expect(win.locator('#runbooks-content')).toContainText('done');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');

@@ -7933,7 +7933,7 @@ function machineEventLabel(event) {
     case 'worker.result':
       return 'Work completed';
     case 'queue.dedupe':
-      return 'Duplicate candidate skipped';
+      return 'Duplicate work skipped';
     case 'queue.transition': {
       const state = payload.toState || event?.toState;
       return state ? `Work item moved to ${state}` : 'Work item updated';
@@ -8102,17 +8102,18 @@ function latestMachineEvent(events, eventType, predicate = () => true) {
 function machineCandidateInventoryDetails(record) {
   const inventory = record?.candidateInventory || null;
   if (inventory) {
+    const emptyPassCount = Number(inventory.emptyPassCount) || 0;
     return [
-      machineCountLabel(inventory.candidateCount, 'candidate'),
-      machineCountLabel(inventory.emptyPassCount, 'empty-pass', 'empty-pass'),
-      inventory.artifactPath || '',
+      `${machineCountLabel(inventory.candidateCount, 'work item')} found`,
+      emptyPassCount ? `${machineCountLabel(emptyPassCount, 'scan')} found no work` : '',
+      inventory.artifactPath ? 'Discovery evidence saved' : '',
     ].filter(Boolean).join(', ');
   }
   const event = latestMachineEvent(record?.events, 'artifact.registered', item => (
     item.payload?.file?.schemaVersion === 'orpad.machineCandidateInventory.v1'
     || item.payload?.file?.producedBy === 'orpad.machine.candidate-inventory'
   ));
-  return event?.payload?.file?.path || 'No candidate inventory yet';
+  return event?.payload?.file?.path ? 'Discovery evidence saved' : 'No work discovery yet';
 }
 
 function machineWorkerProofDetails(record) {
@@ -8426,7 +8427,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       </div>
       <div class="runbook-machine-grid">
         <div class="runbook-guide ${record.candidateInventory ? 'good' : 'warn'}">
-          <strong>Candidate inventory</strong>
+          <strong>Work found</strong>
           <span>${escapeHtml(candidateDetails)}</span>
         </div>
         <div class="runbook-guide ${workerProofDetails === 'No worker proof yet' ? 'warn' : 'good'}">
