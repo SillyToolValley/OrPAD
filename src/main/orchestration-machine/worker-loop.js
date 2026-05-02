@@ -63,7 +63,7 @@ function assertDoneResultHasProof(result) {
   const hasVerification = (result.verification || []).length > 0;
   if (hasArtifact && hasVerification) return;
 
-  const err = new Error('Worker done result requires artifact evidence and verification proof.');
+  const err = new Error('Worker done result requires evidence files and verification proof.');
   err.code = 'WORKER_DONE_RESULT_MISSING_PROOF';
   throw err;
 }

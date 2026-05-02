@@ -2,9 +2,9 @@
   "kind": "orpad.node",
   "schemaVersion": "1.0",
   "type": "orpad.artifactContract",
-  "label": "Artifact Contract",
+  "label": "Evidence Contract",
   "category": "Core",
-  "description": "Declares required artifacts for replay, review, and proof of value.",
+  "description": "Declares required evidence files for replay, review, and proof of value.",
   "inputs": [
     {
       "name": "input",

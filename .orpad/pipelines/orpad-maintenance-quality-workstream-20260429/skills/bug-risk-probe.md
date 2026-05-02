@@ -9,7 +9,7 @@ Find defects likely to break validation, editing, execution evidence, or migrati
 - Write findings to `discovery/bug-risk-findings.md`.
 - Stage candidates under `run.probeInboxRoot/bug-risk-probe/candidate/`.
 - Include a `## Coverage Evidence` section with structured bullets that name `type`, `target`, `file` or `command`, and a short observed result so the discovery barrier can write `run.coverageManifestPath`.
-- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and source/command/artifact proof from the current run.
+- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and source/command/evidence proof from the current run.
 - Record scenario rows for `validate-broken-ref`, `compare-renderer-validator-node-types`, `inspect-generated-evidence-git-hygiene`, and `inspect-web-desktop-parity`.
 - Stage inventory fragment rows under `config.inventoryStageRoot` for every notable observation: `candidate`, `deferred`, `deduped-into`, or `empty-pass`. The discovery barrier, not parallel probes, writes the merged `run.candidateInventoryPath`.
 - Every inventory row must include `id`, `lensId`, `status`, `title`, `evidenceIds`, `targetIds`, `riskCheckIds`, `checkResult`, `scenarioIds`, `inspectedTargets`, and either `stagedCandidateId`, `dedupedInto`, or a concrete `reason`.
@@ -26,7 +26,7 @@ Find defects likely to break validation, editing, execution evidence, or migrati
 - Validator and renderer disagree on supported node types.
 - Manifest properties are editable but not persisted or not validated.
 - Graph refs, tree refs, and skill refs resolve differently across desktop and web.
-- Queue state and artifact contracts can diverge.
+- Work state and evidence contracts can diverge.
 - Generated files appear in git status unexpectedly.
 - Tests create sidecar metadata files that are not ignored or cleaned.
 - File association, scanner, preview, and editor mappings diverge.

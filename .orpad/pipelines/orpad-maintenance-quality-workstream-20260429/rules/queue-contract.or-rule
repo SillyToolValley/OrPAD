@@ -19,7 +19,7 @@
     "Dispatcher should keep claiming the next actionable queued item until the queue is empty, the next item requires approval, a scope split is required, verification is blocked, local risk is exhausted, or handoff is required.",
     "WorkerLoop is the single writer for done, blocked-after-claim, or requeued decisions.",
     "Canonical queue state directories represent the current active state only; a state transition must write the destination state file and remove the previous active state file.",
-    "Do not preserve transition history by copying the same work item into multiple active state directories; use journal.jsonl and item-level artifacts for history.",
+    "Do not preserve transition history by copying the same work item into multiple active state directories; use journal.jsonl and item-level evidence files for history.",
     "Every transition must append one valid JSONL journal event with actor, action, itemId, fromState, toState, timestamp, and evidence.",
     "Ingest journal evidence should point at the staged inbox candidate file for the item.",
     "Journal actions must use the canonical transition names: ingest, triage, claim, and close.",

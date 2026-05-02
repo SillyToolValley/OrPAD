@@ -9,7 +9,7 @@ Find mismatches between OrPAD's intended product model and the current implement
 - Write findings to `discovery/product-intent-findings.md`.
 - Stage candidates under `run.probeInboxRoot/product-intent-probe/candidate/`.
 - Include a `## Coverage Evidence` section with structured bullets that name `type`, `target`, `file` or `command`, and a short observed result so the discovery barrier can write `run.coverageManifestPath`.
-- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and enough current-run source, command, or artifact evidence to reproduce the observation.
+- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and enough current-run source, command, or evidence file detail to reproduce the observation.
 - Record scenario rows for `launch-from-pipeline-path`, `inspect-manifest-policy`, and `inspect-node-pack-model`.
 - Stage inventory fragment rows under `config.inventoryStageRoot` for every notable observation: `candidate`, `deferred`, `deduped-into`, or `empty-pass`. The discovery barrier, not parallel probes, writes the merged `run.candidateInventoryPath`.
 - Every inventory row must include `id`, `lensId`, `status`, `title`, `evidenceIds`, `targetIds`, `riskCheckIds`, `checkResult`, `scenarioIds`, `inspectedTargets`, and either `stagedCandidateId`, `dedupedInto`, or a concrete `reason`.

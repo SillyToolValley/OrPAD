@@ -19,7 +19,7 @@ Judge whether the pipeline improved real work quality and capture the next impro
 5. If the weak spot is actionable and self-improvement is enabled, stage it as a future candidate instead of silently changing scope.
 6. Record processed item ids, residual queued/blocked/rejected work, inventory disposition counts, and a concrete next-cycle suggestion, even when the cycle status is `done`.
 7. Update `run.metadataPath` with endedAt, status, final git HEAD, final git status digest, audit command summaries, and an `artifactManifest.files` list containing path, sha256, and size for `summaryPath`, `coverageManifestPath`, `candidateInventoryPath`, every required artifact, `journal.jsonl`, and queue item JSON file.
-8. Write the final summary with artifacts created, verification run, residual risk, next-cycle suggestion, and status.
+8. Write the final summary with evidence files created, verification run, residual risk, next-cycle suggestion, and status.
 
 ## Summary Status
 

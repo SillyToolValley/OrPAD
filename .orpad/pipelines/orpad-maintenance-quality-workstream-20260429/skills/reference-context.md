@@ -36,6 +36,6 @@ Write these files under `run.artifactRoot`:
 
 - Do not copy long reference text.
 - Do not treat historical review findings as current evidence.
-- Treat existing latest-run artifacts as historical until their metadata matches the current HEAD/worktree status and `npm run audit:orpad-run` passes.
+- Treat existing latest-run evidence files as historical until their metadata matches the current HEAD/worktree status and `npm run audit:orpad-run` passes.
 - Make it clear that `latest-run` is the mutable snapshot for this cycle, while durable future runner evidence belongs under `runs/<runId>`.
 - End with a short list of checks the discovery probes should perform.

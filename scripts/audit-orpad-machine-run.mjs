@@ -310,7 +310,7 @@ function auditWorkerResultProof(events) {
     const hasArtifact = (event.artifactRefs || []).length > 0 || Boolean(event.payload?.patchArtifact);
     const hasVerification = (event.payload?.verification || []).length > 0;
     if (!hasArtifact || !hasVerification) {
-      diagnostics.push(diagnostic('MACHINE_WORKER_DONE_PROOF_MISSING', 'Done worker results must include artifact evidence and verification proof.', {
+      diagnostics.push(diagnostic('MACHINE_WORKER_DONE_PROOF_MISSING', 'Done worker results must include evidence files and verification proof.', {
         sequence: event.sequence,
         itemId: event.itemId,
         adapterCallId: event.payload?.adapterCallId || '',
@@ -500,7 +500,7 @@ function auditApprovalCausality(events) {
         && candidate.payload?.file?.path === ref
       ));
       if (!artifact) {
-        diagnostics.push(diagnostic('MACHINE_APPROVAL_REQUEST_ARTIFACT_UNREGISTERED', 'Approval request artifact refs must be registered before approval.requested.', {
+        diagnostics.push(diagnostic('MACHINE_APPROVAL_REQUEST_ARTIFACT_UNREGISTERED', 'Approval request evidence refs must be registered before approval.requested.', {
           sequence: event.sequence,
           approvalId,
           ref,
@@ -612,7 +612,7 @@ async function auditArtifactManifest(runRoot) {
 
   const validation = contractValidator.validate('artifactManifest', manifest);
   if (!validation.ok) {
-    diagnostics.push(diagnostic('MACHINE_ARTIFACT_MANIFEST_SCHEMA_INVALID', 'Artifact manifest must match the Machine contract schema.', {
+    diagnostics.push(diagnostic('MACHINE_ARTIFACT_MANIFEST_SCHEMA_INVALID', 'Evidence manifest must match the Machine contract schema.', {
       path: manifestPath,
       errors: validation.errors,
     }));
@@ -623,7 +623,7 @@ async function auditArtifactManifest(runRoot) {
     try {
       filePath = runRelativePath(runRoot, file.path);
     } catch (err) {
-      diagnostics.push(diagnostic('MACHINE_ARTIFACT_PATH_INVALID', 'Artifact manifest file paths must be normalized run-relative paths.', {
+      diagnostics.push(diagnostic('MACHINE_ARTIFACT_PATH_INVALID', 'Evidence manifest file paths must be normalized run-relative paths.', {
         path: file.path,
         error: err.message,
       }));
@@ -632,27 +632,27 @@ async function auditArtifactManifest(runRoot) {
     try {
       const digest = await fileDigest(filePath);
       if (digest.sha256 !== file.sha256) {
-        diagnostics.push(diagnostic('MACHINE_ARTIFACT_HASH_MISMATCH', 'Artifact manifest sha256 must match current file.', {
+        diagnostics.push(diagnostic('MACHINE_ARTIFACT_HASH_MISMATCH', 'Evidence manifest sha256 must match current file.', {
           path: file.path,
           expected: file.sha256,
           actual: digest.sha256,
         }));
       }
       if (digest.size !== file.size) {
-        diagnostics.push(diagnostic('MACHINE_ARTIFACT_SIZE_MISMATCH', 'Artifact manifest size must match current file.', {
+        diagnostics.push(diagnostic('MACHINE_ARTIFACT_SIZE_MISMATCH', 'Evidence manifest size must match current file.', {
           path: file.path,
           expected: file.size,
           actual: digest.size,
         }));
       }
     } catch (err) {
-      diagnostics.push(diagnostic('MACHINE_ARTIFACT_FILE_MISSING', 'Artifact manifest file is missing or unreadable.', {
+      diagnostics.push(diagnostic('MACHINE_ARTIFACT_FILE_MISSING', 'Evidence manifest file is missing or unreadable.', {
         path: file.path,
         error: err.message,
       }));
     }
     if (!file.producedBy || !file.registeredBy) {
-      diagnostics.push(diagnostic('MACHINE_ARTIFACT_PROVENANCE_MISSING', 'Artifact manifest files must include producedBy and registeredBy.', {
+      diagnostics.push(diagnostic('MACHINE_ARTIFACT_PROVENANCE_MISSING', 'Evidence manifest files must include producedBy and registeredBy.', {
         path: file.path,
       }));
     }
@@ -669,7 +669,7 @@ function auditWorkerResultArtifacts(events, manifest) {
     const refs = workerResultArtifactRefs(event);
     if (!refs.length) continue;
     if (!manifest) {
-      diagnostics.push(diagnostic('MACHINE_WORKER_RESULT_ARTIFACT_MANIFEST_MISSING', 'Worker result artifact proof requires a Machine artifact manifest.', {
+      diagnostics.push(diagnostic('MACHINE_WORKER_RESULT_ARTIFACT_MANIFEST_MISSING', 'Worker result evidence proof requires a Machine evidence manifest.', {
         sequence: event.sequence,
         itemId: event.itemId,
         refs,
@@ -678,7 +678,7 @@ function auditWorkerResultArtifacts(events, manifest) {
     }
     for (const ref of refs) {
       if (manifestPaths.has(ref)) continue;
-      diagnostics.push(diagnostic('MACHINE_WORKER_RESULT_ARTIFACT_UNREGISTERED', 'Worker result artifact proof must reference a registered Machine artifact.', {
+      diagnostics.push(diagnostic('MACHINE_WORKER_RESULT_ARTIFACT_UNREGISTERED', 'Worker result evidence proof must reference a registered Machine evidence file.', {
         sequence: event.sequence,
         itemId: event.itemId,
         ref,
@@ -718,7 +718,7 @@ async function auditCandidateInventory(runRoot, manifest, events) {
     try {
       filePath = runRelativePath(runRoot, file.path);
     } catch (err) {
-      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_PATH_INVALID', 'Candidate inventory artifact path must be a normalized run-relative path.', {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_PATH_INVALID', 'Candidate inventory evidence path must be a normalized run-relative path.', {
         path: file.path,
         error: err.message,
       }));
@@ -728,7 +728,7 @@ async function auditCandidateInventory(runRoot, manifest, events) {
     try {
       inventory = JSON.parse(await fs.readFile(filePath, 'utf8'));
     } catch (err) {
-      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_UNREADABLE', 'Candidate inventory artifact must be readable JSON.', {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_UNREADABLE', 'Candidate inventory evidence file must be readable JSON.', {
         path: file.path,
         error: err.message,
       }));
@@ -737,7 +737,7 @@ async function auditCandidateInventory(runRoot, manifest, events) {
 
     const validation = contractValidator.validate('candidateInventory', inventory);
     if (!validation.ok) {
-      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_SCHEMA_INVALID', 'Candidate inventory artifact must match the Machine contract schema.', {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_SCHEMA_INVALID', 'Candidate inventory evidence file must match the Machine contract schema.', {
         path: file.path,
         errors: validation.errors,
       }));
@@ -794,11 +794,11 @@ async function auditCandidateInventory(runRoot, manifest, events) {
       && event.payload?.file?.path === file.path
     ));
     if (!registrationEvent) {
-      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_REGISTRATION_MISSING', 'Candidate inventory artifact must have an artifact.registered event.', {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_REGISTRATION_MISSING', 'Candidate inventory evidence file must have an artifact.registered event.', {
         path: file.path,
       }));
     } else if (inventory.sourceEventSequence >= registrationEvent.sequence) {
-      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_SOURCE_SEQUENCE_INVALID', 'Candidate inventory sourceEventSequence must point to events before artifact registration.', {
+      diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_SOURCE_SEQUENCE_INVALID', 'Candidate inventory sourceEventSequence must point to events before evidence registration.', {
         path: file.path,
         sourceEventSequence: inventory.sourceEventSequence,
         registrationSequence: registrationEvent.sequence,

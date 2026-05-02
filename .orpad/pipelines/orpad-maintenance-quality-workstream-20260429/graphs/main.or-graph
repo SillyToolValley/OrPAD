@@ -97,7 +97,7 @@
           },
           "outputs": {
             "stagedCandidates": "probe inbox candidates",
-            "lensFindings": "discovery artifacts"
+            "lensFindings": "discovery evidence"
           }
         }
       },
@@ -145,7 +145,7 @@
         "config": {
           "criteria": [
             "The status marker closes only this maintenance cycle, not the pipeline definition.",
-            "All required artifacts exist or missing artifacts are explained in summaryPath.",
+            "All required evidence files exist or missing evidence is explained in summaryPath.",
             "Every claimed work item has item-level proof.",
             "Verification was run or the blocked reason is explicit.",
             "Generated evidence was not treated as the only fix target.",
@@ -169,7 +169,7 @@
       {
         "id": "artifact-contract",
         "type": "orpad.artifactContract",
-        "label": "Required artifacts and queue journal",
+        "label": "Required evidence and work journal",
         "config": {
           "artifactRoot": "harness/generated/latest-run/artifacts",
           "summaryPath": "harness/generated/latest-run/summary.md",

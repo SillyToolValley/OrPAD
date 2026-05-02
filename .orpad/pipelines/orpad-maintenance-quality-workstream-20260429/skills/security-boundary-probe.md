@@ -9,7 +9,7 @@ Find authority, trust, path, IPC, and execution risks in OrPAD.
 - Write findings to `discovery/security-boundary-findings.md`.
 - Stage candidates under `run.probeInboxRoot/security-boundary-probe/candidate/`.
 - Include a `## Coverage Evidence` section with structured bullets that name `type`, `target`, `file` or `command`, and a short observed result so the discovery barrier can write `run.coverageManifestPath`.
-- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and current-run source, command, or artifact proof.
+- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and current-run source, command, or evidence proof.
 - Record scenario rows for `validate-imported-trust-denial`, `inspect-realpath-ref-boundary`, and `inspect-approval-deny-path`.
 - Stage inventory fragment rows under `config.inventoryStageRoot` for every notable observation: `candidate`, `deferred`, `deduped-into`, or `empty-pass`. The discovery barrier, not parallel probes, writes the merged `run.candidateInventoryPath`.
 - Every inventory row must include `id`, `lensId`, `status`, `title`, `evidenceIds`, `targetIds`, `riskCheckIds`, `checkResult`, `scenarioIds`, `inspectedTargets`, and either `stagedCandidateId`, `dedupedInto`, or a concrete `reason`.

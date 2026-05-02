@@ -255,7 +255,7 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
   await expect.poll(() => JSON.parse(fs.readFileSync(pipelinePath, 'utf-8')).title).toBe('Edited pipeline contract');
   const updated = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
   expect(updated.skills.implement.description).toBe('Edited implementation skill');
-  expect(updated.executionPolicy.doneCriteria).toContain('required artifacts updated');
+  expect(updated.executionPolicy.doneCriteria).toContain('required evidence updated');
   expect(updated.harness.path).toBe('harness/orpad-generated');
   expect(updated.metadata).toEqual({ owner: 'product', status: 'reviewed' });
   expect(updated.maintenancePolicy.repeatable).toBe(true);
@@ -286,8 +286,8 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await expect(win.locator('#runbooks-content')).toContainText('orpad-maintenance-quality-workstream-20260429');
-  await win.locator('.runbook-item').filter({ hasText: 'orpad-maintenance-quality-workstream-20260429' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText('OrPAD Maintenance Quality Workstream');
+  await win.locator('.runbook-item').filter({ hasText: 'OrPAD Maintenance Quality Workstream' }).click();
   await win.locator('#btn-preview').click();
 
   await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
@@ -298,7 +298,7 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
     'Ingest, dedupe, and triage queue',
     'Dispatch and execute bounded work',
     'Done and proof gate',
-    'Required artifacts and queue journal',
+    'Required evidence and work journal',
   ]);
 
   const discoveryNode = win.locator('.orch-graph-node.type-orpad-graph').filter({ hasText: 'Run parallel discovery lenses' });

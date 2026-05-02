@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Find problems in pipeline, node-pack, graph, tree, skill, rule, queue, and artifact contracts.
+Find problems in pipeline, node-pack, graph, tree, skill, rule, work-state, and evidence contracts.
 
 ## Outputs
 
 - Write findings to `discovery/pipeline-quality-findings.md`.
 - Stage candidates under `run.probeInboxRoot/pipeline-quality-probe/candidate/`.
 - Include a `## Coverage Evidence` section with structured bullets that name `type`, `target`, `file` or `command`, and a short observed result so the discovery barrier can write `run.coverageManifestPath`.
-- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and source, command, or artifact proof from the current run.
+- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and source, command, or evidence proof from the current run.
 - Stage inventory fragment rows under `config.inventoryStageRoot` for every notable observation: `candidate`, `deferred`, `deduped-into`, or `empty-pass`. The discovery barrier, not parallel probes, writes the merged `run.candidateInventoryPath`.
 - Every inventory row must include `id`, `lensId`, `status`, `title`, `evidenceIds`, `targetIds`, `riskCheckIds`, `checkResult`, `inspectedTargets`, and either `stagedCandidateId`, `dedupedInto`, or a concrete `reason`; include `scenarioIds` when this lens records scenario rows.
 - Use target ids from `run.discoveryCoveragePolicy.targetMatrix`; do not replace target-level rows with one broad lens-level empty pass.
@@ -23,7 +23,7 @@ Find problems in pipeline, node-pack, graph, tree, skill, rule, queue, and artif
 ## Lenses
 
 - A pipeline launched by path should not require prompt-specific hidden instructions.
-- Artifact roots, queue roots, and summary paths must be unambiguous.
+- Evidence roots, work-state roots, and summary paths must be unambiguous.
 - Parallel probe outputs must not race on a shared journal.
 - Graph-level capabilities must include the union of child capabilities.
 - Node schemas should expose config fields used by real graphs.
@@ -37,7 +37,7 @@ Inspect and record at least two current evidence items before writing an empty p
 
 Valid evidence includes:
 
-- A mismatch between manifest, graph, tree, skill, rule, node-pack, or artifact contracts.
+- A mismatch between manifest, graph, tree, skill, rule, node-pack, or evidence contracts.
 - A queue/journal/replay issue that would make other lenses unreliable.
 - A source-of-truth pipeline issue that prevents path-only agent execution.
 

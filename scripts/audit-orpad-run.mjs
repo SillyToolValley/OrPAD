@@ -369,7 +369,7 @@ async function auditWorkItemArtifacts({ queueRoot, workItemArtifactRoot, queueAu
     if (!files.length) {
       diagnostics.push(diagnostic(
         'RUN_WORK_ITEM_PROOF_MISSING',
-        'Claimed work items must have item-level proof artifacts.',
+        'Claimed work items must have item-level proof evidence files.',
         { itemId, path: itemArtifactDir },
       ));
     }
@@ -576,7 +576,7 @@ function negativeCheckDiagnostics(item, context = {}) {
       }));
     }
     if ((field === 'method' || field === 'observed') && !hasConcreteProbeDetail(value)) {
-      diagnostics.push(diagnostic('CANDIDATE_INVENTORY_NEGATIVE_CHECK_NOT_CONCRETE', `negativeCheck.${field} must name a concrete file, command, assertion, selector, artifact, or observed behavior.`, {
+      diagnostics.push(diagnostic('CANDIDATE_INVENTORY_NEGATIVE_CHECK_NOT_CONCRETE', `negativeCheck.${field} must name a concrete file, command, assertion, selector, evidence file, or observed behavior.`, {
         ...diagnosticContext,
         field,
       }));
@@ -591,7 +591,7 @@ function negativeCheckDiagnostics(item, context = {}) {
     const hasSourceReference = referencedEvidence
       .some(evidence => textReferencesCoverageEvidenceSource(sourceText, evidence));
     if (!hasSourceReference) {
-      diagnostics.push(diagnostic('CANDIDATE_INVENTORY_NEGATIVE_CHECK_EVIDENCE_UNLINKED', 'negativeCheck.method or negativeCheck.observed must cite a file, command, or artifact from one of the row evidenceIds.', diagnosticContext));
+      diagnostics.push(diagnostic('CANDIDATE_INVENTORY_NEGATIVE_CHECK_EVIDENCE_UNLINKED', 'negativeCheck.method or negativeCheck.observed must cite a file, command, or evidence file from one of the row evidenceIds.', diagnosticContext));
     }
   }
   return diagnostics;
@@ -1069,10 +1069,10 @@ function auditCoverageManifest(coverage, policy, options = {}) {
         }));
       }
       if (!item.file && !item.command && !item.artifact) {
-        diagnostics.push(diagnostic('DISCOVERY_EVIDENCE_SOURCE_MISSING', 'Coverage evidence must include file, command, or artifact.', { lensId, path: itemPath }));
+        diagnostics.push(diagnostic('DISCOVERY_EVIDENCE_SOURCE_MISSING', 'Coverage evidence must include file, command, or evidence file.', { lensId, path: itemPath }));
       }
       if (LIVE_EVIDENCE_TYPES.has(String(item.type || '').toLowerCase()) && !item.command && !item.artifact) {
-        diagnostics.push(diagnostic('DISCOVERY_EVIDENCE_LIVE_SOURCE_MISSING', 'Live app or viewport evidence must include a command or artifact from this run, not only a source file.', { lensId, path: itemPath }));
+        diagnostics.push(diagnostic('DISCOVERY_EVIDENCE_LIVE_SOURCE_MISSING', 'Live app or viewport evidence must include a command or evidence file from this run, not only a source file.', { lensId, path: itemPath }));
       }
       if (item.file && !evidenceFileExists(workspaceRoot, item)) {
         diagnostics.push(diagnostic('DISCOVERY_EVIDENCE_FILE_NOT_FOUND', 'Coverage evidence file must exist inside the workspace.', {
@@ -1082,7 +1082,7 @@ function auditCoverageManifest(coverage, policy, options = {}) {
         }));
       }
       if (item.artifact && !evidenceArtifactExists(workspaceRoot, item)) {
-        diagnostics.push(diagnostic('DISCOVERY_EVIDENCE_ARTIFACT_NOT_FOUND', 'Coverage evidence artifact must exist inside the workspace.', {
+        diagnostics.push(diagnostic('DISCOVERY_EVIDENCE_ARTIFACT_NOT_FOUND', 'Coverage evidence file must exist inside the workspace.', {
           lensId,
           path: itemPath,
           artifact: item.artifact,
@@ -1263,14 +1263,14 @@ async function auditRun(pipelinePath) {
   for (const ref of run.requiredArtifacts || []) {
     const filePath = path.join(artifactRoot, String(ref || '').replace(/\\/g, path.sep));
     if (!(await exists(filePath))) {
-      diagnostics.push(diagnostic('RUN_REQUIRED_ARTIFACT_MISSING', 'Required run artifact is missing.', { ref, path: filePath }));
+      diagnostics.push(diagnostic('RUN_REQUIRED_ARTIFACT_MISSING', 'Required run evidence file is missing.', { ref, path: filePath }));
     }
   }
 
   for (const ref of run.requiredQueueArtifacts || []) {
     const filePath = path.join(queueRoot, String(ref || '').replace(/\\/g, path.sep));
     if (!(await exists(filePath))) {
-      diagnostics.push(diagnostic('RUN_REQUIRED_QUEUE_ARTIFACT_MISSING', 'Required queue artifact is missing.', { ref, path: filePath }));
+      diagnostics.push(diagnostic('RUN_REQUIRED_QUEUE_ARTIFACT_MISSING', 'Required queue evidence file is missing.', { ref, path: filePath }));
     }
   }
 

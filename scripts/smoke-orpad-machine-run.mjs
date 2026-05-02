@@ -90,7 +90,7 @@ async function writeMachineSmokeWorkspace(options = {}) {
         { id: 'triage', type: 'orpad.triage', label: 'Triage', config: { queueRef: 'queue' } },
         { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue', adapter: 'cli-agent-overlay' } },
-        { id: 'artifact', type: 'orpad.artifactContract', label: 'Artifact Contract', config: { manifest: 'harness/generated/latest-run/run-metadata.json' } },
+        { id: 'artifact', type: 'orpad.artifactContract', label: 'Evidence Contract', config: { manifest: 'harness/generated/latest-run/run-metadata.json' } },
       ],
       transitions: [
         { from: 'context', to: 'probe' },

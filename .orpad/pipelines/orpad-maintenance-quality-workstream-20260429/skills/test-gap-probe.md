@@ -9,7 +9,7 @@ Find missing focused tests that would catch important OrPAD regressions.
 - Write findings to `discovery/test-gap-findings.md`.
 - Stage candidates under `run.probeInboxRoot/test-gap-probe/candidate/`.
 - Include a `## Coverage Evidence` section with structured bullets that name `type`, `target`, `file` or `command`, and a short observed result so the discovery barrier can write `run.coverageManifestPath`.
-- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and current-run source, command, or artifact proof.
+- Every coverage evidence item must include a stable `id`, `observedAt`, `observationKind`, and current-run source, command, or evidence proof.
 - Record scenario rows for `map-focused-electron-coverage`, `map-validator-audit-coverage`, and `map-web-or-file-association-coverage`.
 - Stage inventory fragment rows under `config.inventoryStageRoot` for every notable observation: `candidate`, `deferred`, `deduped-into`, or `empty-pass`. The discovery barrier, not parallel probes, writes the merged `run.candidateInventoryPath`.
 - Every inventory row must include `id`, `lensId`, `status`, `title`, `evidenceIds`, `targetIds`, `riskCheckIds`, `checkResult`, `scenarioIds`, `inspectedTargets`, and either `stagedCandidateId`, `dedupedInto`, or a concrete `reason`.

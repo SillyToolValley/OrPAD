@@ -27,7 +27,7 @@
   "executionPolicy": {
     "mode": "template-only",
     "copyBeforeRun": true,
-    "description": "Built-in examples are templates. Copy this pipeline into a workspace before executing so run artifacts are not written into the app bundle."
+    "description": "Built-in examples are templates. Copy this pipeline into a workspace before executing so run evidence files are not written into the app bundle."
   },
   "run": {
     "artifactRoot": ".orpad/harness/generated/latest-run/artifacts",

@@ -82,7 +82,7 @@
     },
     "pipeline-quality-probe": {
       "file": "skills/pipeline-quality-probe.md",
-      "description": "Find issues in OrPAD pipeline, node-pack, queue, and artifact contracts."
+      "description": "Find issues in OrPAD pipeline, node-pack, work-state, and evidence contracts."
     },
     "queue-ingestion": {
       "file": "skills/queue-ingestion.md",
@@ -561,7 +561,7 @@
             "riskChecks": [
               {
                 "id": "bug.generated-git-hygiene.ignored-evidence",
-                "question": "Do generated latest-run artifacts stay ignored while source-of-truth changes remain visible?"
+                "question": "Do generated latest-run evidence files stay ignored while source-of-truth changes remain visible?"
               },
               {
                 "id": "bug.generated-git-hygiene.stale-run-audit",
@@ -782,7 +782,7 @@
       "priority": "defer-unless-blocking-or-no-product-candidate",
       "candidatePolicy": [
         "Generated run evidence may reveal a problem, but the selected fix must target an allowed source-of-truth file.",
-        "Do not create or select a work item whose only fix is restoring, rewriting, or beautifying latest-run artifacts.",
+        "Do not create or select a work item whose only fix is restoring, rewriting, or beautifying latest-run evidence files.",
         "If enabled is false, do not select candidates that modify this pipeline's definition, graphs, trees, skills, or rules.",
         "If enabled is true, pipeline self-improvement is allowed only when current evidence shows the pipeline itself reduces work quality, misses valuable issues, or creates ambiguous execution.",
         "Pipeline self-improvement must not outrank a current P1/P2 user-visible, security, bug-risk, or test-gap candidate unless the pipeline issue prevents the run from discovering or executing those candidates."
@@ -798,7 +798,7 @@
       "cycle-start.md records a fresh latest-run cycle and states that previous generated evidence was ignored unless audited current",
       "each non-pipeline probe satisfies run.discoveryCoveragePolicy.minimumLensEvidence before triage selects a pipeline-quality-only item",
       "each non-pipeline probe records required scenario observations with linked evidence ids",
-      "live app or viewport evidence includes current-run command/artifact proof",
+      "live app or viewport evidence includes current-run command/evidence proof",
       "all probes stage candidates under run.probeInboxRoot and do not write the canonical journal",
       "WorkQueue ingests staged candidates deterministically and writes journal.jsonl",
       "triage records every candidate as queued, blocked, or rejected with evidence and preserves the full backlog",
@@ -810,7 +810,7 @@
       "run.metadataPath exists and matches the current HEAD/worktree status for the run being trusted",
       "run.coverageManifestPath satisfies run.discoveryCoveragePolicy.minimumLensEvidence",
       "run.candidateInventoryPath cross-checks against staged inbox candidates, coverage candidatesStaged, and triage backlog decisions",
-      "all requiredArtifacts exist under run.artifactRoot",
+      "all required evidence files exist under run.artifactRoot",
       "npm run audit:orpad-run passes before latest-run evidence is treated as current",
       "summaryPath exists and ends with a status marker for this cycle only",
       "summaryPath status closes the current maintenance cycle only; the pipeline remains active for future runs",

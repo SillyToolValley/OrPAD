@@ -2596,8 +2596,8 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const handoffDisabled = checked && !agentReady;
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = runtimeBlockReason || (checked
-    ? machineStartBlockReason(validation) || 'Start a durable run with OrPAD-owned queue, state, and artifacts.'
-    : 'Check and start a durable run with OrPAD-owned queue, state, and artifacts.');
+    ? machineStartBlockReason(validation) || 'Start a durable run with OrPAD-owned work state, progress, and evidence files.'
+    : 'Check and start a durable run with OrPAD-owned work state, progress, and evidence files.');
   const machineStartable = isMachineStartablePipeline(validation);
   const machineCompatible = isMachineCompatiblePipeline(validation);
   const machineDisabled = checked && !machineStartable;
@@ -2628,7 +2628,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
           </summary>
           <div class="pipeline-run-menu" role="menu">
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline is not available for the local MVP runner.' : 'Run with the local MVP runner.')}">Run locally</button>
-            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineReason || 'Start a durable run with OrPAD-owned queue, state, and artifacts.')}">Start Managed Run</button>
+            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineReason || 'Start a durable run with OrPAD-owned work state, progress, and evidence files.')}">Start Managed Run</button>
             <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No agent handoff is required for the checked pipeline.' : 'Prepare a path-only supervised agent handoff.')}">Prepare Handoff</button>
             <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}">Check</button>
           </div>
@@ -3146,7 +3146,7 @@ function orchNodeDefaultLabel(type) {
     'orpad.tree': 'New tree reference',
     'orpad.graph': 'New graph reference',
     'orpad.rule': 'New rule',
-    'orpad.artifactContract': 'New artifact contract',
+    'orpad.artifactContract': 'New evidence contract',
     'orpad.probe': 'New probe',
     'orpad.workQueue': 'New work queue',
     'orpad.triage': 'New triage',
@@ -5266,7 +5266,7 @@ function renderOrchPipelinePreview(content) {
           </section>
           ${ORCH_PIPELINE_REF_SECTIONS.map(section => renderPipelineRefSection(doc, section, readwrite)).join('')}
           ${renderPipelineJsonSection(doc, 'nodePacks', 'Node Packs', 'Built-in and custom node packs required by this pipeline.', readwrite)}
-          ${renderPipelineJsonSection(doc, 'run', 'Run Contract', 'Artifact roots, queue protocol, coverage policy, and auditable latest run/cycle evidence.', readwrite)}
+          ${renderPipelineJsonSection(doc, 'run', 'Run Contract', 'Evidence storage, work-state protocol, coverage policy, and auditable latest run/cycle evidence.', readwrite)}
           ${renderPipelineJsonSection(doc, 'maintenancePolicy', 'Maintenance Cycle Policy', 'Repeatability, cadence, triggers, backlog carry-over, and latest-run cycle semantics.', readwrite)}
           ${renderPipelineExecutionPolicy(doc, readwrite)}
           ${renderPipelineJsonSection(doc, 'metadata', 'Reference Metadata', 'Reference families, source dates, and maintenance lenses used by path-launched agents.', readwrite)}
@@ -5409,7 +5409,7 @@ function bindOrchPipelineEditorInteractions(readwrite) {
       applyOrchPipelineMutation((doc) => {
         const policy = ensurePipelineExecutionPolicy(doc);
         const list = pipelinePolicyList(policy, key);
-        list.push(key === 'doneCriteria' ? 'required artifacts updated' : 'approval-required');
+        list.push(key === 'doneCriteria' ? 'required evidence updated' : 'approval-required');
         policy[key] = list;
       });
     });
@@ -7324,7 +7324,7 @@ async function enableManagedRunsForSession() {
   if (!canEnableManagedRunsForSession()) return false;
   const approved = confirm(
     'Enable managed runs for this OrPAD session?\n\n'
-    + 'OrPAD will own queue state, run status, and run artifacts for this pipeline. '
+    + 'OrPAD will own work state, run status, and evidence files for this pipeline. '
     + 'Source files are not changed unless an approved adapter step applies a patch.',
   );
   if (!approved) return null;
@@ -7771,7 +7771,7 @@ function renderRunEvidenceAudit(audit) {
     ` : ''}
     ${diagnostics.length ? `
       <div class="runbook-diagnostic ${audit.ok || noCycleYet ? 'warning' : 'error'}">
-        ${escapeHtml(noCycleYet ? 'Run evidence audit becomes meaningful after the first cycle creates required artifacts.' : diagnostics.slice(0, 5).map(formatDiagnostic).join('\n'))}
+        ${escapeHtml(noCycleYet ? 'Run evidence audit becomes meaningful after the first cycle creates required evidence files.' : diagnostics.slice(0, 5).map(formatDiagnostic).join('\n'))}
       </div>
     ` : '<div class="runbook-diagnostic">Latest run/cycle evidence audit passed.</div>'}
   `;
@@ -9250,7 +9250,7 @@ function defaultOrpadRunbookSkill(taskText) {
     '## Acceptance Criteria',
     '',
     '- Generate or update the `.orpad/pipelines/<pipeline>/` package needed for the requested work.',
-    '- Keep graph flow in `.or-graph` using workstream nodes that OrPAD can run with owned queue, status, and artifacts.',
+    '- Keep graph flow in `.or-graph` using workstream nodes that OrPAD can run with owned work state, progress, and evidence files.',
     '- Validate the graph before running implementation work.',
     '- Run the approved managed pipeline flow and write evidence under the pipeline `runs/` folder.',
     '- Keep source edits focused on the requested OrPAD behavior.',
@@ -9326,7 +9326,7 @@ async function createOrpadRunbookStarter() {
         {
           id: 'artifact',
           type: 'orpad.artifactContract',
-          label: 'Record run artifacts',
+          label: 'Record run evidence',
           config: {
             artifactRoot: 'harness/generated/latest-run/artifacts',
             queueRoot: 'harness/generated/latest-run/queue',
@@ -9394,7 +9394,7 @@ async function createOrpadRunbookStarter() {
         dispatcherNodePath: 'main/dispatch',
         workerNodePath: 'main/worker',
         supportNodePolicy: 'record-gate-warnings-and-mark-artifact-partial',
-        description: 'Generated managed-run adapter. OrPAD owns queue, run status, and artifacts; Codex CLI submits candidate/result/proof through adapter contracts.',
+        description: 'Generated managed-run adapter. OrPAD owns work state, run status, and evidence files; Codex CLI submits candidate/result/proof through adapter contracts.',
       },
     },
   };

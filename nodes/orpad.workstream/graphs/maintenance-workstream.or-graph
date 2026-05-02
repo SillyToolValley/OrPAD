@@ -195,7 +195,7 @@
       {
         "id": "artifact-contract",
         "type": "orpad.artifactContract",
-        "label": "Artifact Contract",
+        "label": "Evidence Contract",
         "config": {
           "artifactRoot": "harness/generated/latest-run/artifacts",
           "required": ["workstream-proof.md"],

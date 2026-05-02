@@ -8,7 +8,7 @@
     "executionPolicy.selfImprovement.enabled controls whether this pipeline may modify its own definition, graphs, trees, skills, or rules.",
     "When self-improvement is enabled, pipeline changes must fix an observed pipeline quality problem, improve agent execution reliability, or reduce ambiguity.",
     "When self-improvement is disabled, pipeline self-change candidates must be blocked and summarized for the user.",
-    "Generated latest-run artifacts are evidence-only. They can reveal a problem, but they must not be the only modified target selected as an improvement.",
+    "Generated latest-run evidence files are evidence-only. They can reveal a problem, but they must not be the only modified target selected as an improvement.",
     "Pipeline self-improvement must include current evidence, a bounded change, and local validation.",
     "Pipeline self-improvement is deferred unless it blocks reliable pipeline execution, improves discovery quality for future product work, or no actionable product/app candidate remains after evidence-backed coverage."
   ]

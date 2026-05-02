@@ -264,7 +264,7 @@ function liveProbePrompt(input = {}) {
     `Return at most ${candidateLimit} candidateProposals.`,
     'Use current, concrete evidence only. Prefer a small user-visible, source-of-truth fix.',
     'If no actionable current finding is visible for this node, return status "done", candidateProposals: [], and an evidence-backed emptyPass.',
-    'Do not create broad refactor candidates. Do not make generated latest-run artifacts the only sourceOfTruthTargets.',
+    'Do not create broad refactor candidates. Do not make generated latest-run evidence files the only sourceOfTruthTargets.',
   ].join('\n');
 }
 
@@ -545,7 +545,7 @@ async function validateArtifactContract(runRoot, config = {}) {
   if (!result.valid && result.onMissing === 'fail-run') {
     const err = machineExecutionError(
       'MACHINE_ARTIFACT_CONTRACT_MISSING',
-      'ArtifactContract required artifacts or queue files are missing.',
+      'Evidence contract required files or queue files are missing.',
     );
     err.contract = result;
     throw err;
