@@ -6,6 +6,8 @@ import { launchElectron } from '../helpers';
 
 const {
   claimNextQueuedItem,
+  appendMachineEvent,
+  appendRunLifecycleStatus,
   createMachineRun,
   findQueueItem,
   ingestCandidateProposal,
@@ -301,6 +303,67 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI shows running managed runs as busy and blocks duplicate Continue', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_running',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'running',
+    reason: 'machine-ui.fixture.active-step',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'probe',
+    eventType: 'node.started',
+    payload: {
+      nodeExecutionId: `${run.runId}:probe:attempt-1`,
+      nodeType: 'orpad.probe',
+      status: 'started',
+      attempt: 1,
+    },
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Run in progress.');
+  await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeDisabled();
+  await win.locator('[data-pipeline-run-menu]').click();
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Running$/ })).toBeVisible();
+  const continueButton = win.locator('button[data-runbook-action="machine-execute-step"]');
+  await expect(continueButton).toBeDisabled();
+  await expect(continueButton).toHaveAttribute('title', /OrPAD is already working/);
+  const recoverButton = win.locator('button[data-runbook-action="machine-resume-run"]');
+  await expect(recoverButton).toBeDisabled();
+  await expect(recoverButton).toHaveAttribute('title', /OrPAD is already working/);
+  await expect(win.locator('#runbooks-content')).toContainText('Run started');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

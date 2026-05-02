@@ -391,6 +391,8 @@ const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
+const machineRunPendingActions = new Set();
+const machineRunProgressTimers = new Map();
 let lastMachineRunRecord = null;
 let machineCapabilityToken = '';
 let machineRuntimeStatus = null;
@@ -2597,7 +2599,8 @@ function selectedPipelineValidation(runbookPath) {
   return getRunbookCache(runbookValidationCache, runbookPath);
 }
 
-function pipelinePreviewRunStatus(validation, runtimeBlockReason) {
+function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress = false) {
+  if (runInProgress) return { state: 'warn', text: 'Run in progress.' };
   if (!validation) return { state: '', text: 'Not checked yet.' };
   if (!validation.ok) {
     const issue = (validation.diagnostics || []).find(isDiagnosticError) || (validation.diagnostics || [])[0];
@@ -2644,17 +2647,21 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const agentReady = isAgentOrchestratedPipeline(validation);
   const localDisabled = checked && validation?.canExecute !== true;
   const handoffDisabled = checked && !agentReady;
+  const selectedRunbookMatchesPreview = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+  const previewRunRecord = getRunbookCache(machineRunRecordCache, runbookPath) || (selectedRunbookMatchesPreview ? lastMachineRunRecord : null);
+  const previewRunInProgress = isMachineRunInProgress(previewRunRecord, runbookPath);
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = runtimeBlockReason || (checked
     ? machineStartBlockReason(validation) || 'Start and track work state, progress, and evidence files.'
     : 'Check this pipeline, then start and track its work state, progress, and evidence files.');
   const machineStartable = isMachineStartablePipeline(validation);
   const machineCompatible = isMachineCompatiblePipeline(validation);
-  const machineDisabled = checked && !machineStartable;
+  const machineDisabled = previewRunInProgress || (checked && !machineStartable);
   const defaultTitle = machineCompatible
-    ? (machineReason || 'Start Run')
+    ? (previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start Run'))
     : (agentReady ? 'Prepare Handoff' : 'Run this pipeline');
-  const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason);
+  const defaultDisabled = machineCompatible && previewRunInProgress;
+  const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason, previewRunInProgress);
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
   const activePathTitle = runbookRelativePath(context.activePath || runbookPath);
@@ -2669,7 +2676,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
       </div>
       <div class="pipeline-runbar-actions">
-        <button class="pipeline-run-primary" data-pipeline-run-action="default" data-path="${escapeHtml(runbookPath)}" title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
+        <button class="pipeline-run-primary" data-pipeline-run-action="default" data-path="${escapeHtml(runbookPath)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
           ${orchToolIcon('M5 3l7 5-7 5V3z')}
         </button>
         <details class="pipeline-run-menu-wrap">
@@ -2678,7 +2685,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
           </summary>
           <div class="pipeline-run-menu" role="menu">
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.')}">Run locally</button>
-            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineReason || 'Start and track work state, progress, and evidence files.')}">Start Run</button>
+            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start and track work state, progress, and evidence files.'))}">Start Run</button>
             <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No handoff is required for this pipeline.' : 'Prepare instructions for running this pipeline with an external agent.')}">Prepare Handoff</button>
             <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}">Check</button>
           </div>
@@ -8418,7 +8425,143 @@ function machineStaleActiveClaims(record) {
   });
 }
 
-function machineExecuteControlDetails(record, validation = null) {
+function machineRunActionKey(runbookPath, runId) {
+  return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId || ''}`;
+}
+
+function stopMachineRunProgressPollingByKey(key) {
+  const timer = machineRunProgressTimers.get(key);
+  if (!timer) return;
+  clearInterval(timer);
+  machineRunProgressTimers.delete(key);
+}
+
+function clearMachineRunProgressState() {
+  for (const key of [...machineRunProgressTimers.keys()]) {
+    stopMachineRunProgressPollingByKey(key);
+  }
+  machineRunPendingActions.clear();
+}
+
+function setMachineRunActionPending(runbookPath, runId, pending) {
+  if (!runbookPath || !runId) return;
+  const key = machineRunActionKey(runbookPath, runId);
+  if (pending) {
+    machineRunPendingActions.add(key);
+    return;
+  }
+  machineRunPendingActions.delete(key);
+  stopMachineRunProgressPollingByKey(key);
+}
+
+function isMachineRunActionPending(runbookPath, runId) {
+  if (!runbookPath || !runId) return false;
+  return machineRunPendingActions.has(machineRunActionKey(runbookPath, runId));
+}
+
+function machineActiveNodeExecutions(record) {
+  const active = new Map();
+  for (const event of record?.events || []) {
+    const type = String(event?.eventType || '');
+    const nodeExecutionId = event?.payload?.nodeExecutionId
+      || event?.nodeExecutionId
+      || event?.nodePath
+      || event?.nodeId
+      || '';
+    if (!nodeExecutionId) continue;
+    if (type === 'node.started') {
+      active.set(nodeExecutionId, event);
+    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(type)) {
+      active.delete(nodeExecutionId);
+    }
+  }
+  return [...active.values()];
+}
+
+function isMachineRunInProgress(record, runbookPath = selectedRunbookPath) {
+  const runState = record?.runState || {};
+  const runId = runState.runId || record?.runId || '';
+  if (isMachineRunTerminal(runState)) return false;
+  if (isMachineRunActionPending(runbookPath, runId)) return true;
+  if (['running', 'cancelling'].includes(String(runState.lifecycleStatus || '').toLowerCase())) return true;
+  return machineActiveNodeExecutions(record).length > 0;
+}
+
+function machineUpdateRunRecord(runbookPath, record) {
+  if (!record) return null;
+  const runId = record.runState?.runId || record.runId || '';
+  const selectedMatches = !selectedRunbookPath || runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+  const current = getRunbookCache(machineRunRecordCache, runbookPath) || (selectedMatches ? lastMachineRunRecord : null) || {};
+  const next = {
+    ...current,
+    ...record,
+    runId: runId || current.runId,
+    exported: record.exported || record.export || current.exported || null,
+  };
+  if (runbookPath) setRunbookCache(machineRunRecordCache, runbookPath, next);
+  if (selectedMatches) {
+    selectedRunbookPath = runbookPath || selectedRunbookPath;
+    lastMachineRunRecord = next;
+  }
+  return next;
+}
+
+async function refreshMachineRunPanelSnapshot(runbookPath, runId) {
+  const snapshot = await loadMachineRunRecord(runbookPath, runId);
+  if (!snapshot) return null;
+  const record = machineUpdateRunRecord(runbookPath, snapshot);
+  renderRunbooksPanel();
+  rerenderPipelinePreviewIfActive(runbookPath);
+  return record;
+}
+
+function startMachineRunProgressPolling(runbookPath, runId) {
+  if (!runbookPath || !runId) return;
+  const key = machineRunActionKey(runbookPath, runId);
+  if (machineRunProgressTimers.has(key)) return;
+  let polling = false;
+  const tick = async () => {
+    if (polling) return;
+    if (!isMachineRunActionPending(runbookPath, runId)) {
+      stopMachineRunProgressPollingByKey(key);
+      return;
+    }
+    polling = true;
+    try {
+      const record = await refreshMachineRunPanelSnapshot(runbookPath, runId);
+      if (isMachineRunTerminal(record?.runState)) {
+        setMachineRunActionPending(runbookPath, runId, false);
+      }
+    } catch {
+      // Keep the optimistic running state visible; the execute response will surface failures.
+    } finally {
+      polling = false;
+    }
+  };
+  machineRunProgressTimers.set(key, setInterval(tick, 2000));
+  void tick();
+}
+
+function markMachineRunExecuting(runbookPath, runId) {
+  const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
+  const runState = cached.runState || {};
+  const record = machineUpdateRunRecord(runbookPath, {
+    ...cached,
+    runId,
+    runState: {
+      ...runState,
+      runId,
+      lifecycleStatus: 'running',
+      summaryStatus: runState.summaryStatus || 'pending',
+      updatedAt: new Date().toISOString(),
+    },
+  });
+  renderRunbooksPanel();
+  rerenderPipelinePreviewIfActive(runbookPath);
+  return record;
+}
+
+function machineExecuteControlDetails(record, validation = null, runbookPath = selectedRunbookPath) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
   const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
@@ -8426,12 +8569,13 @@ function machineExecuteControlDetails(record, validation = null) {
   if (!runId) return 'Continue unavailable: no run selected';
   if (validation && !isMachineStartablePipeline(validation)) return machineStartBlockReason(validation);
   if (isMachineRunTerminal(runState)) return `Continue unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished`;
+  if (isMachineRunInProgress(record, runbookPath)) return 'Continue paused: OrPAD is already working on this run.';
   if (pendingApprovals > 0) return `Continue blocked: decide ${machineCountLabel(pendingApprovals, 'permission request')} first`;
   if (activeClaims.length) return `Continue paused: ${machineWorkInProgressLabel(activeClaims.length)}; cancel or wait before continuing`;
   return 'Continue this run.';
 }
 
-function machineResumeControlDetails(record) {
+function machineResumeControlDetails(record, runbookPath = selectedRunbookPath) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
   const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
@@ -8445,6 +8589,9 @@ function machineResumeControlDetails(record) {
   }
   if (isMachineRunTerminal(runState)) {
     return { state: 'warn', text: `Recovery unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished` };
+  }
+  if (isMachineRunInProgress(record, runbookPath)) {
+    return { state: 'warn', text: 'Recovery paused: OrPAD is already working on this run' };
   }
   if (pendingApprovals > 0) {
     return { state: 'warn', text: `Recovery blocked: decide ${machineCountLabel(pendingApprovals, 'permission request')} first` };
@@ -8542,8 +8689,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const taskText = normalizeRunbookTask(runState.metadata?.taskText || record.metadata?.taskText || '');
   const validation = selectedPipelineValidation(runbookPath);
   const machineStepUnavailable = !!validation && !isMachineStartablePipeline(validation);
-  const executeDetails = machineExecuteControlDetails(record, validation);
-  const resumeDetails = machineResumeControlDetails(record);
+  const runInProgress = isMachineRunInProgress(record, runbookPath);
+  const executeDetails = machineExecuteControlDetails(record, validation, runbookPath);
+  const resumeDetails = machineResumeControlDetails(record, runbookPath);
   const cancellationDetails = machineCancellationControlDetails(record);
   const runId = runState.runId || record.runId || '';
   const runLabel = machineRunDisplayLabel({
@@ -8551,12 +8699,12 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     createdAt: runState.createdAt || record.createdAt,
     updatedAt: runState.updatedAt || record.updatedAt,
   });
-  const lifecycleStatus = runState.lifecycleStatus || 'created';
+  const lifecycleStatus = runInProgress ? 'running' : (runState.lifecycleStatus || 'created');
   const summaryStatus = runState.summaryStatus || 'pending';
   const hasActiveClaims = activeClaims.length > 0;
   const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
-  const executeDisabled = !runId || machineStepUnavailable || runTerminal || approvalPending || hasActiveClaims;
-  const resumeDisabled = !runId || runTerminal || approvalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
+  const executeDisabled = !runId || machineStepUnavailable || runTerminal || runInProgress || approvalPending || hasActiveClaims;
+  const resumeDisabled = !runId || runTerminal || runInProgress || approvalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
   const cancelDisabled = runTerminal || !window.orpad?.machine?.cancelClaim;
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
@@ -9039,38 +9187,43 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const taskText = currentRunbookTaskText();
-  const executed = await window.orpad.machine.executeRunStep({
-    workspacePath,
-    pipelinePath: runbookPath,
-    runId,
-    capabilityToken: token,
-    exportLatestRun: true,
-    options: taskText ? { taskText } : {},
-  });
+  setMachineRunActionPending(runbookPath, runId, true);
+  markMachineRunExecuting(runbookPath, runId);
+  startMachineRunProgressPolling(runbookPath, runId);
+  let executed = null;
+  try {
+    executed = await window.orpad.machine.executeRunStep({
+      workspacePath,
+      pipelinePath: runbookPath,
+      runId,
+      capabilityToken: token,
+      exportLatestRun: true,
+      options: taskText ? { taskText } : {},
+    });
+  } catch (err) {
+    setMachineRunActionPending(runbookPath, runId, false);
+    try {
+      await refreshMachineRunPanelSnapshot(runbookPath, runId);
+    } catch {
+      renderRunbooksPanel();
+    }
+    alert(err?.message || 'Run step failed.');
+    return;
+  }
+  setMachineRunActionPending(runbookPath, runId, false);
   if (!executed?.success) {
     if (executed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
       alert(executed?.error || 'Managed run step failed.');
       return;
     }
-    lastMachineRunRecord = {
-      ...(lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {}),
-      ...executed,
-      exported: executed?.exported || executed?.export || lastMachineRunRecord?.exported || null,
-    };
-    setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+    lastMachineRunRecord = machineUpdateRunRecord(runbookPath, executed);
     await refreshMachineRunList(runbookPath);
     renderRunbooksPanel();
     return;
   }
   selectedRunbookPath = runbookPath;
-  const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
-  lastMachineRunRecord = {
-    ...cached,
-    ...executed,
-    exported: executed.exported || executed.export,
-  };
-  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  lastMachineRunRecord = machineUpdateRunRecord(runbookPath, executed);
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
@@ -9732,6 +9885,7 @@ async function openFolder() {
     selectedRunbookValidation = null;
     lastRunRecord = null;
     lastMachineRunRecord = null;
+    clearMachineRunProgressState();
     runbookValidationCache.clear();
     runbookRecordCache.clear();
     machineRunRecordCache.clear();
