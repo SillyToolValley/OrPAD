@@ -8479,7 +8479,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         </div>
         <div class="runbook-guide ${exported ? 'good' : 'warn'}">
           <strong>Evidence snapshot</strong>
-          <span>${escapeHtml(exported ? 'Saved' : 'Not saved')}</span>
+          <span>${escapeHtml(exported ? 'Snapshot saved' : 'No snapshot saved yet')}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
           <strong>Run audit</strong>
@@ -9137,7 +9137,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     `Evidence source: ${machineArtifactManifestSource(record)}`,
     `Files: ${machineCountLabel(files.length, 'file')}`,
     record.runRoot ? 'Storage: Run snapshot available' : '',
-    exported?.targetRoot || exported?.latestRunExportPath ? 'Evidence snapshot: Saved' : '',
+    exported?.targetRoot || exported?.latestRunExportPath ? 'Evidence snapshot saved' : '',
     manifest?.sourceEventSequence != null ? `Source event sequence: ${manifest.sourceEventSequence}` : '',
   ].filter(Boolean);
   const body = [
