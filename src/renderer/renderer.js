@@ -4370,8 +4370,8 @@ function renderOrchTreePreview(content) {
         <strong>Tree setup</strong>
         <div class="orch-toolbar-actions">
           <div class="jedit-seg">
-            <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-orch-mode="readonly">Read-only</button>
-            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-orch-mode="readwrite">Read-write</button>
+            <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-orch-mode="readonly">View</button>
+            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-orch-mode="readwrite">Edit</button>
           </div>
         </div>
       </div>
@@ -5220,8 +5220,8 @@ function renderOrchPipelinePreview(content) {
           <span class="runbook-chip good">${escapeHtml(doc.trustLevel || 'local-authored')}</span>
           <span class="runbook-chip">${escapeHtml(doc.version || 'unversioned')}</span>
           <div class="jedit-seg">
-            <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-pipeline-mode="readonly">Read-only</button>
-            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-pipeline-mode="readwrite">Read-write</button>
+            <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-pipeline-mode="readonly">View</button>
+            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-pipeline-mode="readwrite">Edit</button>
           </div>
         </div>
       </div>
@@ -5541,8 +5541,8 @@ function renderOrchGraphPreview(content) {
           <span class="runbook-chip good">${layerKindLabel}</span>
           <span class="runbook-chip">${layerSourceLabel}</span>
           <div class="jedit-seg">
-            <button class="jedit-seg-btn ${effectiveReadwrite ? '' : 'active'}" data-orch-mode="readonly">Read-only</button>
-            <button class="jedit-seg-btn ${effectiveReadwrite ? 'active' : ''}" data-orch-mode="readwrite">Read-write</button>
+            <button class="jedit-seg-btn ${effectiveReadwrite ? '' : 'active'}" data-orch-mode="readonly">View</button>
+            <button class="jedit-seg-btn ${effectiveReadwrite ? 'active' : ''}" data-orch-mode="readwrite">Edit</button>
           </div>
         </div>
       </div>

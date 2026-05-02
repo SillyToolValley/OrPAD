@@ -134,6 +134,10 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
   await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
   await win.locator('#btn-preview').click();
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
+  await expect(win.locator('.orch-preview button[data-orch-mode="readonly"]')).toHaveText('View');
+  await expect(win.locator('.orch-preview button[data-orch-mode="readwrite"]')).toHaveText('Edit');
+  await expect(win.locator('.orch-preview')).not.toContainText('Read-only');
+  await expect(win.locator('.orch-preview')).not.toContainText('Read-write');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('.orch-graph-layout > .orch-inspector')).toHaveCount(0);
   await expect(win.locator('.orch-graph-main .orch-floating-inspector .orch-inspector')).toBeVisible();
@@ -195,6 +199,8 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
 
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Manifest');
+  await expect(win.locator('.orch-preview button[data-pipeline-mode="readonly"]')).toHaveText('View');
+  await expect(win.locator('.orch-preview button[data-pipeline-mode="readwrite"]')).toHaveText('Edit');
   const manifestScroll = await win.locator('#content').evaluate((el) => {
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
     return {

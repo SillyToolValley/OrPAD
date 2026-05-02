@@ -3,7 +3,7 @@
 // - Click an object key to rename (duplicates get auto-suffixed)
 // - Hover a row to reveal + (add child) and trash (delete) buttons
 // - On any change, serialize and call onChange
-// - Read-only mode for YAML/TOML/INI where round-tripping loses comments / formatting.
+// - View-only mode for YAML/TOML/INI where round-tripping loses comments / formatting.
 
 // Pagination for large containers — avoids creating 10k DOM nodes for a 10k-item array.
 // Anything beyond this is hidden behind a "Show next N" button.
@@ -106,9 +106,9 @@ export class JSONEditor {
     const label = document.createElement('span');
     label.className = 'jedit-mode-label';
     if (this.toggleable) {
-      label.textContent = this.readOnly ? 'Read-only' : 'Editing';
+      label.textContent = this.readOnly ? 'View only' : 'Editing';
     } else if (this.initialReadOnly) {
-      label.textContent = 'Read-only — edit source';
+      label.textContent = 'View only - edit source';
       label.classList.add('jedit-locked');
     } else {
       label.textContent = 'Editing';
