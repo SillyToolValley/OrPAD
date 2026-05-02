@@ -214,14 +214,17 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
 
   const taskText = 'Find competitor gaps and improve Pipes.';
   await win.locator('[data-runbook-task]').fill(taskText);
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
-  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('machine-workstream');
-  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for managed run or supervised handoff.');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Machine Workstream');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Flow: Main flow');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).not.toContainText('main.or-graph');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready to start.');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).not.toContainText(/Ready for .*handoff/);
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="local"]')).toBeDisabled();
-  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toContainText('Start Managed Run');
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toContainText('Start Run');
   await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toContainText('Prepare Handoff');
   await win.locator('[data-pipeline-run-menu]').click();
   await win.locator('[data-runbook-task]').focus();
@@ -287,7 +290,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText(taskText);
@@ -326,7 +329,7 @@ test('Machine UI play action attempts managed run and blocks non-runnable pipeli
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('runnable adapter');
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
   await win.locator('[data-pipeline-run-menu]').click();
@@ -359,7 +362,7 @@ test('Pipes Refresh reloads selected managed run evidence from disk', async () =
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
 
   await seedActiveClaimRun(workspace, pipelinePath, {
@@ -397,11 +400,12 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
   });
 
   await expect(win.locator('#runbooks-content')).not.toContainText('Machine Runtime');
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toHaveCount(0);
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toHaveCount(0);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
-  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('approve this session');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Approve this session to start.');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).not.toContainText('main.or-graph');
   await win.waitForTimeout(250);
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="local"]')).toBeDisabled();
@@ -419,7 +423,7 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
     };
   });
   await managedRun.click();
-  await expect.poll(() => win.evaluate(() => ((window as any).__orpadConfirms || []).join('\n'))).toContain('Enable managed runs');
+  await expect.poll(() => win.evaluate(() => ((window as any).__orpadConfirms || []).join('\n'))).toContain('Allow OrPAD to start runs');
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText('Run started');
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
@@ -449,7 +453,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await startManagedRunFromPreview(win);
   await submitMachineCapabilityToken(win);
 
@@ -509,7 +513,7 @@ test('Machine UI switches between durable run history snapshots', async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await startManagedRunFromPreview(win);
   await submitMachineCapabilityToken(win);
   const runRoot = path.join(pipelineDir, 'runs');
@@ -562,7 +566,7 @@ test('Machine UI cancels work in progress and releases visible locks', async () 
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('1 reserved file: src/smoke-target.md');
@@ -611,7 +615,7 @@ test('Machine UI recovers interrupted work and reports work state repair', async
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery ready: 1 interrupted work item can be recovered before continuing');
@@ -659,7 +663,7 @@ test('Machine UI keeps denied approval runs terminal', async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await startManagedRunFromPreview(win);
   await submitMachineCapabilityToken(win);
   await win.locator('button[data-runbook-action="machine-deny-approval"]').click();
@@ -694,7 +698,7 @@ test('Machine UI renders failure evidence from a failed runtime node', async () 
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await startManagedRunFromPreview(win);
   await submitMachineCapabilityToken(win);
 

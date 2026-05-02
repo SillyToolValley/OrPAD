@@ -68,7 +68,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   });
 
   await expect(win.locator('#runbooks-content')).toContainText('Generate Pipeline');
-  await win.locator('[data-runbook-task]').fill('Make the Pipes panel obvious: generate an OrPAD pipeline, validate it, then start a managed run.');
+  await win.locator('[data-runbook-task]').fill('Make the Pipes panel obvious: generate an OrPAD pipeline, validate it, then start a run.');
   await win.locator('button[data-runbook-action="starter"]').click();
 
   await expect(win.locator('#sidebar-runbooks')).toBeVisible();

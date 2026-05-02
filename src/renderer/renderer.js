@@ -2556,14 +2556,14 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason) {
   if (isAgentOrchestratedPipeline(validation)) {
     if (runtimeBlockReason) {
       if (canEnableManagedRunsForSession()) {
-        return { state: 'warn', text: 'Workstream pipeline: approve this session to start a managed run.' };
+        return { state: 'warn', text: 'Approve this session to start.' };
       }
-      return { state: 'warn', text: 'Workstream pipeline: local runner unavailable; managed run setup needed.' };
+      return { state: 'warn', text: 'Run support is unavailable in this session.' };
     }
     if (isMachineCompatiblePipeline(validation) && !isMachineStartablePipeline(validation)) {
-      return { state: 'warn', text: 'Managed run needs a runnable adapter before it can start.' };
+      return { state: 'warn', text: 'This pipeline needs a runnable adapter before it can start.' };
     }
-    return { state: 'good', text: 'Ready for managed run or supervised handoff.' };
+    return { state: 'good', text: 'Ready to start.' };
   }
   if (validation.canExecute) {
     return { state: 'good', text: 'Ready for local run.' };
@@ -2581,7 +2581,7 @@ function pipelinePreviewTitle(context, pipelineDoc = null) {
 function pipelinePreviewLocationLabel(context) {
   if (!context) return '';
   if (context.isManifest) return 'Manifest';
-  if (context.isGraph) return `Flow: ${runbookBaseName(context.activePath, 'main.or-graph')}`;
+  if (context.isGraph) return `Flow: ${pipelineDisplayTitle(context.activePath, 'Flow')}`;
   if (context.activeRelativePath) return context.activeRelativePath;
   return 'Pipeline package';
 }
@@ -2596,14 +2596,14 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const handoffDisabled = checked && !agentReady;
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = runtimeBlockReason || (checked
-    ? machineStartBlockReason(validation) || 'Start a durable run with OrPAD-owned work state, progress, and evidence files.'
-    : 'Check and start a durable run with OrPAD-owned work state, progress, and evidence files.');
+    ? machineStartBlockReason(validation) || 'Start and track work state, progress, and evidence files.'
+    : 'Check this pipeline, then start and track its work state, progress, and evidence files.');
   const machineStartable = isMachineStartablePipeline(validation);
   const machineCompatible = isMachineCompatiblePipeline(validation);
   const machineDisabled = checked && !machineStartable;
   const defaultTitle = machineCompatible
-    ? (machineReason || 'Start Managed Run')
-    : (agentReady ? 'Prepare a supervised agent handoff' : 'Run this pipeline');
+    ? (machineReason || 'Start Run')
+    : (agentReady ? 'Prepare Handoff' : 'Run this pipeline');
   const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason);
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
@@ -2627,9 +2627,9 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
             ${orchToolIcon('M4 6l4 4 4-4')}
           </summary>
           <div class="pipeline-run-menu" role="menu">
-            <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline is not available for the local MVP runner.' : 'Run with the local MVP runner.')}">Run locally</button>
-            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineReason || 'Start a durable run with OrPAD-owned work state, progress, and evidence files.')}">Start Managed Run</button>
-            <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No agent handoff is required for the checked pipeline.' : 'Prepare a path-only supervised agent handoff.')}">Prepare Handoff</button>
+            <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.')}">Run locally</button>
+            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineReason || 'Start and track work state, progress, and evidence files.')}">Start Run</button>
+            <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No handoff is required for this pipeline.' : 'Prepare instructions for running this pipeline with an external agent.')}">Prepare Handoff</button>
             <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}">Check</button>
           </div>
         </details>
@@ -7402,14 +7402,14 @@ function canEnableManagedRunsForSession() {
 async function enableManagedRunsForSession() {
   if (!canEnableManagedRunsForSession()) return false;
   const approved = confirm(
-    'Enable managed runs for this OrPAD session?\n\n'
+    'Allow OrPAD to start runs in this session?\n\n'
     + 'OrPAD will own work state, run status, and evidence files for this pipeline. '
     + 'Source files are not changed unless an allowed adapter step applies a patch.',
   );
   if (!approved) return null;
   const enabled = await window.orpad.machine.enableSession();
   if (!enabled?.success) {
-    alert(enabled?.error || 'Managed runs could not be enabled for this session.');
+    alert(enabled?.error || 'Runs could not be enabled for this session.');
     return false;
   }
   machineRuntimeStatus = {
@@ -7450,15 +7450,15 @@ function isMachineStartablePipeline(validation) {
 }
 
 function machineStartBlockReason(validation) {
-  if (!validation) return 'Check this pipeline before starting a managed run.';
+  if (!validation) return 'Check this pipeline before starting.';
   if (!isMachineCompatiblePipeline(validation)) {
-    return (validation.machineBlockedReasons || []).join(', ') || 'This pipeline is not ready for a managed run yet.';
+    return (validation.machineBlockedReasons || []).join(', ') || 'This pipeline is not ready to start yet.';
   }
   const reasons = validation.machineStepBlockedReasons || [];
   if (reasons.includes('machine-harness-required')) {
-    return 'Managed run cannot start yet: this pipeline needs run.machineHarness or run.machineAdapter.';
+    return 'Cannot start yet: this pipeline needs run.machineHarness or run.machineAdapter.';
   }
-  if (reasons.length) return `Managed run cannot start yet: ${reasons.join(', ')}.`;
+  if (reasons.length) return `Cannot start yet: ${reasons.join(', ')}.`;
   return '';
 }
 
@@ -8891,7 +8891,7 @@ async function requestMachineCapabilityToken() {
     body.innerHTML = `
       <p>Enter the run authorization token for this desktop session.</p>
       <input class="runbook-task-input" type="password" data-machine-token-input autocomplete="off" placeholder="Capability token">
-      <div class="runbook-diagnostic warning">The token stays in session memory and is used only for managed run-store mutations.</div>
+      <div class="runbook-diagnostic warning">The token stays in session memory and is used only to update run state.</div>
     `;
     const finish = (value) => {
       if (settled) return;
@@ -8932,7 +8932,7 @@ async function startSelectedMachineRun(runbookPath) {
   }
   const validation = selectedRunbookValidation || getRunbookCache(runbookValidationCache, runbookPath);
   if (!isMachineCompatiblePipeline(validation)) {
-    alert('Pipeline must be ready for a managed run before starting.');
+    alert('Pipeline must be ready before starting.');
     return;
   }
   if (!isMachineStartablePipeline(validation)) {
@@ -9315,7 +9315,7 @@ function defaultOrpadRunbookSkill(taskText) {
   return [
     '# OrPAD Pipeline Skill',
     '',
-    'Use the current workspace to implement the user request through a small, reviewable OrPAD managed run.',
+    'Use the current workspace to implement the user request through a small, reviewable OrPAD run.',
     '',
     '## User Request',
     '',
