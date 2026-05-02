@@ -370,7 +370,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-graph-node')).toHaveCount(9);
   await expect(win.locator('.orch-transition')).toHaveCount(8);
   await expect(win.locator('.orch-graph-node.selected')).toContainText('New context');
-  await expect(win.locator('.orch-graph-node.selected')).toContainText('orpad.context');
+  await expect(win.locator('.orch-graph-node.selected')).toContainText('Context');
   await win.keyboard.press('Delete');
   await expect(win.locator('.orch-graph-node')).toHaveCount(8);
   await expect(win.locator('.orch-transition')).toHaveCount(7);

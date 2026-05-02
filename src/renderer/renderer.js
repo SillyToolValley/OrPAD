@@ -908,6 +908,24 @@ function getLangExtension(viewType) {
   }
 }
 
+function viewTypeDisplayLabel(viewType) {
+  const labels = {
+    'orch-pipeline': 'Pipeline',
+    'orch-graph': 'Flow',
+    'orch-tree': 'Tree',
+    jsonl: 'JSONL',
+    yaml: 'YAML',
+    toml: 'TOML',
+    csv: 'CSV',
+    tsv: 'TSV',
+    html: 'HTML',
+    xml: 'XML',
+    env: 'Env',
+  };
+  const raw = String(viewType || '').trim();
+  return labels[raw] || (raw ? raw.toUpperCase() : '');
+}
+
 const BINARY_EXTS = new Set([
   'exe','dll','so','dylib','bin','msi','app','class','jar',
   'zip','rar','7z','tar','gz','bz2','xz',
@@ -3739,7 +3757,7 @@ function collectOrchStateGraph(doc) {
   const maxX = Math.max(...nodes.map(item => item.x + ORCH_NODE_WIDTH + ORCH_GRAPH_MARGIN), 760);
   const maxY = Math.max(...nodes.map(item => item.y + ORCH_NODE_HEIGHT + ORCH_GRAPH_MARGIN), 520);
   return {
-    tree: { id: graphDoc.id || 'orch-graph', label: graphDoc.label || 'Main flow' },
+    tree: { id: graphDoc.id || '', label: graphDoc.label || 'Main flow' },
     treeIndex: 0,
     nodes,
     edges,
@@ -3995,7 +4013,7 @@ function insertOrchSubtree(draft, path) {
 
 function ensureOrchGraphDoc(draft) {
   if (!draft.graph || typeof draft.graph !== 'object' || Array.isArray(draft.graph)) {
-    draft.graph = { id: 'orch-graph', label: 'Main flow', nodes: [], transitions: [] };
+    draft.graph = { id: 'main-flow', label: 'Main flow', nodes: [], transitions: [] };
   }
   if (!Array.isArray(draft.graph.nodes)) draft.graph.nodes = [];
   if (!Array.isArray(draft.graph.transitions)) draft.graph.transitions = [];
@@ -6335,7 +6353,7 @@ function buildTOC() {
   }
   const viewType = tab.viewType || 'markdown';
   const fileName = tab.filePath ? tab.filePath.split(/[/\\]/).pop() : t('untitled');
-  setTocSource(fileName + '  -  ' + viewType);
+  setTocSource(fileName + '  -  ' + viewTypeDisplayLabel(viewType));
 
   const content = editor.state.doc.toString();
   const items = buildOutline(viewType, content);

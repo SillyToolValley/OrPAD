@@ -138,6 +138,8 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-preview button[data-orch-mode="readwrite"]')).toHaveText('Edit');
   await expect(win.locator('.orch-preview')).not.toContainText(/Read-(only|write)/);
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
+  await expect(win.locator('#toc-source-label')).toContainText('Flow');
+  await expect(win.locator('#toc-source-label')).not.toContainText('orch-graph');
   await expect(win.locator('.orch-graph-layout > .orch-inspector')).toHaveCount(0);
   await expect(win.locator('.orch-graph-main .orch-floating-inspector .orch-inspector')).toBeVisible();
   await win.locator('button[data-orch-mode="readwrite"]').click();
@@ -314,6 +316,9 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
   await expect(win.locator('.orch-preview')).toContainText('Main flow');
   await expect(win.locator('.orch-preview')).toContainText('Flow steps');
   await expect(win.locator('.orch-preview')).not.toContainText(new RegExp('State\\s+' + 'graph', 'i'));
+  await expect(win.locator('.orch-preview')).not.toContainText('orch-graph');
+  await expect(win.locator('#toc-source-label')).toContainText('Flow');
+  await expect(win.locator('#toc-source-label')).not.toContainText('orch-graph');
   await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
   await expect(win.locator('.orch-preview')).toContainText('Main flow');
   await expect(win.locator('.orch-preview')).not.toContainText('graphs/main.or-graph');
