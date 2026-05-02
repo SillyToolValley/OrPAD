@@ -449,6 +449,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('1 approval needed: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery blocked: 1 approval must be decided first');
   await expect(win.locator('#runbooks-content')).toContainText('No work to stop');
+  await expect(win.locator('#runbooks-content')).not.toContainText('No active claim to cancel');
   await expect(win.locator('#runbooks-content')).toContainText('No work result yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
