@@ -9481,6 +9481,114 @@ function machineMarkdownCell(value) {
     .trim();
 }
 
+function machineSafeRunArtifactPath(record, artifactPath) {
+  const runRoot = runbookNormalizePath(record?.runRoot || '');
+  const ref = runbookNormalizePath(artifactPath || '');
+  if (!runRoot || !ref || /^[a-z]:\//i.test(ref) || ref.startsWith('/')) return '';
+  const normalized = normalizeRunbookFilePath(`${runRoot}/${ref}`);
+  const root = runRoot.replace(/\/+$/, '').toLowerCase();
+  return normalized.toLowerCase().startsWith(`${root}/`) ? normalized : '';
+}
+
+function machineLineCount(value, exists = true) {
+  if (!exists) return 0;
+  const text = String(value ?? '');
+  if (!text) return 0;
+  return text.replace(/\r?\n$/, '').split(/\r?\n/).length;
+}
+
+function machinePatchChangeStats(change) {
+  const beforeLines = machineLineCount(change?.beforeContent, change?.beforeExists !== false);
+  const afterLines = machineLineCount(change?.afterContent, change?.afterExists !== false);
+  let action = 'Modified';
+  if (change?.beforeExists === false && change?.afterExists !== false) action = 'Added';
+  else if (change?.beforeExists !== false && change?.afterExists === false) action = 'Deleted';
+  const delta = afterLines - beforeLines;
+  const deltaLabel = delta > 0 ? `+${delta}` : String(delta);
+  return {
+    action,
+    beforeLines,
+    afterLines,
+    deltaLabel,
+    beforeSha: String(change?.beforeSha256 || '').slice(0, 12),
+    afterSha: String(change?.afterSha256 || '').slice(0, 12),
+  };
+}
+
+async function machinePatchArtifactSummary(record, workerReview) {
+  if (!workerReview?.patchArtifact) return null;
+  const filePath = machineSafeRunArtifactPath(record, workerReview.patchArtifact);
+  if (!filePath || !window.orpad?.readFile) {
+    return { error: 'Patch artifact could not be read from the run snapshot.' };
+  }
+  try {
+    const result = await window.orpad.readFile(filePath);
+    const patch = JSON.parse(result?.content || '{}');
+    if (patch?.schemaVersion !== 'orpad.patchArtifact.v1') {
+      return { error: 'Patch artifact schema is not recognized.' };
+    }
+    const changes = Array.isArray(patch.changes) ? patch.changes : [];
+    const violations = Array.isArray(patch.violations) ? patch.violations : [];
+    const allowedFiles = Array.isArray(patch.allowedFiles) ? patch.allowedFiles : [];
+    return {
+      schemaVersion: patch.schemaVersion,
+      createdAt: patch.createdAt || '',
+      allowedFileCount: allowedFiles.length,
+      changeCount: changes.length,
+      violationCount: violations.length,
+      changes: changes
+        .filter(change => change?.path)
+        .slice(0, 12)
+        .map(change => ({ path: change.path, ...machinePatchChangeStats(change) })),
+      hasMoreChanges: changes.length > 12,
+      violations: violations
+        .filter(violation => violation?.path || violation?.reason)
+        .slice(0, 5)
+        .map(violation => `${violation.path || 'unknown'}${violation.reason ? ` (${violation.reason})` : ''}`),
+    };
+  } catch (err) {
+    return { error: `Patch artifact summary unavailable: ${err?.message || err}` };
+  }
+}
+
+function machinePatchArtifactMarkdown(summary) {
+  if (!summary) return [];
+  if (summary.error) return [`Patch artifact summary: ${summary.error}`];
+  const lines = [
+    `Patch artifact summary: ${machineCountLabel(summary.changeCount, 'file change')}; ${machineCountLabel(summary.allowedFileCount, 'allowed file')}; ${machineCountLabel(summary.violationCount, 'write-set violation')}.`,
+    summary.createdAt ? `Patch created: ${summary.createdAt}` : '',
+  ].filter(Boolean);
+  if (summary.changes.length) {
+    lines.push(
+      '',
+      '| File | Action | Lines before | Lines after | Delta | SHA before | SHA after |',
+      '| --- | --- | ---: | ---: | ---: | --- | --- |',
+      ...summary.changes.map(change => [
+        '|',
+        machineMarkdownCell(change.path),
+        '|',
+        machineMarkdownCell(change.action),
+        '|',
+        machineMarkdownCell(change.beforeLines),
+        '|',
+        machineMarkdownCell(change.afterLines),
+        '|',
+        machineMarkdownCell(change.deltaLabel),
+        '|',
+        machineMarkdownCell(change.beforeSha),
+        '|',
+        machineMarkdownCell(change.afterSha),
+        '|',
+      ].join(' ')),
+    );
+    if (summary.hasMoreChanges) lines.push('', `_Additional file changes are recorded in the patch artifact._`);
+  }
+  if (summary.violations.length) {
+    lines.push('', `Write-set violations: ${summary.violations.join(', ')}`);
+  }
+  return lines;
+}
+
 async function openMachineArtifactViewer(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId) return;
   let record = getRunbookCache(machineRunRecordCache, runbookPath) || lastMachineRunRecord;
@@ -9500,6 +9608,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   const auditDetails = machineAuditDetails(record);
   const actualRunId = runState.runId || record.runId || runId;
   const workerReview = machineWorkerReviewInfo(record);
+  const patchArtifactSummary = await machinePatchArtifactSummary(record, workerReview);
   const actualRunLabel = machineRunDisplayLabel({
     runId: actualRunId,
     createdAt: runState.createdAt || record.createdAt,
@@ -9529,6 +9638,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     `Status: ${machineWorkerStatusLabel(workerReview.status)}`,
     `Workspace changed: ${String(workerReview.status).toLowerCase() === 'done' ? 'yes' : 'no, review the run evidence before applying anything manually'}`,
     workerReview.patchArtifact ? `Patch artifact: ${workerReview.patchArtifact}` : '',
+    ...machinePatchArtifactMarkdown(patchArtifactSummary),
     workerReview.changedFiles.length ? `Changed files staged in evidence: ${workerReview.changedFiles.join(', ')}` : '',
     workerReview.missingExpectedChanges.length ? `Missing expected changes: ${workerReview.missingExpectedChanges.join(', ')}` : '',
     workerReview.evidenceArtifacts.length ? `Worker evidence: ${workerReview.evidenceArtifacts.join(', ')}` : '',

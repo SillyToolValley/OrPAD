@@ -378,6 +378,23 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
     runId: 'run_machine_ui_blocked_review',
     now: new Date('2026-05-01T00:00:00.000Z'),
   });
+  const patchDir = path.join(run.runRoot, 'artifacts', 'patches');
+  fs.mkdirSync(patchDir, { recursive: true });
+  fs.writeFileSync(path.join(patchDir, 'worker.patch.json'), JSON.stringify({
+    schemaVersion: 'orpad.patchArtifact.v1',
+    createdAt: '2026-05-01T00:00:05.000Z',
+    allowedFiles: ['src/smoke-target.md', 'src/main/runbooks/validator.js'],
+    changes: [{
+      path: 'src/smoke-target.md',
+      beforeExists: true,
+      afterExists: true,
+      beforeSha256: '1111111111111111111111111111111111111111111111111111111111111111',
+      afterSha256: '2222222222222222222222222222222222222222222222222222222222222222',
+      beforeContent: 'before\n',
+      afterContent: 'after from blocked worker\nwith details\n',
+    }],
+    violations: [],
+  }, null, 2));
   await appendMachineEvent(run.runRoot, {
     runId: run.runId,
     actor: 'machine',
@@ -471,6 +488,8 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   await expect(win.locator('.cm-content')).toContainText('Patch Review');
   await expect(win.locator('.cm-content')).toContainText('Workspace changed: no, review the run evidence before applying anything manually');
   await expect(win.locator('.cm-content')).toContainText('Patch artifact: artifacts/patches/worker.patch.json');
+  await expect(win.locator('.cm-content')).toContainText('Patch artifact summary: 1 file change; 2 allowed files; 0 write-set violations.');
+  await expect(win.locator('.cm-content')).toContainText('| src/smoke-target.md | Modified | 1 | 2 | +1 | 111111111111 | 222222222222 |');
   await expect(win.locator('.cm-content')).toContainText('Changed files staged in evidence: src/smoke-target.md');
   await expect(win.locator('.cm-content')).toContainText('Missing expected changes: src/main/runbooks/validator.js');
 
