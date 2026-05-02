@@ -504,8 +504,8 @@ test('Machine UI switches between durable run history snapshots', async () => {
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(2);
   const runIds = fs.readdirSync(runRoot);
   const secondRunId = runIds.find(runId => runId !== firstRunId) || '';
-  await expect(win.locator('#runbooks-content')).toContainText('Recent Runs');
-  await expect(win.locator('#runbooks-content')).toContainText('2 recent runs');
+  await expect(win.locator('#runbooks-content')).toContainText('History');
+  await expect(win.locator('#runbooks-content')).toContainText('2 entries');
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
 
   await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${firstRunId}"]`).click();

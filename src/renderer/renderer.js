@@ -8274,8 +8274,8 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
   return `
     <div class="runbook-machine-history">
       <div class="runbook-item-title">
-        <strong>Recent Runs</strong>
-        <span class="runbook-chip">${escapeHtml(machineCountLabel(runs.length, 'recent run'))}</span>
+        <strong>History</strong>
+        <span class="runbook-chip">${escapeHtml(machineCountLabel(runs.length, 'entry', 'entries'))}</span>
       </div>
       <div class="runbook-action-row">
         ${runs.slice(0, 6).map(run => {
