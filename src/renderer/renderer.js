@@ -2532,7 +2532,7 @@ function renderPipelineEditorTabs(context, active, graphPath = '') {
   const manifestPath = context.pipelinePath;
   const resolvedGraphPath = graphPath || pipelineEditorCurrentGraphPath(context);
   return `
-    <div class="pipeline-editor-tabs" aria-label="Pipeline editor tabs">
+    <div class="pipeline-editor-tabs" aria-label="Pipeline setup tabs">
       <button class="${active === 'graph' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(resolvedGraphPath)}" ${resolvedGraphPath ? '' : 'disabled'}>Graph</button>
       <button class="${active === 'manifest' ? 'active' : ''}" data-pipeline-editor-target="${escapeHtml(manifestPath)}">Manifest</button>
     </div>
@@ -4367,7 +4367,7 @@ function renderOrchTreePreview(content) {
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">
-        <strong>orch-tree editor</strong>
+        <strong>Tree setup</strong>
         <div class="orch-toolbar-actions">
           <div class="jedit-seg">
             <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-orch-mode="readonly">Read-only</button>
@@ -5214,7 +5214,7 @@ function renderOrchPipelinePreview(content) {
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">
-        <strong>Pipeline editor</strong>
+        <strong>Pipeline setup</strong>
         <div class="orch-toolbar-actions">
           <span class="runbook-chip">Manifest</span>
           <span class="runbook-chip good">${escapeHtml(doc.trustLevel || 'local-authored')}</span>
@@ -5535,7 +5535,7 @@ function renderOrchGraphPreview(content) {
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">
-        <strong>${pipelineContext ? 'Pipeline editor' : (linkedGraphLayer || !layerPath ? 'orch-graph editor' : 'orch-tree editor')}</strong>
+        <strong>${pipelineContext ? 'Pipeline setup' : (linkedGraphLayer || !layerPath ? 'Graph setup' : 'Tree setup')}</strong>
         <div class="orch-toolbar-actions">
           ${pipelineContext ? `<span class="runbook-chip">Graph</span>` : ''}
           <span class="runbook-chip good">${layerKindLabel}</span>

@@ -133,7 +133,7 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
   await expect(win.locator('#runbooks-content')).toContainText('Pipeline editor fixture');
   await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
   await win.locator('#btn-preview').click();
-  await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
+  await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Graph');
   await expect(win.locator('.orch-graph-layout > .orch-inspector')).toHaveCount(0);
   await expect(win.locator('.orch-graph-main .orch-floating-inspector .orch-inspector')).toBeVisible();
@@ -193,7 +193,7 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-graph-node')).toHaveCount(3);
   await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Manifest' }).click();
 
-  await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
+  await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Manifest');
   const manifestScroll = await win.locator('#content').evaluate((el) => {
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
@@ -290,7 +290,7 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
   await win.locator('.runbook-item').filter({ hasText: 'OrPAD Maintenance Quality Workstream' }).click();
   await win.locator('#btn-preview').click();
 
-  await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
+  await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Graph');
   await expect(win.locator('.orch-graph-node')).toContainText([
     'Load reference and workspace context',
