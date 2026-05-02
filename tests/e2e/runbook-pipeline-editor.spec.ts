@@ -136,8 +136,7 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.orch-preview button[data-orch-mode="readonly"]')).toHaveText('View');
   await expect(win.locator('.orch-preview button[data-orch-mode="readwrite"]')).toHaveText('Edit');
-  await expect(win.locator('.orch-preview')).not.toContainText('Read-only');
-  await expect(win.locator('.orch-preview')).not.toContainText('Read-write');
+  await expect(win.locator('.orch-preview')).not.toContainText(/Read-(only|write)/);
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('.orch-graph-layout > .orch-inspector')).toHaveCount(0);
   await expect(win.locator('.orch-graph-main .orch-floating-inspector .orch-inspector')).toBeVisible();
