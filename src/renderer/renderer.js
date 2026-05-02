@@ -4238,7 +4238,7 @@ function renderOrchGraphCanvas(graph, readwrite, tools = true) {
 
 function orchLayerNodeLabel(doc, path) {
   const node = orchValueAtPath(doc, path);
-  return node?.label || node?.id || 'OrchTree';
+  return node?.label || node?.id || 'Tree subflow';
 }
 
 function renderOrchGraphLayerBar(doc) {
