@@ -364,6 +364,8 @@ test('Pipes Refresh reloads selected managed run evidence from disk', async () =
   await expect(win.locator('#runbooks-content')).not.toContainText('run_machine_ui_refresh_claim');
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Ready to stop: machine-ui-smoke is in progress');
+  await expect(win.locator('#runbooks-content')).toContainText('No evidence files yet');
+  await expect(win.locator('#runbooks-content')).not.toContainText('No artifact manifest files yet');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -451,6 +453,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('#runbooks-content')).toContainText('No work to stop');
   await expect(win.locator('#runbooks-content')).not.toContainText('No active claim to cancel');
   await expect(win.locator('#runbooks-content')).toContainText('No work result yet');
+  await expect(win.locator('#runbooks-content')).not.toContainText('No artifact manifest files yet');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
