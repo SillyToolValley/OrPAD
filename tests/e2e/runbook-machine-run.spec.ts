@@ -230,6 +230,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('run.created');
+  await expect(win.locator('#runbooks-content')).not.toContainText(/run_\d{8}_\d{6}/);
 
   const runRoot = path.join(pipelineDir, 'runs');
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(1);
@@ -249,16 +250,18 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
 
   await win.locator('button[data-runbook-action="machine-export"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('harness');
-  await expect(win.locator('#runbooks-content')).toContainText('audit:orpad-machine-run');
+  await expect(win.locator('#runbooks-content')).toContainText('Audit evidence ready');
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
   await expect(win.locator('button[data-runbook-action="machine-view-artifacts"]')).toBeEnabled();
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
   await expect(win.locator('.tab-item.active')).toContainText('Run Artifacts');
+  await expect(win.locator('.tab-item.active')).not.toContainText(/run_\d{8}_\d{6}/);
   await expect(win.locator('.cm-content')).toContainText('Run Artifact Manifest');
+  await expect(win.locator('.cm-content')).not.toContainText(/run_\d{8}_\d{6}/);
   await win.locator('#btn-preview').click();
   await expect(win.locator('#content')).toContainText('artifacts/discovery/candidate-inventory.json');
   await expect(win.locator('#content')).toContainText('artifacts/patches');
-  await expect(win.locator('#content')).toContainText('audit:orpad-machine-run');
+  await expect(win.locator('#content')).toContainText('Audit evidence ready');
 
   const runDirs = fs.readdirSync(runRoot);
   expect(fs.existsSync(path.join(runRoot, runDirs[0], 'run-state.json'))).toBe(true);
@@ -278,7 +281,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
-  await expect(win.locator('#runbooks-content')).toContainText(runDirs[0]);
+  await expect(win.locator('#runbooks-content')).not.toContainText(runDirs[0]);
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
   await expect(win.locator('#runbooks-content')).toContainText('artifacts/discovery/candidate-inventory.json');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
@@ -354,7 +357,7 @@ test('Pipes Refresh reloads selected managed run evidence from disk', async () =
   await win.locator('button[data-runbook-action="refresh"]').click();
 
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
-  await expect(win.locator('#runbooks-content')).toContainText('run_machine_ui_refresh_claim');
+  await expect(win.locator('#runbooks-content')).not.toContainText('run_machine_ui_refresh_claim');
   await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Cancel ready: claim claim-machine-ui-smoke owns machine-ui-smoke');
 
@@ -506,12 +509,14 @@ test('Machine UI switches between durable run history snapshots', async () => {
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
 
   await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${firstRunId}"]`).click();
-  await expect(win.locator('#runbooks-content')).toContainText(firstRunId);
+  await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${firstRunId}"]`)).toHaveClass(/primary/);
+  await expect(win.locator('#runbooks-content')).not.toContainText(firstRunId);
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
 
   await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`).click();
-  await expect(win.locator('#runbooks-content')).toContainText(secondRunId);
+  await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`)).toHaveClass(/primary/);
+  await expect(win.locator('#runbooks-content')).not.toContainText(secondRunId);
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
 
   await app.close();
@@ -539,7 +544,7 @@ test('Machine UI cancels an active claim and releases visible locks', async () =
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText(seeded.runId);
+  await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('1 active write-set lock: src/smoke-target.md');
   await expect(win.locator('#runbooks-content')).toContainText('Resume guarded: 1 active claim still owns work');
@@ -585,7 +590,7 @@ test('Machine UI resumes stale claims and reports queue repair', async () => {
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText(seeded.runId);
+  await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Resume ready: 1 stale claim can be recovered before continuing');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();

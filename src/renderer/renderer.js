@@ -7897,12 +7897,13 @@ function renderRunRecordPanel(record = lastRunRecord) {
   if (!record) return '';
   const events = record.events || [];
   const runStatus = record.run?.status || 'created';
+  const runLabel = machineRunDisplayLabel(record.run || {});
   return `
     <section class="runbook-panel-section">
       <h3>Replay</h3>
       <div class="runbook-chip-row">
         <span class="runbook-chip ${escapeHtml(machineStatusChipClass(runStatus))}" title="${escapeHtml(`Status: ${machineLifecycleStatusLabel(runStatus)}`)}">${escapeHtml(machineLifecycleStatusLabel(runStatus))}</span>
-        <span class="runbook-chip">${escapeHtml(record.run?.runId || '')}</span>
+        <span class="runbook-chip">${escapeHtml(runLabel)}</span>
       </div>
       <div class="runbook-replay-events">
         ${events.slice(0, 12).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(event.type || '')}</div>`).join('') || '<div class="runbook-event">No events recorded.</div>'}
@@ -7995,6 +7996,41 @@ function machineStatusChipClass(status, kind = 'lifecycle') {
   return kind === 'summary' ? 'warn' : '';
 }
 
+function machineRunDateLabel(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '';
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const currentYear = new Date().getFullYear();
+  const year = date.getFullYear() === currentYear ? '' : ` ${date.getFullYear()}`;
+  return `${months[date.getMonth()]} ${date.getDate()}${year}, ${hours}:${minutes}`;
+}
+
+function machineRunLabelFromId(runId) {
+  const text = String(runId || '').trim();
+  const timestamp = text.match(/^run_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:_|$)/);
+  if (timestamp) {
+    const [, year, month, day, hour, minute, second] = timestamp;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+    return machineRunDateLabel(parsed);
+  }
+  const acronyms = new Set(['ai', 'api', 'id', 'ipc', 'mcp', 'mvp', 'ui', 'url', 'ux']);
+  return text.replace(/^run[_-]?/i, '')
+    .split(/[_\-.]+/)
+    .filter(Boolean)
+    .map(part => (acronyms.has(part.toLowerCase())
+      ? part.toUpperCase()
+      : part.charAt(0).toUpperCase() + part.slice(1)))
+    .join(' ') || 'Run';
+}
+
+function machineRunDisplayLabel(run = {}) {
+  const runId = typeof run === 'string' ? run : run.runId;
+  return machineRunDateLabel(run.createdAt || run.updatedAt) || machineRunLabelFromId(runId);
+}
+
 function latestMachineEvent(events, eventType, predicate = () => true) {
   return [...(events || [])].reverse().find(event => (
     event?.eventType === eventType
@@ -8079,24 +8115,20 @@ function machineActiveWriteSetDetails(record) {
   return `${machineCountLabel(activeWriteSets.length, 'active write-set lock')}${paths ? `: ${paths}${more}` : ''}`;
 }
 
-function machineShellArg(value) {
-  return `"${String(value || '').replace(/"/g, '\\"')}"`;
-}
-
 function machineAuditDetails(record) {
   const runRoot = record?.runRoot || '';
   const exportRoot = record?.exported?.targetRoot
     || record?.exported?.latestRunExportPath
     || '';
   if (!runRoot) {
-    return { state: 'warn', text: 'Run root unavailable' };
+    return { state: 'warn', text: 'Audit unavailable' };
   }
   if (!exportRoot) {
-    return { state: 'warn', text: 'Export Latest before auditing this run' };
+    return { state: 'warn', text: 'Export latest before audit' };
   }
   return {
     state: 'good',
-    text: `npm run audit:orpad-machine-run -- ${machineShellArg(runRoot)} ${machineShellArg(exportRoot)}`,
+    text: 'Audit evidence ready',
   };
 }
 
@@ -8248,8 +8280,13 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
       <div class="runbook-action-row">
         ${runs.slice(0, 6).map(run => {
           const selected = run.runId === currentRunId;
-          const label = run.runId ? run.runId.replace(/^run_/, '') : 'run';
-          return `<button data-runbook-action="machine-select-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(run.runId || '')}" class="${selected ? 'primary' : ''}" title="${escapeHtml([run.lifecycleStatus, run.summaryStatus, run.updatedAt || run.createdAt].filter(Boolean).join(' - '))}">${escapeHtml(label)}</button>`;
+          const label = machineRunDisplayLabel(run);
+          const title = [
+            machineLifecycleStatusLabel(run.lifecycleStatus),
+            machineSummaryStatusLabel(run.summaryStatus),
+            machineRunDateLabel(run.updatedAt || run.createdAt),
+          ].filter(Boolean).join(' - ');
+          return `<button data-runbook-action="machine-select-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(run.runId || '')}" class="${selected ? 'primary' : ''}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
         }).join('')}
       </div>
     </div>
@@ -8282,6 +8319,11 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const resumeDetails = machineResumeControlDetails(record);
   const cancellationDetails = machineCancellationControlDetails(record);
   const runId = runState.runId || record.runId || '';
+  const runLabel = machineRunDisplayLabel({
+    runId,
+    createdAt: runState.createdAt || record.createdAt,
+    updatedAt: runState.updatedAt || record.updatedAt,
+  });
   const lifecycleStatus = runState.lifecycleStatus || 'created';
   const summaryStatus = runState.summaryStatus || 'pending';
   const hasActiveClaims = activeClaims.length > 0;
@@ -8303,7 +8345,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       <div class="runbook-chip-row">
         <span class="runbook-chip ${escapeHtml(machineStatusChipClass(lifecycleStatus))}" title="${escapeHtml(`Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`)}">${escapeHtml(machineLifecycleStatusLabel(lifecycleStatus))}</span>
         <span class="runbook-chip ${escapeHtml(machineStatusChipClass(summaryStatus, 'summary'))}" title="${escapeHtml(`Summary: ${machineSummaryStatusLabel(summaryStatus)}`)}">${escapeHtml(machineSummaryStatusLabel(summaryStatus))}</span>
-        <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
+        <span class="runbook-chip">${escapeHtml(runLabel)}</span>
       </div>
       ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
       ${renderMachineRunHistory(runbookPath, runId)}
@@ -8353,7 +8395,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         </div>
         <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
           <strong>Run audit</strong>
-          <span><code>${escapeHtml(auditDetails.text)}</code></span>
+          <span>${escapeHtml(auditDetails.text)}</span>
         </div>
         <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
           <strong>Approval</strong>
@@ -8977,6 +9019,12 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   const manifest = exported?.metadata?.artifactManifest || null;
   const auditDetails = machineAuditDetails(record);
   const actualRunId = runState.runId || record.runId || runId;
+  const actualRunLabel = machineRunDisplayLabel({
+    runId: actualRunId,
+    createdAt: runState.createdAt || record.createdAt,
+    updatedAt: runState.updatedAt || record.updatedAt,
+  });
+  const artifactTitleLabel = actualRunLabel.replace(/[<>:"/\\|?*]+/g, '-');
   const table = files.length ? [
     '| Path | Size | Produced by | Registered by | SHA-256 |',
     '| --- | ---: | --- | --- | --- |',
@@ -8995,12 +9043,12 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     ].join(' ')),
   ] : ['_No run artifacts registered yet._'];
   const metadataLines = [
-    `Run: ${actualRunId}`,
+    `Run: ${actualRunLabel}`,
     `Lifecycle: ${runState.lifecycleStatus || 'unknown'}`,
     `Summary: ${runState.summaryStatus || 'unknown'}`,
     `Manifest source: ${machineArtifactManifestSource(record)}`,
     `Artifacts: ${machineCountLabel(files.length, 'file')}`,
-    record.runRoot ? `Run root: ${record.runRoot}` : '',
+    record.runRoot ? 'Storage: Run snapshot available' : '',
     exported?.targetRoot || exported?.latestRunExportPath ? `Latest-run export: ${exported.targetRoot || exported.latestRunExportPath}` : '',
     manifest?.sourceEventSequence != null ? `Source event sequence: ${manifest.sourceEventSequence}` : '',
   ].filter(Boolean);
@@ -9011,9 +9059,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     '',
     '## Audit',
     '',
-    auditDetails.state === 'good'
-      ? ['```sh', auditDetails.text, '```'].join('\n')
-      : auditDetails.text,
+    auditDetails.text,
     '',
     '## Files',
     '',
@@ -9022,7 +9068,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   ].join('\n');
 
   createTab(null, null, body, '', {
-    title: `Run Artifacts ${actualRunId}.md`,
+    title: `Run Artifacts ${artifactTitleLabel}.md`,
     viewType: 'markdown',
     forceUnsaved: true,
   });
