@@ -93,6 +93,45 @@ function writeFixtureWorkspace(): string {
       ],
     },
   }, null, 2));
+  const defaultPipelineRoot = path.join(workspace, '.orpad', 'pipelines', 'default-agent-workstream');
+  fs.mkdirSync(path.join(defaultPipelineRoot, 'graphs'), { recursive: true });
+  fs.writeFileSync(path.join(defaultPipelineRoot, 'graphs', 'main.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'default-agent-workstream',
+      nodes: [
+        { id: 'context', type: 'orpad.context', label: 'Context', config: { summary: 'Collect context.' } },
+        { id: 'queue', type: 'orpad.workQueue', label: 'Queue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+        { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue' } },
+      ],
+      transitions: [],
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(defaultPipelineRoot, 'pipeline.or-pipeline'), JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'default-agent-workstream',
+    title: 'Default Agent Workstream',
+    trustLevel: 'local-authored',
+    entryGraph: 'graphs/main.or-graph',
+    nodePacks: [
+      { id: 'orpad.core', version: '>=1.0.0-beta.3', origin: 'built-in' },
+      { id: 'orpad.workstream', version: '>=0.1.0', origin: 'built-in' },
+    ],
+    maintenancePolicy: {
+      handoff: {
+        promptContract: 'path-only',
+      },
+    },
+    run: {
+      artifactRoot: 'harness/generated/latest-run/artifacts',
+      queueRoot: 'harness/generated/latest-run/queue',
+      metadataPath: 'harness/generated/latest-run/run-metadata.json',
+    },
+    graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
+  }, null, 2));
   const templateRoot = path.join(workspace, 'nodes', 'orpad.workstream', 'examples');
   fs.mkdirSync(templateRoot, { recursive: true });
   fs.writeFileSync(path.join(templateRoot, 'maintenance-workstream.or-pipeline'), JSON.stringify({
@@ -155,11 +194,12 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   const pipelinesSection = win.locator('[data-runbook-section="pipelines"]');
   const templatesSection = win.locator('[data-runbook-section="templates"]');
   const legacySection = win.locator('[data-runbook-section="legacy"]');
-  await expect(pipelinesSection.locator('.runbook-item[data-runbook-format="or-pipeline"] strong')).toContainText('Agent Workstream');
+  await expect(pipelinesSection.locator('.runbook-item[data-runbook-format="or-pipeline"]')
+    .filter({ has: win.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })).toBeVisible();
   await expect(pipelinesSection).not.toContainText('.orpad/pipelines');
   await expect(pipelinesSection).not.toContainText('pipeline.or-pipeline');
   await expect(pipelinesSection).not.toContainText('Maintenance Workstream Example');
-  await expect(pipelinesSection).toContainText('1 pipeline');
+  await expect(pipelinesSection).toContainText('2 pipelines');
   await expect(templatesSection).toContainText('Templates');
   await expect(templatesSection).toContainText('Maintenance Workstream Example');
   await expect(templatesSection).toContainText('1 template');
@@ -171,7 +211,7 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(legacySection).toContainText('1 legacy flow');
   const workspaceMeta = win.locator('[data-runbook-workspace-meta]');
   await expect(workspaceMeta).toContainText(path.basename(workspace));
-  await expect(workspaceMeta).toContainText('1 pipeline');
+  await expect(workspaceMeta).toContainText('2 pipelines');
   await expect(workspaceMeta).toContainText('1 legacy flow');
   await expect(workspaceMeta).not.toContainText(workspace);
   await expect(workspaceMeta).toHaveAttribute('title', workspace.replace(/\\/g, '/'));
@@ -183,6 +223,7 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   expect(cachedIndex.workspace.fileCount).toBeGreaterThanOrEqual(13);
   expect(Array.isArray(cachedIndex.pipelines)).toBe(true);
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/agent-workstream/pipeline.or-pipeline');
+  expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/default-agent-workstream/pipeline.or-pipeline');
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).not.toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
   expect(cachedIndex.templatePipelines.map((item: { path: string }) => item.path)).toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
   expect(cachedIndex.legacyRunbooks.map((item: { path: string }) => item.path)).toContain('.orch-tree.json');
@@ -192,7 +233,9 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await win.locator('.runbook-item').filter({ hasText: '.orch-tree.json' }).click();
   await expect(win.locator('.runbook-item.selected')).toContainText('.orch-tree.json');
 
-  await win.locator('.runbook-item').filter({ hasText: 'Agent Workstream' }).click();
+  await win.locator('.runbook-item[data-runbook-format="or-pipeline"]')
+    .filter({ has: win.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })
+    .click();
   await expect(win.locator('.runbook-item.selected')).toContainText('Agent Workstream');
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('[data-pipeline-preview-runbar] strong')).toContainText('Agent Workstream');
@@ -229,6 +272,30 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(win.locator('#fmt-modal-footer button').filter({ hasText: 'Copy Prompt' })).toBeVisible();
   await expect(win.locator('#fmt-modal-footer button').filter({ hasText: 'Copy Audits' })).toBeVisible();
   await expect(win.locator('#fmt-modal-footer button').filter({ hasText: 'Open Summary' })).toBeDisabled();
+  await win.locator('#fmt-modal-close').click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+
+  await win.locator('.runbook-item[data-runbook-format="or-pipeline"]')
+    .filter({ has: win.locator('strong').filter({ hasText: /^Default Agent Workstream$/ }) })
+    .click();
+  await expect(win.locator('.runbook-item.selected')).toContainText('Default Agent Workstream');
+  const defaultPipelinePath = path.join(workspace, '.orpad', 'pipelines', 'default-agent-workstream', 'pipeline.or-pipeline').replace(/\\/g, '/');
+  const defaultRunbar = win.locator('[data-pipeline-preview-runbar]')
+    .filter({ has: win.locator('strong').filter({ hasText: /^Default Agent Workstream$/ }) });
+  await expect(defaultRunbar.locator('strong')).toContainText('Default Agent Workstream');
+  await expect(defaultRunbar).toHaveAttribute('data-pipeline-path', defaultPipelinePath);
+  await expect(defaultRunbar.locator('button[data-pipeline-run-action="handoff"]')).toHaveAttribute('data-path', defaultPipelinePath);
+  await defaultRunbar.locator('[data-pipeline-run-menu]').click();
+  await expect(defaultRunbar.locator('button[data-pipeline-run-action="handoff"]')).toBeEnabled();
+  await defaultRunbar.locator('button[data-pipeline-run-action="handoff"]').click();
+  await expect(win.locator('#fmt-modal')).toBeVisible();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Prepare Agent Handoff');
+  const defaultPrompt = await win.locator('[data-agent-handoff-prompt]').inputValue();
+  expect(defaultPrompt).toBe(`Run this OrPAD pipeline: ${defaultPipelinePath}`);
+  expect(defaultPrompt).toContain(defaultPipelinePath);
+  expect(defaultPrompt).toMatch(/^[\x00-\x7F]+$/);
+  expect(defaultPrompt).not.toContain('undefined');
+  expect(defaultPrompt).not.toContain('\\');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

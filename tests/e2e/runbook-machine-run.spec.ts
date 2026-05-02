@@ -249,11 +249,13 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
   await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
-  await expect(win.getByText('Review Patch')).toBeVisible();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Review Patch');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Exercise Machine UI worker execution');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Patch artifact records the target file change.');
   await expect(win.locator('[data-machine-patch-file]')).toBeChecked();
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
   await win.getByRole('button', { name: 'Apply Selected' }).click();
-  await expect(win.getByText('Review Patch')).not.toBeVisible();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('after from Machine UI harness\n');
   await expect(win.locator('#runbooks-content')).toContainText('Snapshot saved');
   await expect(win.locator('#runbooks-content')).toContainText('No permission needed');
@@ -363,13 +365,17 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Running$/ })).toBeVisible();
-  const continueButton = win.locator('button[data-runbook-action="machine-execute-step"]');
-  await expect(continueButton).toBeDisabled();
-  await expect(continueButton).toHaveAttribute('title', /OrPAD is already working/);
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toHaveCount(0);
+  const stopButton = win.locator('button[data-runbook-action="machine-cancel-run"]');
+  await expect(stopButton).toBeEnabled();
+  await expect(stopButton).toHaveText('Stop Run');
   const recoverButton = win.locator('button[data-runbook-action="machine-resume-run"]');
   await expect(recoverButton).toBeDisabled();
   await expect(recoverButton).toHaveAttribute('title', /OrPAD is already working/);
   await expect(win.locator('#runbooks-content')).toContainText('Run started');
+  await stopButton.click();
+  await submitMachineCapabilityToken(win);
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Cancelled$/ })).toBeVisible();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

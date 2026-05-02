@@ -47,7 +47,7 @@ process is fully sandboxed with no direct Node.js access.
 | `searchFiles(dirPath, query, options)` | workspace search | MEDIUM |
 | `buildLinkIndex` / `resolveWikiLink` / `getBacklinks` / `getFileNames` | wiki-link graph | MEDIUM |
 | `pipelines.*` / `runbooks.*` validation, scan, run-record, and local-run APIs | `.or-pipeline`, `.or-graph`, `.or-tree`, and legacy `.orch-*` validation plus local MVP run evidence | HIGH (future execution substrate) |
-| `machine.*` validation, run-store, readback, listing, resume, claim cancellation, approval decision, execute-step adapter, patch-apply, and evidence snapshot APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic harness and recognized Codex CLI adapter execution | HIGH (execution substrate) |
+| `machine.*` validation, run-store, readback, listing, resume, run/claim cancellation, approval decision, execute-step adapter, patch-apply, and evidence snapshot APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic harness and recognized Codex CLI adapter execution | HIGH (execution substrate) |
 | `revealInExplorer(targetPath)` | `shell.showItemInFolder` | LOW |
 | `saveBinary` / `saveText` | save-dialog before write | LOW |
 | `svgToPng(svg, w, h, bg)` | offscreen BrowserWindow render | LOW |
@@ -342,7 +342,7 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
   process, and generates an in-memory session capability token when no environment token exists.
   It returns only that generated session token; environment-provided tokens still require user or
   process-level provisioning and are not reflected back through this IPC.
-- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-cancel-claim`, `machine-decide-approval`, `machine-export-latest-run`, `machine-apply-patch`) require
+- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-cancel-run`, `machine-cancel-claim`, `machine-decide-approval`, `machine-export-latest-run`, `machine-apply-patch`) require
   either `ORPAD_MACHINE_IPC_TOKEN` or the generated session token and a matching
   `capabilityToken` in the request. Read-only validate, list, and get-run actions still require
   the feature gate and sender/path/schema checks.
@@ -377,6 +377,9 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
 - `machine-cancel-claim` accepts only opaque `runId`, `claimId`, and `itemId` identifiers. Main
   process verifies the active claim lease and queue state before releasing the claim/write-set and
   moving the item to `blocked` or `queued`.
+- `machine-cancel-run` aborts Machine-registered adapter processes for the requested run and then
+  routes active claimed work through the same claim cancellation path. If no claim exists yet, it
+  records a cancelled partial run state without touching workspace files.
 - `machine-decide-approval` can only decide an approval that is currently pending in Machine
   events for the requested run. Approved decisions record Machine-owned grants; denied decisions
   cancel the run through lifecycle guards. The renderer cannot mint arbitrary grants for a
@@ -523,6 +526,7 @@ features that intentionally launch configured/user-requested child processes.
 | `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/` only |
 | `machine-execute-run-step` | handle | Run one managed step through deterministic harness or recognized Codex CLI adapter: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled overlay adapter, optional evidence snapshot export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, proposal read-only, worker overlay-only process cwd |
 | `machine-resume-run` | handle | Repair derived queue snapshots, recover stale claims, mark a non-terminal non-approval-pending run waiting, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
+| `machine-cancel-run` | handle | Abort Machine-registered adapter processes for a run and cancel active claimed work when present | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
 | `machine-cancel-claim` | handle | Cancel an active Machine-owned claim, release its write-set, block or requeue the item, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque claim/item ids only |
 | `machine-decide-approval` | handle | Record a Machine-owned approval decision for a pending approval, optionally exporting latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, pending approval event only |
 | `machine-export-latest-run` | handle | Export durable Machine run evidence and queue metadata to `harness/generated/latest-run` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / pipeline evidence snapshot export only |
@@ -567,8 +571,9 @@ checks before touching storage. In unpackaged/dev sessions, `machine-enable-sess
 feature gate only for the current process and only with an in-memory session capability token.
 `machine-decide-approval` projects pending approvals from Machine
 events before recording a decision and grant. `machine-resume-run` projects approval state from
-Machine events before repairing derived queue files or recovering claims. `machine-cancel-claim`
-requires an active Machine claim lease before it releases claim/write-set ownership.
+Machine events before repairing derived queue files or recovering claims. `machine-cancel-run`
+can only abort processes registered by Machine for that run id. `machine-cancel-claim` requires
+an active Machine claim lease before it releases claim/write-set ownership.
 `machine-execute-run-step` reaches CLI adapters only through Machine-selected harness commands or
 recognized `run.machineAdapter` declarations. Worker execution remains overlay-cwd contained,
 proposal execution is read-only, and arbitrary adapter execution, provider calls, terminal

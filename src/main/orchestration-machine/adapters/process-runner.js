@@ -4,6 +4,7 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const REDACTED_ARG = '[redacted]';
+const activeMachineProcesses = new Map();
 
 function isSecretEnvName(name) {
   return /(^SENTRY_DSN$|^GITHUB_TOKEN$|^DATABASE_URL$|CONNECTION_STRING|(^|_)(AUTH|COOKIE|CREDENTIALS?|KEY|PASSPHRASE|PRIVATE_KEY|SECRET|SESSION|TOKEN)(_|$)|PASSWORD)/i
@@ -95,6 +96,9 @@ function runMachineProcess(input = {}) {
     : DEFAULT_MAX_OUTPUT_BYTES;
   const { env, masked, maskedCount } = sanitizeEnvironment(input.env || process.env, input.extraEnv || {});
   const redactedArgs = redactCommandArgs(args);
+  const runId = String(input.runId || '').trim();
+  const adapterCallId = String(input.adapterCallId || '').trim();
+  const processKey = String(input.processKey || adapterCallId || '').trim();
 
   return new Promise((resolve, reject) => {
     const startedAt = new Date().toISOString();
@@ -112,6 +116,17 @@ function runMachineProcess(input = {}) {
       shell: false,
       windowsHide: true,
     });
+    const registryKeys = [runId ? `run:${runId}` : '', processKey ? `process:${processKey}` : ''].filter(Boolean);
+    let controller = null;
+    const unregister = () => {
+      if (!controller) return;
+      for (const key of registryKeys) {
+        const existing = activeMachineProcesses.get(key);
+        if (!existing) continue;
+        existing.delete(controller);
+        if (!existing.size) activeMachineProcesses.delete(key);
+      }
+    };
     if (input.stdin == null) {
       child.stdin?.end();
     } else {
@@ -130,6 +145,12 @@ function runMachineProcess(input = {}) {
         child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM');
       } catch {}
     };
+    controller = { abort };
+    for (const key of registryKeys) {
+      const existing = activeMachineProcesses.get(key) || new Set();
+      existing.add(controller);
+      activeMachineProcesses.set(key, existing);
+    }
     input.signal?.addEventListener?.('abort', abort, { once: true });
 
     child.stdout?.on('data', chunk => {
@@ -146,6 +167,7 @@ function runMachineProcess(input = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      unregister();
       input.signal?.removeEventListener?.('abort', abort);
       reject(err);
     });
@@ -153,6 +175,7 @@ function runMachineProcess(input = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      unregister();
       input.signal?.removeEventListener?.('abort', abort);
       resolve({
         command,
@@ -176,10 +199,33 @@ function runMachineProcess(input = {}) {
   });
 }
 
+function abortRegisteredProcesses(key) {
+  const controllers = activeMachineProcesses.get(key);
+  if (!controllers?.size) return 0;
+  let count = 0;
+  for (const controller of [...controllers]) {
+    count += 1;
+    controller.abort();
+  }
+  return count;
+}
+
+function cancelMachineProcessRun(runId) {
+  const id = String(runId || '').trim();
+  return id ? abortRegisteredProcesses(`run:${id}`) : 0;
+}
+
+function cancelMachineProcess(processKey) {
+  const key = String(processKey || '').trim();
+  return key ? abortRegisteredProcesses(`process:${key}`) : 0;
+}
+
 module.exports = {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
+  cancelMachineProcess,
+  cancelMachineProcessRun,
   isSecretEnvName,
   redactCommandArgs,
   runMachineProcess,

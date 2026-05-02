@@ -17,7 +17,7 @@ const { applyPatchArtifact } = require('./patches');
 const { recoverStaleClaims } = require('./dispatcher');
 const { executeMachineRunStep } = require('./machine');
 const { appendMachineEvent } = require('./events');
-const { resumeMachineRun } = require('./lifecycle');
+const { appendRunLifecycleStatus, appendRunSummaryStatus, resumeMachineRun } = require('./lifecycle');
 const {
   assertNoSymlinkInWorkspacePath,
   latestRunExportRoot,
@@ -27,6 +27,7 @@ const { createMachineRun, readRunState } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { cancelClaimedItem } = require('./worker-loop');
 const { readActiveWriteSetLocks } = require('./write-sets');
+const { cancelMachineProcessRun } = require('./adapters/process-runner');
 
 const fsp = fs.promises;
 
@@ -39,6 +40,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   listRuns: 'machine-list-runs',
   executeRunStep: 'machine-execute-run-step',
   resumeRun: 'machine-resume-run',
+  cancelRun: 'machine-cancel-run',
   cancelClaim: 'machine-cancel-claim',
   decideApproval: 'machine-decide-approval',
   exportLatestRun: 'machine-export-latest-run',
@@ -635,6 +637,7 @@ async function cancelClaimHandler(event, authority, request) {
   }
 
   try {
+    const abortedProcessCount = cancelMachineProcessRun(runId);
     const cancelled = await cancelClaimedItem(runRoot, {
       runId,
       claimId,
@@ -665,6 +668,7 @@ async function cancelClaimHandler(event, authority, request) {
         claimId,
         itemId,
         toState,
+        abortedProcessCount,
         transition: cancelled.transition,
       },
       exported,
@@ -690,6 +694,64 @@ async function cancelClaimHandler(event, authority, request) {
     }
     throw err;
   }
+}
+
+async function cancelRunHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  const abortedProcessCount = cancelMachineProcessRun(runId);
+  const firstClaim = (snapshot.activeClaims || [])[0] || null;
+  if (firstClaim?.claimId && firstClaim?.itemId) {
+    return cancelClaimHandler(event, authority, {
+      ...request,
+      claimId: firstClaim.claimId,
+      itemId: firstClaim.itemId,
+      toState: request.toState || 'blocked',
+    });
+  }
+  await appendRunLifecycleStatus(runRoot, {
+    runId,
+    toState: 'cancelled',
+    reason: 'machine-ui.cancel-run',
+    payload: { abortedProcessCount },
+  });
+  await appendRunSummaryStatus(runRoot, {
+    runId,
+    summaryStatus: 'partial',
+    reason: 'machine-ui.cancel-run',
+    payload: { abortedProcessCount },
+  });
+  const updated = await readRunSnapshot(runRoot);
+  const exported = request.exportLatestRun === false
+    ? null
+    : await exportLatestRun({
+      runRoot,
+      pipelineDir: context.pipelineDir,
+      allowOverwrite: true,
+    });
+  return {
+    success: true,
+    ok: true,
+    runId,
+    runState: updated.runState,
+    events: updated.events,
+    candidateInventory: updated.candidateInventory,
+    worker: updated.worker,
+    approvals: updated.approvals,
+    activeClaims: updated.activeClaims,
+    activeWriteSets: updated.activeWriteSets,
+    cancellation: {
+      runId,
+      abortedProcessCount,
+      toState: 'cancelled',
+    },
+    exported,
+  };
 }
 
 async function executeRunStepWithHarnessHandler(event, authority, request) {
@@ -840,6 +902,7 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.listRuns, listRunsHandler);
   handle(MACHINE_IPC_CHANNELS.executeRunStep, executeRunStepWithHarnessHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.resumeRun, resumeRunHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.cancelRun, cancelRunHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.cancelClaim, cancelClaimHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.exportLatestRun, exportLatestRunHandler, { mutating: true });

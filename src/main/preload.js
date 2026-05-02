@@ -122,6 +122,7 @@ contextBridge.exposeInMainWorld('orpad', {
     listRuns: (request) => ipcRenderer.invoke('machine-list-runs', request),
     executeRunStep: (request) => ipcRenderer.invoke('machine-execute-run-step', request),
     resumeRun: (request) => ipcRenderer.invoke('machine-resume-run', request),
+    cancelRun: (request) => ipcRenderer.invoke('machine-cancel-run', request),
     cancelClaim: (request) => ipcRenderer.invoke('machine-cancel-claim', request),
     decideApproval: (request) => ipcRenderer.invoke('machine-decide-approval', request),
     exportLatestRun: (request) => ipcRenderer.invoke('machine-export-latest-run', request),

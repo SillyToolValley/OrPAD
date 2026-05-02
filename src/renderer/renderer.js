@@ -7553,7 +7553,8 @@ function renderAgentHandoffPromptShape(shape, runbookPath) {
 
 function agentHandoffLaunchPrompt(runbookPath, pipelineDoc = null) {
   const manifestShape = pipelineDoc?.maintenancePolicy?.handoff?.launchPromptShape;
-  return renderAgentHandoffPromptShape(manifestShape, runbookPath) || `${runbookPath} 진행해`;
+  const normalizedPath = runbookNormalizePath(runbookPath).trim();
+  return renderAgentHandoffPromptShape(manifestShape, normalizedPath) || `Run this OrPAD pipeline: ${normalizedPath}`;
 }
 
 function agentHandoffSummaryPath(runbookPath, pipelineDoc = null) {
@@ -8202,7 +8203,13 @@ function machineRunAttentionDetails(record) {
   const notices = [];
   const workerReview = machineWorkerReviewInfo(record);
   const workerStatus = String(workerReview?.status || '').toLowerCase();
-  if (workerStatus === 'blocked') {
+  if (workerReview?.patchArtifact && workerReview.changedFiles.length && workerStatus !== 'blocked') {
+    notices.push({
+      state: 'warning',
+      title: 'Patch ready',
+      text: `${machineCountLabel(workerReview.changedFiles.length, 'changed file')} staged in run evidence. Review Patch to apply selected files or cancel to keep evidence only.`,
+    });
+  } else if (workerStatus === 'blocked') {
     notices.push({
       state: 'warning',
       title: 'Review required',
@@ -8326,6 +8333,32 @@ function machineStatusChipClass(status, kind = 'lifecycle') {
   if (['running', 'waiting', 'pending', 'partial', 'approval-required', 'approval_required'].includes(value)) return 'warn';
   if (['created', 'completed', 'done', 'success'].includes(value)) return 'good';
   return kind === 'summary' ? 'warn' : '';
+}
+
+function machineDisplayStatus(record, runInProgress) {
+  const runState = record?.runState || {};
+  const workerReview = machineWorkerReviewInfo(record);
+  const hasPatch = !!workerReview?.patchArtifact && (workerReview.changedFiles || []).length > 0;
+  if (!runInProgress && hasPatch && runState.summaryStatus === 'partial') {
+    return {
+      lifecycleLabel: 'Patch ready',
+      lifecycleClass: 'warn',
+      lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(runState.lifecycleStatus || 'waiting')}`,
+      summaryLabel: 'Review required',
+      summaryClass: 'warn',
+      summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'partial')}`,
+    };
+  }
+  const lifecycleStatus = runInProgress ? 'running' : (runState.lifecycleStatus || 'created');
+  const summaryStatus = runState.summaryStatus || 'pending';
+  return {
+    lifecycleLabel: machineLifecycleStatusLabel(lifecycleStatus),
+    lifecycleClass: machineStatusChipClass(lifecycleStatus),
+    lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
+    summaryLabel: machineSummaryStatusLabel(summaryStatus),
+    summaryClass: machineStatusChipClass(summaryStatus, 'summary'),
+    summaryTitle: `Summary: ${machineSummaryStatusLabel(summaryStatus)}`,
+  };
 }
 
 function machineRunDateLabel(value) {
@@ -8798,11 +8831,12 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   });
   const lifecycleStatus = runInProgress ? 'running' : (runState.lifecycleStatus || 'created');
   const summaryStatus = runState.summaryStatus || 'pending';
+  const displayStatus = machineDisplayStatus(record, runInProgress);
   const hasActiveClaims = activeClaims.length > 0;
   const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
   const executeDisabled = !runId || machineStepUnavailable || runTerminal || runInProgress || approvalPending || hasActiveClaims;
   const resumeDisabled = !runId || runTerminal || runInProgress || approvalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
-  const cancelDisabled = runTerminal || !window.orpad?.machine?.cancelClaim;
+  const cancelDisabled = runTerminal || (!window.orpad?.machine?.cancelRun && !window.orpad?.machine?.cancelClaim);
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
           ${pendingApprovals.slice(0, 3).map(approval => `
@@ -8815,8 +8849,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     <section class="runbook-panel-section">
       <h3>Latest Run</h3>
       <div class="runbook-chip-row">
-        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(lifecycleStatus))}" title="${escapeHtml(`Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`)}">${escapeHtml(machineLifecycleStatusLabel(lifecycleStatus))}</span>
-        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(summaryStatus, 'summary'))}" title="${escapeHtml(`Summary: ${machineSummaryStatusLabel(summaryStatus)}`)}">${escapeHtml(machineSummaryStatusLabel(summaryStatus))}</span>
+        <span class="runbook-chip ${escapeHtml(displayStatus.lifecycleClass)}" title="${escapeHtml(displayStatus.lifecycleTitle)}">${escapeHtml(displayStatus.lifecycleLabel)}</span>
+        <span class="runbook-chip ${escapeHtml(displayStatus.summaryClass)}" title="${escapeHtml(displayStatus.summaryTitle)}">${escapeHtml(displayStatus.summaryLabel)}</span>
         <span class="runbook-chip">${escapeHtml(runLabel)}</span>
       </div>
       ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
@@ -8824,9 +8858,11 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ${machineFailureDetails(record)}
       ${attentionDetails}
       <div class="runbook-action-row">
-        <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>
+        ${runInProgress
+          ? `<button class="primary" data-runbook-action="machine-cancel-run" data-run-id="${escapeHtml(runId)}" ${cancelDisabled ? 'disabled' : ''} title="Stop this running Machine step and mark current work for review.">Stop Run</button>`
+          : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>`}
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
-        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Stop Work</button>` : ''}
+        ${!runInProgress && firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Stop Work</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
@@ -9413,6 +9449,31 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
   void refreshWorkspaceRunbookSummary();
 }
 
+async function cancelSelectedMachineRun(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.cancelRun) return;
+  if (!await ensureMachineRuntimeReady()) return;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const cancelled = await window.orpad.machine.cancelRun({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    toState: 'blocked',
+    capabilityToken: token,
+    exportLatestRun: true,
+  });
+  if (!cancelled?.success) {
+    if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+    alert(cancelled?.error || 'Could not stop the run.');
+    return;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = machineUpdateRunRecord(runbookPath, cancelled);
+  await refreshMachineRunList(runbookPath);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+}
+
 async function exportSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine) return;
   if (!await ensureMachineRuntimeReady()) return;
@@ -9620,10 +9681,40 @@ async function applyMachinePatchSelection(runbookPath, runId, workerReview, sele
   return applied;
 }
 
-function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary) {
+async function machineWorkerItemDetails(record, workerReview) {
+  const itemId = machineLatestWorkerEvent(record)?.itemId || '';
+  if (!itemId || !window.orpad?.readFile) return null;
+  const transition = [...(record?.events || [])].reverse().find(event => (
+    event?.eventType === 'queue.transition'
+    && event.itemId === itemId
+    && (event.artifactRefs || []).some(ref => /^queue\//.test(ref))
+  ));
+  const itemPath = (transition?.artifactRefs || []).find(ref => /^queue\//.test(ref)) || '';
+  const filePath = machineSafeRunArtifactPath(record, itemPath);
+  if (!filePath) return { itemId };
+  try {
+    const result = await window.orpad.readFile(filePath);
+    const item = JSON.parse(result?.content || '{}');
+    return {
+      itemId,
+      title: item.title || itemId,
+      issueType: item.issueType || '',
+      userImpact: item.userImpact || '',
+      expectedBehavior: item.expectedBehavior || '',
+      actualBehavior: item.actualBehavior || '',
+      acceptanceCriteria: Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : [],
+    };
+  } catch {
+    return { itemId };
+  }
+}
+
+function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails = null) {
   if (!workerReview?.patchArtifact || !patchSummary || patchSummary.error || !patchSummary.changes?.length) return;
   const body = document.createElement('div');
   body.className = 'runbook-modal-body';
+  const title = itemDetails?.title || itemDetails?.itemId || 'Machine patch';
+  const criteria = (itemDetails?.acceptanceCriteria || []).slice(0, 3);
   const changeRows = patchSummary.changes.map((change, index) => `
     <label class="runbook-diagnostic" style="display:block; margin:8px 0;">
       <input type="checkbox" data-machine-patch-file value="${escapeHtml(change.path)}" ${index < 20 ? 'checked' : ''}>
@@ -9632,7 +9723,10 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     </label>
   `).join('');
   body.innerHTML = `
-    <p>The run produced a patch in evidence. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.</p>
+    <p>The run produced a patch for <strong>${escapeHtml(title)}</strong>. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.</p>
+    ${itemDetails?.userImpact ? `<div class="runbook-diagnostic"><strong>Why</strong> ${escapeHtml(itemDetails.userImpact)}</div>` : ''}
+    ${itemDetails?.actualBehavior || itemDetails?.expectedBehavior ? `<div class="runbook-diagnostic"><strong>Change goal</strong> ${escapeHtml([itemDetails.actualBehavior, itemDetails.expectedBehavior].filter(Boolean).join(' -> '))}</div>` : ''}
+    ${criteria.length ? `<div class="runbook-diagnostic"><strong>Acceptance</strong><ul>${criteria.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>` : ''}
     <div class="runbook-diagnostic warning"><strong>Workspace not changed yet.</strong> Applying writes the selected files to your workspace after base SHA checks.</div>
     <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
     <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
@@ -9705,7 +9799,8 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
     };
   }
   machinePatchReviewShown.add(key);
-  openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary);
+  const itemDetails = await machineWorkerItemDetails(record, workerReview);
+  openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails);
 }
 
 async function openMachineArtifactViewer(runbookPath, runId) {
@@ -10119,7 +10214,8 @@ contentEl?.addEventListener('click', async (event) => {
   event.stopPropagation();
   button.closest('details')?.removeAttribute('open');
   const action = button.dataset.pipelineRunAction || '';
-  const targetPath = button.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+  const runbarPath = button.closest('[data-pipeline-preview-runbar]')?.dataset.pipelinePath || '';
+  const targetPath = runbarPath || button.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
   try {
     await runPipelinePreviewAction(action, targetPath);
   } catch (err) {
@@ -10181,6 +10277,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'run-machine') await startSelectedMachineRun(targetPath);
     else if (action === 'machine-execute-step') await executeSelectedMachineRunStep(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-resume-run') await resumeSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    else if (action === 'machine-cancel-run') await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-cancel-claim') await cancelSelectedMachineClaim(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.claimId || '', button.dataset.itemId || '');
     else if (action === 'machine-approve-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved');
     else if (action === 'machine-deny-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'denied');
