@@ -244,6 +244,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('#runbooks-content')).toContainText('Snapshot saved');
+  await expect(win.locator('#runbooks-content')).toContainText('No permission needed');
+  await expect(win.locator('#runbooks-content')).not.toContainText('No pending approvals');
   await expect(win.locator('#runbooks-content')).not.toContainText('Export Latest');
   await expect(win.locator('#runbooks-content')).not.toContainText('before auditing this run');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
