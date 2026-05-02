@@ -244,6 +244,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('#runbooks-content')).toContainText('Snapshot saved');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Export Latest');
+  await expect(win.locator('#runbooks-content')).not.toContainText('before auditing this run');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
   await expect(win.locator('#runbooks-content')).not.toContainText(/\bResume\b/);
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
@@ -257,6 +259,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Snapshot saved');
   await expect(win.locator('#runbooks-content')).toContainText('Evidence check');
   await expect(win.locator('#runbooks-content')).toContainText('Evidence ready for review');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Export Latest before auditing this run');
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
   await expect(win.locator('button[data-runbook-action="machine-view-artifacts"]')).toBeEnabled();
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
