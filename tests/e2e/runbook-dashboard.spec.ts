@@ -93,6 +93,22 @@ function writeFixtureWorkspace(): string {
       ],
     },
   }, null, 2));
+  const templateRoot = path.join(workspace, 'nodes', 'orpad.workstream', 'examples');
+  fs.mkdirSync(templateRoot, { recursive: true });
+  fs.writeFileSync(path.join(templateRoot, 'maintenance-workstream.or-pipeline'), JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'maintenance-workstream-example',
+    title: 'Maintenance Workstream Example',
+    description: 'Example pipeline that should not appear as a runnable workspace pipeline.',
+    template: true,
+    trustLevel: 'local-authored',
+    entryGraph: 'graphs/main.or-graph',
+    executionPolicy: {
+      mode: 'template-only',
+      copyBeforeRun: true,
+    },
+  }, null, 2));
   fs.writeFileSync(path.join(workspace, '.orch-tree.json'), JSON.stringify({
     $schema: 'https://orchpad.dev/schemas/orch-tree/v4.1.json',
     version: '4.1',
@@ -137,11 +153,16 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(win.locator('#runbooks-content')).toContainText('Pipelines');
   await expect(win.locator('#runbooks-content')).toContainText('.orch-tree.json');
   const pipelinesSection = win.locator('[data-runbook-section="pipelines"]');
+  const templatesSection = win.locator('[data-runbook-section="templates"]');
   const legacySection = win.locator('[data-runbook-section="legacy"]');
   await expect(pipelinesSection.locator('.runbook-item[data-runbook-format="or-pipeline"] strong')).toContainText('Agent Workstream');
   await expect(pipelinesSection).not.toContainText('.orpad/pipelines');
   await expect(pipelinesSection).not.toContainText('pipeline.or-pipeline');
+  await expect(pipelinesSection).not.toContainText('Maintenance Workstream Example');
   await expect(pipelinesSection).toContainText('1 pipeline');
+  await expect(templatesSection).toContainText('Templates');
+  await expect(templatesSection).toContainText('Maintenance Workstream Example');
+  await expect(templatesSection).toContainText('1 template');
   await expect(pipelinesSection).not.toContainText('.orch-tree.json');
   await expect(legacySection).toContainText('Legacy Workflows');
   await expect(legacySection).toContainText('.orch-tree.json');
@@ -160,6 +181,8 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   expect(cachedIndex.workspace.fileCount).toBeGreaterThanOrEqual(13);
   expect(Array.isArray(cachedIndex.pipelines)).toBe(true);
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/agent-workstream/pipeline.or-pipeline');
+  expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).not.toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
+  expect(cachedIndex.templatePipelines.map((item: { path: string }) => item.path)).toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
   expect(cachedIndex.legacyRunbooks.map((item: { path: string }) => item.path)).toContain('.orch-tree.json');
   expect(cachedIndex.redaction.contentIncluded).toBe(false);
   expect(cachedIndex.redaction.candidates.map((item: { path: string }) => item.path)).toContain('.env');

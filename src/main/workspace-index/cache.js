@@ -57,6 +57,7 @@ function buildWorkspaceIndexSnapshot(workspaceRoot, summary = {}) {
       truncated: summary.truncated === true,
     },
     pipelines: toRelativeItems(workspaceRoot, summary.pipelines || []),
+    templatePipelines: toRelativeItems(workspaceRoot, summary.templatePipelines || []),
     legacyRunbooks: toRelativeItems(workspaceRoot, summary.legacyRunbooks || []),
     runbooks: toRelativeItems(workspaceRoot, summary.runbooks || []),
     redaction: {

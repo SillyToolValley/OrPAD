@@ -7012,6 +7012,13 @@ function runbookSummaryItemForPath(filePath) {
   return (summary?.runbooks || []).find(item => runbookNormalizePath(item.path).toLowerCase() === key) || null;
 }
 
+function isWorkspacePipelinePackagePath(filePath) {
+  const root = runbookNormalizePath(workspacePath).replace(/\/+$/, '').toLowerCase();
+  const normalized = runbookNormalizePath(filePath).toLowerCase();
+  if (!root || !normalized.startsWith(`${root}/.orpad/pipelines/`)) return false;
+  return normalized.endsWith('/pipeline.or-pipeline');
+}
+
 function renderRunbookListItems(items, selectedKey) {
   return items.map(item => {
     const relativePath = runbookRelativePath(item.path);
@@ -7100,6 +7107,7 @@ function buildWorkspaceRunbookSummary() {
   const extCounts = new Map();
   const runbooks = [];
   const pipelines = [];
+  const templatePipelines = [];
   const legacyRunbooks = [];
   const risky = [];
   let markdownCount = 0;
@@ -7111,8 +7119,13 @@ function buildWorkspaceRunbookSummary() {
     const ext = runbookExt(file.name);
     extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
     if (isOrpadPipelineFile(file.name)) {
-      const item = { ...file, format: 'or-pipeline', displayName: runbookDirname(file.path).split('/').pop() || file.name };
-      pipelines.push(item);
+      const isWorkspacePipeline = isWorkspacePipelinePackagePath(file.path);
+      const displayName = isWorkspacePipeline
+        ? runbookDirname(file.path).split('/').pop() || file.name
+        : file.name.replace(/\.or-pipeline$/i, '') || file.name;
+      const item = { ...file, format: 'or-pipeline', displayName, template: !isWorkspacePipeline };
+      if (item.template) templatePipelines.push(item);
+      else pipelines.push(item);
       runbooks.push(item);
     } else if (isLegacyRunbookFile(file.name)) {
       const item = { ...file, format: file.name.toLowerCase().endsWith('.orch-graph.json') ? 'orch-graph' : 'orch-tree' };
@@ -7128,11 +7141,14 @@ function buildWorkspaceRunbookSummary() {
 
   const hasObsidian = dirs.some(item => item.name === '.obsidian');
   const hasRuns = dirs.some(item => item.name === '.orch-runs' || (item.name === 'runs' && runbookNormalizePath(item.path).includes('/.orpad/pipelines/')));
+  const pipelineLikeCount = pipelines.length + templatePipelines.length;
   let workspaceType = 'Project workspace';
   if (hasObsidian && pipelines.length) workspaceType = 'Obsidian + OrPAD Pipeline workspace';
+  else if (hasObsidian && pipelineLikeCount) workspaceType = 'Obsidian + OrPAD Template workspace';
   else if (hasObsidian && runbooks.length) workspaceType = 'Obsidian + Legacy Runbook workspace';
   else if (hasObsidian) workspaceType = 'Obsidian vault';
   else if (pipelines.length) workspaceType = 'OrPAD Pipeline workspace';
+  else if (pipelineLikeCount) workspaceType = 'OrPAD Template workspace';
   else if (runbooks.length) workspaceType = 'Legacy Runbook workspace';
 
   return {
@@ -7144,6 +7160,7 @@ function buildWorkspaceRunbookSummary() {
     dirCount: dirs.length,
     runbooks,
     pipelines,
+    templatePipelines,
     legacyRunbooks,
     risky,
     hasObsidian,
@@ -7439,19 +7456,27 @@ function summaryWithSelectedRunbook(summary, selectedPath) {
   if (runbooks.some(item => runbookNormalizePath(item.path).toLowerCase() === key)) return summary;
   const name = selectedPath.split(/[\\/]/).pop() || selectedPath;
   const lower = name.toLowerCase();
+  const isPipeline = lower.endsWith('.or-pipeline');
+  const isWorkspacePipeline = isPipeline && isWorkspacePipelinePackagePath(selectedPath);
   const item = {
     path: selectedPath,
     name,
     kind: 'file',
-    format: lower.endsWith('.or-pipeline') ? 'or-pipeline' : lower.endsWith('.orch-graph.json') ? 'orch-graph' : 'orch-tree',
-    displayName: lower.endsWith('.or-pipeline') ? runbookDirname(selectedPath).split('/').pop() || name : name,
-    description: lower.endsWith('.or-pipeline') ? 'OrPAD pipeline' : '',
+    format: isPipeline ? 'or-pipeline' : lower.endsWith('.orch-graph.json') ? 'orch-graph' : 'orch-tree',
+    displayName: isPipeline && isWorkspacePipeline
+      ? runbookDirname(selectedPath).split('/').pop() || name
+      : isPipeline
+        ? name.replace(/\.or-pipeline$/i, '') || name
+        : name,
+    description: isPipeline ? 'OrPAD pipeline' : '',
+    template: isPipeline && !isWorkspacePipeline,
   };
   const next = {
     ...summary,
     runbooks: [item, ...runbooks],
-    pipelines: lower.endsWith('.or-pipeline') ? [item, ...(summary.pipelines || [])] : (summary.pipelines || []),
-    legacyRunbooks: lower.endsWith('.or-pipeline') ? (summary.legacyRunbooks || []) : [item, ...(summary.legacyRunbooks || [])],
+    pipelines: isPipeline && isWorkspacePipeline ? [item, ...(summary.pipelines || [])] : (summary.pipelines || []),
+    templatePipelines: isPipeline && !isWorkspacePipeline ? [item, ...(summary.templatePipelines || [])] : (summary.templatePipelines || []),
+    legacyRunbooks: isPipeline ? (summary.legacyRunbooks || []) : [item, ...(summary.legacyRunbooks || [])],
   };
   return next;
 }
@@ -8306,8 +8331,10 @@ function renderRunbooksPanel() {
 
   const summary = workspaceRunbookSummary || buildWorkspaceRunbookSummary();
   const pipelineItems = summary.pipelines || [];
+  const templateItems = summary.templatePipelines || [];
   const legacyItems = summary.legacyRunbooks || [];
   const pipelineCount = (summary.pipelines || []).length;
+  const templateCount = templateItems.length;
   const legacyCount = legacyItems.length;
   const selected = selectedRunbookPath || '';
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
@@ -8344,6 +8371,17 @@ function renderRunbooksPanel() {
         </div>
       ` : '<div class="runbook-empty">No OrPAD pipelines found yet. Describe the work, then generate one.</div>'}
     </section>
+    ${templateItems.length ? `
+      <section class="runbook-panel-section" data-runbook-section="templates">
+        <div class="runbook-section-heading">
+          <h3>Templates</h3>
+          <span class="runbook-chip">${escapeHtml(machineCountLabel(templateCount, 'template'))}</span>
+        </div>
+        <div class="runbook-list">
+          ${renderRunbookListItems(templateItems, selectedKey)}
+        </div>
+      </section>
+    ` : ''}
     ${legacyItems.length ? `
       <section class="runbook-panel-section" data-runbook-section="legacy">
         <div class="runbook-section-heading">

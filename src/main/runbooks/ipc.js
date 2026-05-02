@@ -70,12 +70,14 @@ async function readPipelineManifestSummary(filePath) {
       displayName: parsed.title || parsed.name || parsed.id || fallback,
       pipelineId: parsed.id || fallback,
       description: parsed.description || '',
+      template: parsed.template === true || parsed.executionPolicy?.copyBeforeRun === true,
     };
   } catch {
     return {
       displayName: fallback,
       pipelineId: fallback,
       description: '',
+      template: false,
     };
   }
 }
@@ -112,10 +114,21 @@ function isPipelineGeneratedHarnessDir(workspaceRoot, dirPath) {
   return false;
 }
 
+function isWorkspacePipelinePackageFile(workspaceRoot, filePath) {
+  const relativeParts = path.relative(workspaceRoot, filePath)
+    .split(/[\\/]+/)
+    .filter(Boolean);
+  return relativeParts.length >= 4
+    && relativeParts[0] === '.orpad'
+    && relativeParts[1] === 'pipelines'
+    && relativeParts[3] === 'pipeline.or-pipeline';
+}
+
 async function scanRunbookWorkspace(workspaceRoot) {
   const extCounts = new Map();
   const runbooks = [];
   const pipelines = [];
+  const templatePipelines = [];
   const legacyRunbooks = [];
   const risky = [];
   let fileCount = 0;
@@ -184,7 +197,9 @@ async function scanRunbookWorkspace(workspaceRoot) {
           item.displayName = manifestSummary.displayName;
           item.pipelineId = manifestSummary.pipelineId;
           item.description = manifestSummary.description;
-          pipelines.push(item);
+          item.template = manifestSummary.template || !isWorkspacePipelinePackageFile(workspaceRoot, entryPath);
+          if (item.template) templatePipelines.push(item);
+          else pipelines.push(item);
           runbooks.push(item);
         } else if (isLegacyRunbookFile(entry.name)) {
           item.format = entry.name.toLowerCase().endsWith('.orch-graph.json') ? 'orch-graph' : 'orch-tree';
@@ -202,11 +217,14 @@ async function scanRunbookWorkspace(workspaceRoot) {
 
   await walk(workspaceRoot, 0);
 
+  const pipelineLikeCount = pipelines.length + templatePipelines.length;
   let workspaceType = 'Project workspace';
   if (hasObsidian && pipelines.length) workspaceType = 'Obsidian + OrPAD Pipeline workspace';
+  else if (hasObsidian && pipelineLikeCount) workspaceType = 'Obsidian + OrPAD Template workspace';
   else if (hasObsidian && runbooks.length) workspaceType = 'Obsidian + Legacy Runbook workspace';
   else if (hasObsidian) workspaceType = 'Obsidian vault';
   else if (pipelines.length) workspaceType = 'OrPAD Pipeline workspace';
+  else if (pipelineLikeCount) workspaceType = 'OrPAD Template workspace';
   else if (runbooks.length) workspaceType = 'Legacy Runbook workspace';
 
   return {
@@ -218,6 +236,7 @@ async function scanRunbookWorkspace(workspaceRoot) {
     dirCount,
     runbooks,
     pipelines,
+    templatePipelines,
     legacyRunbooks,
     risky,
     hasObsidian,
