@@ -7913,7 +7913,68 @@ function renderRunRecordPanel(record = lastRunRecord) {
 }
 
 function machineEventLabel(event) {
-  return event?.eventType || event?.type || 'event';
+  const type = event?.eventType || event?.type || '';
+  const payload = event?.payload || {};
+  switch (type) {
+    case 'run.created':
+      return 'Run started';
+    case 'run.status': {
+      const status = event?.toState || payload.toState || payload.lifecycleStatus || payload.status;
+      return status ? `Status changed to ${machineLifecycleStatusLabel(status)}` : 'Status updated';
+    }
+    case 'run.summary': {
+      const status = payload.summaryStatus || event?.summaryStatus;
+      return status ? `Summary updated to ${machineSummaryStatusLabel(status)}` : 'Summary updated';
+    }
+    case 'adapter.requested':
+      return 'Agent request prepared';
+    case 'adapter.result':
+      return 'Agent response accepted';
+    case 'worker.result':
+      return 'Work completed';
+    case 'queue.dedupe':
+      return 'Duplicate candidate skipped';
+    case 'queue.transition': {
+      const state = payload.toState || event?.toState;
+      return state ? `Work item moved to ${state}` : 'Work item updated';
+    }
+    case 'artifact.registered':
+      return 'Evidence file saved';
+    case 'approval.requested':
+      return 'Approval requested';
+    case 'approval.decided': {
+      const decision = payload.decision || event?.decision || payload.status;
+      return decision ? `Approval ${decision}` : 'Approval decided';
+    }
+    case 'claim.lease-created':
+      return 'Work item claimed';
+    case 'claim.heartbeat':
+      return 'Work claim refreshed';
+    case 'claim.lease-released':
+      return 'Work claim released';
+    case 'write-set.acquired':
+      return 'Files reserved';
+    case 'write-set.released':
+      return 'File reservation released';
+    case 'node.scheduled':
+      return 'Step scheduled';
+    case 'node.started':
+      return 'Step started';
+    case 'node.completed':
+      return 'Step completed';
+    case 'node.failed':
+      return 'Step failed';
+    case 'node.skipped':
+      return 'Step skipped';
+    case 'node.blocked':
+      return 'Step blocked';
+    default:
+      return type.replace(/[._-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase()) || 'Event recorded';
+  }
+}
+
+function machineEventTimeLabel(event) {
+  return machineRunDateLabel(event?.timestamp) || '';
 }
 
 function machineFailureDetails(record) {
@@ -8358,7 +8419,10 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
       <div class="runbook-replay-events">
-        ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No run events recorded.</div>'}
+        ${events.slice(-24).map(event => {
+          const timeLabel = machineEventTimeLabel(event);
+          return `<div class="runbook-event">${timeLabel ? `${escapeHtml(timeLabel)} ` : ''}${escapeHtml(machineEventLabel(event))}</div>`;
+        }).join('') || '<div class="runbook-event">No run events recorded.</div>'}
       </div>
       <div class="runbook-machine-grid">
         <div class="runbook-guide ${record.candidateInventory ? 'good' : 'warn'}">
