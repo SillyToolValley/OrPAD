@@ -255,7 +255,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.locator('button[data-runbook-action="machine-export"]').click();
   await expect(win.locator('#runbooks-content')).toContainText('Evidence snapshot');
   await expect(win.locator('#runbooks-content')).toContainText('Snapshot saved');
-  await expect(win.locator('#runbooks-content')).toContainText('Audit evidence ready');
+  await expect(win.locator('#runbooks-content')).toContainText('Evidence check');
+  await expect(win.locator('#runbooks-content')).toContainText('Evidence ready for review');
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
   await expect(win.locator('button[data-runbook-action="machine-view-artifacts"]')).toBeEnabled();
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
@@ -266,7 +267,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.locator('#btn-preview').click();
   await expect(win.locator('#content')).toContainText('artifacts/discovery/candidate-inventory.json');
   await expect(win.locator('#content')).toContainText('artifacts/patches');
-  await expect(win.locator('#content')).toContainText('Audit evidence ready');
+  await expect(win.locator('#content')).toContainText('Evidence ready for review');
 
   const runDirs = fs.readdirSync(runRoot);
   expect(fs.existsSync(path.join(runRoot, runDirs[0], 'run-state.json'))).toBe(true);

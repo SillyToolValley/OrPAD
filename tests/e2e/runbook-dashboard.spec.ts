@@ -210,12 +210,12 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(win.locator('#fmt-modal-body')).toContainText('Latest Run / Cycle Evidence');
   await expect(win.locator('#fmt-modal-body')).toContainText('ready for first cycle');
   await expect(win.locator('#fmt-modal-body')).toContainText('No latest cycle evidence exists yet');
-  await expect(win.locator('#fmt-modal-body')).toContainText('Run evidence audit becomes meaningful after the first cycle creates required evidence files');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Evidence check becomes meaningful after the first cycle creates required evidence files');
   await expect(win.locator('#fmt-modal-body')).not.toContainText('RUN_REQUIRED_ARTIFACT_MISSING');
   await expect(win.locator('#fmt-modal-body')).not.toContainText('RUN_ARTIFACT_ROOT_MISSING');
   await expect(win.locator('#fmt-modal-body')).not.toContainText('dynamic import callback');
   await expect(win.locator('#fmt-modal-body')).not.toContainText('RUN_AUDIT_FAILED');
-  await expect(win.locator('#fmt-modal-body')).toContainText('Required Audits');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Required Checks');
   await expect(win.locator('#fmt-modal-body')).toContainText('audit:orpad-node-schemas');
   await expect(win.locator('#fmt-modal-body')).toContainText('audit:orpad-run');
   await expect(win.locator('#fmt-modal-body')).toContainText('agent-workstream/pipeline.or-pipeline');

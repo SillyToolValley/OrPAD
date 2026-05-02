@@ -7442,9 +7442,9 @@ function agentHandoffAuditCommands(runbookPath, pipelineDoc) {
 }
 
 function renderAgentHandoffAuditChecklist(commands) {
-  const items = commands.length ? commands : ['Run evidence audit unavailable.'];
+  const items = commands.length ? commands : ['Evidence check unavailable.'];
   return `
-    <h3>Required Audits</h3>
+    <h3>Required Checks</h3>
     <ul class="runbook-audit-list">
       ${items.map(command => `<li><code>${escapeHtml(command)}</code></li>`).join('')}
     </ul>
@@ -7727,7 +7727,7 @@ async function getRunbookEvidenceAudit(runbookPath) {
 
 function renderRunEvidenceAudit(audit) {
   if (!audit) {
-    return '<div class="runbook-diagnostic warning">Run evidence audit is unavailable in this environment.</div>';
+    return '<div class="runbook-diagnostic warning">Evidence check is unavailable in this environment.</div>';
   }
   const diagnostics = audit.diagnostics || [];
   const noCycleCodes = new Set([
@@ -7761,7 +7761,7 @@ function renderRunEvidenceAudit(audit) {
   };
   return `
     <div class="runbook-chip-row">
-      <span class="runbook-chip ${audit.ok ? 'good' : (noCycleYet ? 'warn' : 'danger')}">${escapeHtml(noCycleYet ? 'ready for first cycle' : `cycle audit ${status}`)}</span>
+      <span class="runbook-chip ${audit.ok ? 'good' : (noCycleYet ? 'warn' : 'danger')}">${escapeHtml(noCycleYet ? 'ready for first cycle' : `cycle check ${status}`)}</span>
       <span class="runbook-chip">${escapeHtml(String(audit.queueAudit?.itemCount ?? 0))} queue items</span>
     </div>
     ${noCycleYet ? `
@@ -7771,9 +7771,9 @@ function renderRunEvidenceAudit(audit) {
     ` : ''}
     ${diagnostics.length ? `
       <div class="runbook-diagnostic ${audit.ok || noCycleYet ? 'warning' : 'error'}">
-        ${escapeHtml(noCycleYet ? 'Run evidence audit becomes meaningful after the first cycle creates required evidence files.' : diagnostics.slice(0, 5).map(formatDiagnostic).join('\n'))}
+        ${escapeHtml(noCycleYet ? 'Evidence check becomes meaningful after the first cycle creates required evidence files.' : diagnostics.slice(0, 5).map(formatDiagnostic).join('\n'))}
       </div>
-    ` : '<div class="runbook-diagnostic">Latest run/cycle evidence audit passed.</div>'}
+    ` : '<div class="runbook-diagnostic">Latest run/cycle evidence check passed.</div>'}
   `;
 }
 
@@ -7806,9 +7806,9 @@ async function openAgentHandoffModal(runbookPath, validation) {
       `workspace: ${workspacePath || ''}`,
       `pipeline: ${runbookRelativePath(runbookPath)}`,
       `latest cycle summary: ${runbookRelativePath(summaryPath)}`,
-      `run audit: ${auditCommand}`,
-      `required audits: ${auditCommands.length}`,
-      'latest-run is the most recent cycle snapshot, not proof that the maintenance pipeline is finished; trust it only when the run audit passes.',
+      `evidence check: ${auditCommand}`,
+      `required checks: ${auditCommands.length}`,
+      'latest-run is the most recent cycle snapshot, not proof that the maintenance pipeline is finished; trust it only after the evidence check passes.',
       renderOnlyTypes.length ? `agent-only node types: ${renderOnlyTypes.join(', ')}` : '',
     ].filter(Boolean).join('\n'))}</pre>
   `;
@@ -8206,14 +8206,14 @@ function machineAuditDetails(record) {
     || record?.exported?.latestRunExportPath
     || '';
   if (!runRoot) {
-    return { state: 'warn', text: 'Audit unavailable' };
+    return { state: 'warn', text: 'Check unavailable' };
   }
   if (!exportRoot) {
-    return { state: 'warn', text: 'Save evidence before audit' };
+    return { state: 'warn', text: 'Save evidence before checking' };
   }
   return {
     state: 'good',
-    text: 'Audit evidence ready',
+    text: 'Evidence ready for review',
   };
 }
 
@@ -8482,7 +8482,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(exported ? 'Snapshot saved' : 'No snapshot saved yet')}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
-          <strong>Run audit</strong>
+          <strong>Evidence check</strong>
           <span>${escapeHtml(auditDetails.text)}</span>
         </div>
         <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
