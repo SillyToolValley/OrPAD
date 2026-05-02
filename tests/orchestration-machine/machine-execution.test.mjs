@@ -7,6 +7,8 @@ import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const {
+  appendMachineEvent,
+  appendRunLifecycleStatus,
   createMachineRun,
   executeMachineRunStep,
   findQueueItem,
@@ -368,6 +370,7 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
 
   const eventTypes = executed.events.map(event => event.eventType);
   assert.equal(executed.runState.eventSequence, executed.events.at(-1).sequence);
+  assert.equal(executed.events.some(event => event.eventType === 'run.status' && event.toState === 'running'), true);
   assert.equal(eventTypes.filter(type => type === 'node.started').length, 9);
   assert.equal(eventTypes.filter(type => type === 'node.completed').length, 9);
   const adapterRequest = executed.events.find(event => event.eventType === 'adapter.requested' && event.payload?.taskKind === 'workerLoop');
@@ -408,6 +411,54 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
     error => error?.code === 'MACHINE_RUN_TERMINAL',
   );
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCountAfterCompletion);
+});
+
+test('graph-driven execute step rejects overlapping running executions', async () => {
+  const { workspaceRoot, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260502_graph_harness_running');
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'running',
+    reason: 'test.in-progress',
+  });
+
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      runRoot: run.runRoot,
+      runId: run.runId,
+    }),
+    error => error?.code === 'MACHINE_RUN_IN_PROGRESS',
+  );
+});
+
+test('graph-driven execute step rejects overlapping active node executions', async () => {
+  const { workspaceRoot, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260502_graph_harness_active_node');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.started',
+    nodePath: 'main/probe',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/probe:attempt-1`,
+      nodeType: 'orpad.probe',
+      status: 'started',
+      attempt: 1,
+    },
+  });
+
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      runRoot: run.runRoot,
+      runId: run.runId,
+    }),
+    error => (
+      error?.code === 'MACHINE_RUN_IN_PROGRESS'
+      && error.activeNodeExecutions?.[0]?.nodePath === 'main/probe'
+    ),
+  );
 });
 
 test('graph-driven execute step runs a live Codex CLI adapter declaration through worker overlay', async () => {

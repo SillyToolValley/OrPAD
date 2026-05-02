@@ -53,7 +53,8 @@ function machineExecutionError(code, message) {
 }
 
 async function assertRunCanExecuteStep(runRoot) {
-  const runState = await readRunState(runRoot) || projectRunStateFromEvents(await readMachineEvents(runRoot));
+  const events = await readMachineEvents(runRoot);
+  const runState = await readRunState(runRoot) || projectRunStateFromEvents(events);
   if (
     TERMINAL_RUN_LIFECYCLE_STATUSES.has(runState?.lifecycleStatus)
     || runState?.summaryStatus === 'done'
@@ -63,6 +64,45 @@ async function assertRunCanExecuteStep(runRoot) {
       `Machine run is terminal (${runState.lifecycleStatus}/${runState.summaryStatus}) and cannot execute another step.`,
     );
   }
+  if (['running', 'cancelling'].includes(runState?.lifecycleStatus)) {
+    throw machineExecutionError(
+      'MACHINE_RUN_IN_PROGRESS',
+      `Machine run is already ${runState.lifecycleStatus} and cannot execute another step.`,
+    );
+  }
+  const activeNodeExecutions = activeNodeExecutionsFromEvents(events);
+  if (activeNodeExecutions.length) {
+    const err = machineExecutionError(
+      'MACHINE_RUN_IN_PROGRESS',
+      'Machine run already has an active node execution and cannot execute another step.',
+    );
+    err.activeNodeExecutions = activeNodeExecutions;
+    throw err;
+  }
+}
+
+function nodeExecutionKey(event) {
+  return event?.payload?.nodeExecutionId
+    || `${event?.nodePath || ''}:attempt-${event?.payload?.attempt || 1}`;
+}
+
+function activeNodeExecutionsFromEvents(events = []) {
+  const active = new Map();
+  for (const event of events) {
+    if (!String(event?.eventType || '').startsWith('node.')) continue;
+    const key = nodeExecutionKey(event);
+    if (!key) continue;
+    if (event.eventType === 'node.started') {
+      active.set(key, {
+        nodeExecutionId: key,
+        nodePath: event.nodePath || '',
+        startedSequence: event.sequence,
+      });
+    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(event.eventType)) {
+      active.delete(key);
+    }
+  }
+  return [...active.values()];
 }
 
 async function readJsonFile(filePath, label = 'JSON file') {
@@ -881,6 +921,17 @@ async function executeMachineRunStep(options = {}) {
   for (const [label, node] of Object.entries({ triageNode, dispatcherNode, workerNode })) {
     if (!node) throw machineExecutionError('MACHINE_EXECUTION_NODE_NOT_FOUND', `Machine graph harness could not find ${label}.`);
   }
+  await appendRunLifecycleStatus(runRoot, {
+    runId,
+    toState: 'running',
+    reason: 'machine-graph-step.start',
+    payload: {
+      selectedProbeNodes: probeNodes.map(node => node.nodePath),
+      triageNode: triageNode.nodePath,
+      dispatcherNode: dispatcherNode.nodePath,
+      workerNode: workerNode.nodePath,
+    },
+  });
 
   const operationNodes = [...probeNodes, triageNode, dispatcherNode, workerNode];
   const supportNodes = supportNodesForExecution(orderedNodes, operationNodes);
