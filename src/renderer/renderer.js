@@ -6962,6 +6962,12 @@ function runbookRelativePath(filePath) {
   return fp;
 }
 
+function runbookBaseName(filePath, fallback = 'Workspace') {
+  const normalized = runbookNormalizePath(filePath).replace(/\/+$/, '');
+  const base = normalized.split('/').filter(Boolean).pop();
+  return base || fallback;
+}
+
 function runbookStateKeys(filePath) {
   const full = runbookNormalizePath(filePath).toLowerCase();
   const relative = runbookRelativePath(filePath).toLowerCase();
@@ -8244,6 +8250,11 @@ function renderRunbooksPanel() {
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
   const selectedMachineRunRecord = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, selected);
   const selectedKey = runbookNormalizePath(selected).toLowerCase();
+  const workspaceMeta = [
+    machineCountLabel(pipelineCount, 'pipeline'),
+    legacyCount ? machineCountLabel(legacyCount, 'legacy graph') : '',
+    machineCountLabel(summary.fileCount, 'file'),
+  ].filter(Boolean);
   runbooksContentEl.innerHTML = `
     <section class="runbook-panel-section">
       <h3>Describe the work</h3>
@@ -8252,7 +8263,12 @@ function renderRunbooksPanel() {
         <button class="primary" data-runbook-action="starter">Generate Pipeline</button>
         <button data-runbook-action="refresh">Refresh</button>
       </div>
-      <p class="runbook-muted">${escapeHtml(runbookRelativePath(workspacePath))} - ${pipelineCount} pipelines${legacyCount ? ` - ${legacyCount} legacy graphs` : ''} - ${summary.fileCount} files</p>
+      <div class="runbook-workspace-meta" data-runbook-workspace-meta title="${escapeHtml(runbookNormalizePath(workspacePath))}">
+        <strong>${escapeHtml(runbookBaseName(workspacePath))}</strong>
+        <span class="runbook-chip-row">
+          ${workspaceMeta.map(item => `<span class="runbook-chip">${escapeHtml(item)}</span>`).join('')}
+        </span>
+      </div>
     </section>
     <section class="runbook-panel-section">
       <h3>Pipelines</h3>

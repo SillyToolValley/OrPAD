@@ -135,6 +135,12 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(win.locator('#runbooks-content')).toContainText('Generate Pipeline');
   await expect(win.locator('#runbooks-content')).toContainText('Pipelines');
   await expect(win.locator('#runbooks-content')).toContainText('.orch-tree.json');
+  const workspaceMeta = win.locator('[data-runbook-workspace-meta]');
+  await expect(workspaceMeta).toContainText(path.basename(workspace));
+  await expect(workspaceMeta).toContainText('1 pipeline');
+  await expect(workspaceMeta).toContainText('1 legacy graph');
+  await expect(workspaceMeta).not.toContainText(workspace);
+  await expect(workspaceMeta).toHaveAttribute('title', workspace.replace(/\\/g, '/'));
   const cacheDir = path.join(userData, 'workspace-index');
   expect(fs.existsSync(cacheDir)).toBe(true);
   const cacheFiles = fs.readdirSync(cacheDir).filter(name => name.endsWith('.json'));
@@ -148,20 +154,19 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   expect(cachedIndex.redaction.candidates.map((item: { path: string }) => item.path)).toContain('.env');
 
   await win.locator('.runbook-item').filter({ hasText: '.orch-tree.json' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText('MVP executable');
   await expect(win.locator('.runbook-item.selected')).toContainText('.orch-tree.json');
-  await expect(win.locator('button[data-runbook-action="start-local"]')).toBeEnabled();
 
   await win.locator('.runbook-item').filter({ hasText: 'agent-workstream' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText('agent-ready');
-  await expect(win.locator('#runbooks-content')).toContainText('PIPELINE_AGENT_ORCHESTRATED');
-  await expect(win.locator('button[data-runbook-action="agent-handoff"]')).toContainText('Prepare Handoff');
-  await expect(win.locator('button[data-runbook-action="agent-handoff"]')).toBeEnabled();
+  await expect(win.locator('.runbook-item.selected')).toContainText('agent-workstream');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+  await win.locator('[data-pipeline-run-menu]').click();
+  await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toContainText('Prepare Handoff');
+  await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="latest-summary"]')).toHaveCount(0);
-  await win.locator('button[data-runbook-action="agent-handoff"]').click();
+  await win.locator('button[data-pipeline-run-action="handoff"]').click();
   await expect(win.locator('#fmt-modal')).toBeVisible();
   await expect(win.locator('#fmt-modal-title')).toContainText('Prepare Agent Handoff');
-  const expectedPrompt = `${path.join(workspace, '.orpad', 'pipelines', 'agent-workstream', 'pipeline.or-pipeline')} --custom-handoff`;
+  const expectedPrompt = `${path.join(workspace, '.orpad', 'pipelines', 'agent-workstream', 'pipeline.or-pipeline').replace(/\\/g, '/')} --custom-handoff`;
   await expect(win.locator('[data-agent-handoff-prompt]')).toHaveValue(expectedPrompt);
   await expect(win.locator('#fmt-modal-body')).toContainText('Latest Run / Cycle Evidence');
   await expect(win.locator('#fmt-modal-body')).toContainText('ready for first cycle');

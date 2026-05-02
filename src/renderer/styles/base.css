@@ -1434,6 +1434,27 @@ body.json-diff-mode #preview-pane {
   color: var(--text-tertiary);
   font-size: calc(11px * var(--us));
 }
+.runbook-workspace-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(6px * var(--us)) calc(8px * var(--us));
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--us));
+}
+.runbook-workspace-meta strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+.runbook-workspace-meta .runbook-chip-row {
+  gap: calc(4px * var(--us));
+}
 .runbook-task-input {
   width: 100%;
   min-height: calc(92px * var(--us));
