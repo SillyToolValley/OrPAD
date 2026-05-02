@@ -3781,6 +3781,7 @@ function orchViewportTransform() {
 
 function updateOrchViewportDom() {
   const activeTool = orchGraphTemporaryTool || orchGraphTool;
+  const zoomText = `${Math.round(orchGraphViewport.scale * 100)}%`;
   const frames = contentEl.querySelectorAll('[data-orch-frame]');
   frames.forEach(frame => {
     const viewport = frame.querySelector('[data-orch-viewport]');
@@ -3794,7 +3795,9 @@ function updateOrchViewportDom() {
     button.classList.toggle('active', orchGridSnapEnabled || orchTempSnap);
   });
   contentEl.querySelectorAll('[data-orch-zoom-label]').forEach(label => {
-    label.textContent = `${Math.round(orchGraphViewport.scale * 100)}%`;
+    label.dataset.zoomValue = zoomText;
+    label.title = `Zoom ${zoomText}`;
+    label.textContent = '';
   });
 }
 
@@ -4310,10 +4313,10 @@ function renderOrchGraphCanvas(graph, readwrite, tools = true) {
           <button class="orch-tool-btn ${orchGraphTool === 'select' ? 'active' : ''}" data-orch-tool="select">${ORCH_TOOL_ICON_SELECT}</button>
           <button class="orch-tool-btn ${orchGraphTool === 'hand' ? 'active' : ''}" data-orch-tool="hand">${ORCH_TOOL_ICON_HAND}</button>
           <button class="orch-tool-btn ${orchGridSnapEnabled || orchTempSnap ? 'active' : ''}" data-orch-action="snap-toggle">${ORCH_TOOL_ICON_SNAP}</button>
-          <button class="orch-tool-btn orch-zoom-btn" data-orch-zoom="out">${ORCH_TOOL_ICON_ZOOM_OUT}</button>
-          <span class="orch-zoom-label" data-orch-zoom-label>${Math.round(orchGraphViewport.scale * 100)}%</span>
-          <button class="orch-tool-btn orch-zoom-btn" data-orch-zoom="in">${ORCH_TOOL_ICON_ZOOM_IN}</button>
-          <button class="orch-tool-btn" data-orch-action="fit">${ORCH_TOOL_ICON_FIT}</button>
+          <button class="orch-tool-btn orch-zoom-btn" data-orch-zoom="out" title="Zoom out" aria-label="Zoom out">${ORCH_TOOL_ICON_ZOOM_OUT}</button>
+          <span class="orch-zoom-label" data-orch-zoom-label data-zoom-value="${Math.round(orchGraphViewport.scale * 100)}%" title="Zoom ${Math.round(orchGraphViewport.scale * 100)}%"></span>
+          <button class="orch-tool-btn orch-zoom-btn" data-orch-zoom="in" title="Zoom in" aria-label="Zoom in">${ORCH_TOOL_ICON_ZOOM_IN}</button>
+          <button class="orch-tool-btn" data-orch-action="fit" title="Fit" aria-label="Fit">${ORCH_TOOL_ICON_FIT}</button>
         </div>` : ''}
         <div class="orch-graph-viewport" data-orch-viewport style="width:${gw}px;height:${gh}px;transform:${orchViewportTransform()}">
           <div class="orch-graph-canvas" style="width:${gw}px;height:${gh}px">

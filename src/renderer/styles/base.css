@@ -1969,10 +1969,7 @@ body.json-diff-mode #preview-pane {
   padding-inline: 0;
 }
 .orch-zoom-label {
-  width: calc(42px * var(--us));
-  color: var(--text-tertiary);
-  font-size: calc(11px * var(--us));
-  text-align: center;
+  display: none;
 }
 .orch-graph-tools {
   position: absolute;

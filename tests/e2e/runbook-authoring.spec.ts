@@ -136,9 +136,10 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-graph-tools .ogi')).toHaveCount(8);
   await expect(win.locator('button[data-orch-action="snap-toggle"] .ogi')).toBeVisible();
   const zoomLabel = win.locator('[data-orch-zoom-label]');
-  const beforeZoom = await zoomLabel.textContent();
+  await expect(zoomLabel).toHaveText('');
+  const beforeZoom = await zoomLabel.getAttribute('data-zoom-value');
   await win.locator('button[data-orch-zoom="in"]').click();
-  await expect.poll(async () => zoomLabel.textContent()).not.toBe(beforeZoom);
+  await expect.poll(async () => zoomLabel.getAttribute('data-zoom-value')).not.toBe(beforeZoom);
   await win.locator('button[data-orch-tool="hand"]').click();
   await expect(win.locator('button[data-orch-tool="hand"]')).toHaveClass(/active/);
   await expect(win.locator('.orch-graph-frame')).toHaveClass(/hand/);
