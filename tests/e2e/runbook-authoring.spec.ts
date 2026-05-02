@@ -108,6 +108,8 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
+  await expect(win.locator('.orch-inspector')).toContainText('Step key');
+  await expect(win.locator('.orch-inspector')).not.toContainText(/\bID\b/);
   await expect(win.locator('.orch-graph-node')).toHaveCount(8);
   await expect(win.locator('.orch-graph-node')).toContainText(['Prepare workspace', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
   await expect(win.locator('button[data-orch-tool="select"]')).toHaveClass(/active/);
@@ -328,6 +330,8 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   const graphApprovalNode = win.locator('.orch-graph-node[data-orch-path="graph.nodes.1"]');
   await expect(graphContextNode).toBeVisible();
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
+  await expect(win.locator('.orch-inspector')).toContainText('Step key');
+  await expect(win.locator('.orch-inspector')).not.toContainText(/\bID\b/);
   const graphLabelInput = win.locator('[data-orch-edit="label"]').first();
   await graphLabelInput.evaluate((input, value) => {
     (input as HTMLInputElement).value = value;

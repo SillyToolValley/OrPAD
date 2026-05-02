@@ -220,6 +220,8 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-preview')).toContainText('Entry Flow');
   await expect(win.locator('.orch-preview')).toContainText('Main flow');
   await expect(win.locator('.orch-preview')).not.toContainText('graphs/main.or-graph');
+  await expect(win.locator('.orch-inspector')).toContainText('Pipeline key');
+  await expect(win.locator('.orch-inspector')).not.toContainText(/\bID\b/);
   const manifestScroll = await win.locator('#content').evaluate((el) => {
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
     return {
@@ -243,6 +245,7 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('.pipeline-ref-section').filter({ hasText: 'Skills' })).toContainText('Implementation skill');
 
   await win.locator('button[data-pipeline-mode="readwrite"]').click();
+  await expect(win.locator('.pipeline-ref-section').filter({ hasText: 'Skills' })).toContainText('Reference key');
   await expect(win.locator('[data-pipeline-field="title"]')).toHaveValue('Pipeline editor fixture');
   await win.locator('[data-pipeline-field="title"]').evaluate((input) => {
     (input as HTMLInputElement).value = 'Edited pipeline contract';

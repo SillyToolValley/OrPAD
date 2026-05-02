@@ -2951,7 +2951,7 @@ function renderPipelineRefSection(doc, section, readwrite) {
         ${empty ? `<div class="runbook-empty">No ${escapeHtml(section.key)} declared.</div>` : entries.map((entry, index) => `
           <div class="pipeline-ref-row" data-pipeline-ref-index="${index}">
             ${readwrite ? `
-              <label><span>ID</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="id" value="${escapeHtml(entry.id || '')}"></label>
+              <label><span>Reference key</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="id" value="${escapeHtml(entry.id || '')}"></label>
               <label><span>File</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="file" value="${escapeHtml(entry.file || '')}"></label>
               <label><span>Description</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="description" value="${escapeHtml(entry.description || '')}"></label>
             ` : `
@@ -4422,7 +4422,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
         <h3>${escapeHtml(node.label || node.id || 'Node')}</h3>
         <dl>
           <dt>Kind</dt><dd title="${escapeHtml(node.type || '')}">${escapeHtml(orchNodeTypeLabel(node.type))}</dd>
-          <dt>ID</dt><dd>${escapeHtml(node.id || '')}</dd>
+          <dt>Step key</dt><dd>${escapeHtml(node.id || '')}</dd>
           ${node.file ? `<dt>File</dt><dd>${escapeHtml(node.file)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.id ? `<dt>Tree</dt><dd>${escapeHtml(node.tree.id)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.root ? `<dt>Tree nodes</dt><dd>${countOrchNestedNodes(node.tree.root)}</dd>` : ''}
@@ -4433,7 +4433,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
   return `
     <aside class="orch-inspector">
       <h3>Edit Node</h3>
-      <label><span>ID</span><input data-orch-edit="id" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.id || '')}"></label>
+      <label><span>Step key</span><input data-orch-edit="id" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.id || '')}"></label>
       <label><span>Label</span><input data-orch-edit="label" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.label || '')}"></label>
       ${renderOrchTypeField(selectedOrchNodePath, node)}
       ${node.type === 'Skill' ? `<label><span>Skill file</span><input data-orch-edit="file" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.file || '')}"></label>` : ''}
@@ -5376,7 +5376,7 @@ function renderOrchPipelinePreview(content) {
         <aside class="orch-inspector">
           <h3>Package</h3>
           <dl>
-            <dt>ID</dt><dd>${escapeHtml(doc.id || '')}</dd>
+            <dt>Pipeline key</dt><dd>${escapeHtml(doc.id || '')}</dd>
             <dt>Kind</dt><dd>${escapeHtml(doc.kind || 'orpad.pipeline')}</dd>
             <dt>Entry</dt><dd>${escapeHtml(entryGraph ? pipelineDisplayTitle(entryGraph, 'Entry flow') : 'not set')}</dd>
             <dt>Harness</dt><dd>${escapeHtml(doc.harness?.path || 'harness/generated')}</dd>
