@@ -633,7 +633,7 @@ function evaluateGateCriterion(criterion, input = {}) {
   if (!normalized) {
     return { criterion, supported: false, passed: false, reason: 'empty-criterion' };
   }
-  if (normalized.includes('worker proof accepted')) {
+  if (normalized.includes('worker proof accepted') || normalized.includes('work result accepted')) {
     const event = acceptedWorkerProof(input.events);
     return {
       criterion,

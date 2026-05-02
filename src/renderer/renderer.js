@@ -9299,7 +9299,7 @@ async function createOrpadRunbookStarter() {
         { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
         { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', label: 'Implement claimed work in overlay', config: { queueRef: 'queue' } },
-        { id: 'verification-gate', type: 'orpad.gate', label: 'Verify worker proof', config: { criteria: ['worker proof accepted', 'queue empty'], onFail: 'warn' } },
+        { id: 'verification-gate', type: 'orpad.gate', label: 'Verify work result', config: { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' } },
         {
           id: 'artifact',
           type: 'orpad.artifactContract',

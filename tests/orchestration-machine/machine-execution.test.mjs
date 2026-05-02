@@ -615,7 +615,7 @@ test('Gate rejects unsupported or unmet criteria instead of passing by prompt te
 test('Gate rejects unsupported onFail policy even when criteria pass', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_gate_invalid_onfail');
   await updateMainNodeConfig(pipelineDir, 'verification-gate', {
-    criteria: ['worker proof accepted', 'queue empty'],
+    criteria: ['work result accepted', 'queue empty'],
     onFail: 'agent-decides',
   });
 
