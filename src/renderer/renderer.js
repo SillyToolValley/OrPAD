@@ -2230,6 +2230,25 @@ const ORCH_GRAPH_NODE_TYPES = [
   'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop', 'orpad.barrier',
   'State', 'Tool', 'Human', 'Wait',
 ];
+const ORCH_NODE_TYPE_LABELS = {
+  'orpad.context': 'Context',
+  'orpad.gate': 'Gate',
+  'orpad.skill': 'Skill',
+  'orpad.tree': 'Tree layer',
+  'orpad.graph': 'Flow layer',
+  'orpad.rule': 'Rule',
+  'orpad.artifactContract': 'Evidence contract',
+  'orpad.probe': 'Probe',
+  'orpad.workQueue': 'Work queue',
+  'orpad.triage': 'Triage',
+  'orpad.dispatcher': 'Dispatcher',
+  'orpad.workerLoop': 'Worker loop',
+  'orpad.barrier': 'Barrier',
+  State: 'Step',
+  Tool: 'Tool',
+  Human: 'Human',
+  Wait: 'Wait',
+};
 const ORCH_NODE_WIDTH = 236;
 const ORCH_NODE_HEIGHT = 88;
 const ORCH_X_GAP = 72;
@@ -2250,6 +2269,12 @@ function isOrchGraphNodeTypeTarget(path) {
 
 function orchNodeTypesForPath(path) {
   return isOrchGraphNodeTypeTarget(path) ? ORCH_GRAPH_NODE_TYPES : ORCH_TREE_NODE_TYPES;
+}
+
+function orchNodeTypeLabel(type) {
+  const raw = String(type || '').trim();
+  if (!raw) return '';
+  return ORCH_NODE_TYPE_LABELS[raw] || raw;
 }
 
 function isOrchSkillType(type) {
@@ -4206,6 +4231,7 @@ function renderOrchGraphNode(item, readwrite) {
   const children = Array.isArray(node?.children) ? node.children.length : 0;
   const treeNodes = isOrchTreeRefType(node?.type) ? countOrchNestedNodes(node.tree?.root) : 0;
   const title = node?.label || node?.id || node?.type || 'Untitled node';
+  const typeLabel = orchNodeTypeLabel(node?.type) || 'Node';
   return `
     <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}"
       data-orch-path="${escapeHtml(path)}"
@@ -4214,7 +4240,7 @@ function renderOrchGraphNode(item, readwrite) {
       style="left:${Math.round(x)}px;top:${Math.round(y)}px">
       <div class="orch-graph-node-top">
         <strong>${escapeHtml(title)}</strong>
-        <span>${escapeHtml(node?.type || 'Node')}</span>
+        <span title="${escapeHtml(node?.type || '')}">${escapeHtml(typeLabel)}</span>
       </div>
       <div class="orch-graph-node-meta">
         <code>${escapeHtml(node?.id || '(no id)')}</code>
@@ -4318,11 +4344,11 @@ function renderOrchTypeField(path, node) {
   const scopeLabel = isOrchGraphNodeTypeTarget(path) ? 'flow' : 'tree';
   const options = [
     typeAllowed ? '' : `<option value="" disabled selected>Select ${scopeLabel} node type</option>`,
-    ...types.map(type => `<option value="${type}" ${currentType === type ? 'selected' : ''}>${type}</option>`),
+    ...types.map(type => `<option value="${type}" ${currentType === type ? 'selected' : ''}>${escapeHtml(orchNodeTypeLabel(type))}</option>`),
   ].join('');
   return `
     <label><span>Type</span><select data-orch-edit="type" data-orch-path="${escapeHtml(path)}">${options}</select></label>
-    ${currentType && !typeAllowed ? `<div class="runbook-empty">Current type ${escapeHtml(currentType)} is not addable in this ${scopeLabel} editor. Choose a listed type to convert it.</div>` : ''}
+    ${currentType && !typeAllowed ? `<div class="runbook-empty">Current type ${escapeHtml(orchNodeTypeLabel(currentType))} is not addable in this ${scopeLabel} editor. Choose a listed type to convert it.</div>` : ''}
   `;
 }
 
@@ -4367,7 +4393,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
       <aside class="orch-inspector">
         <h3>${escapeHtml(node.label || node.id || 'Node')}</h3>
         <dl>
-          <dt>Type</dt><dd>${escapeHtml(node.type || '')}</dd>
+          <dt>Type</dt><dd title="${escapeHtml(node.type || '')}">${escapeHtml(orchNodeTypeLabel(node.type))}</dd>
           <dt>ID</dt><dd>${escapeHtml(node.id || '')}</dd>
           ${node.file ? `<dt>File</dt><dd>${escapeHtml(node.file)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.id ? `<dt>Tree</dt><dd>${escapeHtml(node.tree.id)}</dd>` : ''}
@@ -5578,8 +5604,8 @@ function renderOrchGraphPreview(content) {
       : linkedLayer?.error
         ? `<div class="preview-error">Linked OrPAD layer could not be loaded: ${escapeHtml(linkedLayer.error)}</div>`
         : '<div class="runbook-empty">No flow steps found.</div>';
-  const layerKindLabel = linkedGraphLayer ? 'Flow layer' : layerPath ? 'Tree layer' : 'main flow';
-  const layerSourceLabel = linkedGraphLayer ? 'linked flow file' : linkedLayer ? 'linked tree file' : layerPath ? 'embedded flow' : 'tree subflow steps';
+  const layerKindLabel = linkedGraphLayer ? 'Flow layer' : layerPath ? 'Tree layer' : 'Main flow';
+  const layerSourceLabel = linkedGraphLayer ? 'Linked file' : linkedLayer ? 'Linked tree file' : layerPath ? 'Embedded flow' : 'Flow steps';
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">

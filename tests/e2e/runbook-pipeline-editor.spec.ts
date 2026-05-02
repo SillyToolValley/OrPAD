@@ -144,6 +144,9 @@ test('pipeline details preview exposes editable contract fields', async () => {
   const graphTypeOptions = await win.locator('.orch-floating-inspector select[data-orch-edit="type"] option').evaluateAll(options =>
     options.map(option => (option as HTMLOptionElement).value).filter(Boolean)
   );
+  const graphTypeLabels = await win.locator('.orch-floating-inspector select[data-orch-edit="type"] option').evaluateAll(options =>
+    options.map(option => (option.textContent || '').trim()).filter(Boolean)
+  );
   expect(graphTypeOptions).toContain('orpad.context');
   expect(graphTypeOptions).toContain('orpad.graph');
   expect(graphTypeOptions).toContain('orpad.tree');
@@ -155,6 +158,11 @@ test('pipeline details preview exposes editable contract fields', async () => {
   expect(graphTypeOptions).not.toContain('Context');
   expect(graphTypeOptions).not.toContain('OrchTree');
   expect(graphTypeOptions).not.toContain('Sequence');
+  expect(graphTypeLabels).toContain('Flow layer');
+  expect(graphTypeLabels).toContain('Tree layer');
+  expect(graphTypeLabels).toContain('Step');
+  expect(graphTypeLabels).not.toContain('orpad.graph');
+  expect(graphTypeLabels).not.toContain('State');
   await win.locator('button[data-orch-mode="readonly"]').click();
   const implementationNode = win.locator('.orch-graph-node.type-orchtree').filter({ hasText: 'Implementation' });
   await implementationNode.dblclick();
@@ -162,7 +170,7 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-layer-bar')).toContainText('Main flow');
   await expect(win.locator('.orch-layer-bar')).toContainText('Implementation');
   await expect(win.locator('.orch-layer-up')).toBeVisible();
-  await expect(win.locator('.orch-preview')).toContainText('linked tree file');
+  await expect(win.locator('.orch-preview')).toContainText('Linked tree file');
   await expect(win.locator('.orch-graph-node')).toHaveCount(2);
   await expect(win.locator('.orch-graph-node')).toContainText(['Implementation', 'Implement']);
   const layerNodeBounds = await win.locator('.orch-graph-frame').evaluate((frame) => {
@@ -188,7 +196,7 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-layer-bar')).toContainText('Main flow');
   await expect(win.locator('.orch-layer-bar')).toContainText('Quality graph');
   await expect(win.locator('.orch-layer-up')).toBeVisible();
-  await expect(win.locator('.orch-preview')).toContainText('linked flow file');
+  await expect(win.locator('.orch-preview')).toContainText('Linked file');
   await expect(win.locator('.orch-graph-node')).toHaveCount(2);
   await expect(win.locator('.orch-graph-node')).toContainText(['Probe UI quality', 'Queue findings']);
   await win.locator('.orch-layer-up').click();
@@ -303,6 +311,9 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
 
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
+  await expect(win.locator('.orch-preview')).toContainText('Main flow');
+  await expect(win.locator('.orch-preview')).toContainText('Flow steps');
+  await expect(win.locator('.orch-preview')).not.toContainText('State graph');
   await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
   await expect(win.locator('.orch-preview')).toContainText('Main flow');
   await expect(win.locator('.orch-preview')).not.toContainText('graphs/main.or-graph');
@@ -323,7 +334,7 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
   await expect(win.locator('.orch-layer-bar')).toContainText('Main flow');
   await expect(win.locator('.orch-layer-bar')).toContainText('Run parallel discovery lenses');
   await expect(win.locator('.orch-layer-up')).toBeVisible();
-  await expect(win.locator('.orch-preview')).toContainText('linked flow file');
+  await expect(win.locator('.orch-preview')).toContainText('Linked file');
   await expect(win.locator('.orch-graph-node')).toContainText([
     'Current-evidence source quality',
     'Graph editor journey probe',
