@@ -1164,7 +1164,7 @@ function webValidateRunbookSource(source, options = {}) {
       diagnostics.push({
         level: 'warning',
         code: 'GRAPH_RENDER_VALIDATE_ONLY',
-        message: 'State graph runbooks are render/validate-only until the local graph executor is enabled.',
+        message: 'Flow-based runbooks are review-only on the web until local execution is available.',
       });
       return {
         ok: !diagnostics.some(item => item.level === 'error'),
