@@ -7140,6 +7140,27 @@ function updateWorkspaceRunbookSummary() {
   void refreshWorkspaceRunbookSummary();
 }
 
+async function refreshPipesPanelState() {
+  const previousSelection = selectedRunbookPath || '';
+  await loadFileTree();
+  await refreshWorkspaceRunbookSummary();
+  const previousKey = runbookNormalizePath(previousSelection).toLowerCase();
+  const previousStillPresent = previousKey && (workspaceRunbookSummary?.runbooks || [])
+    .some(item => runbookNormalizePath(item.path).toLowerCase() === previousKey);
+  const selected = selectedRunbookPath || (previousStillPresent ? previousSelection : '');
+  if (!selected) {
+    renderRunbooksPanel();
+    return;
+  }
+  if (selectedRunbookPath !== selected) selectedRunbookPath = selected;
+  runbookValidationCache.delete(selected);
+  machineRunRecordCache.delete(selected);
+  machineRunListCache.delete(selected);
+  await validateSelectedRunbook(selected);
+  await refreshMachineRuntimeStatus({ force: true });
+  rerenderPipelinePreviewIfActive(selected);
+}
+
 function isDiagnosticError(item) {
   return item?.level === 'error' || item?.severity === 'error';
 }
@@ -9184,7 +9205,17 @@ runbooksContentEl?.addEventListener('click', async (event) => {
   const targetPath = button.dataset.path || selectedRunbookPath || '';
   try {
     if (action === 'open-folder') await openFolder();
-    else if (action === 'refresh') { await loadFileTree(); updateWorkspaceRunbookSummary(); }
+    else if (action === 'refresh') {
+      const previousLabel = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Refreshing...';
+      try {
+        await refreshPipesPanelState();
+      } finally {
+        button.disabled = false;
+        button.textContent = previousLabel;
+      }
+    }
     else if (action === 'starter') {
       const previousLabel = button.textContent;
       button.disabled = true;

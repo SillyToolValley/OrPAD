@@ -328,6 +328,41 @@ test('Machine UI play action attempts managed run and blocks non-runnable pipeli
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Pipes Refresh reloads selected managed run evidence from disk', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+
+  await seedActiveClaimRun(workspace, pipelinePath, {
+    runId: 'run_machine_ui_refresh_claim',
+  });
+  await win.locator('button[data-runbook-action="refresh"]').click();
+
+  await expect(win.locator('#runbooks-content')).toContainText('Run Status');
+  await expect(win.locator('#runbooks-content')).toContainText('run_machine_ui_refresh_claim');
+  await expect(win.locator('#runbooks-content')).toContainText('1 active claim: machine-ui-smoke');
+  await expect(win.locator('#runbooks-content')).toContainText('Cancel ready: claim claim-machine-ui-smoke owns machine-ui-smoke');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('Machine UI keeps gated managed run actions in the pipeline preview', async () => {
   const { workspace } = writeMachineWorkspace();
   const app = await launchElectron([], {
