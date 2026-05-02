@@ -486,10 +486,11 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
   await expect(win.locator('.tab-item.active')).toContainText('Run Evidence');
   await expect(win.locator('.cm-content')).toContainText('Patch Review');
-  await expect(win.locator('.cm-content')).toContainText('Workspace changed: no, review the run evidence before applying anything manually');
+  await expect(win.locator('.cm-content')).toContainText('Workspace changed: no, changes are staged in run evidence only');
   await expect(win.locator('.cm-content')).toContainText('Patch artifact: artifacts/patches/worker.patch.json');
   await expect(win.locator('.cm-content')).toContainText('Patch artifact summary: 1 file change; 2 allowed files; 0 write-set violations.');
-  await expect(win.locator('.cm-content')).toContainText('| src/smoke-target.md | Modified | 1 | 2 | +1 | 111111111111 | 222222222222 |');
+  await expect(win.locator('.cm-content')).toContainText('Continue runs the next machine step; it does not apply this patch to the workspace.');
+  await expect(win.locator('.cm-content')).toContainText('`src/smoke-target.md`: Modified; 1 -> 2 lines (+1); SHA 111111111111 -> 222222222222');
   await expect(win.locator('.cm-content')).toContainText('Changed files staged in evidence: src/smoke-target.md');
   await expect(win.locator('.cm-content')).toContainText('Missing expected changes: src/main/runbooks/validator.js');
 

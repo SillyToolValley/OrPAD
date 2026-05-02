@@ -9557,29 +9557,24 @@ function machinePatchArtifactMarkdown(summary) {
   const lines = [
     `Patch artifact summary: ${machineCountLabel(summary.changeCount, 'file change')}; ${machineCountLabel(summary.allowedFileCount, 'allowed file')}; ${machineCountLabel(summary.violationCount, 'write-set violation')}.`,
     summary.createdAt ? `Patch created: ${summary.createdAt}` : '',
+    '',
+    'What this means:',
+    '- The worker produced a patch artifact in run evidence.',
+    '- The canonical workspace files were not changed by opening this review.',
+    '- Review the changed files below before applying anything manually.',
+    '',
+    'Next actions:',
+    '- Save Evidence keeps a reviewable snapshot of this run.',
+    '- Review Evidence shows what the worker proposed.',
+    '- Continue runs the next machine step; it does not apply this patch to the workspace.',
   ].filter(Boolean);
   if (summary.changes.length) {
     lines.push(
       '',
-      '| File | Action | Lines before | Lines after | Delta | SHA before | SHA after |',
-      '| --- | --- | ---: | ---: | ---: | --- | --- |',
-      ...summary.changes.map(change => [
-        '|',
-        machineMarkdownCell(change.path),
-        '|',
-        machineMarkdownCell(change.action),
-        '|',
-        machineMarkdownCell(change.beforeLines),
-        '|',
-        machineMarkdownCell(change.afterLines),
-        '|',
-        machineMarkdownCell(change.deltaLabel),
-        '|',
-        machineMarkdownCell(change.beforeSha),
-        '|',
-        machineMarkdownCell(change.afterSha),
-        '|',
-      ].join(' ')),
+      'Changed files:',
+      ...summary.changes.map(change => (
+        `- \`${change.path}\`: ${change.action}; ${change.beforeLines} -> ${change.afterLines} lines (${change.deltaLabel}); SHA ${change.beforeSha || 'none'} -> ${change.afterSha || 'none'}`
+      )),
     );
     if (summary.hasMoreChanges) lines.push('', `_Additional file changes are recorded in the patch artifact._`);
   }
@@ -9635,8 +9630,8 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   const patchReview = workerReview ? [
     '## Patch Review',
     '',
-    `Status: ${machineWorkerStatusLabel(workerReview.status)}`,
-    `Workspace changed: ${String(workerReview.status).toLowerCase() === 'done' ? 'yes' : 'no, review the run evidence before applying anything manually'}`,
+    `Worker result: ${machineWorkerStatusLabel(workerReview.status)}`,
+    `Workspace changed: no, changes are staged in run evidence only`,
     workerReview.patchArtifact ? `Patch artifact: ${workerReview.patchArtifact}` : '',
     ...machinePatchArtifactMarkdown(patchArtifactSummary),
     workerReview.changedFiles.length ? `Changed files staged in evidence: ${workerReview.changedFiles.join(', ')}` : '',
