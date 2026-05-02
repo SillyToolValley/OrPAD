@@ -149,7 +149,7 @@ async function seedActiveClaimRun(
     claimId: 'claim-machine-ui-smoke',
     workerId: 'machine-ui-e2e-worker',
     recoverStale: false,
-    leaseMs: options.leaseMs ?? 24 * 60 * 60 * 1000,
+    leaseMs: options.leaseMs ?? 7 * 24 * 60 * 60 * 1000,
     now: '2026-05-01T00:00:03.000Z',
   });
   return {

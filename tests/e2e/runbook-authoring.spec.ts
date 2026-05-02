@@ -68,13 +68,12 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   });
 
   await expect(win.locator('#runbooks-content')).toContainText('Generate Pipeline');
-  await win.locator('[data-runbook-task]').fill('Make the Pipes panel obvious: generate an OrPAD pipeline, validate it, then run the approved OrPAD harness.');
+  await win.locator('[data-runbook-task]').fill('Make the Pipes panel obvious: generate an OrPAD pipeline, validate it, then start a managed run.');
   await win.locator('button[data-runbook-action="starter"]').click();
 
   await expect(win.locator('#sidebar-runbooks')).toBeVisible();
-  await expect(win.locator('.runbook-item.selected')).toContainText('Selected');
+  await expect(win.locator('.runbook-item.selected')).toHaveAttribute('aria-pressed', 'true');
   await expect(win.locator('.runbook-item.selected')).toContainText('pipeline.or-pipeline');
-  await expect(win.locator('#runbooks-content')).toContainText('MVP executable');
 
   const pipelinesRoot = path.join(workspace, '.orpad', 'pipelines');
   const pipelineDirs = fs.readdirSync(pipelinesRoot);
@@ -84,54 +83,37 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   const graphFile = 'main.or-graph';
   expect(fs.existsSync(path.join(runbookDir, pipelineFile))).toBe(true);
   expect(fs.existsSync(path.join(runbookDir, 'graphs', graphFile))).toBe(true);
-  expect(fs.existsSync(path.join(runbookDir, 'trees', 'implementation.or-tree'))).toBe(true);
   const skillFiles = fs.readdirSync(path.join(runbookDir, 'skills')).filter(name => name.endsWith('.md'));
   expect(skillFiles.length).toBe(1);
   const pipeline = JSON.parse(fs.readFileSync(path.join(runbookDir, pipelineFile), 'utf-8'));
   expect(pipeline.entryGraph).toBe('graphs/main.or-graph');
+  expect(pipeline.nodePacks.map((entry: { id: string }) => entry.id)).toContain('orpad.workstream');
+  expect(pipeline.run.machineAdapter.type).toBe('codex-cli');
+  expect(pipeline.run.machineAdapter.probeNodePaths).toEqual(['main/probe']);
   const graph = JSON.parse(fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8'));
-  expect(graph.graph.nodes.map((node: { type: string }) => node.type)).toEqual(['orpad.context', 'orpad.gate', 'orpad.tree']);
-  const treeNode = graph.graph.nodes.find((node: { type: string }) => node.type === 'orpad.tree');
-  expect(treeNode.config.treeRef).toBe('../trees/implementation.or-tree');
-  const tree = JSON.parse(fs.readFileSync(path.join(runbookDir, 'trees', 'implementation.or-tree'), 'utf-8'));
-  expect(tree.root.children[0].file).toBe(`../skills/${skillFiles[0]}`);
+  expect(graph.graph.nodes.map((node: { type: string }) => node.type)).toEqual([
+    'orpad.context',
+    'orpad.probe',
+    'orpad.workQueue',
+    'orpad.triage',
+    'orpad.dispatcher',
+    'orpad.workerLoop',
+    'orpad.gate',
+    'orpad.artifactContract',
+  ]);
   expect(fs.readFileSync(path.join(runbookDir, 'skills', skillFiles[0]), 'utf-8')).toContain('Make the Pipes panel obvious');
   await win.locator('#btn-preview').click();
   await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Graph');
-  await expect(win.locator('.orch-graph-node')).toHaveCount(3);
-  await expect(win.locator('.orch-graph-node')).toContainText(['Collect workspace facts and relevant project files', 'Review context and approve one run', 'Run implementation tree subflow']);
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+  await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
+  await expect(win.locator('.orch-graph-node')).toHaveCount(8);
+  await expect(win.locator('.orch-graph-node')).toContainText(['Load request and workspace context', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
   await expect(win.locator('button[data-orch-tool="select"]')).toHaveClass(/active/);
   await expect(win.locator('.orch-graph-tools .ogi')).toHaveCount(8);
-  const generatedTreeNode = win.locator('.orch-graph-node.type-orpad-tree').filter({ hasText: 'Run implementation tree subflow' });
-  await generatedTreeNode.dblclick();
-  await expect(win.locator('.tab-item.active')).toContainText(graphFile);
-  await expect(win.locator('.orch-layer-bar')).toContainText('Run implementation tree subflow');
-  await expect(win.locator('.orch-layer-up')).toBeVisible();
-  await expect(win.locator('.orch-preview')).toContainText('linked .or-tree');
-  await expect(win.locator('.orch-graph-node')).toHaveCount(2);
-  await expect(win.locator('.orch-graph-node').first()).toContainText('Implement requested OrPAD');
-  await win.locator('.orch-graph-node.type-skill').dblclick();
-  await expect(win.locator('.tab-item.active')).toContainText(skillFiles[0]);
-  await expect(win.locator('.cm-content')).toContainText('Make the Pipes panel obvious');
-  await win.locator('.tab-item').filter({ hasText: graphFile }).click();
-  await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
-  await win.locator('.orch-layer-up').click();
-  await expect(win.locator('.orch-layer-up')).toHaveCount(0);
-  await expect(win.locator('.orch-graph-node')).toHaveCount(3);
-  await generatedTreeNode.click({ button: 'right' });
-  await expect(win.locator('.orch-context-menu')).toContainText('Open layer');
-  await expect(win.locator('.orch-context-menu')).toContainText('Open file');
-  await win.locator('button[data-orch-context-action="open-file"]').click();
-  await expect(win.locator('.orch-preview')).toContainText('orch-tree editor');
-  await win.locator('.tab-item').filter({ hasText: graphFile }).click();
-  await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
-  await expect(win.locator('.orch-graph-node')).toHaveCount(3);
 
-  const runSection = win.locator('.runbook-panel-section').filter({ has: win.locator('button[data-runbook-action="start-local"]') });
   await win.locator('.runbook-item').filter({ hasText: 'root-workflow.orch-tree.json' }).click();
   await expect(win.locator('.runbook-item.selected')).toContainText('root-workflow.orch-tree.json');
-  await expect(runSection).toContainText('root-workflow.orch-tree.json');
   await expect(win.locator('.orch-preview')).toBeVisible();
   await win.locator('#btn-preview').click();
   await expect(win.locator('.orch-preview')).toContainText('orch-tree editor');
@@ -330,7 +312,6 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
 
   await win.locator('.runbook-item.selected').click();
   await expect(win.locator('.runbook-item.selected')).toHaveCount(0);
-  await expect(win.locator('#runbooks-content')).toContainText('Click a pipeline to select it');
 
   await win.locator('.runbook-item').filter({ hasText: 'root-workflow.orch-tree.json' }).click();
   await expect(win.locator('.runbook-item.selected')).toContainText('root-workflow.orch-tree.json');
@@ -353,7 +334,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Edited graph context');
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await win.keyboard.press('Control+Z');
-  await expect(win.locator('.orch-graph-node.selected')).toContainText('Collect workspace facts and relevant project files');
+  await expect(win.locator('.orch-graph-node.selected')).toContainText('Load request and workspace context');
   await win.keyboard.press('Control+Y');
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Edited graph context');
   const approvalBeforeMove = await graphApprovalNode.evaluate((el) => ({
@@ -385,18 +366,18 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect.poll(() => fs.existsSync(graphMetaPath)).toBe(true);
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await win.locator('button[data-orch-action="add-child"]').click();
-  await expect(win.locator('.orch-graph-node')).toHaveCount(4);
-  await expect(win.locator('.orch-transition')).toHaveCount(3);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(9);
+  await expect(win.locator('.orch-transition')).toHaveCount(8);
   await expect(win.locator('.orch-graph-node.selected')).toContainText('New context');
   await expect(win.locator('.orch-graph-node.selected')).toContainText('orpad.context');
   await win.keyboard.press('Delete');
-  await expect(win.locator('.orch-graph-node')).toHaveCount(3);
-  await expect(win.locator('.orch-transition')).toHaveCount(2);
-  await graphContextNode.click();
+  await expect(win.locator('.orch-graph-node')).toHaveCount(8);
+  await expect(win.locator('.orch-transition')).toHaveCount(7);
+  await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await win.locator('.orch-graph-node[data-orch-path="graph.nodes.2"]').click({ button: 'right' });
   await expect(win.locator('.orch-context-menu')).toContainText('Connect selected');
   await win.locator('button[data-orch-context-action="connect-selected"]').click();
-  await expect(win.locator('.orch-transition')).toHaveCount(3);
+  await expect(win.locator('.orch-transition')).toHaveCount(8);
   await win.locator('.orch-transition-hit').first().evaluate((pathEl) => {
     const rect = pathEl.getBoundingClientRect();
     pathEl.dispatchEvent(new MouseEvent('mousedown', {
@@ -412,8 +393,8 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-transition.selected')).toHaveClass(/style-straight/);
   await expect(win.locator('.orch-transition-handle')).toBeVisible();
   await win.locator('button[data-orch-action="delete-transition"]').click();
-  await expect(win.locator('.orch-graph-node')).toHaveCount(3);
-  await expect(win.locator('.orch-transition')).toHaveCount(2);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(8);
+  await expect(win.locator('.orch-transition')).toHaveCount(7);
   await win.keyboard.press('Control+S');
   await expect.poll(() => fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8')).toContain('Edited graph context');
 

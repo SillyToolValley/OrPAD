@@ -8902,7 +8902,7 @@ function defaultOrpadRunbookSkill(taskText) {
   return [
     '# OrPAD Pipeline Skill',
     '',
-    'Use the current workspace to implement the user request through a small, reviewable OrPAD pipeline run.',
+    'Use the current workspace to implement the user request through a small, reviewable OrPAD managed run.',
     '',
     '## User Request',
     '',
@@ -8925,9 +8925,9 @@ function defaultOrpadRunbookSkill(taskText) {
     '## Acceptance Criteria',
     '',
     '- Generate or update the `.orpad/pipelines/<pipeline>/` package needed for the requested work.',
-    '- Keep graph flow in `.or-graph` with canonical `orpad.tree` references to `.or-tree` implementation flows.',
+    '- Keep graph flow in `.or-graph` using workstream nodes that OrPAD can run with owned queue, status, and artifacts.',
     '- Validate the graph before running implementation work.',
-    '- Run the approved OrPAD pipeline flow and write evidence under the pipeline `runs/` folder.',
+    '- Run the approved managed pipeline flow and write evidence under the pipeline `runs/` folder.',
     '- Keep source edits focused on the requested OrPAD behavior.',
     '',
   ].join('\n');
@@ -8972,7 +8972,6 @@ async function createOrpadRunbookStarter() {
   const pipelinesPath = workspaceChildPath('.orpad', 'pipelines');
   const pipelineFolderPath = workspaceChildPath('.orpad', 'pipelines', slug);
   const graphFolderPath = workspaceChildPath('.orpad', 'pipelines', slug, 'graphs');
-  const treeFolderPath = workspaceChildPath('.orpad', 'pipelines', slug, 'trees');
   const skillFolderPath = workspaceChildPath('.orpad', 'pipelines', slug, 'skills');
   const ruleFolderPath = workspaceChildPath('.orpad', 'pipelines', slug, 'rules');
   const harnessFolderPath = workspaceChildPath('.orpad', 'pipelines', slug, 'harness');
@@ -8980,26 +8979,9 @@ async function createOrpadRunbookStarter() {
   const skillName = `orpad-improvement-${stamp}.md`;
   const pipelinePath = workspaceChildPath('.orpad', 'pipelines', slug, 'pipeline.or-pipeline');
   const graphPath = workspaceChildPath('.orpad', 'pipelines', slug, 'graphs', 'main.or-graph');
-  const treePath = workspaceChildPath('.orpad', 'pipelines', slug, 'trees', 'implementation.or-tree');
   const contextRulePath = workspaceChildPath('.orpad', 'pipelines', slug, 'rules', 'context.or-rule');
-  const approvalRulePath = workspaceChildPath('.orpad', 'pipelines', slug, 'rules', 'approvals.or-rule');
   const skillPath = `skills/${skillName}`;
   const skillFilePath = workspaceChildPath('.orpad', 'pipelines', slug, skillPath);
-  const implementationTree = {
-    $schema: 'https://orpad.dev/schemas/or-tree/v1.json',
-    kind: 'orpad.tree',
-    version: '1.0',
-    id: 'implementation-tree',
-    label: 'Implementation tree subflow',
-    root: {
-      id: 'implementation-sequence',
-      type: 'Sequence',
-      label: 'Implement requested OrPAD work',
-      children: [
-        { id: 'implement', type: 'Skill', label: 'Implement the requested OrPAD work', file: `../${skillPath}` },
-      ],
-    },
-  };
   const graph = {
     $schema: 'https://orpad.dev/schemas/or-graph/v1.json',
     kind: 'orpad.graph',
@@ -9009,13 +8991,34 @@ async function createOrpadRunbookStarter() {
       label: taskText.slice(0, 96),
       start: 'context',
       nodes: [
-        { id: 'context', type: 'orpad.context', label: 'Collect workspace facts and relevant project files', config: { ruleRef: 'context' } },
-        { id: 'approval', type: 'orpad.gate', label: 'Review context and approve one run', config: { ruleRef: 'approvals' } },
-        { id: 'implementation-tree', type: 'orpad.tree', label: 'Run implementation tree subflow', config: { treeRef: '../trees/implementation.or-tree' } },
+        { id: 'context', type: 'orpad.context', label: 'Load request and workspace context', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
+        { id: 'probe', type: 'orpad.probe', label: 'Find evidence-backed candidate work', config: { lens: 'request-focused', userTask: taskText, skillRef: 'request-context' } },
+        { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
+        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+        { id: 'worker', type: 'orpad.workerLoop', label: 'Implement claimed work in overlay', config: { queueRef: 'queue' } },
+        { id: 'verification-gate', type: 'orpad.gate', label: 'Verify worker proof', config: { criteria: ['worker proof accepted', 'queue empty'], onFail: 'warn' } },
+        {
+          id: 'artifact',
+          type: 'orpad.artifactContract',
+          label: 'Record run artifacts',
+          config: {
+            artifactRoot: 'harness/generated/latest-run/artifacts',
+            queueRoot: 'harness/generated/latest-run/queue',
+            required: ['discovery/candidate-inventory.json'],
+            requiredQueue: ['journal.jsonl'],
+            onMissing: 'mark-partial',
+          },
+        },
       ],
       transitions: [
-        { id: 'context-to-approval', from: 'context', to: 'approval' },
-        { id: 'approval-to-implementation-tree', from: 'approval', to: 'implementation-tree' },
+        { id: 'context-to-probe', from: 'context', to: 'probe' },
+        { id: 'probe-to-queue', from: 'probe', to: 'queue' },
+        { id: 'queue-to-triage', from: 'queue', to: 'triage' },
+        { id: 'triage-to-dispatch', from: 'triage', to: 'dispatch' },
+        { id: 'dispatch-to-worker', from: 'dispatch', to: 'worker' },
+        { id: 'worker-to-verification-gate', from: 'worker', to: 'verification-gate' },
+        { id: 'verification-gate-to-artifact', from: 'verification-gate', to: 'artifact' },
       ],
     },
   };
@@ -9025,16 +9028,50 @@ async function createOrpadRunbookStarter() {
     version: '1.0',
     id: slug,
     title: taskText.slice(0, 96),
+    description: 'Generated from Pipes as a managed, queue-driven workstream pipeline.',
     trustLevel: 'local-authored',
     entryGraph: 'graphs/main.or-graph',
-    graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
-    trees: [{ id: 'implementation', file: 'trees/implementation.or-tree' }],
-    skills: [{ id: 'implement', file: skillPath }],
-    rules: [
-      { id: 'context', file: 'rules/context.or-rule' },
-      { id: 'approvals', file: 'rules/approvals.or-rule' },
+    nodePacks: [
+      { id: 'orpad.core', version: '>=1.0.0-beta.3', origin: 'built-in' },
+      { id: 'orpad.workstream', version: '>=0.1.0', origin: 'built-in' },
     ],
+    graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
+    skills: [{ id: 'request-context', file: skillPath }],
+    rules: [{ id: 'context', file: 'rules/context.or-rule' }],
     harness: { path: 'harness/generated' },
+    run: {
+      artifactRoot: 'harness/generated/latest-run/artifacts',
+      artifactRootResolution: 'relative-to-pipeline-directory',
+      queueRoot: 'harness/generated/latest-run/queue',
+      queueRootResolution: 'relative-to-pipeline-directory',
+      candidateInventoryPath: 'harness/generated/latest-run/artifacts/discovery/candidate-inventory.json',
+      candidateInventoryPathResolution: 'relative-to-pipeline-directory',
+      summaryPath: 'harness/generated/latest-run/summary.md',
+      summaryPathResolution: 'relative-to-pipeline-directory',
+      durableRunRoot: 'runs',
+      durableRunRootResolution: 'relative-to-pipeline-directory',
+      machineAdapter: {
+        type: 'codex-cli',
+        enabled: true,
+        mode: 'live-mvp',
+        command: 'codex',
+        sandbox: 'read-only',
+        proposalSandbox: 'read-only',
+        workerSandbox: 'workspace-write',
+        approvalPolicy: 'never',
+        ephemeral: true,
+        candidateLimit: 1,
+        proposalTimeoutMs: 600000,
+        workerTimeoutMs: 900000,
+        claimLeaseMs: 1800000,
+        probeNodePaths: ['main/probe'],
+        triageNodePath: 'main/triage',
+        dispatcherNodePath: 'main/dispatch',
+        workerNodePath: 'main/worker',
+        supportNodePolicy: 'record-gate-warnings-and-mark-artifact-partial',
+        description: 'Generated managed-run adapter. OrPAD owns queue, run status, and artifacts; Codex CLI submits candidate/result/proof through adapter contracts.',
+      },
+    },
   };
   const contextRule = {
     kind: 'orpad.rule',
@@ -9043,12 +9080,6 @@ async function createOrpadRunbookStarter() {
     include: ['README.md', 'package.json', '.orpad/pipelines/**'],
     exclude: ['.env', '**/*secret*', '**/*token*', '**/*.pem', '**/*.key'],
   };
-  const approvalRule = {
-    kind: 'orpad.rule',
-    version: '1.0',
-    id: 'approvals',
-    approvals: [{ action: 'provider-send', scope: 'run', mode: 'approve-once' }],
-  };
   const skill = await buildOrpadRunbookSkill(taskText);
 
   await window.orpad.createFolder(orpadPath).catch(() => {});
@@ -9056,7 +9087,6 @@ async function createOrpadRunbookStarter() {
   await window.orpad.createFolder(pipelinesPath).catch(() => {});
   await window.orpad.createFolder(pipelineFolderPath).catch(() => {});
   await window.orpad.createFolder(graphFolderPath).catch(() => {});
-  await window.orpad.createFolder(treeFolderPath).catch(() => {});
   await window.orpad.createFolder(skillFolderPath).catch(() => {});
   await window.orpad.createFolder(ruleFolderPath).catch(() => {});
   await window.orpad.createFolder(harnessFolderPath).catch(() => {});
@@ -9065,19 +9095,14 @@ async function createOrpadRunbookStarter() {
   if (pipelineCreate?.error) throw new Error(pipelineCreate.error);
   const graphCreate = await window.orpad.createFile(graphPath);
   if (graphCreate?.error) throw new Error(graphCreate.error);
-  const treeCreate = await window.orpad.createFile(treePath);
-  if (treeCreate?.error) throw new Error(treeCreate.error);
   const skillCreate = await window.orpad.createFile(skillFilePath);
   if (skillCreate?.error) throw new Error(skillCreate.error);
   await window.orpad.createFile(contextRulePath).catch(() => {});
-  await window.orpad.createFile(approvalRulePath).catch(() => {});
   const savedPipeline = await window.orpad.saveFile(pipelinePath, JSON.stringify(pipeline, null, 2));
   const savedGraph = await window.orpad.saveFile(graphPath, JSON.stringify(graph, null, 2));
-  const savedTree = await window.orpad.saveFile(treePath, JSON.stringify(implementationTree, null, 2));
   const savedSkill = await window.orpad.saveFile(skillFilePath, skill);
   const savedContextRule = await window.orpad.saveFile(contextRulePath, JSON.stringify(contextRule, null, 2));
-  const savedApprovalRule = await window.orpad.saveFile(approvalRulePath, JSON.stringify(approvalRule, null, 2));
-  if (!savedPipeline || !savedGraph || !savedTree || !savedSkill || !savedContextRule || !savedApprovalRule) throw new Error('Failed to write OrPAD pipeline files.');
+  if (!savedPipeline || !savedGraph || !savedSkill || !savedContextRule) throw new Error('Failed to write OrPAD pipeline files.');
 
   selectedRunbookPath = pipelinePath;
   selectedRunbookValidation = null;
