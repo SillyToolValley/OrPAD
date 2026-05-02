@@ -238,14 +238,16 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
 
   await expect(win.locator('#runbooks-content')).toContainText('Agent request prepared');
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
-  await expect(win.locator('#runbooks-content')).toContainText('Work item moved');
+  await expect(win.locator('#runbooks-content')).toContainText('Work is ready');
   await expect(win.locator('#runbooks-content')).toContainText('Work found');
   await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
   await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
+  await expect(win.locator('#runbooks-content')).not.toContainText(/\bResume\b/);
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toHaveText('Recover');
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
 
@@ -595,8 +597,10 @@ test('Machine UI recovers interrupted work and reports work state repair', async
   await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery ready: 1 interrupted work item can be recovered before continuing');
+  await expect(win.locator('#runbooks-content')).not.toContainText(/\bResume\b/);
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
+  await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toHaveText('Recover');
   await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toBeEnabled();
 
   await win.locator('button[data-runbook-action="machine-resume-run"]').click();
