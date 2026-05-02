@@ -313,7 +313,7 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('.orch-preview')).toContainText('Main flow');
   await expect(win.locator('.orch-preview')).toContainText('Flow steps');
-  await expect(win.locator('.orch-preview')).not.toContainText('State graph');
+  await expect(win.locator('.orch-preview')).not.toContainText(new RegExp('State\\s+' + 'graph', 'i'));
   await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
   await expect(win.locator('.orch-preview')).toContainText('Main flow');
   await expect(win.locator('.orch-preview')).not.toContainText('graphs/main.or-graph');
