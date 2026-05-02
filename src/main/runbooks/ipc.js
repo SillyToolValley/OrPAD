@@ -62,13 +62,21 @@ function isRunbookFile(name) {
   return isPipelineFile(name) || isLegacyRunbookFile(name);
 }
 
-async function readPipelineDisplayName(filePath) {
+async function readPipelineManifestSummary(filePath) {
   const fallback = path.basename(path.dirname(filePath));
   try {
     const parsed = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
-    return parsed.title || parsed.name || parsed.id || fallback;
+    return {
+      displayName: parsed.title || parsed.name || parsed.id || fallback,
+      pipelineId: parsed.id || fallback,
+      description: parsed.description || '',
+    };
   } catch {
-    return fallback;
+    return {
+      displayName: fallback,
+      pipelineId: fallback,
+      description: '',
+    };
   }
 }
 
@@ -171,8 +179,11 @@ async function scanRunbookWorkspace(workspaceRoot) {
         const item = { name: entry.name, path: entryPath, kind: 'file' };
         extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
         if (isPipelineFile(entry.name)) {
+          const manifestSummary = await readPipelineManifestSummary(entryPath);
           item.format = 'or-pipeline';
-          item.displayName = await readPipelineDisplayName(entryPath);
+          item.displayName = manifestSummary.displayName;
+          item.pipelineId = manifestSummary.pipelineId;
+          item.description = manifestSummary.description;
           pipelines.push(item);
           runbooks.push(item);
         } else if (isLegacyRunbookFile(entry.name)) {

@@ -2571,7 +2571,22 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason) {
   return { state: 'warn', text: 'Checked, but no executable run mode is available yet.' };
 }
 
-function renderPipelinePreviewRunBar(context = pipelineContextForPath()) {
+function pipelinePreviewTitle(context, pipelineDoc = null) {
+  const manifestTitle = pipelineDoc?.title || pipelineDoc?.name || pipelineDoc?.id || '';
+  if (manifestTitle) return manifestTitle;
+  const summaryItem = context?.pipelinePath ? runbookSummaryItemForPath(context.pipelinePath) : null;
+  return (summaryItem ? runbookListItemTitle(summaryItem) : '') || context?.pipelineName || 'Pipeline';
+}
+
+function pipelinePreviewLocationLabel(context) {
+  if (!context) return '';
+  if (context.isManifest) return 'Manifest';
+  if (context.isGraph) return `Graph: ${runbookBaseName(context.activePath, 'main.or-graph')}`;
+  if (context.activeRelativePath) return context.activeRelativePath;
+  return 'Pipeline package';
+}
+
+function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelineDoc = null) {
   if (!context?.pipelinePath) return '';
   const runbookPath = context.pipelinePath;
   const validation = selectedPipelineValidation(runbookPath);
@@ -2590,15 +2605,17 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath()) {
     ? (machineReason || 'Start Managed Run')
     : (agentReady ? 'Prepare a supervised agent handoff' : 'Run this pipeline');
   const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason);
-  const activeLabel = context.activeRelativePath || (context.isManifest ? 'pipeline.or-pipeline' : runbookRelativePath(runbookPath));
+  const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
+  const activeLabel = pipelinePreviewLocationLabel(context);
+  const activePathTitle = runbookRelativePath(context.activePath || runbookPath);
   if (isMachineApiAvailable() && !machineRuntimeStatus && !machineRuntimeStatusLoading) {
     void refreshMachineRuntimeStatus();
   }
   return `
     <div class="pipeline-runbar" data-pipeline-preview-runbar data-pipeline-path="${escapeHtml(runbookPath)}">
       <div class="pipeline-runbar-meta">
-        <strong>${escapeHtml(context.pipelineName || 'Pipeline')}</strong>
-        <span class="pipeline-runbar-path">${escapeHtml(activeLabel)}</span>
+        <strong>${escapeHtml(displayTitle)}</strong>
+        <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
       </div>
       <div class="pipeline-runbar-actions">
@@ -5208,7 +5225,7 @@ function renderOrchPipelinePreview(content) {
           </div>
         </div>
       </div>
-      ${renderPipelinePreviewRunBar(pipelineContext)}
+      ${renderPipelinePreviewRunBar(pipelineContext, doc)}
       ${renderPipelineEditorTabs(pipelineContext, 'manifest', entryGraphPath)}
       <div class="orch-graph-layout">
         <div class="orch-graph-main">
@@ -6975,12 +6992,24 @@ function runbookListItemTitle(item) {
     || 'Pipeline';
 }
 
+function runbookCompactText(text, maxLength = 120) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized || normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
+}
+
 function runbookListItemSubtitle(item) {
   const relative = runbookRelativePath(item.path);
   if (item.format === 'or-pipeline' && relative.endsWith('/pipeline.or-pipeline')) {
-    return relative.slice(0, -'/pipeline.or-pipeline'.length);
+    return runbookCompactText(item.description, 112) || 'OrPAD pipeline';
   }
   return relative;
+}
+
+function runbookSummaryItemForPath(filePath) {
+  const summary = workspaceRunbookSummary || buildWorkspaceRunbookSummary();
+  const key = runbookNormalizePath(filePath).toLowerCase();
+  return (summary?.runbooks || []).find(item => runbookNormalizePath(item.path).toLowerCase() === key) || null;
 }
 
 function renderRunbookListItems(items, selectedKey) {
@@ -7416,6 +7445,7 @@ function summaryWithSelectedRunbook(summary, selectedPath) {
     kind: 'file',
     format: lower.endsWith('.or-pipeline') ? 'or-pipeline' : lower.endsWith('.orch-graph.json') ? 'orch-graph' : 'orch-tree',
     displayName: lower.endsWith('.or-pipeline') ? runbookDirname(selectedPath).split('/').pop() || name : name,
+    description: lower.endsWith('.or-pipeline') ? 'OrPAD pipeline' : '',
   };
   const next = {
     ...summary,

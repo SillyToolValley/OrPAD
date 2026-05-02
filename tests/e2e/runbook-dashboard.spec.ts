@@ -139,7 +139,8 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   const pipelinesSection = win.locator('[data-runbook-section="pipelines"]');
   const legacySection = win.locator('[data-runbook-section="legacy"]');
   await expect(pipelinesSection.locator('.runbook-item[data-runbook-format="or-pipeline"] strong')).toContainText('Agent Workstream');
-  await expect(pipelinesSection).toContainText('agent-workstream');
+  await expect(pipelinesSection).not.toContainText('.orpad/pipelines');
+  await expect(pipelinesSection).not.toContainText('pipeline.or-pipeline');
   await expect(pipelinesSection).toContainText('1 pipeline');
   await expect(pipelinesSection).not.toContainText('.orch-tree.json');
   await expect(legacySection).toContainText('Legacy Workflows');
@@ -169,6 +170,9 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await win.locator('.runbook-item').filter({ hasText: 'Agent Workstream' }).click();
   await expect(win.locator('.runbook-item.selected')).toContainText('Agent Workstream');
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+  await expect(win.locator('[data-pipeline-preview-runbar] strong')).toContainText('Agent Workstream');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).not.toContainText('.orpad/pipelines');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).not.toContainText('pipeline.or-pipeline');
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toContainText('Prepare Handoff');
   await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toBeEnabled();

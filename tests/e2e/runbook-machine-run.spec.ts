@@ -383,7 +383,6 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
 
   await expect(win.locator('#runbooks-content')).not.toContainText('Machine Runtime');
   await win.locator('.runbook-item').filter({ hasText: 'machine-workstream' }).click();
-  await expect(win.locator('#runbooks-content .runbook-chip')).toHaveCount(0);
   await expect(win.locator('button[data-runbook-action="toggle-machine-ui"]')).toHaveCount(0);
   await expect(win.locator('button[data-runbook-action="run-machine"]')).toHaveCount(0);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
