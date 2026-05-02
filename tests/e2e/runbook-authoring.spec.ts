@@ -73,7 +73,8 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
 
   await expect(win.locator('#sidebar-runbooks')).toBeVisible();
   await expect(win.locator('.runbook-item.selected')).toHaveAttribute('aria-pressed', 'true');
-  await expect(win.locator('.runbook-item.selected')).toHaveAttribute('title', /\.orpad\/pipelines\/.+\/pipeline\.or-pipeline/);
+  await expect(win.locator('.runbook-item.selected')).toHaveAttribute('data-runbook-path', /[\\\/]\.orpad[\\\/]pipelines[\\\/].+[\\\/]pipeline\.or-pipeline/);
+  await expect(win.locator('.runbook-item.selected')).not.toContainText('pipeline.or-pipeline');
 
   const pipelinesRoot = path.join(workspace, '.orpad', 'pipelines');
   const pipelineDirs = fs.readdirSync(pipelinesRoot);
@@ -317,7 +318,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.runbook-item.selected')).toContainText('root-workflow.orch-tree.json');
 
   await win.locator('.runbook-item[data-runbook-format="or-pipeline"]').click();
-  await expect(win.locator('.runbook-item.selected')).toHaveAttribute('title', /\.orpad\/pipelines\/.+\/pipeline\.or-pipeline/);
+  await expect(win.locator('.runbook-item.selected')).toHaveAttribute('data-runbook-path', /[\\\/]\.orpad[\\\/]pipelines[\\\/].+[\\\/]pipeline\.or-pipeline/);
   await win.locator('.tab-item').filter({ hasText: graphFile }).click();
   await expect(win.locator('.tab-item.active')).toContainText(graphFile);
   await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');

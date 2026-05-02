@@ -163,6 +163,8 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(templatesSection).toContainText('Templates');
   await expect(templatesSection).toContainText('Maintenance Workstream Example');
   await expect(templatesSection).toContainText('1 template');
+  await expect(templatesSection).not.toContainText('nodes/orpad.workstream');
+  await expect(templatesSection).not.toContainText('maintenance-workstream.or-pipeline');
   await expect(pipelinesSection).not.toContainText('.orch-tree.json');
   await expect(legacySection).toContainText('Legacy Workflows');
   await expect(legacySection).toContainText('.orch-tree.json');

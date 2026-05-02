@@ -117,11 +117,14 @@ test('pipeline local MVP run records context, approval, replay, and claim artifa
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await expect(win.locator('#runbooks-content')).toContainText('pipeline.or-pipeline');
-  await win.locator('.runbook-item').filter({ hasText: 'pipeline.or-pipeline' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText('MVP executable');
+  await expect(win.locator('#runbooks-content')).toContainText('Release audit');
+  await expect(win.locator('#runbooks-content')).not.toContainText('pipeline.or-pipeline');
+  await win.locator('.runbook-item[data-runbook-format="or-pipeline"]').click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for local run.');
 
-  await win.locator('button[data-runbook-action="start-local"]').click();
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="local"]').click();
   await expect(win.locator('#fmt-modal')).toContainText('Approve Local Run');
   await expect(win.locator('#fmt-modal')).toContainText('scope: this run only');
   await expect(win.locator('#fmt-modal')).toContainText('skills/release-claim-audit.md');
@@ -202,9 +205,10 @@ test('denying local run approval does not create a run directory', async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  await win.locator('.runbook-item').filter({ hasText: 'pipeline.or-pipeline' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText('MVP executable');
-  await win.locator('button[data-runbook-action="start-local"]').click();
+  await win.locator('.runbook-item[data-runbook-format="or-pipeline"]').click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for local run.');
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="local"]').click();
   await expect(win.locator('#fmt-modal')).toContainText('Approve Local Run');
   await win.getByRole('button', { name: 'Deny' }).click();
   await expect(win.locator('#fmt-modal')).toBeHidden();

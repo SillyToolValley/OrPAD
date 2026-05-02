@@ -6999,11 +6999,10 @@ function runbookCompactText(text, maxLength = 120) {
 }
 
 function runbookListItemSubtitle(item) {
-  const relative = runbookRelativePath(item.path);
-  if (item.format === 'or-pipeline' && relative.endsWith('/pipeline.or-pipeline')) {
-    return runbookCompactText(item.description, 112) || 'OrPAD pipeline';
+  if (item.format === 'or-pipeline') {
+    return runbookCompactText(item.description, 112) || (item.template ? 'Template pipeline' : 'OrPAD pipeline');
   }
-  return relative;
+  return runbookRelativePath(item.path);
 }
 
 function runbookSummaryItemForPath(filePath) {
@@ -7025,8 +7024,11 @@ function renderRunbookListItems(items, selectedKey) {
     const itemSelected = runbookNormalizePath(item.path).toLowerCase() === selectedKey;
     const title = runbookListItemTitle(item);
     const subtitle = runbookListItemSubtitle(item);
+    const tooltip = item.format === 'or-pipeline'
+      ? [title, subtitle].filter(Boolean).join(' - ')
+      : relativePath;
     return `
-      <div class="runbook-item ${itemSelected ? 'selected' : ''}" data-runbook-path="${escapeHtml(item.path)}" data-runbook-format="${escapeHtml(item.format || '')}" data-selected="${itemSelected ? 'true' : 'false'}" role="button" tabindex="0" aria-pressed="${itemSelected ? 'true' : 'false'}" title="${escapeHtml(relativePath)}">
+      <div class="runbook-item ${itemSelected ? 'selected' : ''}" data-runbook-path="${escapeHtml(item.path)}" data-runbook-format="${escapeHtml(item.format || '')}" data-selected="${itemSelected ? 'true' : 'false'}" role="button" tabindex="0" aria-pressed="${itemSelected ? 'true' : 'false'}" title="${escapeHtml(tooltip)}">
         <div class="runbook-item-title">
           <strong>${escapeHtml(title)}</strong>
         </div>
