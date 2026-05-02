@@ -8133,11 +8133,7 @@ function machineWorkerProofDetails(record) {
 
 function machineNodeCompletionDetails(record) {
   const completed = (record?.events || []).filter(event => event?.eventType === 'node.completed');
-  const selected = Object.values(record?.selectedNodes || {}).filter(Boolean);
-  if (selected.length) {
-    return `${machineCountLabel(completed.length, 'completed node')}; ${selected.join(', ')}`;
-  }
-  return completed.length ? machineCountLabel(completed.length, 'completed node') : 'No completed nodes yet';
+  return completed.length ? `${machineCountLabel(completed.length, 'step')} completed` : 'No steps completed yet';
 }
 
 function machineApprovalDetails(record) {
@@ -8435,7 +8431,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(workerProofDetails)}</span>
         </div>
         <div class="runbook-guide">
-          <strong>Node lifecycle</strong>
+          <strong>Step progress</strong>
           <span>${escapeHtml(nodeCompletionDetails)}</span>
         </div>
         <div class="runbook-guide">
