@@ -7924,7 +7924,7 @@ function machineFailureDetails(record) {
     .map(event => event.nodePath || event.payload?.nodePath || '')
     .filter(Boolean);
   const contract = failure.contract
-    ? `Artifact contract missing: ${failure.contract.missingArtifactCount || 0} artifacts, ${failure.contract.missingQueueCount || 0} queue files.`
+    ? `Required evidence missing: ${machineCountLabel(failure.contract.missingArtifactCount, 'evidence file')}, ${machineCountLabel(failure.contract.missingQueueCount, 'queue file')}.`
     : '';
   const gate = failure.gate
     ? `Gate failed: ${(failure.gate.failed || []).map(item => item.criterion).filter(Boolean).join(', ') || 'criteria unmet'}.`
@@ -8063,7 +8063,7 @@ function machineWorkerProofDetails(record) {
   const changedFiles = payload.changedFiles || [];
   return [
     payload.status || 'worker result',
-    machineCountLabel(artifacts.length, 'artifact'),
+    machineCountLabel(artifacts.length, 'evidence file'),
     machineCountLabel(verification.length, 'check'),
     machineCountLabel(changedFiles.length, 'changed file'),
   ].filter(Boolean).join('; ');
@@ -8153,13 +8153,13 @@ function machineArtifactManifestFiles(record) {
 
 function machineArtifactManifestSource(record) {
   return Array.isArray(record?.exported?.metadata?.artifactManifest?.files)
-    ? 'latest export'
+    ? 'saved evidence'
     : 'run events';
 }
 
 function machineArtifactSummary(record) {
   const files = machineArtifactManifestFiles(record);
-  if (!files.length) return 'No artifact manifest files yet';
+  if (!files.length) return 'No evidence files yet';
   const preview = files
     .slice(0, 3)
     .map(file => file.path)
@@ -8355,7 +8355,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
         ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Claim</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
-        <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>View Artifacts</button>
+        <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
       <div class="runbook-replay-events">
         ${events.slice(-24).map(event => `<div class="runbook-event">${escapeHtml(event.timestamp || '')} ${escapeHtml(machineEventLabel(event))}</div>`).join('') || '<div class="runbook-event">No run events recorded.</div>'}
@@ -8386,7 +8386,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(cancellationDetails.text)}</span>
         </div>
         <div class="runbook-guide">
-          <strong>Artifacts</strong>
+          <strong>Evidence files</strong>
           <span>${escapeHtml(artifactDetails)}</span>
         </div>
         <div class="runbook-guide ${exported ? 'good' : 'warn'}">
@@ -9041,19 +9041,19 @@ async function openMachineArtifactViewer(runbookPath, runId) {
       machineMarkdownCell(file.sha256),
       '|',
     ].join(' ')),
-  ] : ['_No run artifacts registered yet._'];
+  ] : ['_No evidence files recorded yet._'];
   const metadataLines = [
     `Run: ${actualRunLabel}`,
     `Lifecycle: ${runState.lifecycleStatus || 'unknown'}`,
     `Summary: ${runState.summaryStatus || 'unknown'}`,
-    `Manifest source: ${machineArtifactManifestSource(record)}`,
-    `Artifacts: ${machineCountLabel(files.length, 'file')}`,
+    `Evidence source: ${machineArtifactManifestSource(record)}`,
+    `Files: ${machineCountLabel(files.length, 'file')}`,
     record.runRoot ? 'Storage: Run snapshot available' : '',
-    exported?.targetRoot || exported?.latestRunExportPath ? `Latest-run export: ${exported.targetRoot || exported.latestRunExportPath}` : '',
+    exported?.targetRoot || exported?.latestRunExportPath ? 'Evidence snapshot: Saved' : '',
     manifest?.sourceEventSequence != null ? `Source event sequence: ${manifest.sourceEventSequence}` : '',
   ].filter(Boolean);
   const body = [
-    '# Run Artifact Manifest',
+    '# Run Evidence',
     '',
     ...metadataLines,
     '',
@@ -9068,7 +9068,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   ].join('\n');
 
   createTab(null, null, body, '', {
-    title: `Run Artifacts ${artifactTitleLabel}.md`,
+    title: `Run Evidence ${artifactTitleLabel}.md`,
     viewType: 'markdown',
     forceUnsaved: true,
   });

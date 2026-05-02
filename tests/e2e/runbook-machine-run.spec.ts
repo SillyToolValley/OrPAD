@@ -241,7 +241,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).toContainText('Candidate inventory');
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
   await expect(win.locator('#runbooks-content')).toContainText('Worker proof');
-  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
@@ -255,9 +255,9 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
   await expect(win.locator('button[data-runbook-action="machine-view-artifacts"]')).toBeEnabled();
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
-  await expect(win.locator('.tab-item.active')).toContainText('Run Artifacts');
+  await expect(win.locator('.tab-item.active')).toContainText('Run Evidence');
   await expect(win.locator('.tab-item.active')).not.toContainText(/run_\d{8}_\d{6}/);
-  await expect(win.locator('.cm-content')).toContainText('Run Artifact Manifest');
+  await expect(win.locator('.cm-content')).toContainText('Run Evidence');
   await expect(win.locator('.cm-content')).not.toContainText(/run_\d{8}_\d{6}/);
   await win.locator('#btn-preview').click();
   await expect(win.locator('#content')).toContainText('artifacts/discovery/candidate-inventory.json');
@@ -285,7 +285,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#runbooks-content')).not.toContainText(runDirs[0]);
   await expect(win.locator('#runbooks-content')).toContainText('1 candidate, 0 empty-pass');
   await expect(win.locator('#runbooks-content')).toContainText('artifacts/discovery/candidate-inventory.json');
-  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 
@@ -499,7 +499,7 @@ test('Machine UI switches between durable run history snapshots', async () => {
   const firstRunId = fs.readdirSync(runRoot)[0];
 
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
-  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
 
   await startManagedRunFromPreview(win);
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(2);
@@ -513,12 +513,12 @@ test('Machine UI switches between durable run history snapshots', async () => {
   await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${firstRunId}"]`)).toHaveClass(/primary/);
   await expect(win.locator('#runbooks-content')).not.toContainText(firstRunId);
   await expect(win.locator('#runbooks-content')).toContainText('worker.result');
-  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
 
   await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`).click();
   await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`)).toHaveClass(/primary/);
   await expect(win.locator('#runbooks-content')).not.toContainText(secondRunId);
-  await expect(win.locator('#runbooks-content')).toContainText('done; 2 artifacts; 1 check; 1 changed file');
+  await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -674,7 +674,7 @@ test('Machine UI renders failure evidence from a failed runtime node', async () 
   await submitMachineCapabilityToken(win);
 
   await expect(win.locator('#runbooks-content')).toContainText('MACHINE_ARTIFACT_CONTRACT_MISSING');
-  await expect(win.locator('#runbooks-content')).toContainText('Artifact contract missing: 1 artifacts');
+  await expect(win.locator('#runbooks-content')).toContainText('Required evidence missing: 1 evidence file');
   await expect(win.locator('#runbooks-content')).toContainText('main/artifact');
   await expect(win.locator('#runbooks-content')).toContainText('node.failed');
 
