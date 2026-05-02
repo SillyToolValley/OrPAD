@@ -7936,7 +7936,7 @@ function machineEventLabel(event) {
       return 'Duplicate work skipped';
     case 'queue.transition': {
       const state = payload.toState || event?.toState;
-      return state ? `Work item moved to ${state}` : 'Work item updated';
+      return machineQueueTransitionEventLabel(state);
     }
     case 'artifact.registered':
       return 'Evidence file saved';
@@ -7947,11 +7947,11 @@ function machineEventLabel(event) {
       return decision ? `Approval ${decision}` : 'Approval decided';
     }
     case 'claim.lease-created':
-      return 'Work item claimed';
+      return 'Work started';
     case 'claim.heartbeat':
-      return 'Work claim refreshed';
+      return 'Work still running';
     case 'claim.lease-released':
-      return 'Work claim released';
+      return 'Work reservation released';
     case 'write-set.acquired':
       return 'Files reserved';
     case 'write-set.released':
@@ -7975,6 +7975,32 @@ function machineEventLabel(event) {
 
 function machineEventTimeLabel(event) {
   return machineRunDateLabel(event?.timestamp) || '';
+}
+
+function machineWorkStateLabel(value) {
+  const state = String(value || '').trim().toLowerCase();
+  const labels = {
+    queued: 'ready',
+    claimed: 'in progress',
+    blocked: 'stopped',
+    done: 'completed',
+  };
+  return labels[state] || state.replace(/[._-]+/g, ' ') || 'unknown';
+}
+
+function machineQueueTransitionEventLabel(state) {
+  const normalized = String(state || '').trim().toLowerCase();
+  const labels = {
+    queued: 'Work is ready',
+    claimed: 'Work started',
+    blocked: 'Work stopped',
+    done: 'Work completed',
+  };
+  return labels[normalized] || (normalized ? `Work updated to ${machineWorkStateLabel(normalized)}` : 'Work updated');
+}
+
+function machineWorkInProgressLabel(count) {
+  return `${machineCountLabel(count, 'work item')} in progress`;
 }
 
 function machineFailureDetails(record) {
@@ -8156,21 +8182,22 @@ function machineApprovalDetails(record) {
 
 function machineActiveClaimDetails(record) {
   const activeClaims = record?.activeClaims || [];
-  if (!activeClaims.length) return 'No active claims';
+  if (!activeClaims.length) return 'No work in progress';
   const first = activeClaims[0];
-  const label = first.itemId || first.claimId || 'claim';
-  return `${machineCountLabel(activeClaims.length, 'active claim')}: ${label}`;
+  const label = first.itemId || '';
+  return `${machineWorkInProgressLabel(activeClaims.length)}${label ? `: ${label}` : ''}`;
 }
 
 function machineActiveWriteSetDetails(record) {
   const activeWriteSets = record?.activeWriteSets || [];
-  if (!activeWriteSets.length) return 'No active write-set locks';
+  if (!activeWriteSets.length) return 'No reserved files';
   const first = activeWriteSets[0];
   const paths = (first.paths || [])
     .slice(0, 3)
     .join(', ');
-  const more = (first.paths || []).length > 3 ? `, +${first.paths.length - 3} more` : '';
-  return `${machineCountLabel(activeWriteSets.length, 'active write-set lock')}${paths ? `: ${paths}${more}` : ''}`;
+  const fileCount = activeWriteSets.reduce((sum, item) => sum + Math.max(1, (item.paths || []).length), 0);
+  const more = fileCount > 3 ? `, +${fileCount - 3} more` : '';
+  return `${machineCountLabel(fileCount || activeWriteSets.length, 'reserved file')}${paths ? `: ${paths}${more}` : ''}`;
 }
 
 function machineAuditDetails(record) {
@@ -8230,9 +8257,9 @@ function machineArtifactSummary(record) {
 function machineQueueInventorySummary(inventory) {
   const counts = inventory?.counts || {};
   const labels = ['queued', 'claimed', 'blocked', 'done']
-    .map(state => counts[state] ? `${counts[state]} ${state}` : '')
+    .map(state => counts[state] ? `${counts[state]} ${machineWorkStateLabel(state)}` : '')
     .filter(Boolean);
-  return labels.length ? labels.join(', ') : 'no queue inventory';
+  return labels.length ? labels.join(', ') : 'no work state';
 }
 
 function machineRunStatusLabel(runState) {
@@ -8258,7 +8285,7 @@ function machineExecuteControlDetails(record, validation = null) {
   if (validation && !isMachineStartablePipeline(validation)) return machineStartBlockReason(validation);
   if (isMachineRunTerminal(runState)) return `Continue unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished`;
   if (pendingApprovals > 0) return `Continue blocked: ${machineCountLabel(pendingApprovals, 'approval')} must be decided first`;
-  if (activeClaims.length) return `Continue paused: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing`;
+  if (activeClaims.length) return `Continue paused: ${machineWorkInProgressLabel(activeClaims.length)}; cancel or wait before continuing`;
   return 'Continue this run.';
 }
 
@@ -8283,18 +8310,18 @@ function machineResumeControlDetails(record) {
   if (activeClaims.length) {
     const staleClaims = machineStaleActiveClaims(record);
     if (staleClaims.length === activeClaims.length) {
-      return { state: 'good', text: `Recovery ready: ${machineCountLabel(staleClaims.length, 'stale claim')} can be recovered before continuing` };
+      return { state: 'good', text: `Recovery ready: ${machineCountLabel(staleClaims.length, 'interrupted work item')} can be recovered before continuing` };
     }
-    return { state: 'warn', text: `Recovery paused: ${machineCountLabel(activeClaims.length, 'active claim')} still owns work; cancel or wait before continuing` };
+    return { state: 'warn', text: `Recovery paused: ${machineWorkInProgressLabel(activeClaims.length)}; cancel or wait before continuing` };
   }
   if (resume) {
     const repaired = resume.queueRepair?.repaired?.length || 0;
     return {
       state: 'good',
-      text: `Last recovery: ${machineCountLabel(repaired, 'queue repair')}; ${machineCountLabel(resume.staleClaimCount, 'stale claim')} recovered; ${machineQueueInventorySummary(resume.inventory)}`,
+      text: `Last recovery: ${machineCountLabel(repaired, 'work state repair')}; ${machineCountLabel(resume.staleClaimCount, 'interrupted work item')} recovered; ${machineQueueInventorySummary(resume.inventory)}`,
     };
   }
-  return { state: 'good', text: 'Recovery ready: OrPAD can repair queue snapshots and recover stale claims before continuing' };
+  return { state: 'good', text: 'Recovery ready: OrPAD can repair work state and recover interrupted work before continuing' };
 }
 
 function machineCancellationControlDetails(record) {
@@ -8303,17 +8330,17 @@ function machineCancellationControlDetails(record) {
   if (cancellation) {
     return {
       state: 'good',
-      text: `Last cancellation: ${cancellation.itemId || 'item'} moved to ${cancellation.toState || 'blocked'}; claim ${cancellation.claimId || 'claim'} released`,
+      text: `Last cancellation: ${cancellation.itemId || 'work item'} was stopped; work reservation released`,
     };
   }
   if (activeClaims.length) {
     const first = activeClaims[0];
     return {
       state: 'warn',
-      text: `Cancel ready: claim ${first.claimId || 'claim'} owns ${first.itemId || 'work item'}; ${machineActiveWriteSetDetails(record)}`,
+      text: `Cancel ready: ${first.itemId || 'work item'} is in progress; ${machineActiveWriteSetDetails(record)}`,
     };
   }
-  return { state: 'good', text: 'No active claim to cancel' };
+  return { state: 'good', text: 'No work to cancel' };
 }
 
 function isMachineRunTerminal(runState) {
@@ -8411,7 +8438,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
-        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Claim</button>` : ''}
+        ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Work</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
@@ -8435,8 +8462,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(nodeCompletionDetails)}</span>
         </div>
         <div class="runbook-guide">
-          <strong>Queue</strong>
-          <span>${escapeHtml([queueEvents.length ? `${queueEvents.length} queue events` : 'No queue events yet', activeClaimDetails, activeWriteSetDetails].join('; '))}</span>
+          <strong>Work status</strong>
+          <span>${escapeHtml([queueEvents.length ? machineCountLabel(queueEvents.length, 'work update') : 'No work updates yet', activeClaimDetails, activeWriteSetDetails].join('; '))}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(resumeDetails.state)}">
           <strong>Recovery</strong>
