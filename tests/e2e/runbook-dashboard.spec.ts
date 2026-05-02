@@ -66,6 +66,7 @@ function writeFixtureWorkspace(): string {
     kind: 'orpad.pipeline',
     version: '1.0',
     id: 'agent-workstream',
+    title: 'Agent Workstream',
     trustLevel: 'local-authored',
     entryGraph: 'graphs/main.or-graph',
     nodePacks: [
@@ -137,6 +138,7 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(win.locator('#runbooks-content')).toContainText('.orch-tree.json');
   const pipelinesSection = win.locator('[data-runbook-section="pipelines"]');
   const legacySection = win.locator('[data-runbook-section="legacy"]');
+  await expect(pipelinesSection.locator('.runbook-item[data-runbook-format="or-pipeline"] strong')).toContainText('Agent Workstream');
   await expect(pipelinesSection).toContainText('agent-workstream');
   await expect(pipelinesSection).toContainText('1 pipeline');
   await expect(pipelinesSection).not.toContainText('.orch-tree.json');
@@ -164,8 +166,8 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await win.locator('.runbook-item').filter({ hasText: '.orch-tree.json' }).click();
   await expect(win.locator('.runbook-item.selected')).toContainText('.orch-tree.json');
 
-  await win.locator('.runbook-item').filter({ hasText: 'agent-workstream' }).click();
-  await expect(win.locator('.runbook-item.selected')).toContainText('agent-workstream');
+  await win.locator('.runbook-item').filter({ hasText: 'Agent Workstream' }).click();
+  await expect(win.locator('.runbook-item.selected')).toContainText('Agent Workstream');
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="handoff"]')).toContainText('Prepare Handoff');

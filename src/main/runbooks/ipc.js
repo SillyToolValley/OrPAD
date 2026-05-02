@@ -62,6 +62,16 @@ function isRunbookFile(name) {
   return isPipelineFile(name) || isLegacyRunbookFile(name);
 }
 
+async function readPipelineDisplayName(filePath) {
+  const fallback = path.basename(path.dirname(filePath));
+  try {
+    const parsed = JSON.parse(await fsp.readFile(filePath, 'utf-8'));
+    return parsed.title || parsed.name || parsed.id || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function isRiskyWorkspaceFile(name) {
   const lower = String(name || '').toLowerCase();
   return lower === '.env'
@@ -162,7 +172,7 @@ async function scanRunbookWorkspace(workspaceRoot) {
         extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
         if (isPipelineFile(entry.name)) {
           item.format = 'or-pipeline';
-          item.displayName = path.basename(path.dirname(entryPath));
+          item.displayName = await readPipelineDisplayName(entryPath);
           pipelines.push(item);
           runbooks.push(item);
         } else if (isLegacyRunbookFile(entry.name)) {
