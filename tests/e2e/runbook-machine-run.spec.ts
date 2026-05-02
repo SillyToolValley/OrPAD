@@ -8,6 +8,7 @@ const {
   claimNextQueuedItem,
   appendMachineEvent,
   appendRunLifecycleStatus,
+  appendRunSummaryStatus,
   createMachineRun,
   findQueueItem,
   ingestCandidateProposal,
@@ -364,6 +365,107 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(recoverButton).toBeDisabled();
   await expect(recoverButton).toHaveAttribute('title', /OrPAD is already working/);
   await expect(win.locator('#runbooks-content')).toContainText('Run started');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI explains blocked overlay results and incomplete evidence', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_blocked_review',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'machine-ui-smoke',
+    reason: 'worker-result.accepted',
+    artifactRefs: [
+      'artifacts/adapters/worker.transcript.json',
+      'artifacts/patches/worker.patch.json',
+    ],
+    payload: {
+      claimId: 'claim-machine-ui-smoke',
+      adapterCallId: 'claim-machine-ui-smoke-graph-cli',
+      attemptId: 'claim-machine-ui-smoke-graph-cli-attempt-1',
+      idempotencyKey: 'claim-machine-ui-smoke-graph-cli:attempt-1',
+      status: 'blocked',
+      toState: 'blocked',
+      patchArtifact: 'artifacts/patches/worker.patch.json',
+      changedFiles: ['src/smoke-target.md'],
+      verification: [{
+        command: process.execPath,
+        args: ['--version'],
+        missingExpectedChanges: ['src/main/runbooks/validator.js'],
+      }],
+    },
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'blocked',
+    reason: 'worker-result.accepted',
+    payload: {
+      itemId: 'machine-ui-smoke',
+      workerStatus: 'blocked',
+      message: 'CLI adapter result requires review before any canonical mutation.',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'artifact-contract',
+    eventType: 'node.completed',
+    payload: {
+      nodeExecutionId: `${run.runId}:artifact-contract:attempt-1`,
+      nodeType: 'orpad.artifactContract',
+      status: 'completed',
+      attempt: 1,
+      valid: false,
+      onMissing: 'mark-partial',
+      missingArtifactCount: 2,
+      missingQueueCount: 1,
+      inventory: { counts: { blocked: 1 } },
+    },
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'artifact-contract.mark-partial',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'artifact-contract.mark-partial',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText('Review required');
+  await expect(win.locator('#runbooks-content')).toContainText('1 changed file staged in run evidence; workspace files were not changed.');
+  await expect(win.locator('#runbooks-content')).toContainText('Missing expected change: src/main/runbooks/validator.js.');
+  await expect(win.locator('#runbooks-content')).toContainText('Evidence incomplete');
+  await expect(win.locator('#runbooks-content')).toContainText('2 required evidence files missing; 1 required queue file missing');
+  await expect(win.locator('#runbooks-content')).toContainText('Work needs review');
+  await expect(win.locator('#runbooks-content')).toContainText('review needed; 2 evidence files; 1 check; 1 changed file');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

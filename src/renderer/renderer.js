@@ -8071,7 +8071,9 @@ function machineEventLabel(event) {
     case 'adapter.result':
       return 'Agent response accepted';
     case 'worker.result':
-      return 'Work completed';
+      return String(payload.status || '').toLowerCase() === 'blocked'
+        ? 'Work needs review'
+        : 'Work completed';
     case 'queue.dedupe':
       return 'Duplicate work skipped';
     case 'queue.transition': {
@@ -8141,6 +8143,90 @@ function machineQueueTransitionEventLabel(state) {
 
 function machineWorkInProgressLabel(count) {
   return `${machineCountLabel(count, 'work item')} in progress`;
+}
+
+function machineLatestWorkerEvent(record) {
+  return record?.worker?.event || latestMachineEvent(record?.events, 'worker.result');
+}
+
+function machineWorkerResultState(record) {
+  const event = machineLatestWorkerEvent(record);
+  if (!event) return 'warn';
+  const status = String(event.payload?.status || '').toLowerCase();
+  if (['blocked', 'failed', 'rejected'].includes(status)) return 'warn';
+  return 'good';
+}
+
+function machineWorkerStatusLabel(status) {
+  const value = String(status || '').toLowerCase();
+  if (value === 'blocked') return 'review needed';
+  if (value === 'done') return 'done';
+  if (value === 'failed') return 'failed';
+  return status || 'worker result';
+}
+
+function machineLatestWorkerSummary(record) {
+  return latestMachineEvent(record?.events, 'run.summary', event => (
+    event?.reason === 'worker-result.accepted'
+    || event?.payload?.workerStatus
+    || event?.payload?.itemId
+  ));
+}
+
+function machineLatestPartialArtifactContract(record) {
+  return latestMachineEvent(record?.events, 'node.completed', event => {
+    const payload = event?.payload || {};
+    return payload.nodeType === 'orpad.artifactContract'
+      && ((Number(payload.missingArtifactCount) || 0) > 0 || (Number(payload.missingQueueCount) || 0) > 0);
+  });
+}
+
+function machineRunAttentionDetails(record) {
+  if (!record) return '';
+  const notices = [];
+  const workerEvent = machineLatestWorkerEvent(record);
+  const workerPayload = workerEvent?.payload || {};
+  const workerStatus = String(workerPayload.status || '').toLowerCase();
+  if (workerStatus === 'blocked') {
+    const changedFiles = workerPayload.changedFiles || [];
+    const verification = workerPayload.verification || [];
+    const missingExpectedChanges = [...new Set(verification.flatMap(item => item.missingExpectedChanges || []))];
+    const summaryPayload = machineLatestWorkerSummary(record)?.payload || {};
+    const patchArtifact = workerPayload.patchArtifact || '';
+    notices.push({
+      state: 'warning',
+      title: 'Review required',
+      text: [
+        changedFiles.length
+          ? `${machineCountLabel(changedFiles.length, 'changed file')} staged in run evidence; workspace files were not changed.`
+          : 'Work stopped before producing an applicable workspace change.',
+        patchArtifact ? `Patch evidence: ${patchArtifact}.` : '',
+        missingExpectedChanges.length
+          ? `Missing expected change: ${missingExpectedChanges.slice(0, 3).join(', ')}${missingExpectedChanges.length > 3 ? `, +${missingExpectedChanges.length - 3} more` : ''}.`
+          : '',
+        summaryPayload.message || '',
+      ].filter(Boolean).join(' '),
+    });
+  }
+  const contract = machineLatestPartialArtifactContract(record)?.payload || null;
+  if (contract) {
+    const missingArtifacts = Number(contract.missingArtifactCount) || 0;
+    const missingQueue = Number(contract.missingQueueCount) || 0;
+    notices.push({
+      state: 'warning',
+      title: 'Evidence incomplete',
+      text: [
+        missingArtifacts ? `${machineCountLabel(missingArtifacts, 'required evidence file')} missing` : '',
+        missingQueue ? `${machineCountLabel(missingQueue, 'required queue file')} missing` : '',
+        'Save and review evidence before treating this run as complete.',
+      ].filter(Boolean).join('; '),
+    });
+  }
+  return notices.map(notice => `
+    <div class="runbook-diagnostic ${escapeHtml(notice.state)}">
+      <strong>${escapeHtml(notice.title)}</strong> ${escapeHtml(notice.text)}
+    </div>
+  `).join('');
 }
 
 function machineFailureDetails(record) {
@@ -8292,14 +8378,14 @@ function machineCandidateInventoryDetails(record) {
 }
 
 function machineWorkerProofDetails(record) {
-  const event = record?.worker?.event || latestMachineEvent(record?.events, 'worker.result');
+  const event = machineLatestWorkerEvent(record);
   if (!event) return 'No work result yet';
   const payload = event.payload || {};
   const artifacts = event.artifactRefs || [];
   const verification = payload.verification || [];
   const changedFiles = payload.changedFiles || [];
   return [
-    payload.status || 'worker result',
+    machineWorkerStatusLabel(payload.status),
     machineCountLabel(artifacts.length, 'evidence file'),
     machineCountLabel(verification.length, 'check'),
     machineCountLabel(changedFiles.length, 'changed file'),
@@ -8693,6 +8779,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const executeDetails = machineExecuteControlDetails(record, validation, runbookPath);
   const resumeDetails = machineResumeControlDetails(record, runbookPath);
   const cancellationDetails = machineCancellationControlDetails(record);
+  const attentionDetails = machineRunAttentionDetails(record);
   const runId = runState.runId || record.runId || '';
   const runLabel = machineRunDisplayLabel({
     runId,
@@ -8725,6 +8812,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
       ${renderMachineRunHistory(runbookPath, runId)}
       ${machineFailureDetails(record)}
+      ${attentionDetails}
       <div class="runbook-action-row">
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
@@ -8743,7 +8831,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <strong>Work found</strong>
           <span>${escapeHtml(candidateDetails)}</span>
         </div>
-        <div class="runbook-guide ${workerProofDetails === 'No work result yet' ? 'warn' : 'good'}">
+        <div class="runbook-guide ${escapeHtml(machineWorkerResultState(record))}">
           <strong>Work result</strong>
           <span>${escapeHtml(workerProofDetails)}</span>
         </div>
