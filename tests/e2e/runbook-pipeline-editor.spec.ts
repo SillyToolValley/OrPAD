@@ -130,8 +130,8 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
   await win.evaluate(async () => {
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
-  await expect(win.locator('#runbooks-content')).toContainText('editor-fixture');
-  await win.locator('.runbook-item').filter({ hasText: 'editor-fixture' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText('Pipeline editor fixture');
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
   await win.locator('#btn-preview').click();
   await expect(win.locator('.orch-preview')).toContainText('Pipeline editor');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Graph');
