@@ -249,7 +249,8 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
 
   await win.locator('button[data-runbook-action="machine-export"]').click();
-  await expect(win.locator('#runbooks-content')).toContainText('harness');
+  await expect(win.locator('#runbooks-content')).toContainText('Evidence snapshot');
+  await expect(win.locator('#runbooks-content')).toContainText('Saved');
   await expect(win.locator('#runbooks-content')).toContainText('Audit evidence ready');
   await expect.poll(() => fs.existsSync(path.join(pipelineDir, 'harness', 'generated', 'latest-run', 'run-metadata.json'))).toBe(true);
   await expect(win.locator('button[data-runbook-action="machine-view-artifacts"]')).toBeEnabled();

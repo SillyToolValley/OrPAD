@@ -8124,7 +8124,7 @@ function machineAuditDetails(record) {
     return { state: 'warn', text: 'Audit unavailable' };
   }
   if (!exportRoot) {
-    return { state: 'warn', text: 'Export latest before audit' };
+    return { state: 'warn', text: 'Save evidence before audit' };
   }
   return {
     state: 'good',
@@ -8354,7 +8354,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
         ${firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Cancel Claim</button>` : ''}
-        <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>Export Latest</button>
+        <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'}>View Artifacts</button>
       </div>
       <div class="runbook-replay-events">
@@ -8390,8 +8390,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(artifactDetails)}</span>
         </div>
         <div class="runbook-guide ${exported ? 'good' : 'warn'}">
-          <strong>Latest-run export</strong>
-          <span>${escapeHtml(exported ? (exported.targetRoot || exported.latestRunExportPath || 'exported') : 'Not exported')}</span>
+          <strong>Evidence snapshot</strong>
+          <span>${escapeHtml(exported ? 'Saved' : 'Not saved')}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
           <strong>Run audit</strong>
@@ -8947,7 +8947,7 @@ async function exportSelectedMachineRun(runbookPath, runId) {
     if (exported?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
     }
-    alert(exported?.error || 'Latest-run export failed.');
+    alert(exported?.error || 'Evidence save failed.');
     return;
   }
   const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || { runId, events: [] };
