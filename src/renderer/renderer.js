@@ -2693,6 +2693,42 @@ function pipelineValueText(value) {
   return String(value);
 }
 
+function pipelineDisplayTitle(value, fallback = 'Item') {
+  const raw = String(value || '').trim();
+  if (!raw) return fallback;
+  const stem = raw
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+    .replace(/\.(or-graph|or-tree|or-rule|md|markdown|json)$/i, '')
+    .replace(/[-_]+(?:19|20)\d{6}$/i, '');
+  if (!stem) return fallback;
+  if (stem.toLowerCase() === 'main') return 'Main flow';
+  const acronyms = new Map([
+    ['api', 'API'],
+    ['cli', 'CLI'],
+    ['ipc', 'IPC'],
+    ['json', 'JSON'],
+    ['llm', 'LLM'],
+    ['mcp', 'MCP'],
+    ['mvp', 'MVP'],
+    ['orpad', 'OrPAD'],
+    ['ui', 'UI'],
+    ['ux', 'UX'],
+  ]);
+  return stem
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(part => acronyms.get(part.toLowerCase()) || `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ') || fallback;
+}
+
+function pipelineRefDisplayTitle(entry, section) {
+  const title = pipelineDisplayTitle(entry?.id || entry?.file, section?.singular || 'Item');
+  if (section?.key === 'graphs' && title.toLowerCase() === 'main') return 'Main flow';
+  return title;
+}
+
 function pipelineRefEntries(doc, key) {
   const value = doc?.[key];
   const shape = Array.isArray(value) ? 'array' : 'object';
@@ -2837,6 +2873,18 @@ function renderPipelineField({ key, label, type = 'text', multiline = false, opt
   `;
 }
 
+function renderPipelineEntryField(entryGraph, readwrite) {
+  if (!readwrite) {
+    return `
+      <div class="pipeline-field readonly">
+        <span>Entry Flow</span>
+        <code>${escapeHtml(entryGraph ? pipelineDisplayTitle(entryGraph, 'Entry flow') : 'not set')}</code>
+      </div>
+    `;
+  }
+  return renderPipelineField({ key: 'entryGraph', label: 'Entry file' }, entryGraph, readwrite);
+}
+
 function renderPipelineRefSection(doc, section, readwrite) {
   const { shape, entries } = pipelineRefEntries(doc, section.key);
   const empty = !entries.length;
@@ -2847,7 +2895,7 @@ function renderPipelineRefSection(doc, section, readwrite) {
           <h3>${escapeHtml(section.label)}</h3>
           <p>${escapeHtml(shape === 'array' ? 'array form' : 'object map form')}</p>
         </div>
-        <span class="runbook-chip">${entries.length} ${escapeHtml(section.key)}</span>
+        <span class="runbook-chip">${escapeHtml(machineCountLabel(entries.length, section.singular))}</span>
       </header>
       <div class="pipeline-ref-list">
         ${empty ? `<div class="runbook-empty">No ${escapeHtml(section.key)} declared.</div>` : entries.map((entry, index) => `
@@ -2857,7 +2905,7 @@ function renderPipelineRefSection(doc, section, readwrite) {
               <label><span>File</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="file" value="${escapeHtml(entry.file || '')}"></label>
               <label><span>Description</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="description" value="${escapeHtml(entry.description || '')}"></label>
             ` : `
-              <div><strong>${escapeHtml(entry.id || section.singular)}</strong><code>${escapeHtml(entry.file || 'no file')}</code>${entry.description ? `<small>${escapeHtml(entry.description)}</small>` : ''}</div>
+              <div><strong>${escapeHtml(pipelineRefDisplayTitle(entry, section))}</strong>${entry.description ? `<small>${escapeHtml(entry.description)}</small>` : ''}</div>
             `}
             <div class="pipeline-ref-actions">
               ${entry.file ? `<button data-pipeline-open-ref="${escapeHtml(entry.file)}">Open</button>` : ''}
@@ -5260,7 +5308,7 @@ function renderOrchPipelinePreview(content) {
               ${renderPipelineField({ key: 'trustLevel', label: 'Trust', options: ORCH_PIPELINE_TRUST_LEVELS }, doc.trustLevel || 'local-authored', readwrite)}
               ${renderPipelineField({ key: 'id', label: 'ID' }, doc.id || '', readwrite)}
               ${renderPipelineField({ key: 'title', label: 'Title' }, doc.title || '', readwrite)}
-              ${renderPipelineField({ key: 'entryGraph', label: 'Entry Graph' }, entryGraph, readwrite)}
+              ${renderPipelineEntryField(entryGraph, readwrite)}
               ${renderPipelineField({ key: 'description', label: 'Description', multiline: true }, doc.description || '', readwrite)}
             </div>
           </section>
@@ -5276,7 +5324,7 @@ function renderOrchPipelinePreview(content) {
           <dl>
             <dt>ID</dt><dd>${escapeHtml(doc.id || '')}</dd>
             <dt>Kind</dt><dd>${escapeHtml(doc.kind || 'orpad.pipeline')}</dd>
-            <dt>Entry</dt><dd>${escapeHtml(entryGraph || 'not set')}</dd>
+            <dt>Entry</dt><dd>${escapeHtml(entryGraph ? pipelineDisplayTitle(entryGraph, 'Entry flow') : 'not set')}</dd>
             <dt>Harness</dt><dd>${escapeHtml(doc.harness?.path || 'harness/generated')}</dd>
             <dt>Cycle</dt><dd>${escapeHtml(doc.maintenancePolicy?.repeatable ? 'repeatable' : 'single run')}</dd>
             <dt>Prompt</dt><dd>${escapeHtml(doc.executionPolicy?.promptRole || 'launch-only')}</dd>

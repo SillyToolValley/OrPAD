@@ -200,6 +200,9 @@ test('pipeline manifest preview exposes editable contract fields', async () => {
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Manifest');
   await expect(win.locator('.orch-preview button[data-pipeline-mode="readonly"]')).toHaveText('View');
   await expect(win.locator('.orch-preview button[data-pipeline-mode="readwrite"]')).toHaveText('Edit');
+  await expect(win.locator('.orch-preview')).toContainText('Entry Flow');
+  await expect(win.locator('.orch-preview')).toContainText('Main flow');
+  await expect(win.locator('.orch-preview')).not.toContainText('graphs/main.or-graph');
   const manifestScroll = await win.locator('#content').evaluate((el) => {
     el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
     return {
@@ -297,6 +300,11 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
   await win.locator('#btn-preview').click();
 
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
+  await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Manifest' }).click();
+  await expect(win.locator('.orch-preview')).toContainText('Main flow');
+  await expect(win.locator('.orch-preview')).not.toContainText('graphs/main.or-graph');
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Flow' }).click();
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('.orch-graph-node')).toContainText([
     'Load reference and workspace context',
