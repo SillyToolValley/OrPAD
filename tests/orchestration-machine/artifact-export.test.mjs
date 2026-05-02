@@ -171,7 +171,7 @@ test('legacy journal exporter projects Machine queue transition events', async (
   assert.deepEqual(journal.map(record => record.actor), ['orpad.workQueue', 'orpad.triage']);
 });
 
-test('latest-run export materializes a provenance snapshot from durable run state', async () => {
+test('evidence snapshot materializes provenance from durable run state', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {
     runId: run.runId,
@@ -201,7 +201,7 @@ test('latest-run export materializes a provenance snapshot from durable run stat
   assert.equal((await fs.stat(path.join(exported.targetRoot, 'queue/journal.jsonl'))).isFile(), true);
 });
 
-test('latest-run export refuses to overwrite an existing export unless explicitly allowed', async () => {
+test('evidence snapshot refuses to overwrite an existing export unless explicitly allowed', async () => {
   const run = await makeRun();
   const targetRoot = latestRunExportRoot(run.pipelineDir);
   await fs.mkdir(targetRoot, { recursive: true });
@@ -215,7 +215,7 @@ test('latest-run export refuses to overwrite an existing export unless explicitl
   assert.equal(await fs.readFile(path.join(targetRoot, 'trusted.txt'), 'utf8'), 'keep me');
 });
 
-test('latest-run export rejects symlinked target path segments before writing', async t => {
+test('evidence snapshot rejects symlinked target path segments before writing', async t => {
   const run = await makeRun();
   const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-export-outside-'));
   const linkType = process.platform === 'win32' ? 'junction' : 'dir';

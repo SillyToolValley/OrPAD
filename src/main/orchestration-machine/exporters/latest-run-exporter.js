@@ -10,7 +10,7 @@ const fsp = fs.promises;
 const LATEST_RUN_EXPORT_RELATIVE_PATH = 'harness/generated/latest-run';
 
 function unsafeLatestRunExportSymlink(relativePath) {
-  const err = new Error(`Latest-run export path crosses a symbolic link: ${relativePath}`);
+  const err = new Error(`Evidence snapshot path crosses a symbolic link: ${relativePath}`);
   err.code = 'LATEST_RUN_EXPORT_SYMLINK_UNSAFE';
   err.path = relativePath;
   return err;
@@ -57,7 +57,7 @@ async function exportLatestRun(options = {}) {
   try {
     await fsp.access(targetRoot);
     if (!allowOverwrite) {
-      const err = new Error(`Latest-run export already exists: ${targetRoot}`);
+      const err = new Error(`Evidence snapshot already exists: ${targetRoot}`);
       err.code = 'LATEST_RUN_EXPORT_EXISTS';
       throw err;
     }

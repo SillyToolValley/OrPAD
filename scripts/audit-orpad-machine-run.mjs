@@ -971,26 +971,26 @@ async function auditLatestRunExport(runRoot, latestRunExportRoot, events) {
   const metadataPath = path.join(latestRunExportRoot, 'run-metadata.json');
   const metadata = await readJsonIfExists(metadataPath, null);
   if (!metadata) {
-    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_METADATA_MISSING', 'Latest-run export metadata is missing.', {
+    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_METADATA_MISSING', 'Evidence snapshot metadata is missing.', {
       path: metadataPath,
     }));
     return { exportMetadata: null, diagnostics };
   }
   const expectedSequence = events.length ? events[events.length - 1].sequence : 0;
   if (path.resolve(metadata.sourceRunRoot || '') !== path.resolve(runRoot)) {
-    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_SOURCE_MISMATCH', 'Latest-run export sourceRunRoot must point to the audited durable run.', {
+    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_SOURCE_MISMATCH', 'Evidence snapshot sourceRunRoot must point to the audited durable run.', {
       expected: path.resolve(runRoot),
       actual: metadata.sourceRunRoot,
     }));
   }
   if (metadata.sourceEventSequence !== expectedSequence) {
-    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_SEQUENCE_STALE', 'Latest-run export sourceEventSequence must match durable run events.', {
+    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_SEQUENCE_STALE', 'Evidence snapshot sourceEventSequence must match durable run events.', {
       expected: expectedSequence,
       actual: metadata.sourceEventSequence,
     }));
   }
   if (metadata.status !== 'exported') {
-    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_STATUS_INVALID', 'Latest-run export metadata status must be exported.', {
+    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_STATUS_INVALID', 'Evidence snapshot metadata status must be exported.', {
       actual: metadata.status,
     }));
   }

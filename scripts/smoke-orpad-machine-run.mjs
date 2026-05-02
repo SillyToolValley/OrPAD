@@ -163,7 +163,7 @@ function smokeCandidateProposal() {
     }],
     acceptanceCriteria: ['The Machine stores a patch artifact for src/smoke-target.md and leaves the canonical workspace unchanged.'],
     sourceOfTruthTargets: ['src/smoke-target.md'],
-    verificationPlan: 'Run scripts/audit-orpad-machine-run.mjs against the durable run and latest-run export.',
+    verificationPlan: 'Run scripts/audit-orpad-machine-run.mjs against the durable run and evidence snapshot.',
   };
 }
 

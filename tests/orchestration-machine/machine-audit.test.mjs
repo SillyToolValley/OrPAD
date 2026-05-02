@@ -196,7 +196,7 @@ test('audit-orpad-machine-run fails without reading unsafe artifact manifest pat
   assert.equal(codes.has('MACHINE_ARTIFACT_PATH_INVALID'), true);
 });
 
-test('audit-orpad-machine-run fails when latest-run export is stale', async () => {
+test('audit-orpad-machine-run fails when evidence snapshot is stale', async () => {
   const run = await makeAuditableRun();
   const metadataPath = path.join(run.latestRunExportRoot, 'run-metadata.json');
   const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8'));

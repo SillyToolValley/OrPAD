@@ -133,7 +133,7 @@ test('createMachineRun writes durable run root and leaves latest-run as export-o
   await assert.rejects(
     fs.stat(run.latestRunExportPath),
     error => error?.code === 'ENOENT',
-    'createMachineRun must not materialize latest-run export',
+    'createMachineRun must not materialize an evidence snapshot',
   );
   await assert.rejects(
     createMachineRun({
