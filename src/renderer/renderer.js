@@ -391,6 +391,7 @@ const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
+const machineRunStartPendingPaths = new Set();
 const machineRunPendingActions = new Set();
 const machineRunProgressTimers = new Map();
 const machinePatchReviewShown = new Set();
@@ -2643,25 +2644,34 @@ function pipelinePreviewLocationLabel(context) {
 function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelineDoc = null) {
   if (!context?.pipelinePath) return '';
   const runbookPath = context.pipelinePath;
+  const runbookKey = runbookNormalizePath(runbookPath).toLowerCase();
   const validation = selectedPipelineValidation(runbookPath);
   const checked = !!validation;
   const agentReady = isAgentOrchestratedPipeline(validation);
   const localDisabled = checked && validation?.canExecute !== true;
   const handoffDisabled = checked && !agentReady;
-  const selectedRunbookMatchesPreview = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+  const selectedRunbookMatchesPreview = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookKey;
   const previewRunRecord = getRunbookCache(machineRunRecordCache, runbookPath) || (selectedRunbookMatchesPreview ? lastMachineRunRecord : null);
   const previewRunInProgress = isMachineRunInProgress(previewRunRecord, runbookPath);
+  const previewRunId = previewRunRecord?.runState?.runId || previewRunRecord?.runId || '';
+  const startPending = machineRunStartPendingPaths.has(runbookKey);
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = runtimeBlockReason || (checked
     ? machineStartBlockReason(validation) || 'Start and track work state, progress, and evidence files.'
     : 'Check this pipeline, then start and track its work state, progress, and evidence files.');
   const machineStartable = isMachineStartablePipeline(validation);
   const machineCompatible = isMachineCompatiblePipeline(validation);
-  const machineDisabled = previewRunInProgress || (checked && !machineStartable);
+  const machineDisabled = startPending || previewRunInProgress || (checked && !machineStartable);
+  const defaultAction = machineCompatible && previewRunInProgress ? 'machine-cancel-run' : 'default';
   const defaultTitle = machineCompatible
-    ? (previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start Run'))
+    ? (previewRunInProgress ? 'Stop Run' : (startPending ? 'Starting run...' : (machineReason || 'Start Run')))
     : (agentReady ? 'Prepare Handoff' : 'Run this pipeline');
-  const defaultDisabled = machineCompatible && previewRunInProgress;
+  const defaultDisabled = machineCompatible
+    ? (startPending || (!previewRunInProgress && checked && !machineStartable) || (previewRunInProgress && !window.orpad?.machine?.cancelRun))
+    : false;
+  const defaultIcon = machineCompatible && previewRunInProgress
+    ? orchToolIcon('M5 5h8v8H5z')
+    : orchToolIcon('M5 3l7 5-7 5V3z');
   const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason, previewRunInProgress);
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
@@ -2677,8 +2687,8 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
       </div>
       <div class="pipeline-runbar-actions">
-        <button class="pipeline-run-primary" data-pipeline-run-action="default" data-path="${escapeHtml(runbookPath)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
-          ${orchToolIcon('M5 3l7 5-7 5V3z')}
+        <button class="pipeline-run-primary" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
+          ${defaultIcon}
         </button>
         <details class="pipeline-run-menu-wrap">
           <summary class="pipeline-run-menu-trigger" data-pipeline-run-menu title="Run options" aria-label="Run options">
@@ -8569,7 +8579,19 @@ function clearMachineRunProgressState() {
   for (const key of [...machineRunProgressTimers.keys()]) {
     stopMachineRunProgressPollingByKey(key);
   }
+  machineRunStartPendingPaths.clear();
   machineRunPendingActions.clear();
+}
+
+function setMachineRunStartPending(runbookPath, pending) {
+  if (!runbookPath) return;
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  if (pending) {
+    machineRunStartPendingPaths.add(key);
+  } else {
+    machineRunStartPendingPaths.delete(key);
+  }
+  rerenderPipelinePreviewIfActive(runbookPath);
 }
 
 function setMachineRunActionPending(runbookPath, runId, pending) {
@@ -9262,6 +9284,9 @@ async function startSelectedMachineRun(runbookPath) {
     alert('Managed runs are unavailable in this build.');
     return;
   }
+  const cachedRecord = getRunbookCache(machineRunRecordCache, runbookPath);
+  const runbookKey = runbookNormalizePath(runbookPath).toLowerCase();
+  if (machineRunStartPendingPaths.has(runbookKey) || isMachineRunInProgress(cachedRecord, runbookPath)) return;
   if (!await ensureMachineRuntimeReady()) return;
   if (!selectedRunbookValidation || selectedRunbookPath !== runbookPath) {
     await validateSelectedRunbook(runbookPath);
@@ -9278,16 +9303,25 @@ async function startSelectedMachineRun(runbookPath) {
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const taskText = currentRunbookTaskText();
-  const created = await window.orpad.machine.createRun({
-    workspacePath,
-    pipelinePath: runbookPath,
-    capabilityToken: token,
-    options: {
-      trustLevel: 'local-authored',
-      ...(taskText ? { taskText } : {}),
-    },
-  });
+  setMachineRunStartPending(runbookPath, true);
+  let created = null;
+  try {
+    created = await window.orpad.machine.createRun({
+      workspacePath,
+      pipelinePath: runbookPath,
+      capabilityToken: token,
+      options: {
+        trustLevel: 'local-authored',
+        ...(taskText ? { taskText } : {}),
+      },
+    });
+  } catch (err) {
+    setMachineRunStartPending(runbookPath, false);
+    alert(err?.message || 'Managed run could not be created.');
+    return;
+  }
   if (!created?.success) {
+    setMachineRunStartPending(runbookPath, false);
     if (created?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
     }
@@ -9308,6 +9342,8 @@ async function startSelectedMachineRun(runbookPath) {
     events: created.event ? [created.event] : [],
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  setMachineRunActionPending(runbookPath, created.runId, true);
+  setMachineRunStartPending(runbookPath, false);
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
@@ -10217,7 +10253,11 @@ contentEl?.addEventListener('click', async (event) => {
   const runbarPath = button.closest('[data-pipeline-preview-runbar]')?.dataset.pipelinePath || '';
   const targetPath = runbarPath || button.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
   try {
-    await runPipelinePreviewAction(action, targetPath);
+    if (action === 'machine-cancel-run') {
+      await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    } else {
+      await runPipelinePreviewAction(action, targetPath);
+    }
   } catch (err) {
     notifyFormatError('Pipeline', err);
   }
