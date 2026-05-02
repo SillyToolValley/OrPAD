@@ -553,7 +553,7 @@ test('Machine UI cancels an active claim and releases visible locks', async () =
   await expect(win.locator('#runbooks-content')).toContainText('Last cancellation: machine-ui-smoke moved to blocked; claim claim-machine-ui-smoke released');
   await expect(win.locator('#runbooks-content')).toContainText('No active claims');
   await expect(win.locator('#runbooks-content')).toContainText('No active write-set locks');
-  await expect(win.locator('#runbooks-content')).toContainText('cancelled');
+  await expect(win.locator('#runbooks-content')).toContainText('Cancelled');
   await expect(win.locator('#runbooks-content')).toContainText('blocked');
   await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveCount(0);
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'queue', 'blocked', `${seeded.itemId}.json`), 'utf-8')).state).toBe('blocked');
@@ -597,8 +597,8 @@ test('Machine UI resumes stale claims and reports queue repair', async () => {
   await expect(win.locator('#runbooks-content')).toContainText('Last resume: 1 queue repair; 1 stale claim recovered; 1 queued');
   await expect(win.locator('#runbooks-content')).toContainText('No active claims');
   await expect(win.locator('#runbooks-content')).toContainText('No active write-set locks');
-  await expect(win.locator('#runbooks-content')).toContainText('waiting');
-  await expect(win.locator('#runbooks-content')).toContainText('partial');
+  await expect(win.locator('#runbooks-content')).toContainText('Waiting');
+  await expect(win.locator('#runbooks-content')).toContainText('Partial proof');
   await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveCount(0);
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'queue', 'queued', `${seeded.itemId}.json`), 'utf-8')).state).toBe('queued');
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'locks', 'claims', `${seeded.claimId}.json`), 'utf-8')).state).toBe('expired');
@@ -635,7 +635,7 @@ test('Machine UI keeps denied approval runs terminal', async () => {
 
   await expect(win.locator('#runbooks-content')).toContainText('approval.decided');
   await expect(win.locator('#runbooks-content')).toContainText('1 approval decision: denied');
-  await expect(win.locator('#runbooks-content')).toContainText('cancelled');
+  await expect(win.locator('#runbooks-content')).toContainText('Cancelled');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 

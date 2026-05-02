@@ -7896,11 +7896,12 @@ async function requestRunbookApproval(runbookPath, validation) {
 function renderRunRecordPanel(record = lastRunRecord) {
   if (!record) return '';
   const events = record.events || [];
+  const runStatus = record.run?.status || 'created';
   return `
     <section class="runbook-panel-section">
       <h3>Replay</h3>
       <div class="runbook-chip-row">
-        <span class="runbook-chip good">${escapeHtml(record.run?.status || 'created')}</span>
+        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(runStatus))}" title="${escapeHtml(`Status: ${runStatus}`)}">${escapeHtml(machineLifecycleStatusLabel(runStatus))}</span>
         <span class="runbook-chip">${escapeHtml(record.run?.runId || '')}</span>
       </div>
       <div class="runbook-replay-events">
@@ -7947,6 +7948,51 @@ function machineFailureDetails(record) {
 function machineCountLabel(count, singular, plural = `${singular}s`) {
   const value = Number(count) || 0;
   return `${value} ${value === 1 ? singular : plural}`;
+}
+
+function machineStatusFallbackLabel(status) {
+  return String(status || 'unknown')
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Unknown';
+}
+
+function machineLifecycleStatusLabel(status) {
+  const labels = {
+    created: 'Ready',
+    running: 'Running',
+    waiting: 'Waiting',
+    completed: 'Complete',
+    done: 'Complete',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+    canceled: 'Cancelled',
+    blocked: 'Blocked',
+  };
+  return labels[String(status || '').toLowerCase()] || machineStatusFallbackLabel(status);
+}
+
+function machineSummaryStatusLabel(status) {
+  const labels = {
+    pending: 'Proof pending',
+    partial: 'Partial proof',
+    done: 'Proof complete',
+    completed: 'Proof complete',
+    blocked: 'Blocked',
+    failed: 'Failed',
+    'approval-required': 'Needs approval',
+    approval_required: 'Needs approval',
+  };
+  return labels[String(status || '').toLowerCase()] || machineStatusFallbackLabel(status);
+}
+
+function machineStatusChipClass(status, kind = 'lifecycle') {
+  const value = String(status || '').toLowerCase();
+  if (['failed', 'cancelled', 'canceled', 'blocked'].includes(value)) return 'danger';
+  if (['running', 'waiting', 'pending', 'partial', 'approval-required', 'approval_required'].includes(value)) return 'warn';
+  if (['created', 'completed', 'done', 'success'].includes(value)) return 'good';
+  return kind === 'summary' ? 'warn' : '';
 }
 
 function latestMachineEvent(events, eventType, predicate = () => true) {
@@ -8236,6 +8282,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const resumeDetails = machineResumeControlDetails(record);
   const cancellationDetails = machineCancellationControlDetails(record);
   const runId = runState.runId || record.runId || '';
+  const lifecycleStatus = runState.lifecycleStatus || 'created';
+  const summaryStatus = runState.summaryStatus || 'pending';
   const hasActiveClaims = activeClaims.length > 0;
   const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
   const executeDisabled = !runId || machineStepUnavailable || runTerminal || approvalPending || hasActiveClaims;
@@ -8253,8 +8301,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     <section class="runbook-panel-section">
       <h3>Latest Run</h3>
       <div class="runbook-chip-row">
-        <span class="runbook-chip good">${escapeHtml(runState.lifecycleStatus || 'created')}</span>
-        <span class="runbook-chip">${escapeHtml(runState.summaryStatus || 'pending')}</span>
+        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(lifecycleStatus))}" title="${escapeHtml(`Lifecycle: ${lifecycleStatus}`)}">${escapeHtml(machineLifecycleStatusLabel(lifecycleStatus))}</span>
+        <span class="runbook-chip ${escapeHtml(machineStatusChipClass(summaryStatus, 'summary'))}" title="${escapeHtml(`Summary: ${summaryStatus}`)}">${escapeHtml(machineSummaryStatusLabel(summaryStatus))}</span>
         <span class="runbook-chip">${escapeHtml(runState.runId || record.runId || '')}</span>
       </div>
       ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
