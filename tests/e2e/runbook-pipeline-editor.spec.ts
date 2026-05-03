@@ -296,6 +296,43 @@ test('pipeline details preview exposes editable contract fields', async () => {
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('pipeline check shows actionable broken entryGraph ref diagnostic', async () => {
+  test.setTimeout(60_000);
+  const { workspace, pipelinePath } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await expect(win.locator('.pipeline-runbar')).toBeVisible();
+
+  const brokenPipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  brokenPipeline.entryGraph = 'graphs/missing.or-graph';
+  fs.writeFileSync(pipelinePath, JSON.stringify(brokenPipeline, null, 2));
+
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="check"]').click();
+  const status = win.locator('.pipeline-runbar-status.danger');
+  await expect(status).toContainText('PIPELINE_ENTRY_GRAPH_NOT_FOUND');
+  await expect(status).toContainText('Pipeline entryGraph file does not exist.');
+  await expect(status).toContainText('ref: graphs/missing.or-graph');
+  await expect(status).toContainText(/more\./);
+  await expect(status).not.toHaveText('Check failed: PIPELINE_ENTRY_GRAPH_NOT_FOUND');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('maintenance pipeline opens by path and exposes nested graph layers', async () => {
   test.setTimeout(60_000);
   const workspace = path.resolve('.');

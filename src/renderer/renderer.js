@@ -2601,12 +2601,51 @@ function selectedPipelineValidation(runbookPath) {
   return getRunbookCache(runbookValidationCache, runbookPath);
 }
 
+function pipelineDiagnosticDetailText(issue) {
+  if (!issue || typeof issue !== 'object') return '';
+  const detailLabels = {
+    ref: 'ref',
+    path: 'path',
+    refPath: 'ref path',
+    nodeId: 'node',
+    id: 'id',
+    skillRef: 'skill',
+    schema: 'schema',
+  };
+  return Object.entries(detailLabels)
+    .map(([key, label]) => {
+      const value = issue[key];
+      if (value === undefined || value === null || value === '') return '';
+      if (Array.isArray(value)) {
+        const list = value.map(item => String(item || '').trim()).filter(Boolean);
+        return list.length ? `${label}: ${list.join(', ')}` : '';
+      }
+      if (typeof value === 'object') return '';
+      return `${label}: ${String(value)}`;
+    })
+    .filter(Boolean)
+    .join(', ');
+}
+
+function pipelineDiagnosticStatusText(validation) {
+  const diagnostics = Array.isArray(validation?.diagnostics) ? validation.diagnostics : [];
+  const issue = diagnostics.find(isDiagnosticError) || diagnostics[0];
+  if (!issue) return 'Check failed.';
+  const parts = [issue.code ? `Check failed: ${issue.code}` : 'Check failed.'];
+  if (issue.message) parts.push(String(issue.message));
+  const detailText = pipelineDiagnosticDetailText(issue);
+  let text = parts.join(' - ');
+  if (detailText) text += ` (${detailText})`;
+  const remaining = diagnostics.length - 1;
+  if (remaining > 0) text += ` + ${remaining} more.`;
+  return text;
+}
+
 function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress = false) {
   if (runInProgress) return { state: 'warn', text: 'Run in progress.' };
   if (!validation) return { state: '', text: 'Not checked yet.' };
   if (!validation.ok) {
-    const issue = (validation.diagnostics || []).find(isDiagnosticError) || (validation.diagnostics || [])[0];
-    return { state: 'danger', text: issue?.code ? `Check failed: ${issue.code}` : 'Check failed.' };
+    return { state: 'danger', text: pipelineDiagnosticStatusText(validation) };
   }
   if (isAgentOrchestratedPipeline(validation)) {
     if (runtimeBlockReason) {
