@@ -10,6 +10,7 @@ const {
   appendRunLifecycleStatus,
   appendRunSummaryStatus,
   createMachineRun,
+  executeMachineRunStep,
   findQueueItem,
   ingestCandidateProposal,
   transitionQueueItem,
@@ -98,6 +99,42 @@ function writeMachineWorkspace(): { workspace: string; pipelinePath: string; pip
   }, null, 2));
 
   return { workspace, pipelinePath, pipelineDir };
+}
+
+function addParallelProbeHarness(pipelinePath: string): void {
+  const pipelineDir = path.dirname(pipelinePath);
+  const graphPath = path.join(pipelineDir, 'graphs', 'main.or-graph');
+  const graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
+  graph.graph.nodes.splice(2, 0, {
+    id: 'probe-secondary',
+    type: 'orpad.probe',
+    label: 'Secondary Probe',
+    config: { lens: 'test-gap' },
+  });
+  graph.graph.transitions.push(
+    { from: 'context', to: 'probe-secondary' },
+    { from: 'probe-secondary', to: 'queue' },
+  );
+  fs.writeFileSync(graphPath, JSON.stringify(graph, null, 2));
+
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  const primary = {
+    ...pipeline.run.machineHarness.candidateProposal,
+    sourceNode: 'main/probe',
+  };
+  const secondary = {
+    ...pipeline.run.machineHarness.candidateProposal,
+    proposalId: 'proposal-machine-ui-secondary',
+    suggestedWorkItemId: 'machine-ui-secondary',
+    sourceNode: 'main/probe-secondary',
+    title: 'Exercise secondary Machine UI worker execution',
+    fingerprint: 'machine-ui-secondary:src/smoke-target.md',
+  };
+  pipeline.run.machineHarness.candidateProposals = [primary, secondary];
+  pipeline.run.machineHarness.probeNodePaths = ['main/probe', 'main/probe-secondary'];
+  pipeline.run.machineHarness.parallelProbes = true;
+  pipeline.run.machineHarness.probeConcurrency = 2;
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
 function appendFailingArtifactContract(pipelineDir: string): void {
@@ -319,6 +356,48 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
 
   await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine graph executes configured probe fanout in parallel', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  addParallelProbeHarness(pipelinePath);
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_parallel_probe_fanout',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  expect(executed.selectedProbeNodes).toEqual(['main/probe', 'main/probe-secondary']);
+  expect(executed.candidateInventory.candidateCount).toBe(2);
+  const probeStarts = executed.events
+    .filter((event: { eventType?: string; nodePath?: string }) => (
+      event.eventType === 'node.started'
+      && ['main/probe', 'main/probe-secondary'].includes(event.nodePath || '')
+    ));
+  const probeCompletions = executed.events
+    .filter((event: { eventType?: string; nodePath?: string }) => (
+      event.eventType === 'node.completed'
+      && ['main/probe', 'main/probe-secondary'].includes(event.nodePath || '')
+    ));
+  expect(probeStarts.map((event: { nodePath?: string }) => event.nodePath).sort()).toEqual(['main/probe', 'main/probe-secondary']);
+  expect(probeCompletions).toHaveLength(2);
+  const lastStartSequence = Math.max(...probeStarts.map((event: { sequence: number }) => event.sequence));
+  const firstCompletionSequence = Math.min(...probeCompletions.map((event: { sequence: number }) => event.sequence));
+  expect(lastStartSequence).toBeLessThan(firstCompletionSequence);
+  const sequences = executed.events.map((event: { sequence: number }) => event.sequence);
+  expect(new Set(sequences).size).toBe(sequences.length);
+
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 

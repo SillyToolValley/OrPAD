@@ -6,6 +6,7 @@ const { ensureDir } = require('./metadata-store');
 
 const fsp = fs.promises;
 const validator = createContractValidator();
+const eventAppendQueues = new Map();
 
 function eventsPath(runRoot) {
   return path.join(path.resolve(runRoot), 'events.jsonl');
@@ -74,7 +75,7 @@ function assertEventBelongsToRun(existing, event) {
   }
 }
 
-async function appendMachineEvent(runRoot, event) {
+async function appendMachineEventUnlocked(runRoot, event) {
   const existing = await readMachineEvents(runRoot);
   if (event.sequence != null) {
     throw eventLogError('MACHINE_EVENT_SEQUENCE_OWNED', 'Machine event sequence is assigned by the durable event log.');
@@ -93,6 +94,20 @@ async function appendMachineEvent(runRoot, event) {
   await assertEventLogPathSafe(runRoot);
   await fsp.appendFile(eventsPath(runRoot), `${JSON.stringify(record)}\n`, 'utf8');
   return record;
+}
+
+async function appendMachineEvent(runRoot, event) {
+  const key = path.resolve(runRoot);
+  const previous = eventAppendQueues.get(key) || Promise.resolve();
+  const operation = previous
+    .catch(() => {})
+    .then(() => appendMachineEventUnlocked(runRoot, event));
+  eventAppendQueues.set(key, operation);
+  try {
+    return await operation;
+  } finally {
+    if (eventAppendQueues.get(key) === operation) eventAppendQueues.delete(key);
+  }
 }
 
 function projectRunStateFromEvents(events) {

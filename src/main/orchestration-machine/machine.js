@@ -230,6 +230,33 @@ function adapterProbeNodePaths(adapter) {
   return configured.filter(Boolean);
 }
 
+function configuredProbeConcurrency(config = {}, probeCount = 1) {
+  const configured = config.probeConcurrency ?? config.maxParallelProbes;
+  if (String(configured || '').toLowerCase() === 'all') return Math.max(1, probeCount);
+  const parsed = Number(configured);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.max(1, Math.min(probeCount, Math.trunc(parsed)));
+  }
+  return config.parallelProbes === true ? Math.max(1, probeCount) : 1;
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const limit = Math.max(1, Math.min(items.length || 1, concurrency || 1));
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: limit }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  const settled = await Promise.allSettled(workers);
+  const rejected = settled.find(result => result.status === 'rejected');
+  if (rejected) throw rejected.reason;
+  return results;
+}
+
 function normalizeRuntimeTaskText(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 2000);
 }
@@ -918,6 +945,8 @@ async function executeMachineRunStep(options = {}) {
     throw machineExecutionError('MACHINE_EXECUTION_NODE_NOT_FOUND', 'Machine graph harness could not find probeNode.');
   }
   const probeNode = probeNodes[0];
+  const probeNodePaths = new Set(probeNodes.map(node => node.nodePath));
+  const probeConcurrency = configuredProbeConcurrency(hasHarness ? harness : adapter, probeNodes.length);
   for (const [label, node] of Object.entries({ triageNode, dispatcherNode, workerNode })) {
     if (!node) throw machineExecutionError('MACHINE_EXECUTION_NODE_NOT_FOUND', `Machine graph harness could not find ${label}.`);
   }
@@ -927,6 +956,7 @@ async function executeMachineRunStep(options = {}) {
     reason: 'machine-graph-step.start',
     payload: {
       selectedProbeNodes: probeNodes.map(node => node.nodePath),
+      probeConcurrency,
       triageNode: triageNode.nodePath,
       dispatcherNode: dispatcherNode.nodePath,
       workerNode: workerNode.nodePath,
@@ -952,6 +982,73 @@ async function executeMachineRunStep(options = {}) {
     .filter(approval => approval.status === 'approved')
     .flatMap(approval => approval.grants || []);
   const resumeAfterApproval = approvalGrants.length > 0;
+  let probeFanoutExecuted = false;
+  const executeProbeNode = async (currentProbeNode) => {
+    const attempt = nextNodeAttempt(initialEvents, currentProbeNode.nodePath);
+    const harnessProbeCandidates = hasHarness
+      ? candidatesForProbeNode(currentProbeNode, probeNodes, candidates)
+      : [];
+    const probeResult = await withNodeLifecycle(runRoot, currentProbeNode, {
+      runId,
+      attempt,
+      completedPayload: result => ({
+        proposalCount: result.proposals?.length || 0,
+        summaryStatus: result.summaryStatus,
+      }),
+    }, () => (hasHarness
+      ? runProposalProbe({
+        runRoot,
+        runId,
+        nodePath: currentProbeNode.nodePath,
+        workspaceRoot,
+        fixtureResult: request => proposalResultForRequest(request, {
+          summary: harnessProbeCandidates.length
+            ? 'Machine graph probe produced harness candidate proposal.'
+            : 'Machine graph probe completed with no harness candidate for this node.',
+          candidateProposals: harnessProbeCandidates,
+          ...(harnessProbeCandidates.length ? {} : {
+            emptyPass: {
+              reason: 'No deterministic harness candidate was assigned to this probe node.',
+              evidence: [`node:${currentProbeNode.nodePath}`],
+            },
+          }),
+        }),
+      })
+      : runProposalProbe({
+        runRoot,
+        runId,
+        nodePath: currentProbeNode.nodePath,
+        workspaceRoot,
+        adapter: createCodexCliProposalAdapter({
+          runRoot,
+          runId,
+          workspaceRoot,
+          command: adapter.command,
+          commandPrefixArgs: adapter.commandPrefixArgs,
+          sandbox: adapter.proposalSandbox || adapter.sandbox || 'read-only',
+          approvalPolicy: adapter.approvalPolicy || 'never',
+          timeoutMs: adapter.proposalTimeoutMs || timeoutMs,
+          maxOutputBytes: 64 * 1024,
+          ephemeral: adapter.ephemeral,
+          prompt: request => liveProbePrompt({
+            request,
+            node: currentProbeNode,
+            pipelinePath,
+            pipeline,
+            adapter,
+            taskText: runtimeTaskText,
+          }),
+        }),
+      })));
+    const probeCandidates = hasHarness
+      ? harnessProbeCandidates
+      : (probeResult.proposals || []).map(entry => candidateProposalFromWorkItem(entry.item)).filter(Boolean);
+    return {
+      nodePath: currentProbeNode.nodePath,
+      candidateProposals: probeCandidates,
+      result: probeResult,
+    };
+  };
 
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
@@ -964,72 +1061,16 @@ async function executeMachineRunStep(options = {}) {
       continue;
     }
     const attempt = nextNodeAttempt(initialEvents, node.nodePath);
-    if (probeNodes.some(probeEntry => probeEntry.nodePath === node.nodePath)) {
-      const currentProbeNode = node;
-      const harnessProbeCandidates = hasHarness
-        ? candidatesForProbeNode(currentProbeNode, probeNodes, candidates)
-        : [];
-      const probeResult = await withNodeLifecycle(runRoot, currentProbeNode, {
-        runId,
-        attempt,
-        completedPayload: result => ({
-          proposalCount: result.proposals?.length || 0,
-          summaryStatus: result.summaryStatus,
-        }),
-      }, () => (hasHarness
-        ? runProposalProbe({
-          runRoot,
-          runId,
-          nodePath: currentProbeNode.nodePath,
-          workspaceRoot,
-          fixtureResult: request => proposalResultForRequest(request, {
-            summary: harnessProbeCandidates.length
-              ? 'Machine graph probe produced harness candidate proposal.'
-              : 'Machine graph probe completed with no harness candidate for this node.',
-            candidateProposals: harnessProbeCandidates,
-            ...(harnessProbeCandidates.length ? {} : {
-              emptyPass: {
-                reason: 'No deterministic harness candidate was assigned to this probe node.',
-                evidence: [`node:${currentProbeNode.nodePath}`],
-              },
-            }),
-          }),
-        })
-        : runProposalProbe({
-          runRoot,
-          runId,
-          nodePath: currentProbeNode.nodePath,
-          workspaceRoot,
-          adapter: createCodexCliProposalAdapter({
-            runRoot,
-            runId,
-            workspaceRoot,
-            command: adapter.command,
-            commandPrefixArgs: adapter.commandPrefixArgs,
-            sandbox: adapter.proposalSandbox || adapter.sandbox || 'read-only',
-            approvalPolicy: adapter.approvalPolicy || 'never',
-            timeoutMs: adapter.proposalTimeoutMs || timeoutMs,
-            maxOutputBytes: 64 * 1024,
-            ephemeral: adapter.ephemeral,
-            prompt: request => liveProbePrompt({
-              request,
-              node: currentProbeNode,
-              pipelinePath,
-              pipeline,
-              adapter,
-              taskText: runtimeTaskText,
-            }),
-          }),
-        })));
-      const probeCandidates = hasHarness
-        ? harnessProbeCandidates
-        : (probeResult.proposals || []).map(entry => candidateProposalFromWorkItem(entry.item)).filter(Boolean);
-      probes.push({
-        nodePath: currentProbeNode.nodePath,
-        candidateProposals: probeCandidates,
-        result: probeResult,
-      });
-      if (!probe) probe = probeResult;
+    if (probeNodePaths.has(node.nodePath)) {
+      if (!probeFanoutExecuted) {
+        const runnableProbeNodes = resumeAfterApproval
+          ? probeNodes.filter(probeEntry => !latestNodeCompletedEvent(initialEvents, probeEntry.nodePath))
+          : probeNodes;
+        const probeResults = await mapWithConcurrency(runnableProbeNodes, probeConcurrency, executeProbeNode);
+        probes.push(...probeResults);
+        if (!probe && probeResults[0]) probe = probeResults[0].result;
+        probeFanoutExecuted = true;
+      }
     } else if (node.nodePath === triageNode.nodePath) {
       candidateInventory = await registerCandidateInventoryArtifact(runRoot, {
         runId,

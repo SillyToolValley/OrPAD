@@ -239,9 +239,19 @@
       "proposalTimeoutMs": 600000,
       "workerTimeoutMs": 900000,
       "claimLeaseMs": 1800000,
-      "probeNodePaths": ["discovery-lenses/ux-ui-probe"],
+      "parallelProbes": true,
+      "probeConcurrency": "all",
+      "probeNodePaths": [
+        "discovery-lenses/graph-editor-journey-probe",
+        "discovery-lenses/product-intent-probe",
+        "discovery-lenses/ux-ui-probe",
+        "discovery-lenses/bug-risk-probe",
+        "discovery-lenses/security-boundary-probe",
+        "discovery-lenses/test-gap-probe",
+        "discovery-lenses/pipeline-quality-probe"
+      ],
       "supportNodePolicy": "record-gate-warnings-and-mark-artifact-partial",
-      "description": "Managed-run MVP adapter. OrPAD owns queue, run status, and artifacts; Codex CLI submits candidate/result/proof through adapter contracts. The first live path runs one bounded UX/UI probe per execute step before expanding to full multi-lens fanout."
+      "description": "Managed-run adapter. OrPAD owns queue, run status, and artifacts; Codex CLI submits candidate/result/proof through adapter contracts. Discovery runs the configured lens fanout in parallel before barrier merge and triage."
     },
     "requiredArtifacts": [
       "cycle-start.md",
