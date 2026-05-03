@@ -2641,6 +2641,128 @@ function pipelineDiagnosticStatusText(validation) {
   return text;
 }
 
+function pipelineValidationDiagnostics(validation) {
+  return (Array.isArray(validation?.diagnostics) ? validation.diagnostics : []).filter(isDiagnosticError);
+}
+
+function pipelineInlineDiagnosticText(issue) {
+  if (!issue || typeof issue !== 'object') return '';
+  const parts = [issue.code, issue.message].filter(Boolean).map(String);
+  const details = pipelineDiagnosticDetailText(issue);
+  if (details) parts.push(details);
+  return parts.join(' - ');
+}
+
+function renderPipelineInlineDiagnostic(issue) {
+  const text = pipelineInlineDiagnosticText(issue);
+  if (!text) return '';
+  return `<div class="pipeline-inline-diagnostic" role="alert">${escapeHtml(text)}</div>`;
+}
+
+function normalizeDiagnosticRef(value) {
+  return runbookNormalizePath(value).replace(/^\.\/+/, '').toLowerCase();
+}
+
+function pipelineEntryDiagnostic(diagnostics) {
+  return diagnostics.find(issue => [
+    'PIPELINE_ENTRY_GRAPH_MISSING',
+    'PIPELINE_ENTRY_GRAPH_NOT_FOUND',
+    'PIPELINE_ENTRY_GRAPH_OUTSIDE_PIPELINE',
+    'PIPELINE_ENTRY_GRAPH_PARSE_FAILED',
+  ].includes(issue.code));
+}
+
+function pipelineRefDiagnostic(diagnostics, kind, entry) {
+  const codes = new Set([
+    `${kind.toUpperCase()}_REF_NOT_FOUND`,
+    `${kind.toUpperCase()}_REF_OUTSIDE_PIPELINE`,
+  ]);
+  const entryId = normalizeDiagnosticRef(entry?.id || '');
+  const entryFile = normalizeDiagnosticRef(entry?.file || '');
+  return diagnostics.find((issue) => {
+    if (!codes.has(issue.code)) return false;
+    const issueId = normalizeDiagnosticRef(issue.id || '');
+    const issueRef = normalizeDiagnosticRef(issue.ref || '');
+    return (entryId && issueId === entryId) || (entryFile && issueRef === entryFile);
+  });
+}
+
+function graphDiagnosticSourcePath(issue) {
+  const value = String(issue?.path || issue?.refPath || '');
+  const graphPathIndex = value.search(/:(graph|trees)\./);
+  if (graphPathIndex === -1) return '';
+  return runbookNormalizePath(value.slice(0, graphPathIndex));
+}
+
+function normalizeGraphDiagnosticPath(value) {
+  const text = String(value || '');
+  const graphPathIndex = text.search(/:(graph|trees)\./);
+  const local = graphPathIndex === -1 ? text : text.slice(graphPathIndex + 1);
+  return local.replace(/\[(\d+)\]/g, '.$1');
+}
+
+function graphNodePathFromDiagnostic(issue) {
+  const normalized = normalizeGraphDiagnosticPath(issue?.path || '');
+  const match = normalized.match(/(?:^|\.)graph\.nodes\.(\d+)(?:\.|$)/);
+  return match ? `graph.nodes.${match[1]}` : '';
+}
+
+function graphRelativePathForFile(filePath, context = pipelineContextForPath(filePath)) {
+  const normalized = runbookNormalizePath(filePath);
+  const pipelineDir = runbookNormalizePath(context?.pipelineDir || '').replace(/\/+$/, '');
+  if (!normalized || !pipelineDir) return '';
+  if (normalized.toLowerCase().startsWith((pipelineDir + '/').toLowerCase())) {
+    return normalized.slice(pipelineDir.length + 1);
+  }
+  return '';
+}
+
+function diagnosticMatchesGraphFile(issue, baseFilePath, context = pipelineContextForPath(baseFilePath)) {
+  const source = graphDiagnosticSourcePath(issue);
+  if (!source) return true;
+  const relative = graphRelativePathForFile(baseFilePath, context);
+  return !!relative && normalizeDiagnosticRef(source) === normalizeDiagnosticRef(relative);
+}
+
+function graphDiagnosticField(issue, node) {
+  const path = normalizeGraphDiagnosticPath(issue?.path || '');
+  if (issue?.configKey) return `config.${issue.configKey}`;
+  if (/\.config\.queueRef$/.test(path) || String(issue?.code || '').startsWith('GRAPH_QUEUE_REF_')) return 'config.queueRef';
+  if (/\.config\.workerLoopRef$/.test(path) || String(issue?.code || '').startsWith('GRAPH_WORKER_LOOP_REF_')) return 'config.workerLoopRef';
+  if (String(issue?.code || '').startsWith('SKILL_')) return node?.type === 'Skill' ? 'file' : 'config.skillRef';
+  if (String(issue?.code || '').startsWith('ORCH_TREE_')) return 'config.treeRef';
+  if (String(issue?.code || '').startsWith('ORPAD_GRAPH_')) return 'config.graphRef';
+  return '';
+}
+
+function graphNodeDiagnostics(doc, nodePath, baseFilePath = getActiveTab()?.filePath) {
+  const context = pipelineContextForPath(baseFilePath);
+  const runbookPath = context?.pipelinePath || baseFilePath;
+  const diagnostics = pipelineValidationDiagnostics(selectedPipelineValidation(runbookPath));
+  const node = orchValueAtPath(doc, nodePath);
+  return diagnostics.filter((issue) => {
+    if (!diagnosticMatchesGraphFile(issue, baseFilePath, context)) return false;
+    const diagnosticNodePath = graphNodePathFromDiagnostic(issue);
+    if (diagnosticNodePath && diagnosticNodePath === nodePath) return true;
+    return !!issue.nodeId && String(issue.nodeId) === String(node?.id || '');
+  });
+}
+
+function graphNodeFieldDiagnostic(diagnostics, field, node) {
+  return diagnostics.find(issue => graphDiagnosticField(issue, node) === field);
+}
+
+function renderOrchInspectorField(label, field, path, value, issue = null) {
+  const hasIssue = !!issue;
+  return `
+    <label class="${hasIssue ? 'has-inline-diagnostic' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <input data-orch-edit="${escapeHtml(field)}" data-orch-path="${escapeHtml(path)}" value="${escapeHtml(value || '')}" ${hasIssue ? 'aria-invalid="true"' : ''}>
+      ${renderPipelineInlineDiagnostic(issue)}
+    </label>
+  `;
+}
+
 function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress = false) {
   if (runInProgress) return { state: 'warn', text: 'Run in progress.' };
   if (!validation) return { state: '', text: 'Not checked yet.' };
@@ -2981,19 +3103,25 @@ function renderPipelineField({ key, label, type = 'text', multiline = false, opt
   `;
 }
 
-function renderPipelineEntryField(entryGraph, readwrite) {
+function renderPipelineEntryField(entryGraph, readwrite, diagnostics = []) {
+  const issue = pipelineEntryDiagnostic(diagnostics);
+  const diagnostic = renderPipelineInlineDiagnostic(issue);
   if (!readwrite) {
     return `
-      <div class="pipeline-field readonly">
+      <div class="pipeline-field readonly ${issue ? 'has-inline-diagnostic' : ''}">
         <span>Entry Flow</span>
         <code>${escapeHtml(entryGraph ? pipelineDisplayTitle(entryGraph, 'Entry flow') : 'not set')}</code>
+        ${diagnostic}
       </div>
     `;
   }
-  return renderPipelineField({ key: 'entryGraph', label: 'Entry file' }, entryGraph, readwrite);
+  return renderPipelineField({ key: 'entryGraph', label: 'Entry file' }, entryGraph, readwrite)
+    .replace('<label class="pipeline-field"', `<label class="pipeline-field ${issue ? 'has-inline-diagnostic' : ''}"`)
+    .replace('</label>', `${diagnostic}</label>`)
+    .replace('<input data-pipeline-field="entryGraph"', `<input data-pipeline-field="entryGraph" ${issue ? 'aria-invalid="true"' : ''}`);
 }
 
-function renderPipelineRefSection(doc, section, readwrite) {
+function renderPipelineRefSection(doc, section, readwrite, diagnostics = []) {
   const { shape, entries } = pipelineRefEntries(doc, section.key);
   const empty = !entries.length;
   return `
@@ -3006,21 +3134,23 @@ function renderPipelineRefSection(doc, section, readwrite) {
         <span class="runbook-chip">${escapeHtml(machineCountLabel(entries.length, section.singular))}</span>
       </header>
       <div class="pipeline-ref-list">
-        ${empty ? `<div class="runbook-empty">No ${escapeHtml(section.key)} declared.</div>` : entries.map((entry, index) => `
-          <div class="pipeline-ref-row" data-pipeline-ref-index="${index}">
+        ${empty ? `<div class="runbook-empty">No ${escapeHtml(section.key)} declared.</div>` : entries.map((entry, index) => {
+          const issue = pipelineRefDiagnostic(diagnostics, section.singular, entry);
+          return `
+          <div class="pipeline-ref-row ${issue ? 'has-inline-diagnostic' : ''}" data-pipeline-ref-index="${index}">
             ${readwrite ? `
               <label><span>Reference key</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="id" value="${escapeHtml(entry.id || '')}"></label>
-              <label><span>File</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="file" value="${escapeHtml(entry.file || '')}"></label>
+              <label class="${issue ? 'has-inline-diagnostic' : ''}"><span>File</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="file" value="${escapeHtml(entry.file || '')}" ${issue ? 'aria-invalid="true"' : ''}>${renderPipelineInlineDiagnostic(issue)}</label>
               <label><span>Description</span><input data-pipeline-ref-edit="${escapeHtml(section.key)}" data-ref-index="${index}" data-ref-field="description" value="${escapeHtml(entry.description || '')}"></label>
             ` : `
-              <div><strong>${escapeHtml(pipelineRefDisplayTitle(entry, section))}</strong>${entry.description ? `<small>${escapeHtml(entry.description)}</small>` : ''}</div>
+              <div><strong>${escapeHtml(pipelineRefDisplayTitle(entry, section))}</strong>${entry.description ? `<small>${escapeHtml(entry.description)}</small>` : ''}${renderPipelineInlineDiagnostic(issue)}</div>
             `}
             <div class="pipeline-ref-actions">
               ${entry.file ? `<button data-pipeline-open-ref="${escapeHtml(entry.file)}">Open</button>` : ''}
               ${readwrite ? `<button data-pipeline-ref-remove="${escapeHtml(section.key)}" data-ref-index="${index}">Remove</button>` : ''}
             </div>
           </div>
-        `).join('')}
+        `; }).join('')}
       </div>
       ${readwrite ? `<button class="pipeline-add-btn" data-pipeline-ref-add="${escapeHtml(section.key)}">Add ${escapeHtml(section.singular)}</button>` : ''}
     </section>
@@ -4483,6 +4613,8 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
       </aside>
     `;
   }
+  const diagnostics = graphNodeDiagnostics(doc, selectedOrchNodePath, baseFilePath);
+  const nodeDiagnostic = diagnostics[0] || null;
   if (!readwrite) {
     return `
       <aside class="orch-inspector">
@@ -4493,19 +4625,22 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
           ${isOrchTreeRefType(node.type) && node.tree?.id ? `<dt>Tree</dt><dd>${escapeHtml(node.tree.id)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.root ? `<dt>Tree nodes</dt><dd>${countOrchNestedNodes(node.tree.root)}</dd>` : ''}
         </dl>
+        ${renderPipelineInlineDiagnostic(nodeDiagnostic)}
       </aside>
     `;
   }
   return `
     <aside class="orch-inspector">
       <h3>Edit Node</h3>
-      <label><span>Step key</span><input data-orch-edit="id" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.id || '')}"></label>
-      <label><span>Label</span><input data-orch-edit="label" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.label || '')}"></label>
+      ${renderOrchInspectorField('Step key', 'id', selectedOrchNodePath, node.id || '')}
+      ${renderOrchInspectorField('Label', 'label', selectedOrchNodePath, node.label || '')}
       ${renderOrchTypeField(selectedOrchNodePath, node)}
-      ${node.type === 'Skill' ? `<label><span>Skill file</span><input data-orch-edit="file" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.file || '')}"></label>` : ''}
-      ${node.type === 'orpad.skill' ? `<label><span>Skill ref</span><input data-orch-edit="config.skillRef" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.config?.skillRef || '')}"></label>` : ''}
-      ${node.type === 'orpad.tree' ? `<label><span>Tree ref</span><input data-orch-edit="config.treeRef" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.config?.treeRef || node.config?.ref || '')}"></label>` : ''}
-      ${node.type === 'orpad.graph' ? `<label><span>Flow ref</span><input data-orch-edit="config.graphRef" data-orch-path="${escapeHtml(selectedOrchNodePath)}" value="${escapeHtml(node.config?.graphRef || '')}"></label>` : ''}
+      ${node.type === 'Skill' ? renderOrchInspectorField('Skill file', 'file', selectedOrchNodePath, node.file || '', graphNodeFieldDiagnostic(diagnostics, 'file', node)) : ''}
+      ${node.type === 'orpad.skill' ? renderOrchInspectorField('Skill ref', 'config.skillRef', selectedOrchNodePath, node.config?.skillRef || '', graphNodeFieldDiagnostic(diagnostics, 'config.skillRef', node)) : ''}
+      ${node.type === 'orpad.tree' ? renderOrchInspectorField('Tree ref', 'config.treeRef', selectedOrchNodePath, node.config?.treeRef || node.config?.ref || '', graphNodeFieldDiagnostic(diagnostics, 'config.treeRef', node)) : ''}
+      ${node.type === 'orpad.graph' ? renderOrchInspectorField('Flow ref', 'config.graphRef', selectedOrchNodePath, node.config?.graphRef || '', graphNodeFieldDiagnostic(diagnostics, 'config.graphRef', node)) : ''}
+      ${['orpad.probe', 'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop'].includes(node.type) ? renderOrchInspectorField('Queue ref', 'config.queueRef', selectedOrchNodePath, node.config?.queueRef || '', graphNodeFieldDiagnostic(diagnostics, 'config.queueRef', node)) : ''}
+      ${node.type === 'orpad.dispatcher' ? renderOrchInspectorField('Worker loop ref', 'config.workerLoopRef', selectedOrchNodePath, node.config?.workerLoopRef || '', graphNodeFieldDiagnostic(diagnostics, 'config.workerLoopRef', node)) : ''}
       <div class="orch-inspector-actions">
         ${canOpenOrchSubtree(selectedOrchNodePath, doc) ? `<button data-orch-action="open-subtree" data-orch-path="${escapeHtml(selectedOrchNodePath)}">Open</button>` : ''}
         ${!canOpenOrchSubtree(selectedOrchNodePath, doc) && orchNodeFileTarget(selectedOrchNodePath, doc, baseFilePath) ? `<button data-orch-action="open-file" data-orch-path="${escapeHtml(selectedOrchNodePath)}">Open file</button>` : ''}
@@ -5379,6 +5514,7 @@ function renderOrchPipelinePreview(content) {
   const entryGraph = doc.entryGraph || doc.entry?.graph || doc.graph?.file || graphRefs[0]?.file || '';
   const pipelineContext = pipelineContextForPath();
   const entryGraphPath = pipelineEditorGraphPathFromDoc(doc, pipelineContext);
+  const diagnostics = pipelineValidationDiagnostics(selectedPipelineValidation(pipelineContext?.pipelinePath));
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">
@@ -5428,11 +5564,11 @@ function renderOrchPipelinePreview(content) {
               ${renderPipelineField({ key: 'trustLevel', label: 'Trust', options: ORCH_PIPELINE_TRUST_LEVELS }, doc.trustLevel || 'local-authored', readwrite)}
               ${renderPipelineField({ key: 'id', label: 'ID' }, doc.id || '', readwrite)}
               ${renderPipelineField({ key: 'title', label: 'Title' }, doc.title || '', readwrite)}
-              ${renderPipelineEntryField(entryGraph, readwrite)}
+              ${renderPipelineEntryField(entryGraph, readwrite, diagnostics)}
               ${renderPipelineField({ key: 'description', label: 'Description', multiline: true }, doc.description || '', readwrite)}
             </div>
           </section>
-          ${ORCH_PIPELINE_REF_SECTIONS.map(section => renderPipelineRefSection(doc, section, readwrite)).join('')}
+          ${ORCH_PIPELINE_REF_SECTIONS.map(section => renderPipelineRefSection(doc, section, readwrite, diagnostics)).join('')}
           ${renderPipelineJsonSection(doc, 'nodePacks', 'Node Packs', 'Built-in and custom node packs required by this pipeline.', readwrite)}
           ${renderPipelineJsonSection(doc, 'run', 'Run Contract', 'Evidence storage, work-state protocol, coverage policy, and auditable latest run/cycle evidence.', readwrite)}
           ${renderPipelineJsonSection(doc, 'maintenancePolicy', 'Maintenance Cycle Policy', 'Repeatability, cadence, triggers, backlog carry-over, and latest-run cycle semantics.', readwrite)}

@@ -329,7 +329,60 @@ test('pipeline check shows actionable broken entryGraph ref diagnostic', async (
   await expect(status).toContainText(/more\./);
   await expect(status).not.toHaveText('Check failed: PIPELINE_ENTRY_GRAPH_NOT_FOUND');
 
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
+  await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Details');
+  const entryInlineDiagnostic = win.locator('.pipeline-field.has-inline-diagnostic').filter({ hasText: 'Entry' });
+  await expect(entryInlineDiagnostic).toContainText('PIPELINE_ENTRY_GRAPH_NOT_FOUND');
+  await expect(entryInlineDiagnostic).toContainText('Pipeline entryGraph file does not exist.');
+  await expect(entryInlineDiagnostic).toContainText('ref: graphs/missing.or-graph');
+
   await app.close();
+
+  const restoredPipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  restoredPipeline.entryGraph = 'graphs/main.or-graph';
+  fs.writeFileSync(pipelinePath, JSON.stringify(restoredPipeline, null, 2));
+  const mainGraphPath = path.join(path.dirname(pipelinePath), 'graphs', 'main.or-graph');
+  const brokenGraph = JSON.parse(fs.readFileSync(mainGraphPath, 'utf-8'));
+  const qualityNode = brokenGraph.graph.nodes.find((node: any) => node.id === 'quality-graph');
+  qualityNode.config.graphRef = 'missing-quality.or-graph';
+  fs.writeFileSync(mainGraphPath, JSON.stringify(brokenGraph, null, 2));
+
+  const graphApp = await launchElectron();
+  const graphWin = await graphApp.firstWindow();
+  const graphUserData = await graphApp.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(graphUserData, workspace);
+
+  await graphWin.reload();
+  await graphWin.waitForLoadState('domcontentloaded');
+  await graphWin.waitForSelector('.cm-editor');
+  await graphWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await graphWin.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await graphWin.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await graphWin.locator('#btn-preview').click();
+  await expect(graphWin.locator('.pipeline-runbar')).toBeVisible();
+
+  await graphWin.locator('[data-pipeline-run-menu]').click();
+  await graphWin.locator('button[data-pipeline-run-action="check"]').click();
+  const graphStatus = graphWin.locator('.pipeline-runbar-status.danger');
+  await expect(graphStatus).toContainText('ORPAD_GRAPH_NOT_FOUND');
+  await expect(graphStatus).toContainText('Referenced graph file does not exist.');
+  await expect(graphStatus).toContainText('ref: missing-quality.or-graph');
+
+  await graphWin.locator('.pipeline-editor-tabs button').filter({ hasText: 'Flow' }).click();
+  await expect(graphWin.locator('.orch-graph-node.type-orpad-graph').filter({ hasText: 'Quality graph' })).toBeVisible();
+  await graphWin.locator('button[data-orch-mode="readwrite"]').click();
+  await graphWin.locator('.orch-graph-node.type-orpad-graph').filter({ hasText: 'Quality graph' }).click();
+  const flowInlineDiagnostic = graphWin.locator('.orch-floating-inspector label.has-inline-diagnostic', {
+    has: graphWin.locator('input[data-orch-edit="config.graphRef"]'),
+  });
+  await expect(flowInlineDiagnostic).toContainText('ORPAD_GRAPH_NOT_FOUND');
+  await expect(flowInlineDiagnostic).toContainText('Referenced graph file does not exist.');
+  await expect(flowInlineDiagnostic).toContainText('ref: missing-quality.or-graph');
+
+  await graphApp.close();
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 

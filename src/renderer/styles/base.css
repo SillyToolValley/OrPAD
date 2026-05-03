@@ -1858,6 +1858,18 @@ body.json-diff-mode #preview-pane {
 .pipeline-runbar-status.danger {
   color: var(--danger-color, #ff7676);
 }
+.pipeline-inline-diagnostic {
+  display: block;
+  margin-top: calc(4px * var(--us));
+  padding: calc(5px * var(--us)) calc(6px * var(--us));
+  border-left: 2px solid var(--danger-color, #ff7676);
+  border-radius: calc(4px * var(--us));
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 10%, transparent);
+  color: var(--danger-color, #ff7676);
+  font-size: calc(10px * var(--us));
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
 .pipeline-runbar-actions {
   position: relative;
   display: inline-flex;
@@ -2451,6 +2463,15 @@ body.json-diff-mode #preview-pane {
   color: var(--text-primary);
   font: inherit;
   font-size: calc(11px * var(--us));
+}
+.pipeline-field.has-inline-diagnostic input,
+.pipeline-field.has-inline-diagnostic select,
+.pipeline-field.has-inline-diagnostic textarea,
+.pipeline-field.has-inline-diagnostic code,
+.pipeline-ref-row.has-inline-diagnostic input[aria-invalid="true"],
+.orch-inspector label.has-inline-diagnostic input {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 72%, var(--border-color));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger-color, #ff7676) 32%, transparent);
 }
 .pipeline-field textarea {
   resize: vertical;
