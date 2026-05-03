@@ -8350,6 +8350,16 @@ function machineDisplayStatus(record, runInProgress) {
   const runState = record?.runState || {};
   const workerReview = machineWorkerReviewInfo(record);
   const hasPatch = !!workerReview?.patchArtifact && (workerReview.changedFiles || []).length > 0;
+  if (!runInProgress && ['cancelled', 'canceled'].includes(String(runState.lifecycleStatus || '').toLowerCase())) {
+    return {
+      lifecycleLabel: 'Cancelled',
+      lifecycleClass: 'danger',
+      lifecycleTitle: 'Lifecycle: Cancelled',
+      summaryLabel: 'Stopped',
+      summaryClass: 'danger',
+      summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'blocked')}`,
+    };
+  }
   if (!runInProgress && hasPatch && runState.summaryStatus === 'partial') {
     return {
       lifecycleLabel: 'Patch ready',
@@ -9933,10 +9943,10 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     '',
   ].join('\n');
 
-  createTab(null, null, body, '', {
+  createTab(null, null, body, body, {
     title: `Run Evidence ${artifactTitleLabel}.md`,
     viewType: 'markdown',
-    forceUnsaved: true,
+    forceUnsaved: false,
   });
 }
 

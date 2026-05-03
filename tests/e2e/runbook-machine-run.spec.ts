@@ -378,6 +378,8 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await primaryRunButton.click();
   await submitMachineCapabilityToken(win);
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Cancelled$/ })).toBeVisible();
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Stopped$/ })).toBeVisible();
+  await expect(win.locator('#runbooks-content')).not.toContainText('Partial proof');
   await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'default');
   await expect(primaryRunButton).toHaveAttribute('aria-label', /Start Run/);
   await expect(primaryRunButton).not.toHaveClass(/danger/);
@@ -501,6 +503,7 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   await expect(win.locator('#runbooks-content')).toContainText('review needed; 2 evidence files; 1 check; 1 changed file');
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
   await expect(win.locator('.tab-item.active')).toContainText('Run Evidence');
+  await expect(win.locator('.tab-item.active')).not.toHaveClass(/modified/);
   await expect(win.locator('.cm-content')).toContainText('Patch Review');
   await expect(win.locator('.cm-content')).toContainText('Workspace changed: no, changes are staged in run evidence only');
   await expect(win.locator('.cm-content')).toContainText('Patch artifact: artifacts/patches/worker.patch.json');

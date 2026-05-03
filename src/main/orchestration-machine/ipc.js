@@ -722,7 +722,7 @@ async function cancelRunHandler(event, authority, request) {
   });
   await appendRunSummaryStatus(runRoot, {
     runId,
-    summaryStatus: 'partial',
+    summaryStatus: 'blocked',
     reason: 'machine-ui.cancel-run',
     payload: { abortedProcessCount },
   });
