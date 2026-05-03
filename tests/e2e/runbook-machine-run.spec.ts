@@ -44,7 +44,13 @@ function writeMachineWorkspace(): { workspace: string; pipelinePath: string; pip
         { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue' } },
       ],
-      transitions: [],
+      transitions: [
+        { from: 'context', to: 'probe' },
+        { from: 'probe', to: 'queue' },
+        { from: 'queue', to: 'triage' },
+        { from: 'triage', to: 'dispatch' },
+        { from: 'dispatch', to: 'worker' },
+      ],
     },
   }, null, 2));
 
@@ -368,6 +374,7 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   const runningProbeNode = win.locator('.orch-graph-node[data-machine-node-path="main/probe"]');
   await expect(runningProbeNode).toContainText('Running');
   await expect(runningProbeNode).toHaveClass(/runtime-running/);
+  await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(1);
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
@@ -388,6 +395,7 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(primaryRunButton).not.toHaveClass(/danger/);
   await expect(runningProbeNode).toContainText('Stopped');
   await expect(runningProbeNode).toHaveClass(/runtime-cancelled/);
+  await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(0);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

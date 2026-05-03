@@ -3812,10 +3812,12 @@ function collectOrchStateGraph(doc) {
   const nodePathById = new Map(nodes.map(item => [String(item.node?.id || ''), item.path]));
   const edges = [];
   rawTransitions.forEach((transition) => {
-    const source = nodePathById.get(String(transition?.from || ''));
-    const target = nodePathById.get(String(transition?.to || ''));
+    const from = String(transition?.from || '');
+    const to = String(transition?.to || '');
+    const source = nodePathById.get(from);
+    const target = nodePathById.get(to);
     if (!source || !target) return;
-    edges.push({ id: `${source}->${target}`, source, target });
+    edges.push({ id: `${source}->${target}`, source, target, from, to });
   });
   const minX = Math.min(0, ...nodes.map(item => item.x - ORCH_GRAPH_MARGIN));
   const minY = Math.min(0, ...nodes.map(item => item.y - ORCH_GRAPH_MARGIN));
@@ -4341,23 +4343,26 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
   `;
 }
 
-function renderOrchEdge(edge, byPath) {
+function renderOrchEdge(edge, byPath, runProjection = null) {
   const source = byPath.get(edge.source);
   const target = byPath.get(edge.target);
   if (!source || !target) return '';
   const transition = currentOrchMeta().transitions[edge.id];
   const style = transition?.style === 'straight' ? 'straight' : 'curve';
   const selected = selectedOrchEdgeId === edge.id;
+  const runtime = machineRuntimeStatusForGraphEdge(edge, source, target, runProjection);
+  const runtimeClass = runtime ? ` runtime-${runtime.state}` : '';
   const point = orchTransitionPoint(edge.id, source, target);
   const edgePath = orchEdgePath(source, target, edge.id);
   return `
     <path class="orch-transition-hit"
       data-orch-edge="${escapeHtml(edge.id)}"
       d="${edgePath}" />
-    <path class="orch-transition ${selected ? 'selected' : ''} style-${style}"
+    <path class="orch-transition${runtimeClass} ${selected ? 'selected' : ''} style-${style}"
       data-orch-edge="${escapeHtml(edge.id)}"
       data-source="${escapeHtml(edge.source)}"
       data-target="${escapeHtml(edge.target)}"
+      ${runtime ? `data-machine-edge-state="${escapeHtml(runtime.state)}"` : ''}
       d="${edgePath}" />
     ${selected ? `<circle class="orch-transition-handle" data-orch-edge="${escapeHtml(edge.id)}" cx="${Math.round(point.x)}" cy="${Math.round(point.y)}" r="6" />` : ''}
   `;
@@ -4390,7 +4395,7 @@ function renderOrchGraphCanvas(graph, readwrite, tools = true, runProjection = n
         <div class="orch-graph-viewport" data-orch-viewport style="width:${gw}px;height:${gh}px;transform:${orchViewportTransform()}">
           <div class="orch-graph-canvas" style="width:${gw}px;height:${gh}px">
             <svg class="orch-graph-edges" style="left:${gx}px;top:${gy}px;width:${gw}px;height:${gh}px" viewBox="${gx} ${gy} ${gw} ${gh}">
-              ${graph.edges.map(edge => renderOrchEdge(edge, byPath)).join('')}
+              ${graph.edges.map(edge => renderOrchEdge(edge, byPath, runProjection)).join('')}
             </svg>
             ${graph.nodes.map(node => renderOrchGraphNode(node, readwrite, runProjection)).join('')}
           </div>
@@ -8687,6 +8692,8 @@ function machineActiveNodeExecutions(record) {
 
 function machineNodeRuntimeStatusFromEventType(type) {
   switch (type) {
+    case 'node.scheduled':
+      return { state: 'queued', label: 'Queued' };
     case 'node.started':
       return { state: 'running', label: 'Running' };
     case 'node.completed':
@@ -8710,7 +8717,18 @@ function machineRuntimeNodeExecutionKey(event) {
 
 function machineRuntimeNodeProjection(record) {
   const statuses = new Map();
-  for (const event of record?.events || []) {
+  const events = record?.events || [];
+  let cancelSequence = null;
+  for (const event of events) {
+    if (
+      event?.eventType === 'run.status'
+      && ['cancelled', 'canceled'].includes(String(event?.toState || event?.payload?.toState || '').toLowerCase())
+    ) {
+      cancelSequence = event.sequence;
+    }
+  }
+  for (const event of events) {
+    if (cancelSequence != null && Number(event?.sequence) > Number(cancelSequence)) continue;
     const type = String(event?.eventType || '');
     if (!type.startsWith('node.')) continue;
     const nodePath = String(event?.nodePath || '').trim();
@@ -8787,6 +8805,24 @@ function machineRuntimeStatusForGraphNode(item, runProjection) {
     .map(([, status]) => status);
   if (matches.length === 1) return matches[0];
   return null;
+}
+
+function machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus) {
+  const sourceState = sourceStatus?.state || '';
+  const targetState = targetStatus?.state || '';
+  if (['running', 'queued'].includes(targetState)) return { state: 'active' };
+  if (targetState === 'cancelled' || sourceState === 'cancelled') return { state: 'muted' };
+  if (['failed', 'blocked'].includes(targetState)) return { state: 'blocked' };
+  if (sourceState === 'completed' && targetState === 'completed') return { state: 'completed' };
+  if (sourceState === 'completed' && !targetState) return { state: 'active' };
+  return null;
+}
+
+function machineRuntimeStatusForGraphEdge(edge, source, target, runProjection) {
+  if (!runProjection?.statuses?.size) return null;
+  const sourceStatus = machineRuntimeStatusForGraphNode(source, runProjection);
+  const targetStatus = machineRuntimeStatusForGraphNode(target, runProjection);
+  return machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus);
 }
 
 function isMachineRunInProgress(record, runbookPath = selectedRunbookPath) {

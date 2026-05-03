@@ -2090,6 +2090,23 @@ body.json-diff-mode #preview-pane {
   stroke: var(--accent-color);
   stroke-width: 4;
 }
+.orch-graph-edges .orch-transition.runtime-completed {
+  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 64%, var(--border-color));
+}
+.orch-graph-edges .orch-transition.runtime-active {
+  stroke: var(--accent-color);
+  stroke-width: 4;
+  stroke-dasharray: 10 7;
+  animation: orch-transition-flow 1.1s linear infinite;
+}
+.orch-graph-edges .orch-transition.runtime-blocked {
+  stroke: color-mix(in srgb, var(--syntax-meta, #e0af68) 72%, var(--border-color));
+  stroke-width: 4;
+}
+.orch-graph-edges .orch-transition.runtime-muted {
+  stroke: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
+  opacity: 0.55;
+}
 .orch-transition-handle {
   fill: var(--accent-color);
   stroke: var(--bg-primary);
@@ -2181,6 +2198,11 @@ body.json-diff-mode #preview-pane {
   }
   50% {
     box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-color) 26%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+  }
+}
+@keyframes orch-transition-flow {
+  to {
+    stroke-dashoffset: -17;
   }
 }
 .orch-graph-node.draggable {
