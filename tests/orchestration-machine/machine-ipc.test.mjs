@@ -706,3 +706,72 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   assert.equal(audit.exitCode, 0, audit.stderr || audit.stdout);
   assert.equal(audit.json.ok, true);
 });
+
+test('Machine IPC denied approval decisions cancel blocked work without grants', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const source = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  source.run.machineHarness.candidateProposal.approvalRequired = true;
+  await fs.writeFile(pipelinePath, `${JSON.stringify(source, null, 2)}\n`, 'utf8');
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_harness_approval_denied',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(executed.success, true);
+  assert.equal(executed.approvals.pendingCount, 1);
+  assert.equal(executed.approvals.pending[0].approvalId, 'approval-ipc-harness-smoke');
+  assert.equal(executed.runState.lifecycleStatus, 'approval-required');
+  assert.equal(executed.runState.summaryStatus, 'blocked');
+  assert.equal(executed.worker, null);
+
+  const denied = await handlers.get(MACHINE_IPC_CHANNELS.decideApproval)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    approvalId: 'approval-ipc-harness-smoke',
+    decision: 'denied',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(denied.success, true);
+  assert.deepEqual(denied.grants, []);
+  assert.equal(denied.approvals.pendingCount, 0);
+  assert.equal(denied.approvals.all[0].status, 'denied');
+  assert.equal(denied.runState.lifecycleStatus, 'cancelled');
+  assert.equal(denied.runState.summaryStatus, 'blocked');
+
+  const listed = await handlers.get(MACHINE_IPC_CHANNELS.listRuns)(event, baseRequest);
+  const listedRun = listed.runs.find(run => run.runId === created.runId);
+  assert.equal(listedRun.pendingApprovalCount, 0);
+
+  const resumeDenied = await handlers.get(MACHINE_IPC_CHANNELS.resumeRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(resumeDenied.success, false);
+  assert.equal(resumeDenied.code, 'MACHINE_RUN_TERMINAL');
+  assert.equal(resumeDenied.runState.lifecycleStatus, 'cancelled');
+  assert.equal(resumeDenied.runState.summaryStatus, 'blocked');
+
+  const executeDenied = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(executeDenied.success, false);
+  assert.equal(executeDenied.code, 'MACHINE_RUN_TERMINAL');
+  assert.equal(executeDenied.runState.lifecycleStatus, 'cancelled');
+  assert.equal(executeDenied.runState.summaryStatus, 'blocked');
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'before\n');
+});
