@@ -4484,16 +4484,28 @@ function renderOrchEdge(edge, byPath, runProjection = null) {
   const runtimeClass = runtime ? ` runtime-${runtime.state}` : '';
   const point = orchTransitionPoint(edge.id, source, target);
   const edgePath = orchEdgePath(source, target, edge.id);
+  const edgeDomId = `orch-edge-${hash32(`${edge.id}:${edgePath}`)}`;
+  const activeFlow = runtime?.state === 'active'
+    ? `
+    <text class="orch-transition-flow-arrows" dy="-5" aria-hidden="true">
+      <textPath href="#${escapeHtml(edgeDomId)}" startOffset="8%"><animate attributeName="startOffset" values="8%;72%" dur="1.35s" repeatCount="indefinite" />&gt; &gt; &gt; &gt;</textPath>
+    </text>
+    <text class="orch-transition-flow-arrows secondary" dy="-5" aria-hidden="true">
+      <textPath href="#${escapeHtml(edgeDomId)}" startOffset="-24%"><animate attributeName="startOffset" values="-24%;42%" dur="1.35s" repeatCount="indefinite" />&gt; &gt; &gt; &gt;</textPath>
+    </text>`
+    : '';
   return `
     <path class="orch-transition-hit"
       data-orch-edge="${escapeHtml(edge.id)}"
       d="${edgePath}" />
-    <path class="orch-transition${runtimeClass} ${selected ? 'selected' : ''} style-${style}"
+    <path id="${escapeHtml(edgeDomId)}"
+      class="orch-transition${runtimeClass} ${selected ? 'selected' : ''} style-${style}"
       data-orch-edge="${escapeHtml(edge.id)}"
       data-source="${escapeHtml(edge.source)}"
       data-target="${escapeHtml(edge.target)}"
       ${runtime ? `data-machine-edge-state="${escapeHtml(runtime.state)}"` : ''}
       d="${edgePath}" />
+    ${activeFlow}
     ${selected ? `<circle class="orch-transition-handle" data-orch-edge="${escapeHtml(edge.id)}" cx="${Math.round(point.x)}" cy="${Math.round(point.y)}" r="6" />` : ''}
   `;
 }
@@ -4660,7 +4672,11 @@ function renderOrchTreePreview(content) {
     contentEl.innerHTML = '<div class="preview-error">Invalid orch-tree JSON: ' + escapeHtml(err.message || String(err)) + '</div>';
     return;
   }
-  const readwrite = orchTreeGraphMode === 'readwrite';
+  const pipelineContext = pipelineContextForPath();
+  const pipelineRunInProgress = isPipelineMachineRunInProgress(pipelineContext?.pipelinePath);
+  if (pipelineRunInProgress && orchTreeGraphMode === 'readwrite') orchTreeGraphMode = 'readonly';
+  const readwrite = orchTreeGraphMode === 'readwrite' && !pipelineRunInProgress;
+  const editLockTitle = pipelineRunInProgress ? 'Run in progress; editing is locked.' : 'Edit';
   const treeEntries = orchTreeEntriesFromDoc(doc);
   const graphs = treeEntries.map(({ tree, index, rootPath }) => collectOrchGraph(tree, index, rootPath));
   if (!selectedOrchEdgeId || !graphs.some(graph => graph.edges.some(edge => edge.id === selectedOrchEdgeId))) {
@@ -4674,7 +4690,7 @@ function renderOrchTreePreview(content) {
         <div class="orch-toolbar-actions">
           <div class="jedit-seg">
             <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-orch-mode="readonly">View</button>
-            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-orch-mode="readwrite">Edit</button>
+            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-orch-mode="readwrite" title="${escapeHtml(editLockTitle)}" ${pipelineRunInProgress ? 'disabled' : ''}>Edit</button>
           </div>
         </div>
       </div>
@@ -4689,6 +4705,12 @@ function renderOrchTreePreview(content) {
 
   contentEl.querySelectorAll('[data-orch-mode]').forEach(button => {
     button.addEventListener('click', () => {
+      if (button.dataset.orchMode === 'readwrite' && isPipelineMachineRunInProgress(pipelineContext?.pipelinePath)) {
+        orchTreeGraphMode = 'readonly';
+        lastRendered = { tabId: null, viewType: null, content: null };
+        rerenderOrchTree();
+        return;
+      }
       orchTreeGraphMode = button.dataset.orchMode;
       lastRendered = { tabId: null, viewType: null, content: null };
       orchGraphFitAfterRender = true;
@@ -5133,7 +5155,7 @@ function renderOrchTreePreview(content) {
   }
 }
 
-function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFilePath = getActiveTab()?.filePath) {
+function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFilePath = getActiveTab()?.filePath, pipelineContext = pipelineContextForPath()) {
   contentEl.querySelectorAll('[data-orch-layer-index]').forEach(button => {
     button.addEventListener('click', () => navigateOrchGraphLayer(Number(button.dataset.orchLayerIndex)));
   });
@@ -5142,6 +5164,13 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
   });
   contentEl.querySelectorAll('[data-orch-mode]').forEach(button => {
     button.addEventListener('click', () => {
+      if (button.dataset.orchMode === 'readwrite' && isPipelineMachineRunInProgress(pipelineContext?.pipelinePath)) {
+        orchTreeGraphMode = 'readonly';
+        lastRendered = { tabId: null, viewType: null, content: null };
+        orchGraphFitAfterRender = true;
+        rerenderOrchPreview();
+        return;
+      }
       orchTreeGraphMode = button.dataset.orchMode;
       lastRendered = { tabId: null, viewType: null, content: null };
       orchGraphFitAfterRender = true;
@@ -5506,13 +5535,16 @@ function renderOrchPipelinePreview(content) {
     contentEl.innerHTML = '<div class="preview-error">Invalid OrPAD pipeline: ' + escapeHtml(err.message || String(err)) + '</div>';
     return;
   }
-  const readwrite = orchTreeGraphMode === 'readwrite';
+  const pipelineContext = pipelineContextForPath();
+  const pipelineRunInProgress = isPipelineMachineRunInProgress(pipelineContext?.pipelinePath);
+  if (pipelineRunInProgress && orchTreeGraphMode === 'readwrite') orchTreeGraphMode = 'readonly';
+  const readwrite = orchTreeGraphMode === 'readwrite' && !pipelineRunInProgress;
+  const editLockTitle = pipelineRunInProgress ? 'Run in progress; editing is locked.' : 'Edit';
   const graphRefs = pipelineRefEntries(doc, 'graphs').entries;
   const treeRefs = pipelineRefEntries(doc, 'trees').entries;
   const skillRefs = pipelineRefEntries(doc, 'skills').entries;
   const ruleRefs = pipelineRefEntries(doc, 'rules').entries;
   const entryGraph = doc.entryGraph || doc.entry?.graph || doc.graph?.file || graphRefs[0]?.file || '';
-  const pipelineContext = pipelineContextForPath();
   const entryGraphPath = pipelineEditorGraphPathFromDoc(doc, pipelineContext);
   const diagnostics = pipelineValidationDiagnostics(selectedPipelineValidation(pipelineContext?.pipelinePath));
   contentEl.innerHTML = `
@@ -5525,7 +5557,7 @@ function renderOrchPipelinePreview(content) {
           <span class="runbook-chip">${escapeHtml(doc.version || 'unversioned')}</span>
           <div class="jedit-seg">
             <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-pipeline-mode="readonly">View</button>
-            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-pipeline-mode="readwrite">Edit</button>
+            <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-pipeline-mode="readwrite" title="${escapeHtml(editLockTitle)}" ${pipelineRunInProgress ? 'disabled' : ''}>Edit</button>
           </div>
         </div>
       </div>
@@ -5596,12 +5628,18 @@ function renderOrchPipelinePreview(content) {
       </div>
     </div>
   `;
-  bindOrchPipelineEditorInteractions(readwrite);
+  bindOrchPipelineEditorInteractions(readwrite, pipelineContext);
 }
 
-function bindOrchPipelineEditorInteractions(readwrite) {
+function bindOrchPipelineEditorInteractions(readwrite, pipelineContext = pipelineContextForPath()) {
   contentEl.querySelectorAll('[data-pipeline-mode]').forEach(button => {
     button.addEventListener('click', () => {
+      if (button.dataset.pipelineMode === 'readwrite' && isPipelineMachineRunInProgress(pipelineContext?.pipelinePath)) {
+        orchTreeGraphMode = 'readonly';
+        invalidateRenderCache();
+        renderOrchPipelinePreview(editor.state.doc.toString());
+        return;
+      }
       orchTreeGraphMode = button.dataset.pipelineMode;
       invalidateRenderCache();
       renderOrchPipelinePreview(editor.state.doc.toString());
@@ -5801,8 +5839,11 @@ function renderOrchGraphPreview(content) {
     contentEl.innerHTML = '<div class="preview-error">Invalid flow JSON: ' + escapeHtml(err.message || String(err)) + '</div>';
     return;
   }
-  const readwrite = orchTreeGraphMode === 'readwrite';
   const pipelineContext = pipelineContextForPath();
+  const pipelineRunInProgress = isPipelineMachineRunInProgress(pipelineContext?.pipelinePath);
+  if (pipelineRunInProgress && orchTreeGraphMode === 'readwrite') orchTreeGraphMode = 'readonly';
+  const readwrite = orchTreeGraphMode === 'readwrite' && !pipelineRunInProgress;
+  const editLockTitle = pipelineRunInProgress ? 'Run in progress; editing is locked.' : 'Edit';
   normalizeOrchGraphLayerStack(doc);
   const layerPath = activeOrchGraphLayerPath();
   const layerEntry = activeOrchGraphLayerEntry();
@@ -5847,7 +5888,7 @@ function renderOrchGraphPreview(content) {
           <span class="runbook-chip">${layerSourceLabel}</span>
           <div class="jedit-seg">
             <button class="jedit-seg-btn ${effectiveReadwrite ? '' : 'active'}" data-orch-mode="readonly">View</button>
-            <button class="jedit-seg-btn ${effectiveReadwrite ? 'active' : ''}" data-orch-mode="readwrite">Edit</button>
+            <button class="jedit-seg-btn ${effectiveReadwrite ? 'active' : ''}" data-orch-mode="readwrite" title="${escapeHtml(editLockTitle)}" ${pipelineRunInProgress ? 'disabled' : ''}>Edit</button>
           </div>
         </div>
       </div>
@@ -5863,7 +5904,7 @@ function renderOrchGraphPreview(content) {
     </div>
   `;
   bindPipelineEditorTabs();
-  bindOrchGraphEditorInteractions(effectiveReadwrite, graphDoc, graphBaseFilePath);
+  bindOrchGraphEditorInteractions(effectiveReadwrite, graphDoc, graphBaseFilePath, pipelineContext);
 }
 
 // Line-level LCS diff. Returns array of ops: {op: 'equal'|'del'|'add', a?, b?}.
@@ -8534,7 +8575,14 @@ function machineStatusChipClass(status, kind = 'lifecycle') {
 function machineDisplayStatus(record, runInProgress) {
   const runState = record?.runState || {};
   const workerReview = machineWorkerReviewInfo(record);
-  const hasPatch = !!workerReview?.patchArtifact && (workerReview.changedFiles || []).length > 0;
+  const workerStatus = String(workerReview?.status || '').toLowerCase();
+  const incompleteEvidence = !!machineLatestPartialArtifactContract(record);
+  const lifecycleValue = String(runState.lifecycleStatus || '').toLowerCase();
+  const summaryValue = String(runState.summaryStatus || '').toLowerCase();
+  const needsReview = !!workerReview?.patchArtifact
+    || workerStatus === 'blocked'
+    || summaryValue === 'blocked'
+    || (workerReview?.missingExpectedChanges || []).length > 0;
   if (!runInProgress && ['cancelled', 'canceled'].includes(String(runState.lifecycleStatus || '').toLowerCase())) {
     return {
       lifecycleLabel: 'Cancelled',
@@ -8545,15 +8593,25 @@ function machineDisplayStatus(record, runInProgress) {
       summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'blocked')}`,
     };
   }
-  if (!runInProgress && hasPatch && runState.summaryStatus === 'partial') {
+  if (!runInProgress && lifecycleValue === 'waiting') {
     const lifecycleStatus = runState.lifecycleStatus || 'waiting';
+    if (needsReview || incompleteEvidence || ['partial', 'blocked'].includes(summaryValue)) {
+      return {
+        lifecycleLabel: needsReview ? 'Review needed' : (incompleteEvidence ? 'Evidence incomplete' : 'Ready to continue'),
+        lifecycleClass: 'warn',
+        lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
+        summaryLabel: incompleteEvidence ? 'Evidence incomplete' : (needsReview ? 'Review required' : machineSummaryStatusLabel(runState.summaryStatus || 'partial')),
+        summaryClass: 'warn',
+        summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'partial')}`,
+      };
+    }
     return {
-      lifecycleLabel: machineLifecycleStatusLabel(lifecycleStatus),
-      lifecycleClass: machineStatusChipClass(lifecycleStatus),
+      lifecycleLabel: 'Ready to continue',
+      lifecycleClass: 'warn',
       lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
-      summaryLabel: 'Review required',
-      summaryClass: 'warn',
-      summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'partial')}`,
+      summaryLabel: machineSummaryStatusLabel(runState.summaryStatus || 'pending'),
+      summaryClass: machineStatusChipClass(runState.summaryStatus || 'pending', 'summary'),
+      summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'pending')}`,
     };
   }
   const lifecycleStatus = runInProgress ? 'running' : (runState.lifecycleStatus || 'created');
@@ -8761,6 +8819,11 @@ function machineStaleActiveClaims(record) {
   });
 }
 
+function machineHasOnlyStaleActiveClaims(record) {
+  const activeClaims = record?.activeClaims || [];
+  return activeClaims.length > 0 && machineStaleActiveClaims(record).length === activeClaims.length;
+}
+
 function machineRunActionKey(runbookPath, runId) {
   return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId || ''}`;
 }
@@ -8912,10 +8975,21 @@ function machineRuntimeGraphKeyCandidates(context, graphDoc) {
   return keys;
 }
 
+function machineRunRecordForPipelinePath(runbookPath) {
+  if (!runbookPath) return null;
+  const selectedMatches = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+  return getRunbookCache(machineRunRecordCache, runbookPath) || (selectedMatches ? lastMachineRunRecord : null);
+}
+
+function isPipelineMachineRunInProgress(runbookPath) {
+  if (!runbookPath) return false;
+  if (machineRunStartPendingPaths.has(runbookNormalizePath(runbookPath).toLowerCase())) return true;
+  return isMachineRunInProgress(machineRunRecordForPipelinePath(runbookPath), runbookPath);
+}
+
 function machineRuntimeProjectionForGraph(context, graphDoc) {
   if (!context?.pipelinePath) return null;
-  const selectedMatches = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(context.pipelinePath).toLowerCase();
-  const record = getRunbookCache(machineRunRecordCache, context.pipelinePath) || (selectedMatches ? lastMachineRunRecord : null);
+  const record = machineRunRecordForPipelinePath(context.pipelinePath);
   const statuses = machineRuntimeNodeProjection(record);
   if (!statuses.size) return null;
   return {
@@ -8966,8 +9040,11 @@ function isMachineRunInProgress(record, runbookPath = selectedRunbookPath) {
   const runId = runState.runId || record?.runId || '';
   if (isMachineRunTerminal(runState)) return false;
   if (isMachineRunActionPending(runbookPath, runId)) return true;
-  if (['running', 'cancelling'].includes(String(runState.lifecycleStatus || '').toLowerCase())) return true;
-  return machineActiveNodeExecutions(record).length > 0;
+  const activeNodes = machineActiveNodeExecutions(record);
+  if (['running', 'cancelling'].includes(String(runState.lifecycleStatus || '').toLowerCase())) {
+    return !(activeNodes.length === 0 && machineHasOnlyStaleActiveClaims(record));
+  }
+  return activeNodes.length > 0;
 }
 
 function machineUpdateRunRecord(runbookPath, record) {

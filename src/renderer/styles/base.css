@@ -2108,8 +2108,20 @@ body.json-diff-mode #preview-pane {
 .orch-graph-edges .orch-transition.runtime-active {
   stroke: var(--accent-color);
   stroke-width: 4;
-  stroke-dasharray: 10 7;
-  animation: orch-transition-flow 1.1s linear infinite;
+}
+.orch-transition-flow-arrows {
+  fill: var(--accent-color);
+  stroke: var(--bg-primary);
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(14px * var(--us));
+  font-weight: 800;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+.orch-transition-flow-arrows.secondary {
+  opacity: 0.62;
 }
 .orch-graph-edges .orch-transition.runtime-blocked {
   stroke: color-mix(in srgb, var(--syntax-meta, #e0af68) 72%, var(--border-color));
@@ -2210,11 +2222,6 @@ body.json-diff-mode #preview-pane {
   }
   50% {
     box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-color) 26%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
-  }
-}
-@keyframes orch-transition-flow {
-  to {
-    stroke-dashoffset: -17;
   }
 }
 .orch-graph-node.draggable {
@@ -4028,6 +4035,14 @@ body.drag-over::after {
 }
 .jedit-seg-btn + .jedit-seg-btn { border-left: 1px solid var(--border-color); }
 .jedit-seg-btn:hover { color: var(--text-primary); background: var(--hover-bg); }
+.jedit-seg-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.jedit-seg-btn:disabled:hover {
+  color: var(--text-secondary);
+  background: transparent;
+}
 .jedit-seg-btn.active {
   background: color-mix(in srgb, var(--accent-color) 18%, transparent);
   color: var(--accent-color);

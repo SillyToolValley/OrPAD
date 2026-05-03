@@ -375,6 +375,9 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(runningProbeNode).toContainText('Running');
   await expect(runningProbeNode).toHaveClass(/runtime-running/);
   await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(1);
+  await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(2);
+  await expect(win.locator('button[data-orch-mode="readonly"]')).toHaveClass(/active/);
+  await expect(win.locator('button[data-orch-mode="readwrite"]')).toBeDisabled();
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
@@ -396,6 +399,8 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(runningProbeNode).toContainText('Stopped');
   await expect(runningProbeNode).toHaveClass(/runtime-cancelled/);
   await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(0);
+  await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(0);
+  await expect(win.locator('button[data-orch-mode="readwrite"]')).toBeEnabled();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -509,7 +514,8 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('#runbooks-content')).toContainText('Review required');
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Patch ready$/ })).toHaveCount(0);
-  await expect(win.locator('.runbook-chip').filter({ hasText: /^Waiting$/ })).toBeVisible();
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Waiting$/ })).toHaveCount(0);
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Review needed$/ })).toBeVisible();
   await expect(win.locator('#runbooks-content')).toContainText('1 changed file staged in run evidence; workspace files were not changed.');
   await expect(win.locator('#runbooks-content')).toContainText('Missing expected change: src/main/runbooks/validator.js.');
   await expect(win.locator('#runbooks-content')).toContainText('Evidence incomplete');
@@ -858,7 +864,8 @@ test('Machine UI recovers interrupted work and reports work state repair', async
   await expect(win.locator('#runbooks-content')).toContainText('Last recovery: 1 work state repair; 1 interrupted work item recovered; 1 ready');
   await expect(win.locator('#runbooks-content')).toContainText('No work in progress');
   await expect(win.locator('#runbooks-content')).toContainText('No reserved files');
-  await expect(win.locator('#runbooks-content')).toContainText('Waiting');
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Waiting$/ })).toHaveCount(0);
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Ready to continue$/ })).toBeVisible();
   await expect(win.locator('#runbooks-content')).toContainText('Partial proof');
   await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveCount(0);
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'queue', 'queued', `${seeded.itemId}.json`), 'utf-8')).state).toBe('queued');
