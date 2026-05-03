@@ -8361,10 +8361,11 @@ function machineDisplayStatus(record, runInProgress) {
     };
   }
   if (!runInProgress && hasPatch && runState.summaryStatus === 'partial') {
+    const lifecycleStatus = runState.lifecycleStatus || 'waiting';
     return {
-      lifecycleLabel: 'Patch ready',
-      lifecycleClass: 'warn',
-      lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(runState.lifecycleStatus || 'waiting')}`,
+      lifecycleLabel: machineLifecycleStatusLabel(lifecycleStatus),
+      lifecycleClass: machineStatusChipClass(lifecycleStatus),
+      lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
       summaryLabel: 'Review required',
       summaryClass: 'warn',
       summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'partial')}`,

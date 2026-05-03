@@ -495,6 +495,8 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('#runbooks-content')).toContainText('Review required');
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Patch ready$/ })).toHaveCount(0);
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Waiting$/ })).toBeVisible();
   await expect(win.locator('#runbooks-content')).toContainText('1 changed file staged in run evidence; workspace files were not changed.');
   await expect(win.locator('#runbooks-content')).toContainText('Missing expected change: src/main/runbooks/validator.js.');
   await expect(win.locator('#runbooks-content')).toContainText('Evidence incomplete');
