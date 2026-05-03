@@ -332,10 +332,10 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await appendMachineEvent(run.runRoot, {
     runId: run.runId,
     actor: 'machine',
-    nodePath: 'probe',
+    nodePath: 'main/probe',
     eventType: 'node.started',
     payload: {
-      nodeExecutionId: `${run.runId}:probe:attempt-1`,
+      nodeExecutionId: `${run.runId}:main/probe:attempt-1`,
       nodeType: 'orpad.probe',
       status: 'started',
       attempt: 1,
@@ -365,6 +365,9 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'machine-cancel-run');
   await expect(primaryRunButton).toHaveAttribute('aria-label', 'Stop Run');
   await expect(primaryRunButton).toHaveClass(/danger/);
+  const runningProbeNode = win.locator('.orch-graph-node[data-machine-node-path="main/probe"]');
+  await expect(runningProbeNode).toContainText('Running');
+  await expect(runningProbeNode).toHaveClass(/runtime-running/);
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
@@ -383,6 +386,8 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'default');
   await expect(primaryRunButton).toHaveAttribute('aria-label', /Start Run/);
   await expect(primaryRunButton).not.toHaveClass(/danger/);
+  await expect(runningProbeNode).toContainText('Stopped');
+  await expect(runningProbeNode).toHaveClass(/runtime-cancelled/);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

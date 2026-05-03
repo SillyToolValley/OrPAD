@@ -4310,7 +4310,7 @@ function countOrchNestedNodes(node) {
   return 1 + (Array.isArray(node.children) ? node.children.reduce((sum, child) => sum + countOrchNestedNodes(child), 0) : 0);
 }
 
-function renderOrchGraphNode(item, readwrite) {
+function renderOrchGraphNode(item, readwrite, runProjection = null) {
   const { node, path, x, y } = item;
   const selected = isOrchNodeSelected(path);
   const primary = path === selectedOrchNodePath;
@@ -4318,9 +4318,12 @@ function renderOrchGraphNode(item, readwrite) {
   const treeNodes = isOrchTreeRefType(node?.type) ? countOrchNestedNodes(node.tree?.root) : 0;
   const title = node?.label || node?.id || node?.type || 'Untitled node';
   const typeLabel = orchNodeTypeLabel(node?.type) || 'Node';
+  const runtime = machineRuntimeStatusForGraphNode(item, runProjection);
+  const runtimeClass = runtime ? ` runtime-${runtime.state}` : '';
   return `
-    <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}"
+    <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}"
       data-orch-path="${escapeHtml(path)}"
+      ${runtime?.nodePath ? `data-machine-node-path="${escapeHtml(runtime.nodePath)}"` : ''}
       role="button"
       tabindex="0"
       style="left:${Math.round(x)}px;top:${Math.round(y)}px">
@@ -4332,6 +4335,7 @@ function renderOrchGraphNode(item, readwrite) {
         <code>${escapeHtml(node?.id || '(no id)')}</code>
         ${treeNodes ? `<span>${treeNodes} tree nodes</span>` : children ? `<span>${children} child${children === 1 ? '' : 'ren'}</span>` : '<span>leaf</span>'}
       </div>
+      ${runtime ? `<div class="orch-runtime-status" title="${escapeHtml(runtime.title)}"><span class="orch-runtime-dot"></span><span>${escapeHtml(runtime.label)}</span></div>` : ''}
       ${isOrchSkillType(node?.type) && (node?.file || node?.config?.skillRef) ? `<small>${escapeHtml(node.file || node.config.skillRef)}</small>` : ''}
     </div>
   `;
@@ -4359,7 +4363,7 @@ function renderOrchEdge(edge, byPath) {
   `;
 }
 
-function renderOrchGraphCanvas(graph, readwrite, tools = true) {
+function renderOrchGraphCanvas(graph, readwrite, tools = true, runProjection = null) {
   const byPath = new Map(graph.nodes.map(node => [node.path, node]));
   const gx = Math.round(graph.minX);
   const gy = Math.round(graph.minY);
@@ -4388,7 +4392,7 @@ function renderOrchGraphCanvas(graph, readwrite, tools = true) {
             <svg class="orch-graph-edges" style="left:${gx}px;top:${gy}px;width:${gw}px;height:${gh}px" viewBox="${gx} ${gy} ${gw} ${gh}">
               ${graph.edges.map(edge => renderOrchEdge(edge, byPath)).join('')}
             </svg>
-            ${graph.nodes.map(node => renderOrchGraphNode(node, readwrite)).join('')}
+            ${graph.nodes.map(node => renderOrchGraphNode(node, readwrite, runProjection)).join('')}
           </div>
         </div>
       </div>
@@ -5682,8 +5686,9 @@ function renderOrchGraphPreview(content) {
     selectedOrchEdgeId = '';
     normalizeOrchSelection(graphDoc, graph.nodes[0]?.path || '');
   }
+  const runProjection = machineRuntimeProjectionForGraph(pipelineContext, graphDoc);
   const graphBody = graph.nodes.length
-    ? renderOrchGraphCanvas(graph, effectiveReadwrite)
+    ? renderOrchGraphCanvas(graph, effectiveReadwrite, true, runProjection)
     : linkedLayer?.loading
       ? '<div class="runbook-empty">Loading linked OrPAD layer...</div>'
       : linkedLayer?.error
@@ -8678,6 +8683,110 @@ function machineActiveNodeExecutions(record) {
     }
   }
   return [...active.values()];
+}
+
+function machineNodeRuntimeStatusFromEventType(type) {
+  switch (type) {
+    case 'node.started':
+      return { state: 'running', label: 'Running' };
+    case 'node.completed':
+      return { state: 'completed', label: 'Done' };
+    case 'node.blocked':
+      return { state: 'blocked', label: 'Blocked' };
+    case 'node.failed':
+      return { state: 'failed', label: 'Failed' };
+    case 'node.skipped':
+      return { state: 'skipped', label: 'Skipped' };
+    default:
+      return null;
+  }
+}
+
+function machineRuntimeNodeExecutionKey(event) {
+  return event?.payload?.nodeExecutionId
+    || event?.nodeExecutionId
+    || `${event?.nodePath || ''}:attempt-${event?.payload?.attempt || 1}`;
+}
+
+function machineRuntimeNodeProjection(record) {
+  const statuses = new Map();
+  for (const event of record?.events || []) {
+    const type = String(event?.eventType || '');
+    if (!type.startsWith('node.')) continue;
+    const nodePath = String(event?.nodePath || '').trim();
+    if (!nodePath) continue;
+    const status = machineNodeRuntimeStatusFromEventType(type);
+    if (!status) continue;
+    const sequence = Number(event?.sequence) || 0;
+    statuses.set(nodePath, {
+      ...status,
+      nodePath,
+      sequence,
+      eventType: type,
+      nodeExecutionId: machineRuntimeNodeExecutionKey(event),
+      title: `${status.label}: ${nodePath}`,
+    });
+  }
+  const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+  if (['cancelled', 'canceled'].includes(lifecycle)) {
+    for (const [nodePath, status] of statuses.entries()) {
+      if (status.state !== 'running') continue;
+      statuses.set(nodePath, {
+        ...status,
+        state: 'cancelled',
+        label: 'Stopped',
+        title: `Stopped: ${nodePath}`,
+      });
+    }
+  }
+  return statuses;
+}
+
+function machineRuntimeGraphKeyCandidates(context, graphDoc) {
+  const keys = [];
+  const add = (value) => {
+    const key = String(value || '').trim();
+    if (key && !keys.includes(key)) keys.push(key);
+  };
+  const activeRelativePath = runbookNormalizePath(context?.activeRelativePath || '');
+  const fileName = activeRelativePath.split('/').pop() || '';
+  add(fileName.replace(/\.or-graph$/i, ''));
+  add(graphDoc?.graph?.id);
+  add(graphDoc?.id);
+  add('main');
+  add(context?.pipelineName);
+  return keys;
+}
+
+function machineRuntimeProjectionForGraph(context, graphDoc) {
+  if (!context?.pipelinePath) return null;
+  const selectedMatches = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(context.pipelinePath).toLowerCase();
+  const record = getRunbookCache(machineRunRecordCache, context.pipelinePath) || (selectedMatches ? lastMachineRunRecord : null);
+  const statuses = machineRuntimeNodeProjection(record);
+  if (!statuses.size) return null;
+  return {
+    graphKeys: machineRuntimeGraphKeyCandidates(context, graphDoc),
+    statuses,
+  };
+}
+
+function machineRuntimeStatusForGraphNode(item, runProjection) {
+  if (!runProjection?.statuses?.size) return null;
+  const nodeId = String(item?.node?.id || '').trim();
+  if (!nodeId) return null;
+  const direct = runProjection.statuses.get(nodeId);
+  if (direct) return direct;
+  for (const graphKey of runProjection.graphKeys || []) {
+    const nodePath = `${graphKey}/${nodeId}`;
+    const status = runProjection.statuses.get(nodePath);
+    if (status) return status;
+  }
+  const suffix = `/${nodeId}`;
+  const matches = [...runProjection.statuses.entries()]
+    .filter(([nodePath]) => nodePath.endsWith(suffix))
+    .map(([, status]) => status);
+  if (matches.length === 1) return matches[0];
+  return null;
 }
 
 function isMachineRunInProgress(record, runbookPath = selectedRunbookPath) {

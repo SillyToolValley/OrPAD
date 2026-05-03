@@ -2125,6 +2125,64 @@ body.json-diff-mode #preview-pane {
   border-color: var(--accent-color);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 22%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
 }
+.orch-graph-node.runtime-running {
+  border-color: color-mix(in srgb, var(--accent-color) 76%, var(--border-color));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 20%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+  animation: orch-runtime-pulse 1.5s ease-in-out infinite;
+}
+.orch-graph-node.runtime-completed {
+  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 54%, var(--border-color));
+}
+.orch-graph-node.runtime-blocked,
+.orch-graph-node.runtime-skipped {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+}
+.orch-graph-node.runtime-failed,
+.orch-graph-node.runtime-cancelled {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 62%, var(--border-color));
+}
+.orch-runtime-status {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--us));
+  margin-top: calc(7px * var(--us));
+  padding: 2px calc(6px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--accent-color) 44%, var(--border-color));
+  border-radius: 999px;
+  color: var(--accent-color);
+  font-size: calc(10px * var(--us));
+}
+.orch-runtime-dot {
+  width: calc(6px * var(--us));
+  height: calc(6px * var(--us));
+  border-radius: 50%;
+  background: currentColor;
+}
+.orch-graph-node.runtime-running .orch-runtime-status {
+  color: var(--accent-color);
+}
+.orch-graph-node.runtime-completed .orch-runtime-status {
+  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 48%, var(--border-color));
+  color: var(--syntax-string, #9ece6a);
+}
+.orch-graph-node.runtime-blocked .orch-runtime-status,
+.orch-graph-node.runtime-skipped .orch-runtime-status {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 52%, var(--border-color));
+  color: var(--syntax-meta, #e0af68);
+}
+.orch-graph-node.runtime-failed .orch-runtime-status,
+.orch-graph-node.runtime-cancelled .orch-runtime-status {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 52%, var(--border-color));
+  color: var(--danger-color, #ff7676);
+}
+@keyframes orch-runtime-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 12%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-color) 26%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+  }
+}
 .orch-graph-node.draggable {
   cursor: grab;
 }
