@@ -387,6 +387,7 @@ let lastRunRecord = null;
 let runbookScanRequestId = 0;
 const RUNBOOK_TASK_STORAGE_KEY = 'orpad-runbook-task';
 let runbookDraftTask = localStorage.getItem(RUNBOOK_TASK_STORAGE_KEY) || '';
+const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(search|competing products|competitors?|market|benchmarks?|benchmarking|web research|external research|browse|internet|online)\b/i;
 const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
@@ -2838,6 +2839,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
   const activePathTitle = runbookRelativePath(context.activePath || runbookPath);
+  const externalResearchLimitation = pipelineDoc?.metadata?.externalResearch?.limitation || pipelineDoc?.run?.externalResearchLimitation || '';
   if (isMachineApiAvailable() && !machineRuntimeStatus && !machineRuntimeStatusLoading) {
     void refreshMachineRuntimeStatus();
   }
@@ -2847,6 +2849,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         <strong>${escapeHtml(displayTitle)}</strong>
         <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
+        ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
       </div>
       <div class="pipeline-runbar-actions">
         <button class="pipeline-run-primary${defaultDangerClass}" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
@@ -5547,6 +5550,7 @@ function renderOrchPipelinePreview(content) {
   const entryGraph = doc.entryGraph || doc.entry?.graph || doc.graph?.file || graphRefs[0]?.file || '';
   const entryGraphPath = pipelineEditorGraphPathFromDoc(doc, pipelineContext);
   const diagnostics = pipelineValidationDiagnostics(selectedPipelineValidation(pipelineContext?.pipelinePath));
+  const externalResearchLimitation = doc.metadata?.externalResearch?.limitation || doc.run?.externalResearchLimitation || '';
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">
@@ -5562,6 +5566,7 @@ function renderOrchPipelinePreview(content) {
         </div>
       </div>
       ${renderPipelinePreviewRunBar(pipelineContext, doc)}
+      ${externalResearchLimitation ? `<div class="runbook-diagnostic warning">${escapeHtml(externalResearchLimitation)}</div>` : ''}
       ${renderPipelineEditorTabs(pipelineContext, 'manifest', entryGraphPath)}
       <div class="orch-graph-layout">
         <div class="orch-graph-main">
@@ -9382,6 +9387,7 @@ function renderRunbooksPanel() {
     <section class="runbook-panel-section">
       <h3>Describe the work</h3>
       <textarea class="runbook-task-input" data-runbook-task rows="4" placeholder="Example: improve the OrPAD Pipes panel so I can type a task, generate a pipeline, validate it, and run it.">${escapeHtml(runbookDraftTask)}</textarea>
+      ${renderRunbookExternalResearchWarning(runbookDraftTask)}
       <div class="runbook-action-row">
         <button class="primary" data-runbook-action="starter">Generate Pipeline</button>
         <button data-runbook-action="refresh">Refresh</button>
@@ -10404,9 +10410,54 @@ function currentRunbookTaskText() {
   return normalizeRunbookTask(runbookDraftTask);
 }
 
+function hasExternalResearchIntent(taskText) {
+  return EXTERNAL_RESEARCH_INTENT_PATTERN.test(normalizeRunbookTask(taskText));
+}
+
+function externalResearchLimitationText() {
+  return 'Local-only generated run: external competitor claims require approved browsing or attached research evidence. Without that evidence, the run must report a research gap and propose only local evidence-backed work.';
+}
+
+function renderRunbookExternalResearchWarning(taskText) {
+  const visible = hasExternalResearchIntent(taskText);
+  return `
+    <div class="runbook-diagnostic warning" data-runbook-external-research-warning ${visible ? '' : 'hidden'}>
+      ${visible ? escapeHtml(externalResearchLimitationText()) : ''}
+    </div>
+  `;
+}
+
+function syncRunbookExternalResearchWarning(taskText) {
+  const warning = runbooksContentEl?.querySelector('[data-runbook-external-research-warning]');
+  if (!warning) return;
+  const visible = hasExternalResearchIntent(taskText);
+  warning.hidden = !visible;
+  warning.textContent = visible ? externalResearchLimitationText() : '';
+}
+
 function extractMarkdownFence(text) {
   const match = String(text || '').match(/```(?:markdown|md)?\s*([\s\S]*?)```/i);
   return (match?.[1] || text || '').trim();
+}
+
+function externalResearchSkillGuard(taskText) {
+  if (!hasExternalResearchIntent(taskText)) return '';
+  return [
+    '## External Competitor Research Guard',
+    '',
+    '- External competitor, market, benchmark, and web research claims require approved browsing or attached research evidence.',
+    '- If approved browsing or attached evidence is unavailable, report a research gap instead of presenting competitor claims as verified.',
+    '- Propose and implement only improvements backed by local workspace evidence until external research evidence is supplied.',
+    '',
+  ].join('\n');
+}
+
+function addExternalResearchSkillGuard(markdown, taskText) {
+  const guard = externalResearchSkillGuard(taskText);
+  if (!guard) return markdown;
+  const base = String(markdown || '').trim();
+  if (base.includes('## External Competitor Research Guard')) return `${base}\n`;
+  return `${base}\n\n${guard}`;
 }
 
 function defaultOrpadRunbookSkill(taskText) {
@@ -10461,12 +10512,12 @@ async function buildOrpadRunbookSkill(taskText) {
         ].join('\n'),
       });
       const markdown = extractMarkdownFence(response);
-      if (markdown) return markdown;
+      if (markdown) return addExternalResearchSkillGuard(markdown, taskText);
     } catch {
       // Fall back to the local template when no provider is reachable.
     }
   }
-  return defaultOrpadRunbookSkill(taskText);
+  return addExternalResearchSkillGuard(defaultOrpadRunbookSkill(taskText), taskText);
 }
 
 async function createOrpadRunbookStarter() {
@@ -10476,6 +10527,8 @@ async function createOrpadRunbookStarter() {
   }
   const taskText = normalizeRunbookTask(runbookDraftTask)
     || 'Improve this OrPAD workspace from the current user request, generate evidence, and keep changes reviewable.';
+  const externalResearchIntent = hasExternalResearchIntent(taskText);
+  const externalResearchLimitation = externalResearchIntent ? externalResearchLimitationText() : '';
   const stamp = runbookTimestamp();
   const slug = `${runbookSlug(taskText, 'orpad-improvement')}-${stamp.toLowerCase()}`;
   const orpadPath = workspaceChildPath('.orpad');
@@ -10503,7 +10556,7 @@ async function createOrpadRunbookStarter() {
       start: 'context',
       nodes: [
         { id: 'context', type: 'orpad.context', label: 'Prepare workspace', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
-        { id: 'probe', type: 'orpad.probe', label: 'Find evidence-backed candidate work', config: { lens: 'request-focused', userTask: taskText, skillRef: 'request-context' } },
+        { id: 'probe', type: 'orpad.probe', label: 'Find evidence-backed candidate work', config: { lens: 'request-focused', userTask: taskText, skillRef: 'request-context', ...(externalResearchIntent ? { externalResearchLimitation } : {}) } },
         { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
         { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
         { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
@@ -10539,7 +10592,9 @@ async function createOrpadRunbookStarter() {
     version: '1.0',
     id: slug,
     title: taskText.slice(0, 96),
-    description: 'Generated from Pipes as a managed, queue-driven workstream pipeline.',
+    description: externalResearchIntent
+      ? `Generated from Pipes as a local-only managed workstream pipeline. ${externalResearchLimitation}`
+      : 'Generated from Pipes as a managed, queue-driven workstream pipeline.',
     trustLevel: 'local-authored',
     entryGraph: 'graphs/main.or-graph',
     nodePacks: [
@@ -10561,6 +10616,7 @@ async function createOrpadRunbookStarter() {
       summaryPathResolution: 'relative-to-pipeline-directory',
       durableRunRoot: 'runs',
       durableRunRootResolution: 'relative-to-pipeline-directory',
+      externalResearchLimitation: externalResearchIntent ? externalResearchLimitation : undefined,
       machineAdapter: {
         type: 'codex-cli',
         enabled: true,
@@ -10583,6 +10639,13 @@ async function createOrpadRunbookStarter() {
         description: 'Generated managed-run adapter. OrPAD owns work state, run status, and evidence files; Codex CLI submits candidate/result/proof through adapter contracts.',
       },
     },
+    metadata: externalResearchIntent ? {
+      externalResearch: {
+        limitation: externalResearchLimitation,
+        requiredEvidence: 'approved browsing or attached research evidence',
+        fallback: 'report a research gap and propose only local evidence-backed work',
+      },
+    } : undefined,
   };
   const contextRule = {
     kind: 'orpad.rule',
@@ -10753,6 +10816,7 @@ runbooksContentEl?.addEventListener('input', (event) => {
   if (!event.target.matches?.('[data-runbook-task]')) return;
   runbookDraftTask = event.target.value || '';
   localStorage.setItem(RUNBOOK_TASK_STORAGE_KEY, runbookDraftTask);
+  syncRunbookExternalResearchWarning(runbookDraftTask);
 });
 
 runbooksContentEl?.addEventListener('keydown', (event) => {

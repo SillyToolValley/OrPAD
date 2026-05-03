@@ -68,7 +68,9 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   });
 
   await expect(win.locator('#runbooks-content')).toContainText('Generate Pipeline');
-  await win.locator('[data-runbook-task]').fill('Make the Pipes panel obvious: generate an OrPAD pipeline, validate it, then start a run.');
+  await win.locator('[data-runbook-task]').fill('Search for competing products, find improvements, implement them, and verify whether they are more competitive.');
+  await expect(win.locator('[data-runbook-external-research-warning]')).toBeVisible();
+  await expect(win.locator('[data-runbook-external-research-warning]')).toContainText('external competitor claims require approved browsing or attached research evidence');
   await win.locator('button[data-runbook-action="starter"]').click();
 
   await expect(win.locator('#sidebar-runbooks')).toBeVisible();
@@ -88,6 +90,9 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(skillFiles.length).toBe(1);
   const pipeline = JSON.parse(fs.readFileSync(path.join(runbookDir, pipelineFile), 'utf-8'));
   expect(pipeline.entryGraph).toBe('graphs/main.or-graph');
+  expect(pipeline.description).toContain('Local-only generated run');
+  expect(pipeline.metadata.externalResearch.limitation).toContain('external competitor claims require approved browsing or attached research evidence');
+  expect(pipeline.run.externalResearchLimitation).toContain('report a research gap');
   expect(pipeline.nodePacks.map((entry: { id: string }) => entry.id)).toContain('orpad.workstream');
   expect(pipeline.run.machineAdapter.type).toBe('codex-cli');
   expect(pipeline.run.machineAdapter.probeNodePaths).toEqual(['main/probe']);
@@ -102,7 +107,11 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
     'orpad.gate',
     'orpad.artifactContract',
   ]);
-  expect(fs.readFileSync(path.join(runbookDir, 'skills', skillFiles[0]), 'utf-8')).toContain('Make the Pipes panel obvious');
+  const generatedSkill = fs.readFileSync(path.join(runbookDir, 'skills', skillFiles[0]), 'utf-8');
+  expect(generatedSkill).toContain('Search for competing products');
+  expect(generatedSkill).toContain('External Competitor Research Guard');
+  expect(generatedSkill).toContain('approved browsing or attached research evidence');
+  expect(generatedSkill).toContain('report a research gap');
   await win.locator('#btn-preview').click();
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
@@ -114,6 +123,10 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-graph-node')).toContainText(['Prepare workspace', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
   await expect(win.locator('button[data-orch-tool="select"]')).toHaveClass(/active/);
   await expect(win.locator('.orch-graph-tools .ogi')).toHaveCount(8);
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
+  await expect(win.locator('.orch-preview')).toContainText('external competitor claims require approved browsing or attached research evidence');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('External research needs approval');
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Flow' }).click();
 
   await win.locator('.runbook-item').filter({ hasText: 'root-workflow.orch-tree.json' }).click();
   await expect(win.locator('.runbook-item.selected')).toContainText('root-workflow.orch-tree.json');
