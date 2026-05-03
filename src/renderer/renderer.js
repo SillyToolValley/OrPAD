@@ -8417,6 +8417,14 @@ function machineLatestWorkerSummary(record) {
   ));
 }
 
+function machineWorkerSummaryForEvent(record, workerEvent) {
+  if (!workerEvent) return null;
+  return latestMachineEvent(record?.events, 'run.summary', event => (
+    event?.reason === 'worker-result.accepted'
+    && (!workerEvent.itemId || event?.payload?.itemId === workerEvent.itemId)
+  )) || machineLatestWorkerSummary(record);
+}
+
 function machineLatestPartialArtifactContract(record) {
   return latestMachineEvent(record?.events, 'node.completed', event => {
     const payload = event?.payload || {};
@@ -8427,17 +8435,30 @@ function machineLatestPartialArtifactContract(record) {
 
 function machineWorkerReviewInfo(record) {
   const event = machineLatestWorkerEvent(record);
+  return machineWorkerReviewInfoForEvent(record, event);
+}
+
+function machineWorkerReviewInfoForEvent(record, event) {
   if (!event) return null;
   const payload = event.payload || {};
   const verification = payload.verification || [];
   return {
+    event,
+    itemId: event.itemId || '',
     status: String(payload.status || ''),
     patchArtifact: payload.patchArtifact || '',
     changedFiles: payload.changedFiles || [],
     evidenceArtifacts: event.artifactRefs || [],
     missingExpectedChanges: [...new Set(verification.flatMap(item => item.missingExpectedChanges || []))],
-    message: machineLatestWorkerSummary(record)?.payload?.message || '',
+    message: machineWorkerSummaryForEvent(record, event)?.payload?.message || '',
   };
+}
+
+function machineWorkerReviewInfos(record) {
+  return (record?.events || [])
+    .filter(event => event?.eventType === 'worker.result')
+    .map(event => machineWorkerReviewInfoForEvent(record, event))
+    .filter(Boolean);
 }
 
 function machineRunAttentionDetails(record) {
@@ -8691,8 +8712,20 @@ function machineCandidateInventoryDetails(record) {
 }
 
 function machineWorkerProofDetails(record) {
-  const event = machineLatestWorkerEvent(record);
+  const workerEvents = (record?.events || []).filter(event => event?.eventType === 'worker.result');
+  const event = workerEvents[workerEvents.length - 1] || null;
   if (!event) return 'No work result yet';
+  if (workerEvents.length > 1) {
+    const evidenceCount = workerEvents.reduce((sum, item) => sum + (item.artifactRefs || []).length, 0);
+    const checkCount = workerEvents.reduce((sum, item) => sum + (item.payload?.verification || []).length, 0);
+    const changedFileCount = workerEvents.reduce((sum, item) => sum + (item.payload?.changedFiles || []).length, 0);
+    return [
+      machineCountLabel(workerEvents.length, 'work result'),
+      machineCountLabel(evidenceCount, 'evidence file'),
+      machineCountLabel(checkCount, 'check'),
+      machineCountLabel(changedFileCount, 'changed file'),
+    ].filter(Boolean).join('; ');
+  }
   const payload = event.payload || {};
   const artifacts = event.artifactRefs || [];
   const verification = payload.verification || [];
@@ -10144,7 +10177,7 @@ async function applyMachinePatchSelection(runbookPath, runId, workerReview, sele
 }
 
 async function machineWorkerItemDetails(record, workerReview) {
-  const itemId = machineLatestWorkerEvent(record)?.itemId || '';
+  const itemId = workerReview?.itemId || machineLatestWorkerEvent(record)?.itemId || '';
   if (!itemId || !window.orpad?.readFile) return null;
   const transition = [...(record?.events || [])].reverse().find(event => (
     event?.eventType === 'queue.transition'
@@ -10171,11 +10204,14 @@ async function machineWorkerItemDetails(record, workerReview) {
   }
 }
 
-function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails = null) {
+function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails = null, options = {}) {
   if (!workerReview?.patchArtifact || !patchSummary || patchSummary.error || !patchSummary.changes?.length) return;
   const body = document.createElement('div');
   body.className = 'runbook-modal-body';
   const title = itemDetails?.title || itemDetails?.itemId || 'Machine patch';
+  const reviewIndex = Number(options.reviewIndex) || 1;
+  const reviewCount = Number(options.reviewCount) || 1;
+  const reviewTitle = reviewCount > 1 ? `Review Patch ${reviewIndex} of ${reviewCount}` : 'Review Patch';
   const criteria = (itemDetails?.acceptanceCriteria || []).slice(0, 3);
   const changeRows = patchSummary.changes.map((change, index) => `
     <label class="runbook-diagnostic" style="display:block; margin:8px 0;">
@@ -10184,8 +10220,15 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       <span>${escapeHtml(String(change.action))}; ${escapeHtml(String(change.beforeLines))} -> ${escapeHtml(String(change.afterLines))} lines (${escapeHtml(String(change.deltaLabel))}); SHA ${escapeHtml(change.beforeSha || 'none')} -> ${escapeHtml(change.afterSha || 'none')}</span>
     </label>
   `).join('');
+  const openNextReview = () => {
+    setTimeout(() => {
+      maybeOpenMachinePatchReviewModal(runbookPath, lastMachineRunRecord || record)
+        .catch(err => notifyFormatError('Pipes', err));
+    }, 0);
+  };
   body.innerHTML = `
     <p>The run produced a patch for <strong>${escapeHtml(title)}</strong>. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.</p>
+    ${reviewCount > 1 ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(String(reviewCount))} patch results</strong> Review each worker patch before treating the run as applied.</div>` : ''}
     ${itemDetails?.userImpact ? `<div class="runbook-diagnostic"><strong>Why</strong> ${escapeHtml(itemDetails.userImpact)}</div>` : ''}
     ${itemDetails?.actualBehavior || itemDetails?.expectedBehavior ? `<div class="runbook-diagnostic"><strong>Change goal</strong> ${escapeHtml([itemDetails.actualBehavior, itemDetails.expectedBehavior].filter(Boolean).join(' -> '))}</div>` : ''}
     ${criteria.length ? `<div class="runbook-diagnostic"><strong>Acceptance</strong><ul>${criteria.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>` : ''}
@@ -10202,10 +10245,16 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     .map(input => input.value)
     .filter(Boolean);
   openFmtModal({
-    title: 'Review Patch',
+    title: reviewTitle,
     body,
     footer: [
-      { label: 'Cancel', onClick: () => closeFmtModal() },
+      {
+        label: reviewCount > 1 ? 'Skip Patch' : 'Cancel',
+        onClick: () => {
+          closeFmtModal();
+          if (reviewCount > 1) openNextReview();
+        },
+      },
       {
         label: 'Continue with Prompt',
         onClick: async () => {
@@ -10228,7 +10277,10 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
             return;
           }
           const applied = await applyMachinePatchSelection(runbookPath, runId, workerReview, files);
-          if (applied) closeFmtModal();
+          if (applied) {
+            closeFmtModal();
+            if (reviewCount > 1) openNextReview();
+          }
         },
       },
     ],
@@ -10237,11 +10289,15 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
 
 async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   const runId = record?.runState?.runId || record?.runId || '';
-  const workerReview = machineWorkerReviewInfo(record);
-  if (!runbookPath || !runId || !workerReview?.patchArtifact) return;
+  if (!runbookPath || !runId) return;
   if (isMachineRunInProgress(record, runbookPath)) return;
+  const workerReviews = machineWorkerReviewInfos(record)
+    .filter(review => review?.patchArtifact);
+  const workerReview = workerReviews.find(review => (
+    !machinePatchReviewShown.has(machinePatchReviewKey(runbookPath, runId, review.patchArtifact))
+  ));
+  if (!workerReview?.patchArtifact) return;
   const key = machinePatchReviewKey(runbookPath, runId, workerReview.patchArtifact);
-  if (machinePatchReviewShown.has(key)) return;
   let patchSummary = await machinePatchArtifactSummary(record, workerReview);
   if (!patchSummary || patchSummary.error || !patchSummary.changes?.length) {
     const changedFiles = workerReview.changedFiles || [];
@@ -10262,7 +10318,10 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   }
   machinePatchReviewShown.add(key);
   const itemDetails = await machineWorkerItemDetails(record, workerReview);
-  openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails);
+  openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails, {
+    reviewIndex: workerReviews.findIndex(review => review.patchArtifact === workerReview.patchArtifact) + 1,
+    reviewCount: workerReviews.length,
+  });
 }
 
 async function openMachineArtifactViewer(runbookPath, runId) {
@@ -10283,8 +10342,9 @@ async function openMachineArtifactViewer(runbookPath, runId) {
   const manifest = exported?.metadata?.artifactManifest || null;
   const auditDetails = machineAuditDetails(record);
   const actualRunId = runState.runId || record.runId || runId;
-  const workerReview = machineWorkerReviewInfo(record);
-  const patchArtifactSummary = await machinePatchArtifactSummary(record, workerReview);
+  const workerReviews = machineWorkerReviewInfos(record)
+    .filter(review => review.patchArtifact || review.changedFiles.length || review.status);
+  const patchArtifactSummaries = await Promise.all(workerReviews.map(review => machinePatchArtifactSummary(record, review)));
   const actualRunLabel = machineRunDisplayLabel({
     runId: actualRunId,
     createdAt: runState.createdAt || record.createdAt,
@@ -10308,17 +10368,24 @@ async function openMachineArtifactViewer(runbookPath, runId) {
       '|',
     ].join(' ')),
   ] : ['_No evidence files recorded yet._'];
-  const patchReview = workerReview ? [
+  const patchReview = workerReviews.length ? [
     '## Patch Review',
     '',
-    `Worker result: ${machineWorkerStatusLabel(workerReview.status)}`,
-    `Workspace changed: no, changes are staged in run evidence only`,
-    workerReview.patchArtifact ? `Patch artifact: ${workerReview.patchArtifact}` : '',
-    ...machinePatchArtifactMarkdown(patchArtifactSummary),
-    workerReview.changedFiles.length ? `Changed files staged in evidence: ${workerReview.changedFiles.join(', ')}` : '',
-    workerReview.missingExpectedChanges.length ? `Missing expected changes: ${workerReview.missingExpectedChanges.join(', ')}` : '',
-    workerReview.evidenceArtifacts.length ? `Worker evidence: ${workerReview.evidenceArtifacts.join(', ')}` : '',
-    workerReview.message ? `Message: ${workerReview.message}` : '',
+    `${machineCountLabel(workerReviews.length, 'worker result')} recorded.`,
+    ...workerReviews.flatMap((review, index) => [
+      '',
+      `### Worker Patch ${index + 1}`,
+      '',
+      review.itemId ? `Work item: ${review.itemId}` : '',
+      `Worker result: ${machineWorkerStatusLabel(review.status)}`,
+      `Workspace changed: no, changes are staged in run evidence only`,
+      review.patchArtifact ? `Patch artifact: ${review.patchArtifact}` : '',
+      ...machinePatchArtifactMarkdown(patchArtifactSummaries[index]),
+      review.changedFiles.length ? `Changed files staged in evidence: ${review.changedFiles.join(', ')}` : '',
+      review.missingExpectedChanges.length ? `Missing expected changes: ${review.missingExpectedChanges.join(', ')}` : '',
+      review.evidenceArtifacts.length ? `Worker evidence: ${review.evidenceArtifacts.join(', ')}` : '',
+      review.message ? `Message: ${review.message}` : '',
+    ].filter(Boolean)),
     '',
   ].filter(Boolean) : [];
   const metadataLines = [

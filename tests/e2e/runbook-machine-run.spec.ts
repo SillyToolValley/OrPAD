@@ -380,6 +380,9 @@ test('Machine graph executes configured probe fanout in parallel', async () => {
 
   expect(executed.selectedProbeNodes).toEqual(['main/probe', 'main/probe-secondary']);
   expect(executed.candidateInventory.candidateCount).toBe(2);
+  expect(executed.workerLoop.workerCount).toBe(2);
+  expect(executed.claims).toHaveLength(2);
+  expect(executed.workers).toHaveLength(2);
   const probeStarts = executed.events
     .filter((event: { eventType?: string; nodePath?: string }) => (
       event.eventType === 'node.started'
@@ -397,6 +400,13 @@ test('Machine graph executes configured probe fanout in parallel', async () => {
   expect(lastStartSequence).toBeLessThan(firstCompletionSequence);
   const sequences = executed.events.map((event: { sequence: number }) => event.sequence);
   expect(new Set(sequences).size).toBe(sequences.length);
+  const workerResults = executed.events
+    .filter((event: { eventType?: string }) => event.eventType === 'worker.result');
+  expect(workerResults.map((event: { itemId?: string }) => event.itemId).sort()).toEqual([
+    'machine-ui-secondary',
+    'machine-ui-smoke',
+  ]);
+  expect(executed.finalization.inventory.activeCount).toBe(0);
 
   fs.rmSync(workspace, { recursive: true, force: true });
 });

@@ -240,6 +240,20 @@ function configuredProbeConcurrency(config = {}, probeCount = 1) {
   return config.parallelProbes === true ? Math.max(1, probeCount) : 1;
 }
 
+function configuredWorkerClaimLimit(config = {}, fallbackCount = 1) {
+  const configured = config.workerClaimLimit ?? config.maxWorkerClaims ?? config.claimLimit;
+  if (String(configured || '').toLowerCase() === 'all') return Math.max(1, fallbackCount);
+  const parsed = Number(configured);
+  if (Number.isFinite(parsed) && parsed > 0) return Math.max(1, Math.trunc(parsed));
+  return Math.max(1, fallbackCount);
+}
+
+function shouldStopWorkerLoopAfterStep(step) {
+  const status = String(step?.result?.event?.payload?.status || '').toLowerCase();
+  const toState = String(step?.result?.toState || step?.result?.event?.payload?.toState || '').toLowerCase();
+  return ['approval-required', 'blocked', 'failed', 'rejected'].includes(status) || toState === 'queued';
+}
+
 async function mapWithConcurrency(items, concurrency, worker) {
   const limit = Math.max(1, Math.min(items.length || 1, concurrency || 1));
   const results = new Array(items.length);
@@ -973,7 +987,10 @@ async function executeMachineRunStep(options = {}) {
   const probes = [];
   let triage = null;
   let claim = null;
+  const claims = [];
   let worker = null;
+  const workers = [];
+  let workerLoop = null;
   let candidateInventory = null;
   const support = [];
   const initialEvents = await readMachineEvents(runRoot);
@@ -1049,6 +1066,153 @@ async function executeMachineRunStep(options = {}) {
       result: probeResult,
     };
   };
+  const candidateForClaim = currentClaim => {
+    if (!hasHarness) return candidateProposalFromWorkItem(currentClaim.item);
+    return candidates.find(candidate => candidate.suggestedWorkItemId === currentClaim.item?.id)
+      || candidateProposalFromWorkItem(currentClaim.item)
+      || candidates[0];
+  };
+  const executeWorkerClaim = async (currentClaim, workerIndex = 0) => {
+    const adapterCallId = options.adapterCallId && workerIndex === 0
+      ? options.adapterCallId
+      : `${currentClaim.claim.claimId}-graph-cli`;
+    const workerCandidate = candidateForClaim(currentClaim);
+    const workerExpectedChangedFiles = hasHarness ? expectedChangedFiles : (currentClaim.writeSet?.paths || []);
+    const adapterRequest = createAdapterRequest({
+      adapter: 'cli-agent-overlay',
+      runId,
+      nodePath: workerNode.nodePath,
+      taskKind: 'workerLoop',
+      workspaceRoot,
+      workspaceMode: 'read-only-plus-overlay',
+      allowedFiles: currentClaim.writeSet.paths,
+      inputArtifacts: [`queue/claimed/${currentClaim.item.id}.json`],
+      outputContract: 'orpad.workerResult.v1',
+      adapterCallId,
+      attemptId: `${adapterCallId}-attempt-1`,
+      idempotencyKey: `${adapterCallId}:attempt-1`,
+    });
+    adapterRequest.expectedChangedFiles = workerExpectedChangedFiles;
+    adapterRequest.overlayRootMode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
+    adapterRequest.overlayRoot = overlayRoot
+      || (adapterRequest.overlayRootMode === 'system-temp'
+        ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
+        : cliOverlayRoot(runRoot, adapterRequest));
+    if (dangerousSandboxBypassApproval) {
+      adapterRequest.dangerousSandboxBypassApproval = dangerousSandboxBypassApproval;
+    }
+    const commandSpec = createWorkerCommandSpec
+      ? await createWorkerCommandSpec({
+        request: adapterRequest,
+        overlayRoot: adapterRequest.overlayRoot,
+        claim: currentClaim,
+        candidate: workerCandidate,
+        workerNode,
+        harness,
+        patchConfig,
+        taskText: runtimeTaskText,
+      })
+      : (hasHarness
+        ? nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable })
+        : await codexCliWorkerCommandSpec({
+          adapter,
+          request: adapterRequest,
+          overlayRoot: adapterRequest.overlayRoot,
+          claim: currentClaim,
+          candidate: workerCandidate,
+          workerNode,
+          runRoot,
+          taskText: runtimeTaskText,
+        }));
+    adapterRequest.commandSpec = {
+      command: commandSpec.command,
+      args: commandSpec.args,
+      cwd: commandSpec.cwd,
+    };
+    adapterRequest.commandGrants = [createCommandGrant({
+      ...adapterRequest.commandSpec,
+      grantId: `grant-${adapterCallId}`,
+      scope: 'machine-graph-harness',
+      allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      reason: 'explicit Machine graph harness command',
+    })];
+    return runWorkerLoopOnce({
+      runRoot,
+      runId,
+      workspaceRoot,
+      claim: currentClaim,
+      request: adapterRequest,
+      adapter: createCliAgentAdapter({
+        enabled: true,
+        runRoot,
+        workspaceRoot,
+        allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
+        timeoutMs: hasHarness ? timeoutMs : (adapter.workerTimeoutMs || timeoutMs),
+        maxOutputBytes: 64 * 1024,
+      }),
+    });
+  };
+  const executeSerialWorkerLoop = async (dispatchAttempt) => {
+    const initialWorkerInventory = await summarizeQueueInventory(runRoot);
+    const initialQueuedCount = initialWorkerInventory.counts.queued || candidateInventory?.inventory?.candidateCount || 1;
+    const workerClaimLimit = configuredWorkerClaimLimit(
+      hasHarness ? harness : adapter,
+      initialQueuedCount,
+    );
+    const steps = [];
+    let stopReason = 'claim-limit';
+    for (let index = 0; index < workerClaimLimit; index += 1) {
+      const currentClaim = await withNodeLifecycle(runRoot, dispatcherNode, {
+        runId,
+        attempt: dispatchAttempt + index,
+        completedPayload: result => ({
+          claimed: result.claimed === true,
+          stopReason: result.stopReason || '',
+          itemId: result.item?.id || '',
+          claimIndex: index + 1,
+        }),
+      }, () => claimNextQueuedItem(runRoot, {
+        runId,
+        claimId: index === 0 ? options.claimId : undefined,
+        leaseMs: usingLiveAdapter ? (adapter.claimLeaseMs || adapter.workerTimeoutMs || undefined) : undefined,
+        approvalGrants,
+      }));
+      claim = currentClaim;
+      if (!currentClaim?.claimed) {
+        stopReason = currentClaim?.stopReason || 'not-claimed';
+        break;
+      }
+      claims.push(currentClaim);
+
+      const currentWorker = await withNodeLifecycle(runRoot, workerNode, {
+        runId,
+        attempt: nextNodeAttempt(await readMachineEvents(runRoot), workerNode.nodePath),
+        completedPayload: result => ({
+          workerStatus: result.result?.event?.payload?.status || '',
+          itemId: currentClaim.item?.id || '',
+          claimIndex: index + 1,
+        }),
+      }, () => executeWorkerClaim(currentClaim, index));
+      worker = currentWorker;
+      workers.push(currentWorker);
+      steps.push({ claim: currentClaim, worker: currentWorker });
+
+      if (shouldStopWorkerLoopAfterStep(currentWorker)) {
+        stopReason = currentWorker.result?.event?.payload?.status || currentWorker.result?.toState || 'worker-stop';
+        break;
+      }
+    }
+    return {
+      steps,
+      stopReason,
+      maxClaims: workerClaimLimit,
+      initialQueuedCount,
+      claimCount: claims.length,
+      workerCount: workers.length,
+    };
+  };
+  let workerLoopExecuted = false;
 
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
@@ -1113,109 +1277,16 @@ async function executeMachineRunStep(options = {}) {
         }),
       }));
     } else if (node.nodePath === dispatcherNode.nodePath) {
-      claim = await withNodeLifecycle(runRoot, dispatcherNode, {
-        runId,
-        attempt,
-        completedPayload: result => ({
-          claimed: result.claimed === true,
-          stopReason: result.stopReason || '',
-          itemId: result.item?.id || '',
-        }),
-      }, () => claimNextQueuedItem(runRoot, {
-        runId,
-        claimId: options.claimId || (hasHarness ? `claim-${candidates[0].suggestedWorkItemId}` : undefined),
-        leaseMs: usingLiveAdapter ? (adapter.claimLeaseMs || adapter.workerTimeoutMs || undefined) : undefined,
-        approvalGrants,
-      }));
+      if (!workerLoopExecuted) {
+        workerLoop = await executeSerialWorkerLoop(attempt);
+        workerLoopExecuted = true;
+      }
       if (claim?.stopReason === 'approval-required') break;
     } else if (node.nodePath === workerNode.nodePath) {
-      if (!claim?.claimed) continue;
-      worker = await withNodeLifecycle(runRoot, workerNode, {
-        runId,
-        attempt,
-        completedPayload: result => ({
-          workerStatus: result.result?.event?.payload?.status || '',
-          itemId: claim.item?.id || '',
-        }),
-      }, async () => {
-        const adapterCallId = options.adapterCallId || `${claim.claim.claimId}-graph-cli`;
-        const workerCandidate = hasHarness ? candidates[0] : candidateProposalFromWorkItem(claim.item);
-        const workerExpectedChangedFiles = hasHarness ? expectedChangedFiles : (claim.writeSet?.paths || []);
-        const adapterRequest = createAdapterRequest({
-          adapter: 'cli-agent-overlay',
-          runId,
-          nodePath: workerNode.nodePath,
-          taskKind: 'workerLoop',
-          workspaceRoot,
-          workspaceMode: 'read-only-plus-overlay',
-          allowedFiles: claim.writeSet.paths,
-          inputArtifacts: [`queue/claimed/${claim.item.id}.json`],
-          outputContract: 'orpad.workerResult.v1',
-          adapterCallId,
-          attemptId: `${adapterCallId}-attempt-1`,
-          idempotencyKey: `${adapterCallId}:attempt-1`,
-        });
-        adapterRequest.expectedChangedFiles = workerExpectedChangedFiles;
-        adapterRequest.overlayRootMode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
-        adapterRequest.overlayRoot = overlayRoot
-          || (adapterRequest.overlayRootMode === 'system-temp'
-            ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
-            : cliOverlayRoot(runRoot, adapterRequest));
-        if (dangerousSandboxBypassApproval) {
-          adapterRequest.dangerousSandboxBypassApproval = dangerousSandboxBypassApproval;
-        }
-        const commandSpec = createWorkerCommandSpec
-          ? await createWorkerCommandSpec({
-            request: adapterRequest,
-            overlayRoot: adapterRequest.overlayRoot,
-            claim,
-            candidate: workerCandidate,
-            workerNode,
-            harness,
-            patchConfig,
-            taskText: runtimeTaskText,
-          })
-          : (hasHarness
-            ? nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable })
-            : await codexCliWorkerCommandSpec({
-              adapter,
-              request: adapterRequest,
-              overlayRoot: adapterRequest.overlayRoot,
-              claim,
-              candidate: workerCandidate,
-              workerNode,
-              runRoot,
-              taskText: runtimeTaskText,
-            }));
-        adapterRequest.commandSpec = {
-          command: commandSpec.command,
-          args: commandSpec.args,
-          cwd: commandSpec.cwd,
-        };
-        adapterRequest.commandGrants = [createCommandGrant({
-          ...adapterRequest.commandSpec,
-          grantId: `grant-${adapterCallId}`,
-          scope: 'machine-graph-harness',
-          allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
-          expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-          reason: 'explicit Machine graph harness command',
-        })];
-        return runWorkerLoopOnce({
-          runRoot,
-          runId,
-          workspaceRoot,
-          claim,
-          request: adapterRequest,
-          adapter: createCliAgentAdapter({
-            enabled: true,
-            runRoot,
-            workspaceRoot,
-            allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
-            timeoutMs: hasHarness ? timeoutMs : (adapter.workerTimeoutMs || timeoutMs),
-            maxOutputBytes: 64 * 1024,
-          }),
-        });
-      });
+      if (!workerLoopExecuted) {
+        workerLoop = await executeSerialWorkerLoop(nextNodeAttempt(initialEvents, dispatcherNode.nodePath));
+        workerLoopExecuted = true;
+      }
     } else {
       support.push({
         nodePath: node.nodePath,
@@ -1320,7 +1391,10 @@ async function executeMachineRunStep(options = {}) {
     } : null,
     triage,
     claim,
+    claims,
     worker,
+    workers,
+    workerLoop,
     finalization,
     exported,
     runState: await readRunState(runRoot),
