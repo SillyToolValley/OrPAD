@@ -8999,6 +8999,7 @@ function machineRuntimeProjectionForGraph(context, graphDoc) {
   if (!statuses.size) return null;
   return {
     graphKeys: machineRuntimeGraphKeyCandidates(context, graphDoc),
+    runInProgress: isMachineRunInProgress(record, context.pipelinePath),
     statuses,
   };
 }
@@ -9022,14 +9023,13 @@ function machineRuntimeStatusForGraphNode(item, runProjection) {
   return null;
 }
 
-function machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus) {
+function machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus, runProjection = null) {
   const sourceState = sourceStatus?.state || '';
   const targetState = targetStatus?.state || '';
-  if (['running', 'queued'].includes(targetState)) return { state: 'active' };
+  if (runProjection?.runInProgress && ['running', 'queued'].includes(targetState)) return { state: 'active' };
   if (targetState === 'cancelled' || sourceState === 'cancelled') return { state: 'muted' };
   if (['failed', 'blocked'].includes(targetState)) return { state: 'blocked' };
   if (sourceState === 'completed' && targetState === 'completed') return { state: 'completed' };
-  if (sourceState === 'completed' && !targetState) return { state: 'active' };
   return null;
 }
 
@@ -9037,7 +9037,7 @@ function machineRuntimeStatusForGraphEdge(edge, source, target, runProjection) {
   if (!runProjection?.statuses?.size) return null;
   const sourceStatus = machineRuntimeStatusForGraphNode(source, runProjection);
   const targetStatus = machineRuntimeStatusForGraphNode(target, runProjection);
-  return machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus);
+  return machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus, runProjection);
 }
 
 function isMachineRunInProgress(record, runbookPath = selectedRunbookPath) {
