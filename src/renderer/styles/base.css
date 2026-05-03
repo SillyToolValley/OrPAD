@@ -1882,6 +1882,11 @@ body.json-diff-mode #preview-pane {
   background: color-mix(in srgb, var(--accent-color) 12%, transparent);
   color: var(--accent-color);
 }
+.pipeline-run-primary.danger {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 68%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
+  color: var(--danger-color, #ff7676);
+}
 .pipeline-run-primary:hover,
 .pipeline-run-menu-trigger:hover {
   background: var(--hover-bg);
@@ -1889,6 +1894,10 @@ body.json-diff-mode #preview-pane {
 }
 .pipeline-run-primary:hover {
   color: var(--accent-color);
+}
+.pipeline-run-primary.danger:hover {
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 18%, var(--hover-bg));
+  color: var(--danger-color, #ff7676);
 }
 .pipeline-run-primary:disabled,
 .pipeline-run-menu button:disabled {

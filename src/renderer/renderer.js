@@ -2664,11 +2664,12 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const machineDisabled = startPending || previewRunInProgress || (checked && !machineStartable);
   const defaultAction = machineCompatible && previewRunInProgress ? 'machine-cancel-run' : 'default';
   const defaultTitle = machineCompatible
-    ? (previewRunInProgress ? 'Stop Run' : (startPending ? 'Starting run...' : (machineReason || 'Start Run')))
+    ? (previewRunInProgress ? 'Stop Run' : (startPending ? 'Starting run...' : (machineStartable ? 'Start Run' : (machineReason || 'Start Run'))))
     : (agentReady ? 'Prepare Handoff' : 'Run this pipeline');
   const defaultDisabled = machineCompatible
     ? (startPending || (!previewRunInProgress && checked && !machineStartable) || (previewRunInProgress && !window.orpad?.machine?.cancelRun))
     : false;
+  const defaultDangerClass = machineCompatible && previewRunInProgress ? ' danger' : '';
   const defaultIcon = machineCompatible && previewRunInProgress
     ? orchToolIcon('M5 5h8v8H5z')
     : orchToolIcon('M5 3l7 5-7 5V3z');
@@ -2687,7 +2688,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
       </div>
       <div class="pipeline-runbar-actions">
-        <button class="pipeline-run-primary" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
+        <button class="pipeline-run-primary${defaultDangerClass}" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
           ${defaultIcon}
         </button>
         <details class="pipeline-run-menu-wrap">
@@ -8880,9 +8881,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ${machineFailureDetails(record)}
       ${attentionDetails}
       <div class="runbook-action-row">
-        ${runInProgress
-          ? `<button class="primary" data-runbook-action="machine-cancel-run" data-run-id="${escapeHtml(runId)}" ${cancelDisabled ? 'disabled' : ''} title="Stop this running Machine step and mark current work for review.">Stop Run</button>`
-          : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>`}
+        ${runInProgress ? '' : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>`}
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
         ${!runInProgress && firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Stop Work</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
@@ -9490,23 +9489,36 @@ async function cancelSelectedMachineRun(runbookPath, runId) {
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
-  const cancelled = await window.orpad.machine.cancelRun({
-    workspacePath,
-    pipelinePath: runbookPath,
-    runId,
-    toState: 'blocked',
-    capabilityToken: token,
-    exportLatestRun: true,
-  });
+  setMachineRunActionPending(runbookPath, runId, true);
+  rerenderPipelinePreviewIfActive(runbookPath);
+  let cancelled = null;
+  try {
+    cancelled = await window.orpad.machine.cancelRun({
+      workspacePath,
+      pipelinePath: runbookPath,
+      runId,
+      toState: 'blocked',
+      capabilityToken: token,
+      exportLatestRun: true,
+    });
+  } catch (err) {
+    setMachineRunActionPending(runbookPath, runId, false);
+    rerenderPipelinePreviewIfActive(runbookPath);
+    alert(err?.message || 'Could not stop the run.');
+    return;
+  }
+  setMachineRunActionPending(runbookPath, runId, false);
   if (!cancelled?.success) {
     if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
     alert(cancelled?.error || 'Could not stop the run.');
+    rerenderPipelinePreviewIfActive(runbookPath);
     return;
   }
   selectedRunbookPath = runbookPath;
   lastMachineRunRecord = machineUpdateRunRecord(runbookPath, cancelled);
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
+  rerenderPipelinePreviewIfActive(runbookPath);
   void refreshWorkspaceRunbookSummary();
 }
 

@@ -364,14 +364,13 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(primaryRunButton).toBeEnabled();
   await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'machine-cancel-run');
   await expect(primaryRunButton).toHaveAttribute('aria-label', 'Stop Run');
+  await expect(primaryRunButton).toHaveClass(/danger/);
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Running$/ })).toBeVisible();
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toHaveCount(0);
-  const stopButton = win.locator('button[data-runbook-action="machine-cancel-run"]');
-  await expect(stopButton).toBeEnabled();
-  await expect(stopButton).toHaveText('Stop Run');
+  await expect(win.locator('button[data-runbook-action="machine-cancel-run"]')).toHaveCount(0);
   const recoverButton = win.locator('button[data-runbook-action="machine-resume-run"]');
   await expect(recoverButton).toBeDisabled();
   await expect(recoverButton).toHaveAttribute('title', /OrPAD is already working/);
@@ -379,6 +378,9 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await primaryRunButton.click();
   await submitMachineCapabilityToken(win);
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Cancelled$/ })).toBeVisible();
+  await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'default');
+  await expect(primaryRunButton).toHaveAttribute('aria-label', /Start Run/);
+  await expect(primaryRunButton).not.toHaveClass(/danger/);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
