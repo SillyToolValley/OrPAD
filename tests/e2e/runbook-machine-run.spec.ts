@@ -341,9 +341,9 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('#fmt-modal-body')).toContainText('Patch artifact records the target file change.');
   await expect(win.locator('[data-machine-patch-file]')).toBeChecked();
   expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
-  await win.getByRole('button', { name: 'Apply Selected' }).click();
+  await win.getByRole('button', { name: 'Approve & Apply' }).click();
   await expect(win.locator('#fmt-modal')).toBeHidden();
-  expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('after from Machine UI harness\n');
+  await expect.poll(() => fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('after from Machine UI harness\n');
   await expect(win.locator('#runbooks-content')).toContainText('Snapshot saved');
   await expect(win.locator('#runbooks-content')).toContainText('No permission needed');
   await expect(win.locator('#runbooks-content')).not.toContainText('No pending approvals');

@@ -15,7 +15,7 @@ const { readMachineEvents, projectRunStateFromEvents } = require('./events');
 const { assertNoSymlinkInRunPath, assertRunRelativePath } = require('./artifacts');
 const { applyPatchArtifact } = require('./patches');
 const { recoverStaleClaims } = require('./dispatcher');
-const { executeMachineRunStep } = require('./machine');
+const { batchApplyStateFromEvents, executeMachineRunStep, patchReviewStateFromEvents } = require('./machine');
 const { appendMachineEvent } = require('./events');
 const { appendRunLifecycleStatus, appendRunSummaryStatus, resumeMachineRun } = require('./lifecycle');
 const {
@@ -45,8 +45,19 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   decideApproval: 'machine-decide-approval',
   exportLatestRun: 'machine-export-latest-run',
   applyPatch: 'machine-apply-patch',
+  approvePatch: 'machine-approve-patch',
+  applyApprovedPatches: 'machine-apply-approved-patches',
   reviewPatch: 'machine-review-patch',
 });
+
+const APPLY_BATCH_MUTEXES = new Map();
+
+function withBatchApplyMutex(runRoot, task) {
+  const previous = APPLY_BATCH_MUTEXES.get(runRoot) || Promise.resolve();
+  const next = previous.then(task, task);
+  APPLY_BATCH_MUTEXES.set(runRoot, next.catch(() => null));
+  return next;
+}
 
 function featureGateFromEnv(env = process.env) {
   return {
@@ -455,21 +466,13 @@ async function exportLatestRunHandler(event, authority, request) {
   };
 }
 
-async function applyPatchHandler(event, authority, request) {
-  const context = await resolveMachinePipelineContext(event, authority, request);
-  const runId = assertRunId(request.runId);
-  const patchArtifact = requiredString(request.patchArtifact, 'patchArtifact').trim();
-  const selectedFiles = Array.isArray(request.selectedFiles)
-    ? [...new Set(request.selectedFiles.map(item => optionalString(item, 'selectedFiles[]').trim()).filter(Boolean))]
+function normalizeSelectedFiles(value) {
+  return Array.isArray(value)
+    ? [...new Set(value.map(item => optionalString(item, 'selectedFiles[]').trim()).filter(Boolean))]
     : [];
-  if (!selectedFiles.length) {
-    throw machineError('MACHINE_PATCH_SELECTION_REQUIRED', 'Select at least one patch file to apply.');
-  }
-  const runRoot = await resolveMachineRunRoot(context, runId);
-  const snapshot = await readRunSnapshot(runRoot);
-  if (!snapshot) {
-    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
-  }
+}
+
+async function loadRunPatchArtifact(runRoot, patchArtifact) {
   const artifactPath = await runRelativeArtifactPath(runRoot, patchArtifact);
   if (!artifactPath) {
     throw machineError('MACHINE_PATCH_ARTIFACT_DENIED', 'Patch artifact path is not readable for this run.');
@@ -478,29 +481,85 @@ async function applyPatchHandler(event, authority, request) {
   if (patch?.schemaVersion !== 'orpad.patchArtifact.v1') {
     throw machineError('MACHINE_PATCH_SCHEMA_INVALID', 'Patch artifact schema is not recognized.');
   }
+  return patch;
+}
+
+function selectPatchSubset(patch, selectedFiles) {
   const wanted = new Set(selectedFiles);
   const available = new Set((patch.changes || []).map(change => change?.path).filter(Boolean));
   const missing = selectedFiles.filter(file => !available.has(file));
   if (missing.length) {
     throw machineError('MACHINE_PATCH_SELECTION_INVALID', `Patch selection includes unknown files: ${missing.join(', ')}`);
   }
-  const selectedPatch = {
+  return {
     ...patch,
     changes: (patch.changes || []).filter(change => wanted.has(change?.path)),
   };
-  let result;
+}
+
+function approvalSnapshotForChanges(changes = []) {
+  const snapshot = {};
+  for (const change of changes) {
+    if (!change?.path) continue;
+    snapshot[change.path] = {
+      beforeSha256: change.beforeSha256 || '',
+      afterSha256: change.afterSha256 || '',
+      beforeExists: change.beforeExists !== false,
+      afterExists: change.afterExists !== false,
+    };
+  }
+  return snapshot;
+}
+
+function snapshotResponseFields(snapshot) {
+  return {
+    runState: snapshot.runState,
+    events: snapshot.events,
+    candidateInventory: snapshot.candidateInventory,
+    worker: snapshot.worker,
+    approvals: snapshot.approvals,
+    activeClaims: snapshot.activeClaims,
+    activeWriteSets: snapshot.activeWriteSets,
+  };
+}
+
+async function applyOnePatchToWorkspace({
+  workspaceRoot,
+  runRoot,
+  runId,
+  patchArtifact,
+  patch,
+  selectedFiles,
+  reason,
+}) {
+  const selectedPatch = selectPatchSubset(patch, selectedFiles);
   try {
-    result = await applyPatchArtifact({
-      workspaceRoot: context.workspaceRoot,
+    const result = await applyPatchArtifact({
+      workspaceRoot,
       patch: selectedPatch,
       allowedFiles: patch.allowedFiles || [],
     });
-  } catch (err) {
-    await appendMachineEvent(runRoot, {
+    const appliedEvent = await appendMachineEvent(runRoot, {
       runId,
       actor: 'renderer',
-      eventType: 'patch.apply_failed',
-      reason: 'machine-ui.patch-review.apply',
+      eventType: 'patch.applied',
+      reason,
+      artifactRefs: [patchArtifact],
+      payload: {
+        patchArtifact,
+        selectedFiles,
+        applied: result.applied,
+      },
+    });
+    return { ok: true, appliedEvent, applied: result.applied };
+  } catch (err) {
+    const isMismatch = err?.code === 'PATCH_BASE_MISMATCH';
+    const eventType = isMismatch ? 'patch.apply_conflict' : 'patch.apply_failed';
+    const conflictEvent = await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'renderer',
+      eventType,
+      reason,
       artifactRefs: [patchArtifact],
       payload: {
         patchArtifact,
@@ -511,39 +570,120 @@ async function applyPatchHandler(event, authority, request) {
         mismatches: Array.isArray(err?.mismatches) ? err.mismatches : [],
       },
     }).catch(() => null);
-    const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+    return {
+      ok: false,
+      conflictEvent,
+      code: err?.code || 'MACHINE_PATCH_APPLY_FAILED',
+      message: err?.message || 'Patch could not be applied.',
+      mismatches: Array.isArray(err?.mismatches) ? err.mismatches : [],
+      path: err?.path || '',
+      eventType,
+    };
+  }
+}
+
+async function applyPatchHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const patchArtifact = requiredString(request.patchArtifact, 'patchArtifact').trim();
+  const selectedFiles = normalizeSelectedFiles(request.selectedFiles);
+  if (!selectedFiles.length) {
+    throw machineError('MACHINE_PATCH_SELECTION_REQUIRED', 'Select at least one patch file to apply.');
+  }
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+  const outcome = await withBatchApplyMutex(runRoot, () => applyOnePatchToWorkspace({
+    workspaceRoot: context.workspaceRoot,
+    runRoot,
+    runId,
+    patchArtifact,
+    patch,
+    selectedFiles,
+    reason: 'machine-ui.patch-review.apply',
+  }));
+  const updated = await readRunSnapshot(runRoot) || snapshot;
+  const exported = outcome.ok && request.exportLatestRun !== false
+    ? await exportLatestRun({
+      runRoot,
+      pipelineDir: context.pipelineDir,
+      allowOverwrite: true,
+    })
+    : null;
+  if (!outcome.ok) {
     return {
       success: false,
       ok: false,
-      code: err?.code || 'MACHINE_PATCH_APPLY_FAILED',
-      error: err?.message || 'Patch could not be applied.',
+      code: outcome.code,
+      error: outcome.message,
       runId,
       patchArtifact,
       selectedFiles,
-      path: err?.path || '',
-      mismatches: Array.isArray(err?.mismatches) ? err.mismatches : [],
-      runState: failureSnapshot.runState,
-      events: failureSnapshot.events,
-      candidateInventory: failureSnapshot.candidateInventory,
-      worker: failureSnapshot.worker,
-      approvals: failureSnapshot.approvals,
-      activeClaims: failureSnapshot.activeClaims,
-      activeWriteSets: failureSnapshot.activeWriteSets,
+      path: outcome.path,
+      mismatches: outcome.mismatches,
+      ...snapshotResponseFields(updated),
     };
   }
-  const appliedEvent = await appendMachineEvent(runRoot, {
+  return {
+    success: true,
+    ok: true,
+    runId,
+    patchArtifact,
+    applied: outcome.applied,
+    appliedEvent: outcome.appliedEvent,
+    ...snapshotResponseFields(updated),
+    exported,
+  };
+}
+
+async function approvePatchHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const patchArtifact = requiredString(request.patchArtifact, 'patchArtifact').trim();
+  const selectedFiles = normalizeSelectedFiles(request.selectedFiles);
+  if (!selectedFiles.length) {
+    throw machineError('MACHINE_PATCH_SELECTION_REQUIRED', 'Select at least one patch file to approve.');
+  }
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+  const review = patchReviewStateFromEvents(snapshot.events).reviews
+    .find(item => item.patchArtifact === patchArtifact);
+  if (review?.status === 'applied' || review?.status === 'skipped') {
+    return {
+      success: true,
+      ok: true,
+      runId,
+      patchArtifact,
+      idempotent: true,
+      decision: review.status,
+      ...snapshotResponseFields(snapshot),
+    };
+  }
+  // Validate selection up front so we fail before recording an unusable approval.
+  selectPatchSubset(patch, selectedFiles);
+  const approvalSnapshot = approvalSnapshotForChanges(
+    (patch.changes || []).filter(change => selectedFiles.includes(change?.path)),
+  );
+  const approvedEvent = await appendMachineEvent(runRoot, {
     runId,
     actor: 'renderer',
-    eventType: 'patch.applied',
-    reason: 'machine-ui.patch-review.apply',
+    eventType: 'patch.approved',
+    reason: 'machine-ui.patch-review.approve',
     artifactRefs: [patchArtifact],
     payload: {
       patchArtifact,
       selectedFiles,
-      applied: result.applied,
+      approvalSnapshot,
     },
   });
-  const updated = await readRunSnapshot(runRoot);
+  const updated = await readRunSnapshot(runRoot) || snapshot;
   const exported = request.exportLatestRun === false
     ? null
     : await exportLatestRun({
@@ -556,17 +696,160 @@ async function applyPatchHandler(event, authority, request) {
     ok: true,
     runId,
     patchArtifact,
-    applied: result.applied,
-    appliedEvent,
-    runState: updated.runState,
-    events: updated.events,
-    candidateInventory: updated.candidateInventory,
-    worker: updated.worker,
-    approvals: updated.approvals,
-    activeClaims: updated.activeClaims,
-    activeWriteSets: updated.activeWriteSets,
+    approvedEvent,
+    selectedFiles,
+    ...snapshotResponseFields(updated),
     exported,
   };
+}
+
+async function applyApprovedPatchesHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  return withBatchApplyMutex(runRoot, async () => {
+    const snapshot = await readRunSnapshot(runRoot);
+    if (!snapshot) {
+      throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+    }
+    const review = patchReviewStateFromEvents(snapshot.events);
+    if (review.batch.inFlight) {
+      return {
+        success: false,
+        ok: false,
+        code: 'BATCH_APPLY_IN_FLIGHT',
+        error: 'A batch apply is already in progress for this run.',
+        runId,
+        ...snapshotResponseFields(snapshot),
+      };
+    }
+    const approvedReviews = review.reviews.filter(item => item.status === 'approved');
+    if (!approvedReviews.length) {
+      return {
+        success: true,
+        ok: true,
+        runId,
+        appliedCount: 0,
+        conflictCount: 0,
+        idempotent: true,
+        results: [],
+        ...snapshotResponseFields(snapshot),
+        exported: null,
+      };
+    }
+
+    const startedEvent = await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'renderer',
+      eventType: 'patches.apply_started',
+      reason: 'machine-ui.patch-review.apply-approved',
+      artifactRefs: approvedReviews.map(item => item.patchArtifact),
+      payload: {
+        approvedPatchArtifacts: approvedReviews.map(item => item.patchArtifact),
+      },
+    });
+
+    const results = [];
+    let appliedCount = 0;
+    let conflictCount = 0;
+    for (const item of approvedReviews) {
+      const patchArtifact = item.patchArtifact;
+      const selectedFiles = Array.isArray(item.decision?.selectedFiles) && item.decision.selectedFiles.length
+        ? item.decision.selectedFiles
+        : item.changedFiles;
+      let patch;
+      try {
+        patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+      } catch (err) {
+        const failedEvent = await appendMachineEvent(runRoot, {
+          runId,
+          actor: 'renderer',
+          eventType: 'patch.apply_failed',
+          reason: 'machine-ui.patch-review.apply-approved',
+          artifactRefs: [patchArtifact],
+          payload: {
+            patchArtifact,
+            selectedFiles,
+            code: err?.code || 'MACHINE_PATCH_APPLY_FAILED',
+            message: err?.message || 'Patch artifact could not be loaded.',
+          },
+        }).catch(() => null);
+        results.push({
+          patchArtifact,
+          ok: false,
+          code: err?.code || 'MACHINE_PATCH_APPLY_FAILED',
+          message: err?.message || 'Patch artifact could not be loaded.',
+          eventType: 'patch.apply_failed',
+          event: failedEvent,
+        });
+        conflictCount += 1;
+        continue;
+      }
+      const outcome = await applyOnePatchToWorkspace({
+        workspaceRoot: context.workspaceRoot,
+        runRoot,
+        runId,
+        patchArtifact,
+        patch,
+        selectedFiles,
+        reason: 'machine-ui.patch-review.apply-approved',
+      });
+      if (outcome.ok) {
+        appliedCount += 1;
+        results.push({
+          patchArtifact,
+          ok: true,
+          applied: outcome.applied,
+          event: outcome.appliedEvent,
+        });
+      } else {
+        conflictCount += 1;
+        results.push({
+          patchArtifact,
+          ok: false,
+          code: outcome.code,
+          message: outcome.message,
+          mismatches: outcome.mismatches,
+          eventType: outcome.eventType,
+          event: outcome.conflictEvent,
+        });
+      }
+    }
+
+    const finishedEvent = await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'renderer',
+      eventType: 'patches.apply_finished',
+      reason: 'machine-ui.patch-review.apply-approved',
+      artifactRefs: approvedReviews.map(item => item.patchArtifact),
+      payload: {
+        appliedCount,
+        conflictCount,
+        startedEventSequence: startedEvent?.sequence ?? null,
+      },
+    });
+
+    const updated = await readRunSnapshot(runRoot) || snapshot;
+    const exported = request.exportLatestRun === false
+      ? null
+      : await exportLatestRun({
+        runRoot,
+        pipelineDir: context.pipelineDir,
+        allowOverwrite: true,
+      });
+    return {
+      success: true,
+      ok: true,
+      runId,
+      appliedCount,
+      conflictCount,
+      results,
+      startedEvent,
+      finishedEvent,
+      ...snapshotResponseFields(updated),
+      exported,
+    };
+  });
 }
 
 async function reviewPatchHandler(event, authority, request) {
@@ -1025,6 +1308,8 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.exportLatestRun, exportLatestRunHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.applyPatch, applyPatchHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.approvePatch, approvePatchHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.applyApprovedPatches, applyApprovedPatchesHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.reviewPatch, reviewPatchHandler, { mutating: true });
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };

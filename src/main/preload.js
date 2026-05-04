@@ -127,6 +127,8 @@ contextBridge.exposeInMainWorld('orpad', {
     decideApproval: (request) => ipcRenderer.invoke('machine-decide-approval', request),
     exportLatestRun: (request) => ipcRenderer.invoke('machine-export-latest-run', request),
     applyPatch: (request) => ipcRenderer.invoke('machine-apply-patch', request),
+    approvePatch: (request) => ipcRenderer.invoke('machine-approve-patch', request),
+    applyApprovedPatches: (request) => ipcRenderer.invoke('machine-apply-approved-patches', request),
     reviewPatch: (request) => ipcRenderer.invoke('machine-review-patch', request),
   },
   userSnippets: {

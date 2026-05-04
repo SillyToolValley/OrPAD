@@ -22,8 +22,10 @@ const {
   validateSelectorNode,
 } = require('../../src/main/orchestration-machine');
 const {
+  batchApplyStateFromEvents,
   effectiveProbeCandidateLimit,
   liveProbePrompt,
+  patchReviewStateFromEvents,
 } = require('../../src/main/orchestration-machine/machine.js');
 
 async function createTestSymlink(testContext, target, linkPath, type = 'file') {
@@ -532,6 +534,104 @@ test('graph-driven execute step waits at patch review before exit', async () => 
   assert.equal(second.events.filter(event => event.eventType === 'worker.result').length, 1);
   assert.equal(second.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/patch-review'), true);
   assert.equal(second.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), true);
+
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test('patch review gate keeps blocking after approval until batch apply finishes', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260504_approve_gate_blocked');
+  await addPatchReviewAndExitNodes(pipelineDir);
+
+  const first = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  const workerEvent = first.events.find(event => event.eventType === 'worker.result');
+  const patchArtifact = workerEvent?.payload?.patchArtifact;
+  assert.equal(typeof patchArtifact, 'string');
+  assert.equal(first.finalization.summaryStatus, 'blocked');
+
+  // Approval alone must not unblock the gate; batch apply must run first.
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'renderer',
+    eventType: 'patch.approved',
+    reason: 'machine-ui.patch-review.approve',
+    artifactRefs: [patchArtifact],
+    payload: {
+      patchArtifact,
+      selectedFiles: ['src/target.md'],
+    },
+  });
+  const afterApprove = patchReviewStateFromEvents(await readMachineEvents(run.runRoot));
+  assert.equal(afterApprove.resolved, false, 'approved patches still block until applied');
+  assert.equal(afterApprove.approvedCount, 1);
+  assert.equal(afterApprove.appliedCount, 0);
+  assert.equal(afterApprove.batch.inFlight, false);
+
+  const blocked = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  assert.equal(blocked.finalization.summaryStatus, 'blocked');
+  assert.equal(blocked.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), false);
+
+  // Simulate the batch apply IPC writing its three event types.
+  const startedEvent = await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'renderer',
+    eventType: 'patches.apply_started',
+    reason: 'machine-ui.patch-review.apply-approved',
+    artifactRefs: [patchArtifact],
+    payload: { approvedPatchArtifacts: [patchArtifact] },
+  });
+  const inFlightState = batchApplyStateFromEvents(await readMachineEvents(run.runRoot));
+  assert.equal(inFlightState.inFlight, true);
+
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'renderer',
+    eventType: 'patch.applied',
+    reason: 'machine-ui.patch-review.apply-approved',
+    artifactRefs: [patchArtifact],
+    payload: { patchArtifact, selectedFiles: ['src/target.md'], applied: [{ path: 'src/target.md' }] },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'renderer',
+    eventType: 'patches.apply_finished',
+    reason: 'machine-ui.patch-review.apply-approved',
+    artifactRefs: [patchArtifact],
+    payload: { appliedCount: 1, conflictCount: 0, startedEventSequence: startedEvent.sequence },
+  });
+  const finishedState = batchApplyStateFromEvents(await readMachineEvents(run.runRoot));
+  assert.equal(finishedState.inFlight, false);
+  const afterApply = patchReviewStateFromEvents(await readMachineEvents(run.runRoot));
+  assert.equal(afterApply.resolved, true);
+  assert.equal(afterApply.appliedCount, 1);
+
+  const finalStep = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  assert.equal(finalStep.finalization.summaryStatus, 'done');
+  assert.equal(finalStep.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/patch-review'), true);
+  assert.equal(finalStep.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), true);
 
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });

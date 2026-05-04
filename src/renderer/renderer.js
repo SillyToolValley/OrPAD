@@ -8500,13 +8500,43 @@ function machineWorkerReviewInfo(record) {
   return machineWorkerReviewInfoForEvent(record, event);
 }
 
+const MACHINE_PATCH_DECISION_EVENT_TYPES = [
+  'patch.applied',
+  'patch.review_skipped',
+  'patch.approved',
+  'patch.apply_conflict',
+  'patch.apply_failed',
+];
+
+const MACHINE_PATCH_RESOLVED_EVENT_TYPES = ['patch.applied', 'patch.review_skipped'];
+
+const MACHINE_PATCH_STATUS_BY_EVENT = {
+  'patch.applied': 'applied',
+  'patch.review_skipped': 'skipped',
+  'patch.approved': 'approved',
+  'patch.apply_conflict': 'conflict',
+  'patch.apply_failed': 'failed',
+};
+
 function machinePatchReviewDecisionForArtifact(record, patchArtifact) {
   const artifact = String(patchArtifact || '').trim();
   if (!artifact) return null;
   return [...(record?.events || [])].reverse().find(event => (
-    ['patch.applied', 'patch.review_skipped'].includes(event?.eventType)
+    MACHINE_PATCH_DECISION_EVENT_TYPES.includes(event?.eventType)
     && event?.payload?.patchArtifact === artifact
   )) || null;
+}
+
+function machinePatchBatchInFlight(record) {
+  let started = null;
+  let finished = null;
+  for (const event of record?.events || []) {
+    if (event?.eventType === 'patches.apply_started') started = event;
+    else if (event?.eventType === 'patches.apply_finished') finished = event;
+  }
+  if (!started) return false;
+  if (!finished) return true;
+  return (finished.sequence ?? 0) < (started.sequence ?? 0);
 }
 
 function machineHasBlockedPatchReviewNode(record) {
@@ -8528,13 +8558,23 @@ function machineWorkerReviewInfoForEvent(record, event) {
   const verification = payload.verification || [];
   const patchArtifact = payload.patchArtifact || '';
   const patchReviewDecision = machinePatchReviewDecisionForArtifact(record, patchArtifact);
+  const decisionType = patchReviewDecision?.eventType || '';
+  const patchReviewStatus = MACHINE_PATCH_STATUS_BY_EVENT[decisionType] || 'pending';
+  const patchReviewResolved = MACHINE_PATCH_RESOLVED_EVENT_TYPES.includes(decisionType);
   return {
     event,
     itemId: event.itemId || '',
     status: String(payload.status || ''),
     patchArtifact,
     patchReviewDecision,
-    patchReviewResolved: Boolean(patchReviewDecision),
+    patchReviewStatus,
+    patchReviewResolved,
+    patchReviewSelectedFiles: Array.isArray(patchReviewDecision?.payload?.selectedFiles)
+      ? patchReviewDecision.payload.selectedFiles
+      : [],
+    patchReviewMismatches: Array.isArray(patchReviewDecision?.payload?.mismatches)
+      ? patchReviewDecision.payload.mismatches
+      : [],
     changedFiles: payload.changedFiles || [],
     evidenceArtifacts: event.artifactRefs || [],
     missingExpectedChanges: [...new Set(verification.flatMap(item => item.missingExpectedChanges || []))],
@@ -10381,11 +10421,11 @@ function machinePatchReviewKey(runbookPath, runId, patchArtifact) {
   return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId}::${patchArtifact}`;
 }
 
-async function applyMachinePatchSelection(runbookPath, runId, workerReview, selectedFiles) {
-  if (!workspacePath || !runbookPath || !runId || !workerReview?.patchArtifact || !window.orpad?.machine?.applyPatch) return null;
+async function approveMachinePatchSelection(runbookPath, runId, workerReview, selectedFiles) {
+  if (!workspacePath || !runbookPath || !runId || !workerReview?.patchArtifact || !window.orpad?.machine?.approvePatch) return null;
   const token = await requestMachineCapabilityToken();
   if (!token) return null;
-  const applied = await window.orpad.machine.applyPatch({
+  const approved = await window.orpad.machine.approvePatch({
     workspacePath,
     pipelinePath: runbookPath,
     runId,
@@ -10394,20 +10434,41 @@ async function applyMachinePatchSelection(runbookPath, runId, workerReview, sele
     selectedFiles,
     exportLatestRun: true,
   });
+  if (!approved?.success) {
+    if (approved?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+    alert(approved?.error || 'Patch approval could not be recorded.');
+    return null;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = machineUpdateRunRecord(runbookPath, approved);
+  await refreshMachineRunList(runbookPath);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+  return approved;
+}
+
+async function applyAllApprovedMachinePatches(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.applyApprovedPatches) return null;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return null;
+  const applied = await window.orpad.machine.applyApprovedPatches({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    capabilityToken: token,
+    exportLatestRun: true,
+  });
   if (!applied?.success) {
     if (applied?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
-    if (applied?.runState || applied?.events) {
-      lastMachineRunRecord = machineUpdateRunRecord(runbookPath, applied);
-      await refreshMachineRunList(runbookPath);
-      renderRunbooksPanel();
-      rerenderPipelinePreviewIfActive(runbookPath);
+    if (applied?.code === 'BATCH_APPLY_IN_FLIGHT') {
+      // Another window or invocation is already running the batch; let it finish.
+      if (applied?.runState || applied?.events) {
+        lastMachineRunRecord = machineUpdateRunRecord(runbookPath, applied);
+        renderRunbooksPanel();
+      }
+      return null;
     }
-    const mismatchText = Array.isArray(applied?.mismatches) && applied.mismatches.length
-      ? `\n\nConflicting files:\n${applied.mismatches.slice(0, 5).map(item => `- ${item.path || 'unknown'}`).join('\n')}`
-      : '';
-    alert(applied?.code === 'PATCH_BASE_MISMATCH'
-      ? `This patch no longer matches the current workspace. Another approved patch probably changed the same file first.${mismatchText}`
-      : (applied?.error || 'Patch could not be applied.'));
+    alert(applied?.error || 'Approved patches could not be applied.');
     return null;
   }
   selectedRunbookPath = runbookPath;
@@ -10416,7 +10477,30 @@ async function applyMachinePatchSelection(runbookPath, runId, workerReview, sele
   renderRunbooksPanel();
   await loadFileTree();
   void refreshWorkspaceRunbookSummary();
+  if (applied.appliedCount > 0 || applied.conflictCount > 0) {
+    rerenderPipelinePreviewIfActive(runbookPath);
+  }
+  if (applied.conflictCount > 0) {
+    const conflictDetails = (applied.results || [])
+      .filter(item => item && !item.ok)
+      .slice(0, 5)
+      .map(item => {
+        const paths = (item.mismatches || []).map(entry => `- ${entry.path || 'unknown'}`).join('\n');
+        return `${item.patchArtifact}: ${item.message || item.code || 'apply failed'}${paths ? `\n${paths}` : ''}`;
+      })
+      .join('\n\n');
+    alert(`${applied.appliedCount} patch${applied.appliedCount === 1 ? '' : 'es'} applied; ${applied.conflictCount} could not be applied because the workspace already moved.\n\n${conflictDetails}`);
+  }
   return applied;
+}
+
+async function finalizePatchReviewQueue(runbookPath, runId, record) {
+  const apply = await applyAllApprovedMachinePatches(runbookPath, runId);
+  const latest = lastMachineRunRecord || record;
+  if (machineHasBlockedPatchReviewNode(latest)) {
+    await executeSelectedMachineRunStep(runbookPath, runId);
+  }
+  return apply;
 }
 
 async function recordMachinePatchReviewDecision(runbookPath, runId, workerReview, decision = 'skipped') {
@@ -10505,7 +10589,9 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     ${itemDetails?.userImpact ? `<div class="runbook-diagnostic"><strong>Why</strong> ${escapeHtml(itemDetails.userImpact)}</div>` : ''}
     ${itemDetails?.actualBehavior || itemDetails?.expectedBehavior ? `<div class="runbook-diagnostic"><strong>Change goal</strong> ${escapeHtml([itemDetails.actualBehavior, itemDetails.expectedBehavior].filter(Boolean).join(' -> '))}</div>` : ''}
     ${criteria.length ? `<div class="runbook-diagnostic"><strong>Acceptance</strong><ul>${criteria.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>` : ''}
-    <div class="runbook-diagnostic warning"><strong>Workspace not changed yet.</strong> Applying writes the selected files to your workspace after base SHA checks.</div>
+    <div class="runbook-diagnostic warning"><strong>Workspace not changed yet.</strong> ${reviewCount > 1
+      ? 'Approving queues the selection. Files are written together after every patch in this run is reviewed.'
+      : 'Approving applies the selected files immediately after a fresh base SHA check.'}</div>
     ${conflictCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(conflictCount, 'conflicting file'))}</strong> already changed in the workspace, likely by an earlier approved patch. Conflicting files are unchecked and cannot be applied from this patch without a follow-up run.</div>` : ''}
     <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
     <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
@@ -10529,9 +10615,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
           if (reviewed) {
             closeFmtModal();
             if (hasNextReview) openNextReview();
-            else if (machineHasBlockedPatchReviewNode(lastMachineRunRecord || record)) {
-              await executeSelectedMachineRunStep(runbookPath, runId);
-            }
+            else await finalizePatchReviewQueue(runbookPath, runId, record);
           }
         },
       },
@@ -10546,27 +10630,26 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
           const reviewed = await recordMachinePatchReviewDecision(runbookPath, runId, workerReview, 'follow-up');
           if (reviewed) {
             closeFmtModal();
+            await applyAllApprovedMachinePatches(runbookPath, runId);
             await executeSelectedMachineRunStep(runbookPath, runId);
           }
         },
       },
       {
-        label: 'Apply Selected',
+        label: hasNextReview ? 'Approve & Next' : 'Approve & Apply',
         primary: true,
         disabled: applicableCount === 0,
         onClick: async () => {
           const files = selectedFiles();
           if (!files.length) {
-            alert('Select at least one file to apply.');
+            alert('Select at least one file to approve.');
             return;
           }
-          const applied = await applyMachinePatchSelection(runbookPath, runId, workerReview, files);
-          if (applied) {
+          const approved = await approveMachinePatchSelection(runbookPath, runId, workerReview, files);
+          if (approved) {
             closeFmtModal();
             if (hasNextReview) openNextReview();
-            else if (machineHasBlockedPatchReviewNode(lastMachineRunRecord || record)) {
-              await executeSelectedMachineRunStep(runbookPath, runId);
-            }
+            else await finalizePatchReviewQueue(runbookPath, runId, record);
           }
         },
       },
@@ -10578,8 +10661,9 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   const runId = record?.runState?.runId || record?.runId || '';
   if (!runbookPath || !runId) return;
   if (isMachineRunInProgress(record, runbookPath)) return;
+  if (machinePatchBatchInFlight(record)) return;
   const workerReviews = machineWorkerReviewInfos(record)
-    .filter(review => review?.patchArtifact && !review.patchReviewResolved);
+    .filter(review => review?.patchArtifact && review.patchReviewStatus === 'pending');
   const workerReview = workerReviews.find(review => (
     !machinePatchReviewShown.has(machinePatchReviewKey(runbookPath, runId, review.patchArtifact))
   ));

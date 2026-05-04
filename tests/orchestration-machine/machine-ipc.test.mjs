@@ -171,6 +171,8 @@ test('Machine IPC registers only typed channels and preload exposes no generic m
   assert.equal(preloadSource.includes('machine-cancel-claim'), true);
   assert.equal(preloadSource.includes('machine-decide-approval'), true);
   assert.equal(preloadSource.includes('machine-review-patch'), true);
+  assert.equal(preloadSource.includes('machine-approve-patch'), true);
+  assert.equal(preloadSource.includes('machine-apply-approved-patches'), true);
   assert.equal(preloadSource.includes('machine.invoke'), false);
   assert.equal(preloadSource.includes("ipcRenderer.invoke(channel"), false);
 });
@@ -618,9 +620,148 @@ test('Machine IPC apply patch returns refreshed evidence on base mismatch', asyn
   assert.equal(applied.success, false);
   assert.equal(applied.code, 'PATCH_BASE_MISMATCH');
   assert.equal(applied.mismatches[0].path, 'src/smoke-target.md');
-  assert.equal(applied.events.at(-1).eventType, 'patch.apply_failed');
+  assert.equal(applied.events.at(-1).eventType, 'patch.apply_conflict');
   assert.equal(applied.runState.eventSequence, applied.events.at(-1).sequence);
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'changed before review\n');
+});
+
+test('Machine IPC approve+applyApproved defers writes until batch and emits sequenced events', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const targetPath = path.join(workspaceRoot, 'src/smoke-target.md');
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260504_approve_batch_apply',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(executed.success, true);
+  const patchArtifact = executed.worker.event.payload.patchArtifact;
+
+  const approved = await handlers.get(MACHINE_IPC_CHANNELS.approvePatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact,
+    selectedFiles: ['src/smoke-target.md'],
+  });
+  assert.equal(approved.success, true);
+  assert.equal(approved.events.at(-1).eventType, 'patch.approved');
+  assert.equal(approved.events.at(-1).payload.patchArtifact, patchArtifact);
+  assert.deepEqual(approved.events.at(-1).payload.selectedFiles, ['src/smoke-target.md']);
+  assert.equal(await fs.readFile(targetPath, 'utf8'), 'before\n', 'workspace must remain untouched until batch apply runs');
+
+  const reapproved = await handlers.get(MACHINE_IPC_CHANNELS.approvePatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact,
+    selectedFiles: ['src/smoke-target.md'],
+  });
+  assert.equal(reapproved.success, true);
+  assert.equal(reapproved.events.at(-1).eventType, 'patch.approved');
+  assert.equal(
+    reapproved.events.filter(item => item.eventType === 'patch.approved' && item.payload.patchArtifact === patchArtifact).length,
+    2,
+    'each approve call appends a fresh approval event so the latest selection wins',
+  );
+
+  const applied = await handlers.get(MACHINE_IPC_CHANNELS.applyApprovedPatches)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(applied.success, true);
+  assert.equal(applied.appliedCount, 1);
+  assert.equal(applied.conflictCount, 0);
+  assert.equal(await fs.readFile(targetPath, 'utf8'), 'after from Machine IPC harness\n');
+
+  const eventTypes = applied.events.map(item => item.eventType);
+  const startedIdx = eventTypes.lastIndexOf('patches.apply_started');
+  const finishedIdx = eventTypes.lastIndexOf('patches.apply_finished');
+  const appliedIdx = eventTypes.lastIndexOf('patch.applied');
+  assert.notEqual(startedIdx, -1);
+  assert.notEqual(finishedIdx, -1);
+  assert.notEqual(appliedIdx, -1);
+  assert.ok(startedIdx < appliedIdx && appliedIdx < finishedIdx, 'patch.applied must sit between apply_started and apply_finished');
+
+  const noop = await handlers.get(MACHINE_IPC_CHANNELS.applyApprovedPatches)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(noop.success, true);
+  assert.equal(noop.appliedCount, 0);
+  assert.equal(noop.idempotent, true);
+
+  const reapproveAfterApplied = await handlers.get(MACHINE_IPC_CHANNELS.approvePatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact,
+    selectedFiles: ['src/smoke-target.md'],
+  });
+  assert.equal(reapproveAfterApplied.success, true);
+  assert.equal(reapproveAfterApplied.idempotent, true, 'already-applied patch must not append a new approval event');
+  assert.equal(reapproveAfterApplied.decision, 'applied');
+});
+
+test('Machine IPC applyApprovedPatches surfaces SHA conflict per patch without aborting batch', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const targetPath = path.join(workspaceRoot, 'src/smoke-target.md');
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260504_batch_conflict',
+    capabilityToken: 'test-token',
+  });
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  const patchArtifact = executed.worker.event.payload.patchArtifact;
+
+  await handlers.get(MACHINE_IPC_CHANNELS.approvePatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact,
+    selectedFiles: ['src/smoke-target.md'],
+  });
+  await fs.writeFile(targetPath, 'changed before batch apply\n', 'utf8');
+
+  const applied = await handlers.get(MACHINE_IPC_CHANNELS.applyApprovedPatches)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(applied.success, true);
+  assert.equal(applied.appliedCount, 0);
+  assert.equal(applied.conflictCount, 1);
+  assert.equal(applied.results[0].ok, false);
+  assert.equal(applied.results[0].code, 'PATCH_BASE_MISMATCH');
+  assert.equal(applied.results[0].eventType, 'patch.apply_conflict');
+  assert.equal(await fs.readFile(targetPath, 'utf8'), 'changed before batch apply\n');
+
+  const eventTypes = applied.events.map(item => item.eventType);
+  assert.ok(eventTypes.includes('patches.apply_started'));
+  assert.ok(eventTypes.includes('patches.apply_finished'));
+  assert.ok(eventTypes.includes('patch.apply_conflict'));
 });
 
 test('Machine IPC carries external research mode into selector execution', async () => {

@@ -54,7 +54,20 @@ const SUPPORT_NODE_TYPES = new Set([
 const PATCH_REVIEW_RESOLUTION_EVENT_TYPES = new Set(['patch.applied', 'patch.review_skipped']);
 const PATCH_REVIEW_EVENT_TYPES = new Set([
   ...PATCH_REVIEW_RESOLUTION_EVENT_TYPES,
+  'patch.approved',
   'patch.apply_failed',
+  'patch.apply_conflict',
+]);
+const PATCH_BATCH_APPLY_EVENT_TYPES = new Set([
+  'patches.apply_started',
+  'patches.apply_finished',
+]);
+const PATCH_REVIEW_STATUS_BY_EVENT = new Map([
+  ['patch.applied', 'applied'],
+  ['patch.review_skipped', 'skipped'],
+  ['patch.approved', 'approved'],
+  ['patch.apply_conflict', 'conflict'],
+  ['patch.apply_failed', 'failed'],
 ]);
 
 function machineExecutionError(code, message) {
@@ -1018,24 +1031,32 @@ function patchReviewStateFromEvents(events = []) {
     decisions.set(patchArtifact, {
       eventType: type,
       sequence: event.sequence ?? null,
-      decision: event?.payload?.decision || (type === 'patch.applied' ? 'applied' : ''),
+      decision: event?.payload?.decision || PATCH_REVIEW_STATUS_BY_EVENT.get(type) || '',
       code: event?.payload?.code || '',
       message: event?.payload?.message || '',
+      selectedFiles: Array.isArray(event?.payload?.selectedFiles) ? event.payload.selectedFiles : [],
+      mismatches: Array.isArray(event?.payload?.mismatches) ? event.payload.mismatches : [],
     });
   }
 
   const reviews = patchArtifacts.map(review => {
     const decision = decisions.get(review.patchArtifact) || null;
     const resolved = decision && PATCH_REVIEW_RESOLUTION_EVENT_TYPES.has(decision.eventType);
+    const status = decision
+      ? (PATCH_REVIEW_STATUS_BY_EVENT.get(decision.eventType) || 'pending')
+      : 'pending';
     return {
       ...review,
       decision,
-      status: resolved ? (decision.eventType === 'patch.applied' ? 'applied' : 'skipped') : 'pending',
+      status,
       resolved: Boolean(resolved),
     };
   });
   const pending = reviews.filter(review => !review.resolved);
+  const approved = reviews.filter(review => review.status === 'approved');
+  const conflict = reviews.filter(review => review.status === 'conflict');
   const failed = pending.filter(review => review.decision?.eventType === 'patch.apply_failed');
+  const batch = batchApplyStateFromEvents(events);
   return {
     required: reviews.length > 0,
     resolved: pending.length === 0,
@@ -1043,10 +1064,35 @@ function patchReviewStateFromEvents(events = []) {
     pendingCount: pending.length,
     appliedCount: reviews.filter(review => review.status === 'applied').length,
     skippedCount: reviews.filter(review => review.status === 'skipped').length,
+    approvedCount: approved.length,
+    conflictCount: conflict.length,
     failedCount: failed.length,
     reviews,
     pending,
+    approved,
+    conflict,
     failed,
+    batch,
+  };
+}
+
+function batchApplyStateFromEvents(events = []) {
+  let lastStarted = null;
+  let lastFinished = null;
+  for (const event of events) {
+    const type = String(event?.eventType || '');
+    if (!PATCH_BATCH_APPLY_EVENT_TYPES.has(type)) continue;
+    if (type === 'patches.apply_started') lastStarted = event;
+    else if (type === 'patches.apply_finished') lastFinished = event;
+  }
+  const inFlight = Boolean(
+    lastStarted
+    && (!lastFinished || (lastFinished.sequence ?? 0) < (lastStarted.sequence ?? 0)),
+  );
+  return {
+    inFlight,
+    lastStartedSequence: lastStarted?.sequence ?? null,
+    lastFinishedSequence: lastFinished?.sequence ?? null,
   };
 }
 
@@ -1935,6 +1981,7 @@ async function executeMachineRunStep(options = {}) {
 }
 
 module.exports = {
+  batchApplyStateFromEvents,
   executeMachineRunStep,
   effectiveProbeCandidateLimit,
   flattenTraversalNodes,
