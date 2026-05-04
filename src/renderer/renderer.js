@@ -10735,8 +10735,13 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   const title = itemDetails?.title || itemDetails?.itemId || 'Machine patch';
   const reviewIndex = Number(options.reviewIndex) || 1;
   const reviewCount = Number(options.reviewCount) || 1;
+  const pendingCount = Number(options.pendingCount) || 1;
   const reviewTitle = reviewCount > 1 ? `Review Patch ${reviewIndex} of ${reviewCount}` : 'Review Patch';
-  const hasNextReview = reviewIndex < reviewCount;
+  // hasNextReview reflects whether any other patch is still awaiting a decision after this
+  // one resolves, regardless of where the current patch sits in production order. This keeps
+  // the "Approve & Apply" button on the very last pending review even when earlier patches
+  // were skipped or already applied in a prior batch.
+  const hasNextReview = pendingCount > 1;
   const criteria = (itemDetails?.acceptanceCriteria || []).slice(0, 3);
   const conflictCount = patchSummary.changes.filter(change => change.baseMatches === false).length;
   const applicableCount = patchSummary.changes.filter(change => change.baseMatches !== false).length;
@@ -10837,9 +10842,10 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   // overwrite their pending decision. The next polling tick (or the modal's onClick chain)
   // will pick the next patch up after the current modal closes.
   if (fmtModalEl && !fmtModalEl.classList.contains('hidden')) return;
-  const workerReviews = machineWorkerReviewInfos(record)
-    .filter(review => review?.patchArtifact && review.patchReviewStatus === 'pending');
-  const workerReview = workerReviews.find(review => (
+  const allReviews = machineWorkerReviewInfos(record)
+    .filter(review => review?.patchArtifact);
+  const pendingReviews = allReviews.filter(review => review.patchReviewStatus === 'pending');
+  const workerReview = pendingReviews.find(review => (
     !machinePatchReviewShown.has(machinePatchReviewKey(runbookPath, runId, review.patchArtifact))
   ));
   if (!workerReview?.patchArtifact) return;
@@ -10864,9 +10870,12 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   }
   machinePatchReviewShown.add(key);
   const itemDetails = await machineWorkerItemDetails(record, workerReview);
+  // Counter shows linear progress through every patch produced this run, not just the
+  // pending ones, so approvals do not shrink the denominator (1/14 -> 2/14, never 1/13).
   openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails, {
-    reviewIndex: workerReviews.findIndex(review => review.patchArtifact === workerReview.patchArtifact) + 1,
-    reviewCount: workerReviews.length,
+    reviewIndex: allReviews.findIndex(review => review.patchArtifact === workerReview.patchArtifact) + 1,
+    reviewCount: allReviews.length,
+    pendingCount: pendingReviews.length,
   });
 }
 
