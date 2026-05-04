@@ -9,7 +9,7 @@
 -> [Official website](https://or-pad-website.vercel.app)
   
 **OrPAD (<a>Or</a>chestration <a>P</a>ipeline <a>A</a>uthoring & <a>D</a>evelopment)**<br> 
- is a local-first editor for Markdown, structured data, diagrams, and AI-assisted writing workflows.
+ is a local-first editor for Markdown, structured data, diagrams, AI-assisted writing workflows, and supervised orchestration pipelines.
 
 Open Markdown, JSON, YAML, CSV/TSV, TOML, XML, HTML, Mermaid, INI/conf, `.env`,
 logs, and plain text in one app. Each supported format gets a dedicated
@@ -141,7 +141,8 @@ for CSV, Typora for Markdown, Mermaid Live Editor for diagrams. Five formats
 often means five apps, five clipboards, and several browser tabs.
 
 OrPAD is one desktop and web app where every supported format has a
-first-class editable viewer.
+first-class editable viewer, plus a Pipes workspace for authoring pipeline
+packages and supervised managed runs.
 
 Every view round-trips through the text editor. Change a cell in the CSV grid
 and the underlying text updates; edit the text and the grid refreshes. Scroll
@@ -196,6 +197,16 @@ the preview follows the editor.
   elements, and CSV columns
 - **Links:** backlinks for Markdown wiki links
 
+### AI, MCP, terminal, and orchestration surfaces
+
+- AI sidebar access through `Ctrl+L` and the command palette
+- Command-palette entries for opening Pipes, creating a new pipeline, starting
+  a managed run, and preparing a handoff
+- Pipeline package editing for `.or-pipeline`, `.or-graph`, and `.or-tree`
+  files, with Flow and Details views for graph structure and node metadata
+- MCP and terminal-oriented workflow surfaces use supervised prompts and
+  approval gates before side-effecting external tools or commands
+
 ### Themes, language, and platform
 
 - 16 built-in themes including GitHub Light/Dark, Tokyo Night, Dracula, Nord,
@@ -244,6 +255,27 @@ editor navigation does not steal that binding.
 ---
 
 ## Workflows
+
+### Pipes and managed runs
+
+Pipes are OrPAD pipeline packages for turning local files, node definitions,
+and agent handoffs into an inspectable orchestration workflow. Pipeline files
+can be authored as text while the Pipes UI exposes Flow and Details views for
+editing graph layout, node configuration, run metadata, and handoff context.
+
+Node packs describe reusable orchestration roles such as probes, queues,
+triage, dispatchers, worker loops, and barriers. Managed runs use those node
+definitions to launch supervised worker activity from explicit local paths,
+collect evidence, and keep machine-readable run state with the package instead
+of hiding decisions in chat history.
+
+The run controls are intentionally explicit. **Start Run** begins a managed
+run from the current pipeline package, while **Prepare Handoff** gathers the
+context needed for a human or agent handoff before execution. AI-suggested
+shell commands, MCP actions, terminal work, and external browsing are treated
+as supervised surfaces: they may be prepared or documented, but side-effecting
+commands and competitor or market research require approved browsing or
+attached evidence before OrPAD treats them as source material.
 
 ### Git status
 

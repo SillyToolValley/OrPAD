@@ -2643,7 +2643,8 @@ function pipelineDiagnosticStatusText(validation) {
 }
 
 function pipelineValidationDiagnostics(validation) {
-  return (Array.isArray(validation?.diagnostics) ? validation.diagnostics : []).filter(isDiagnosticError);
+  return (Array.isArray(validation?.diagnostics) ? validation.diagnostics : [])
+    .filter(issue => isDiagnosticError(issue) || isEntryGraphDeclarationWarning(issue));
 }
 
 function pipelineInlineDiagnosticText(issue) {
@@ -2654,10 +2655,15 @@ function pipelineInlineDiagnosticText(issue) {
   return parts.join(' - ');
 }
 
+function isEntryGraphDeclarationWarning(issue) {
+  return issue?.code === 'PIPELINE_ENTRY_GRAPH_NOT_DECLARED';
+}
+
 function renderPipelineInlineDiagnostic(issue) {
   const text = pipelineInlineDiagnosticText(issue);
   if (!text) return '';
-  return `<div class="pipeline-inline-diagnostic" role="alert">${escapeHtml(text)}</div>`;
+  const warning = isEntryGraphDeclarationWarning(issue);
+  return `<div class="pipeline-inline-diagnostic ${warning ? 'warning' : 'error'}" role="${warning ? 'status' : 'alert'}">${escapeHtml(text)}</div>`;
 }
 
 function normalizeDiagnosticRef(value) {
@@ -2665,12 +2671,15 @@ function normalizeDiagnosticRef(value) {
 }
 
 function pipelineEntryDiagnostic(diagnostics) {
-  return diagnostics.find(issue => [
+  const codes = new Set([
     'PIPELINE_ENTRY_GRAPH_MISSING',
+    'PIPELINE_ENTRY_GRAPH_NOT_DECLARED',
     'PIPELINE_ENTRY_GRAPH_NOT_FOUND',
     'PIPELINE_ENTRY_GRAPH_OUTSIDE_PIPELINE',
     'PIPELINE_ENTRY_GRAPH_PARSE_FAILED',
-  ].includes(issue.code));
+  ]);
+  const entryIssues = diagnostics.filter(issue => codes.has(issue.code));
+  return entryIssues.find(isDiagnosticError) || entryIssues[0];
 }
 
 function pipelineRefDiagnostic(diagnostics, kind, entry) {
@@ -2769,6 +2778,10 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
   if (!validation) return { state: '', text: 'Not checked yet.' };
   if (!validation.ok) {
     return { state: 'danger', text: pipelineDiagnosticStatusText(validation) };
+  }
+  const entryGraphWarning = (validation.diagnostics || []).find(isEntryGraphDeclarationWarning);
+  if (entryGraphWarning) {
+    return { state: 'warn', text: `Ready with warning: ${pipelineInlineDiagnosticText(entryGraphWarning)}` };
   }
   if (isAgentOrchestratedPipeline(validation)) {
     if (runtimeBlockReason) {
@@ -3108,10 +3121,11 @@ function renderPipelineField({ key, label, type = 'text', multiline = false, opt
 
 function renderPipelineEntryField(entryGraph, readwrite, diagnostics = []) {
   const issue = pipelineEntryDiagnostic(diagnostics);
+  const isWarning = isEntryGraphDeclarationWarning(issue);
   const diagnostic = renderPipelineInlineDiagnostic(issue);
   if (!readwrite) {
     return `
-      <div class="pipeline-field readonly ${issue ? 'has-inline-diagnostic' : ''}">
+      <div class="pipeline-field readonly ${issue ? `has-inline-diagnostic ${isWarning ? 'has-inline-warning' : 'has-inline-error'}` : ''}">
         <span>Entry Flow</span>
         <code>${escapeHtml(entryGraph ? pipelineDisplayTitle(entryGraph, 'Entry flow') : 'not set')}</code>
         ${diagnostic}
@@ -3119,9 +3133,9 @@ function renderPipelineEntryField(entryGraph, readwrite, diagnostics = []) {
     `;
   }
   return renderPipelineField({ key: 'entryGraph', label: 'Entry file' }, entryGraph, readwrite)
-    .replace('<label class="pipeline-field"', `<label class="pipeline-field ${issue ? 'has-inline-diagnostic' : ''}"`)
+    .replace('<label class="pipeline-field"', `<label class="pipeline-field ${issue ? `has-inline-diagnostic ${isWarning ? 'has-inline-warning' : 'has-inline-error'}` : ''}"`)
     .replace('</label>', `${diagnostic}</label>`)
-    .replace('<input data-pipeline-field="entryGraph"', `<input data-pipeline-field="entryGraph" ${issue ? 'aria-invalid="true"' : ''}`);
+    .replace('<input data-pipeline-field="entryGraph"', `<input data-pipeline-field="entryGraph" ${issue && !isWarning ? 'aria-invalid="true"' : ''}`);
 }
 
 function renderPipelineRefSection(doc, section, readwrite, diagnostics = []) {

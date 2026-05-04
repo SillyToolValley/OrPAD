@@ -386,6 +386,54 @@ test('pipeline check shows actionable broken entryGraph ref diagnostic', async (
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('pipeline check surfaces warning when entry graph is omitted from graph declarations', async () => {
+  test.setTimeout(60_000);
+  const { workspace, pipelinePath } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await expect(win.locator('.pipeline-runbar')).toBeVisible();
+
+  const warningPipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  warningPipeline.graphs = {
+    quality: { file: 'graphs/quality.or-graph', description: 'Quality graph' },
+  };
+  fs.writeFileSync(pipelinePath, JSON.stringify(warningPipeline, null, 2));
+
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="check"]').click();
+  const status = win.locator('.pipeline-runbar-status.warn');
+  await expect(status).toContainText('Ready with warning');
+  await expect(status).toContainText('PIPELINE_ENTRY_GRAPH_NOT_DECLARED');
+  await expect(status).toContainText('Pipeline entryGraph should also be listed in graphs for clearer replay and editing.');
+  await expect(status).toContainText('ref: graphs/main.or-graph');
+  await expect(win.locator('button[data-pipeline-run-action="local"]')).toBeEnabled();
+
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
+  await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Details');
+  const entryInlineDiagnostic = win.locator('.pipeline-field.has-inline-diagnostic.has-inline-warning').filter({ hasText: 'Entry' });
+  await expect(entryInlineDiagnostic).toContainText('PIPELINE_ENTRY_GRAPH_NOT_DECLARED');
+  await expect(entryInlineDiagnostic).toContainText('Pipeline entryGraph should also be listed in graphs for clearer replay and editing.');
+  await expect(entryInlineDiagnostic).toContainText('ref: graphs/main.or-graph');
+  await win.locator('button[data-pipeline-mode="readwrite"]').click();
+  await expect(win.locator('[data-pipeline-field="entryGraph"]')).not.toHaveAttribute('aria-invalid', 'true');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('maintenance pipeline opens by path and exposes nested graph layers', async () => {
   test.setTimeout(60_000);
   const workspace = path.resolve('.');
