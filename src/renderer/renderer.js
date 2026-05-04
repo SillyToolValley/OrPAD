@@ -4510,12 +4510,24 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
   const title = node?.label || node?.id || node?.type || 'Untitled node';
   const typeLabel = orchNodeTypeLabel(node?.type) || 'Node';
   const runtime = machineRuntimeStatusForGraphNode(item, runProjection);
-  const runtimeClass = runtime ? ` runtime-${runtime.state}` : '';
   const progress = machineNodeProgress(item, runProjection);
+  // The graph wrapper's node.completed fires once per executeRunStep but the underlying queue
+  // can still hold unfinished items waiting for the next step (e.g. paused at patch-review).
+  // Prefer the queue truth over the wrapper's stale completed status so users do not see
+  // "Done" next to a half-filled progress bar.
+  const displayRuntime = (runtime?.state === 'completed' && progress?.pattern === 'queue' && progress.done < progress.total)
+    ? {
+      ...runtime,
+      state: 'blocked',
+      label: `Paused (${progress.done}/${progress.total})`,
+      title: `${progress.done} of ${progress.total} items processed; remaining items will resume on the next run step.`,
+    }
+    : runtime;
+  const runtimeClass = displayRuntime ? ` runtime-${displayRuntime.state}` : '';
   return `
     <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}"
       data-orch-path="${escapeHtml(path)}"
-      ${runtime?.nodePath ? `data-machine-node-path="${escapeHtml(runtime.nodePath)}"` : ''}
+      ${displayRuntime?.nodePath ? `data-machine-node-path="${escapeHtml(displayRuntime.nodePath)}"` : ''}
       role="button"
       tabindex="0"
       style="left:${Math.round(x)}px;top:${Math.round(y)}px">
@@ -4528,7 +4540,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
         <code>${escapeHtml(node?.id || '(no id)')}</code>
         ${treeNodes ? `<span>${treeNodes} tree nodes</span>` : children ? `<span>${children} child${children === 1 ? '' : 'ren'}</span>` : '<span>leaf</span>'}
       </div>
-      ${runtime ? `<div class="orch-runtime-status" title="${escapeHtml(runtime.title)}"><span class="orch-runtime-dot"></span><span>${escapeHtml(runtime.label)}</span></div>` : ''}
+      ${displayRuntime ? `<div class="orch-runtime-status" title="${escapeHtml(displayRuntime.title)}"><span class="orch-runtime-dot"></span><span>${escapeHtml(displayRuntime.label)}</span></div>` : ''}
       ${renderMachineNodeProgressBar(progress)}
       ${isOrchSkillType(node?.type) && (node?.file || node?.config?.skillRef) ? `<small>${escapeHtml(node.file || node.config.skillRef)}</small>` : ''}
     </div>
@@ -9325,11 +9337,19 @@ function renderMachineNodeProgressBadge(progress) {
     </div>`;
 }
 
+const MACHINE_PROGRESS_STEP_ORDER = { completed: 0, failed: 1, running: 2, queued: 3 };
+
 function renderMachineNodeProgressBar(progress) {
   if (!progress || progress.total <= 1) return '';
   const MAX_VISIBLE_STEPS = 40;
-  const steps = progress.steps.slice(0, MAX_VISIBLE_STEPS);
-  const overflow = progress.steps.length - steps.length;
+  // Sort segments by state so completed bunches at the start, running blinks in the middle,
+  // and queued tails to the end. Without this the bar looks duty-cycled when the dispatcher
+  // claims items out of enqueue order.
+  const ordered = [...progress.steps].sort((a, b) => (
+    (MACHINE_PROGRESS_STEP_ORDER[a.state] ?? 4) - (MACHINE_PROGRESS_STEP_ORDER[b.state] ?? 4)
+  ));
+  const steps = ordered.slice(0, MAX_VISIBLE_STEPS);
+  const overflow = ordered.length - steps.length;
   const segments = steps.map(step => (
     `<span class="orch-node-progress-step state-${escapeHtml(step.state || 'queued')}" title="${escapeHtml(step.label || '')}"></span>`
   )).join('');
@@ -10813,6 +10833,10 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   if (!runbookPath || !runId) return;
   if (isMachineRunInProgress(record, runbookPath)) return;
   if (machinePatchBatchInFlight(record)) return;
+  // Never replace a modal the user is currently looking at — openFmtModal would silently
+  // overwrite their pending decision. The next polling tick (or the modal's onClick chain)
+  // will pick the next patch up after the current modal closes.
+  if (fmtModalEl && !fmtModalEl.classList.contains('hidden')) return;
   const workerReviews = machineWorkerReviewInfos(record)
     .filter(review => review?.patchArtifact && review.patchReviewStatus === 'pending');
   const workerReview = workerReviews.find(review => (
