@@ -95,8 +95,14 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(pipeline.run.externalResearchLimitation).toContain('report a research gap');
   expect(pipeline.nodePacks.map((entry: { id: string }) => entry.id)).toContain('orpad.workstream');
   expect(pipeline.run.machineAdapter.type).toBe('codex-cli');
+  expect(pipeline.run.machineAdapter.candidateLimit).toBe(5);
+  expect(pipeline.run.runSelection.collectAllVisibleCandidates).toBe(true);
+  expect(pipeline.run.runSelection.queueAllActionableCandidates).toBe(true);
+  expect(pipeline.run.queueProtocol.claimPolicy.concurrency).toBe(1);
   expect(pipeline.run.machineAdapter.probeNodePaths).toEqual(['main/probe']);
   const graph = JSON.parse(fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8'));
+  const probeNode = graph.graph.nodes.find((node: { id: string }) => node.id === 'probe') as { config?: { candidateLimitPolicy?: string } } | undefined;
+  expect(probeNode?.config?.candidateLimitPolicy).toBe('collect-all-visible');
   expect(graph.graph.nodes.map((node: { type: string }) => node.type)).toEqual([
     'orpad.entry',
     'orpad.context',

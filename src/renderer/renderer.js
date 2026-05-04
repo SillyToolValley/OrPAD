@@ -10997,6 +10997,15 @@ async function createOrpadRunbookStarter() {
   const contextRulePath = workspaceChildPath('.orpad', 'pipelines', slug, 'rules', 'context.or-rule');
   const skillPath = `skills/${skillName}`;
   const skillFilePath = workspaceChildPath('.orpad', 'pipelines', slug, skillPath);
+  const generatedCandidateLimit = 5;
+  const generatedProcessUntil = [
+    'queue-empty',
+    'approval-required-next',
+    'scope-split-required',
+    'verification-blocked',
+    'risk-budget-exceeded',
+    'handoff-required',
+  ];
   const graphNodes = [
     { id: 'entry', type: 'orpad.entry', label: 'Entry', config: { summary: 'Begin managed run.' } },
     { id: 'context', type: 'orpad.context', label: 'Prepare workspace', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
@@ -11013,7 +11022,18 @@ async function createOrpadRunbookStarter() {
         fallback: 'report a research gap and propose only local evidence-backed work',
       },
     }] : []),
-    { id: 'probe', type: 'orpad.probe', label: 'Find evidence-backed candidate work', config: { lens: 'request-focused', userTask: taskText, skillRef: 'request-context', ...(externalResearchIntent ? { externalResearchLimitation } : {}) } },
+    {
+      id: 'probe',
+      type: 'orpad.probe',
+      label: 'Find evidence-backed candidate work',
+      config: {
+        lens: 'request-focused',
+        userTask: taskText,
+        skillRef: 'request-context',
+        candidateLimitPolicy: 'collect-all-visible',
+        ...(externalResearchIntent ? { externalResearchLimitation } : {}),
+      },
+    },
     { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
     { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
     { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
@@ -11094,6 +11114,12 @@ async function createOrpadRunbookStarter() {
       durableRunRoot: 'runs',
       durableRunRootResolution: 'relative-to-pipeline-directory',
       externalResearchLimitation: externalResearchIntent ? externalResearchLimitation : undefined,
+      runSelection: {
+        collectAllVisibleCandidates: true,
+        queueAllActionableCandidates: true,
+        defaultAction: 'continue-claiming',
+        processUntil: generatedProcessUntil,
+      },
       machineAdapter: {
         type: 'codex-cli',
         enabled: true,
@@ -11104,7 +11130,7 @@ async function createOrpadRunbookStarter() {
         workerSandbox: 'workspace-write',
         approvalPolicy: 'never',
         ephemeral: true,
-        candidateLimit: 1,
+        candidateLimit: generatedCandidateLimit,
         proposalTimeoutMs: 600000,
         workerTimeoutMs: 900000,
         claimLeaseMs: 1800000,
@@ -11114,6 +11140,16 @@ async function createOrpadRunbookStarter() {
         workerNodePath: 'main/worker',
         supportNodePolicy: 'record-gate-warnings-and-mark-artifact-partial',
         description: 'Generated managed-run adapter. OrPAD owns work state, run status, and evidence files; Codex CLI submits candidate/result/proof through adapter contracts.',
+      },
+      queueProtocol: {
+        schema: 'orpad.workItem.v1',
+        claimPolicy: {
+          concurrency: 1,
+          defaultAction: 'continue-claiming',
+          processUntil: generatedProcessUntil,
+          stopWhenQueueEmpty: true,
+          stopOnApprovalRequired: true,
+        },
       },
     },
     metadata: externalResearchIntent ? {
