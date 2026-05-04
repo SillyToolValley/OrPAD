@@ -7682,6 +7682,7 @@ async function refreshPipesPanelState() {
   machineRunListCache.delete(selected);
   await validateSelectedRunbook(selected);
   await refreshMachineRuntimeStatus({ force: true });
+  void hydrateLatestMachineRunForSelection(selected);
   rerenderPipelinePreviewIfActive(selected);
 }
 
@@ -9797,6 +9798,21 @@ async function toggleRunbookSlot(runbookPath) {
   renderRunbooksPanel();
   await openPipelineEntryOrFile(runbookPath);
   await validateSelectedRunbook(runbookPath);
+  void hydrateLatestMachineRunForSelection(runbookPath);
+}
+
+async function hydrateLatestMachineRunForSelection(runbookPath) {
+  if (!workspacePath || !runbookPath) return;
+  if (selectedRunbookPath !== runbookPath) return;
+  if (lastMachineRunRecord?.runState?.runId || lastMachineRunRecord?.runId) return;
+  try {
+    const record = await loadLatestMachineRunRecord(runbookPath);
+    if (!record || selectedRunbookPath !== runbookPath) return;
+    lastMachineRunRecord = record;
+    renderRunbooksPanel();
+  } catch {
+    // Latest run hydration is best-effort; failures stay silent so panel rendering proceeds.
+  }
 }
 
 async function createSelectedRunRecord(runbookPath) {
