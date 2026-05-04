@@ -388,8 +388,10 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
   for compatibility. It does not apply patches, edit source files, or call external tools.
 - `machine-apply-patch` applies user-selected files from a Machine-owned patch artifact only after
   validating the run artifact path, patch schema, write-set membership, and pre-image SHA for each
-  selected workspace file. The renderer exposes this through a supervised review modal rather than
-  automatic canonical workspace mutation.
+  selected workspace file. Selected files are preflighted as a batch before any canonical write, so
+  an overlapping or stale patch cannot partially apply earlier files before a later base mismatch.
+  Failed applications are recorded as Machine events. The renderer exposes this through a supervised
+  review modal rather than automatic canonical workspace mutation.
 
 ## OrPAD Orchestration Machine adapter security model
 
@@ -423,8 +425,9 @@ harness command assembled by main process.
   verification metadata are written.
 - Overlay diffs become Machine patch artifacts. The adapter does not apply them to the canonical
   workspace.
-- Machine patch application checks the active write set and the pre-image hash before writing.
-  Out-of-write-set changes and duplicate/base-mismatched patch application are rejected.
+- Machine patch application checks the active write set and preflights selected file pre-image hashes
+  before writing. Out-of-write-set changes and duplicate/base-mismatched patch applications are
+  rejected without partial canonical writes.
 - Worker results that claim `changedFiles` outside the claim write set are rejected before
   `worker.result` and queue close events are recorded.
 - The API adapter kernel is provider-neutral and disabled by default. A provider response is

@@ -623,6 +623,44 @@ test('Machine-applied patch rejects out-of-write-set paths and duplicate base ap
     applyPatchArtifact({ workspaceRoot, patch: validPatch }),
     error => error?.code === 'PATCH_BASE_MISMATCH',
   );
+
+  await fs.writeFile(path.join(workspaceRoot, 'src/first.txt'), 'first before\n', 'utf8');
+  await fs.writeFile(path.join(workspaceRoot, 'src/second.txt'), 'second changed\n', 'utf8');
+  const multiFilePatch = {
+    schemaVersion: 'orpad.patchArtifact.v1',
+    createdAt: '2026-04-30T00:00:00.000Z',
+    allowedFiles: ['src/first.txt', 'src/second.txt'],
+    changes: [
+      {
+        path: 'src/first.txt',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('first before\n'),
+        afterSha256: sha256Text('first after\n'),
+        beforeContent: 'first before\n',
+        afterContent: 'first after\n',
+      },
+      {
+        path: 'src/second.txt',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('second before\n'),
+        afterSha256: sha256Text('second after\n'),
+        beforeContent: 'second before\n',
+        afterContent: 'second after\n',
+      },
+    ],
+    violations: [],
+  };
+
+  await assert.rejects(
+    applyPatchArtifact({ workspaceRoot, patch: multiFilePatch }),
+    error => error?.code === 'PATCH_BASE_MISMATCH'
+      && error.path === 'src/second.txt'
+      && error.mismatches?.length === 1,
+  );
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/first.txt'), 'utf8'), 'first before\n');
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/second.txt'), 'utf8'), 'second changed\n');
 });
 
 test('Machine patch helpers reject workspace symlink paths before copy or apply', async t => {

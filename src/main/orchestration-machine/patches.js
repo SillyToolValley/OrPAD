@@ -232,7 +232,8 @@ async function applyPatchArtifact(options = {}) {
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   assertPatchWithinWriteSet(patch, allowedFiles);
 
-  const applied = [];
+  const prepared = [];
+  const mismatches = [];
   for (const change of patch.changes || []) {
     await assertNoSymlinkInWorkspacePath(workspaceRoot, change.path);
     const target = resolveWorkspacePath(workspaceRoot, change.path);
@@ -240,11 +241,24 @@ async function applyPatchArtifact(options = {}) {
     const currentSha = current === null ? '' : sha256Text(current);
     const expectedSha = change.beforeExists === false ? '' : change.beforeSha256;
     if (currentSha !== expectedSha) {
-      const err = new Error(`Patch base mismatch for ${change.path}.`);
-      err.code = 'PATCH_BASE_MISMATCH';
-      err.path = change.path;
-      throw err;
+      mismatches.push({
+        path: change.path,
+        expectedSha256: expectedSha,
+        currentSha256: currentSha,
+      });
     }
+    prepared.push({ change, target });
+  }
+  if (mismatches.length) {
+    const err = new Error(`Patch base mismatch for ${mismatches[0].path}.`);
+    err.code = 'PATCH_BASE_MISMATCH';
+    err.path = mismatches[0].path;
+    err.mismatches = mismatches;
+    throw err;
+  }
+
+  const applied = [];
+  for (const { change, target } of prepared) {
     if (change.afterExists === false) {
       await fsp.rm(target);
     } else {

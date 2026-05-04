@@ -465,11 +465,31 @@ async function applyPatchHandler(event, authority, request) {
     ...patch,
     changes: (patch.changes || []).filter(change => wanted.has(change?.path)),
   };
-  const result = await applyPatchArtifact({
-    workspaceRoot: context.workspaceRoot,
-    patch: selectedPatch,
-    allowedFiles: patch.allowedFiles || [],
-  });
+  let result;
+  try {
+    result = await applyPatchArtifact({
+      workspaceRoot: context.workspaceRoot,
+      patch: selectedPatch,
+      allowedFiles: patch.allowedFiles || [],
+    });
+  } catch (err) {
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'renderer',
+      eventType: 'patch.apply_failed',
+      reason: 'machine-ui.patch-review.apply',
+      artifactRefs: [patchArtifact],
+      payload: {
+        patchArtifact,
+        selectedFiles,
+        code: err?.code || 'MACHINE_PATCH_APPLY_FAILED',
+        message: err?.message || 'Patch could not be applied.',
+        path: err?.path || '',
+        mismatches: Array.isArray(err?.mismatches) ? err.mismatches : [],
+      },
+    }).catch(() => null);
+    throw err;
+  }
   const appliedEvent = await appendMachineEvent(runRoot, {
     runId,
     actor: 'renderer',
