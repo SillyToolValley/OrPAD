@@ -393,7 +393,7 @@ const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
 const machineRunStartPendingPaths = new Set();
-const machineRunPendingActions = new Set();
+const machineRunPendingActions = new Map();
 const machineRunProgressTimers = new Map();
 const machineRunExternalResearchDecisions = new Map();
 const machinePatchReviewShown = new Set();
@@ -9024,17 +9024,23 @@ function setMachineRunStartPending(runbookPath, pending) {
 function setMachineRunActionPending(runbookPath, runId, pending) {
   if (!runbookPath || !runId) return;
   const key = machineRunActionKey(runbookPath, runId);
+  const previous = machineRunPendingActions.get(key) || 0;
   if (pending) {
-    machineRunPendingActions.add(key);
+    machineRunPendingActions.set(key, previous + 1);
     return;
   }
-  machineRunPendingActions.delete(key);
-  stopMachineRunProgressPollingByKey(key);
+  const next = Math.max(previous - 1, 0);
+  if (next === 0) {
+    machineRunPendingActions.delete(key);
+    stopMachineRunProgressPollingByKey(key);
+    return;
+  }
+  machineRunPendingActions.set(key, next);
 }
 
 function isMachineRunActionPending(runbookPath, runId) {
   if (!runbookPath || !runId) return false;
-  return machineRunPendingActions.has(machineRunActionKey(runbookPath, runId));
+  return (machineRunPendingActions.get(machineRunActionKey(runbookPath, runId)) || 0) > 0;
 }
 
 function machineActiveNodeExecutions(record) {
@@ -9339,6 +9345,9 @@ function startMachineRunProgressPolling(runbookPath, runId) {
       const record = await refreshMachineRunPanelSnapshot(runbookPath, runId);
       if (isMachineRunTerminal(record?.runState)) {
         setMachineRunActionPending(runbookPath, runId, false);
+      }
+      if (record && !isMachineRunInProgress(record, runbookPath)) {
+        await maybeOpenMachinePatchReviewModal(runbookPath, record);
       }
     } catch {
       // Keep the optimistic running state visible; the execute response will surface failures.
