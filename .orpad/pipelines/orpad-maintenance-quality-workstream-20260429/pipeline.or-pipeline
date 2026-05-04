@@ -241,6 +241,7 @@
       "claimLeaseMs": 1800000,
       "parallelProbes": true,
       "probeConcurrency": "all",
+      "continueAfterReviewableBlockedPatch": true,
       "probeNodePaths": [
         "discovery-lenses/graph-editor-journey-probe",
         "discovery-lenses/product-intent-probe",

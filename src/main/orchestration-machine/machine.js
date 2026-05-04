@@ -248,8 +248,19 @@ function configuredWorkerClaimLimit(config = {}, fallbackCount = 1) {
   return Math.max(1, fallbackCount);
 }
 
-function shouldStopWorkerLoopAfterStep(step) {
+function isReviewableBlockedPatch(step) {
   const status = String(step?.result?.event?.payload?.status || '').toLowerCase();
+  if (status !== 'blocked') return false;
+  const payload = step?.result?.event?.payload || {};
+  const hasPatch = Boolean(payload.patchArtifact) && (payload.changedFiles || []).length > 0;
+  const hasWriteSetViolation = (payload.verification || [])
+    .some(entry => (Number(entry?.writeSetViolationCount) || 0) > 0);
+  return hasPatch && !hasWriteSetViolation;
+}
+
+function shouldStopWorkerLoopAfterStep(step, config = {}) {
+  const status = String(step?.result?.event?.payload?.status || '').toLowerCase();
+  if (config.continueAfterReviewableBlockedPatch === true && isReviewableBlockedPatch(step)) return false;
   const toState = String(step?.result?.toState || step?.result?.event?.payload?.toState || '').toLowerCase();
   return ['approval-required', 'blocked', 'failed', 'rejected'].includes(status) || toState === 'queued';
 }
@@ -1154,10 +1165,11 @@ async function executeMachineRunStep(options = {}) {
     });
   };
   const executeSerialWorkerLoop = async (dispatchAttempt) => {
+    const machineConfig = hasHarness ? harness : adapter;
     const initialWorkerInventory = await summarizeQueueInventory(runRoot);
     const initialQueuedCount = initialWorkerInventory.counts.queued || candidateInventory?.inventory?.candidateCount || 1;
     const workerClaimLimit = configuredWorkerClaimLimit(
-      hasHarness ? harness : adapter,
+      machineConfig,
       initialQueuedCount,
     );
     const steps = [];
@@ -1198,7 +1210,7 @@ async function executeMachineRunStep(options = {}) {
       workers.push(currentWorker);
       steps.push({ claim: currentClaim, worker: currentWorker });
 
-      if (shouldStopWorkerLoopAfterStep(currentWorker)) {
+      if (shouldStopWorkerLoopAfterStep(currentWorker, machineConfig)) {
         stopReason = currentWorker.result?.event?.payload?.status || currentWorker.result?.toState || 'worker-stop';
         break;
       }

@@ -137,6 +137,16 @@ function addParallelProbeHarness(pipelinePath: string): void {
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
+function makeParallelProbeWorkersReviewBlocked(pipelinePath: string): void {
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.run.machineHarness.continueAfterReviewableBlockedPatch = true;
+  pipeline.run.machineHarness.expectedChangedFiles = [
+    pipeline.run.machineHarness.nodeCliPatch.file,
+    'src/unmodified-expected.md',
+  ];
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+}
+
 function appendFailingArtifactContract(pipelineDir: string): void {
   const graphPath = path.join(pipelineDir, 'graphs', 'main.or-graph');
   const graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
@@ -407,6 +417,38 @@ test('Machine graph executes configured probe fanout in parallel', async () => {
     'machine-ui-smoke',
   ]);
   expect(executed.finalization.inventory.activeCount).toBe(0);
+
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine graph continues queued work after reviewable blocked patch', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  addParallelProbeHarness(pipelinePath);
+  makeParallelProbeWorkersReviewBlocked(pipelinePath);
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_review_blocked_continues_queue',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  expect(executed.workerLoop.workerCount).toBe(2);
+  expect(executed.workerLoop.stopReason).toBe('claim-limit');
+  const workerResults = executed.events
+    .filter((event: { eventType?: string }) => event.eventType === 'worker.result');
+  expect(workerResults).toHaveLength(2);
+  expect(workerResults.every((event: { payload?: { status?: string } }) => event.payload?.status === 'blocked')).toBe(true);
+  expect(executed.finalization.inventory.activeCount).toBe(0);
+  expect(executed.finalization.inventory.blockedCount).toBe(2);
 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
