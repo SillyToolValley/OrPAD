@@ -395,6 +395,7 @@ const machineRunListCache = new Map();
 const machineRunStartPendingPaths = new Set();
 const machineRunPendingActions = new Set();
 const machineRunProgressTimers = new Map();
+const machineRunExternalResearchDecisions = new Map();
 const machinePatchReviewShown = new Set();
 let lastMachineRunRecord = null;
 let machineCapabilityToken = '';
@@ -9763,6 +9764,8 @@ async function startSelectedMachineRun(runbookPath) {
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const taskText = currentRunbookTaskText();
+  const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText);
+  if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
   setMachineRunStartPending(runbookPath, true);
   let created = null;
   try {
@@ -9773,6 +9776,7 @@ async function startSelectedMachineRun(runbookPath) {
       options: {
         trustLevel: 'local-authored',
         ...(taskText ? { taskText } : {}),
+        ...(externalResearch ? { externalResearch } : {}),
       },
     });
   } catch (err) {
@@ -9802,21 +9806,26 @@ async function startSelectedMachineRun(runbookPath) {
     events: created.event ? [created.event] : [],
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  if (externalResearch) {
+    machineRunExternalResearchDecisions.set(externalResearchDecisionKey(runbookPath, created.runId), externalResearch);
+  }
   setMachineRunActionPending(runbookPath, created.runId, true);
   setMachineRunStartPending(runbookPath, false);
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
   void refreshWorkspaceRunbookSummary();
-  await executeSelectedMachineRunStep(runbookPath, created.runId);
+  await executeSelectedMachineRunStep(runbookPath, created.runId, externalResearch);
 }
 
-async function executeSelectedMachineRunStep(runbookPath, runId) {
+async function executeSelectedMachineRunStep(runbookPath, runId, providedExternalResearch = null) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) return;
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
   const taskText = currentRunbookTaskText();
+  const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText, runId, providedExternalResearch);
+  if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
   setMachineRunActionPending(runbookPath, runId, true);
   markMachineRunExecuting(runbookPath, runId);
   startMachineRunProgressPolling(runbookPath, runId);
@@ -9828,7 +9837,10 @@ async function executeSelectedMachineRunStep(runbookPath, runId) {
       runId,
       capabilityToken: token,
       exportLatestRun: true,
-      options: taskText ? { taskText } : {},
+      options: {
+        ...(taskText ? { taskText } : {}),
+        ...(externalResearch ? { externalResearch } : {}),
+      },
     });
   } catch (err) {
     setMachineRunActionPending(runbookPath, runId, false);
@@ -10497,6 +10509,103 @@ function hasExternalResearchIntent(taskText) {
 
 function externalResearchLimitationText() {
   return 'Local-only generated run: external competitor claims require approved browsing or attached research evidence. Without that evidence, the run must report a research gap and propose only local evidence-backed work.';
+}
+
+function externalResearchDecisionKey(runbookPath, runId = '') {
+  return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId || 'draft'}`;
+}
+
+async function externalResearchLaunchContext(runbookPath, taskText) {
+  const normalizedTaskText = normalizeRunbookTask(taskText);
+  let doc = null;
+  try {
+    if (runbookPath && /\.or-pipeline$/i.test(runbookPath)) doc = await readRendererJson(runbookPath);
+  } catch {
+    doc = null;
+  }
+  const metadata = doc?.metadata?.externalResearch || {};
+  const limitation = metadata.limitation || doc?.run?.externalResearchLimitation || '';
+  const intentText = [normalizedTaskText, doc?.title, doc?.description].filter(Boolean).join(' ');
+  const intentDetected = hasExternalResearchIntent(intentText) || !!limitation;
+  return {
+    intentDetected,
+    limitation: limitation || externalResearchLimitationText(),
+    requiredEvidence: metadata.requiredEvidence || 'approved browsing or attached research evidence',
+    fallback: metadata.fallback || 'report a research gap and propose only local evidence-backed work',
+  };
+}
+
+function buildExternalResearchRunState(context, mode) {
+  const localOnly = mode === 'local-only-research-gap';
+  return {
+    schemaVersion: 'orpad.externalResearchRun.v1',
+    intentDetected: true,
+    mode: localOnly ? 'local-only-research-gap' : 'approved-or-attached-evidence',
+    evidence: {
+      status: localOnly ? 'not-provided' : 'approved-or-attached',
+      source: 'user-prelaunch-choice',
+    },
+    limitation: context.limitation,
+    requiredEvidence: context.requiredEvidence,
+    fallback: context.fallback,
+    downstreamInstruction: localOnly
+      ? 'Treat external competitor research as unavailable; report a research gap and use only local workspace evidence.'
+      : 'Use only the approved browsing result or attached research evidence; do not invent competitor claims.',
+  };
+}
+
+function requestExternalResearchRunState(context) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (state) => {
+      if (settled) return;
+      settled = true;
+      closeFmtModal();
+      resolve(state);
+    };
+    const body = document.createElement('div');
+    body.innerHTML = `
+      <p>This task asks for external competitor, market, benchmark, or web research.</p>
+      <div class="runbook-diagnostic warning">${escapeHtml(context.limitation)}</div>
+      <div class="runbook-diagnostic"><strong>Evidence mode</strong> Choose whether approved browsing or attached research evidence is available, or run local-only and record a research gap.</div>
+    `;
+    openFmtModal({
+      title: 'External Research Gate',
+      body,
+      onClose: () => finish(null),
+      footer: [
+        { label: 'Cancel', onClick: () => finish(null) },
+        {
+          label: 'Use Approved Evidence',
+          onClick: () => finish(buildExternalResearchRunState(context, 'approved-or-attached-evidence')),
+        },
+        {
+          label: 'Run Local-Only',
+          primary: true,
+          onClick: () => finish(buildExternalResearchRunState(context, 'local-only-research-gap')),
+        },
+      ],
+    });
+  });
+}
+
+async function ensureExternalResearchRunState(runbookPath, taskText, runId = '', providedState = null) {
+  if (providedState?.intentDetected) return providedState;
+  const context = await externalResearchLaunchContext(runbookPath, taskText);
+  if (!context.intentDetected) return null;
+  const keys = [
+    externalResearchDecisionKey(runbookPath, runId),
+    externalResearchDecisionKey(runbookPath),
+  ];
+  for (const key of keys) {
+    const cached = machineRunExternalResearchDecisions.get(key);
+    if (cached?.intentDetected) return cached;
+  }
+  const state = await requestExternalResearchRunState(context);
+  if (!state) return null;
+  machineRunExternalResearchDecisions.set(externalResearchDecisionKey(runbookPath), state);
+  if (runId) machineRunExternalResearchDecisions.set(externalResearchDecisionKey(runbookPath, runId), state);
+  return state;
 }
 
 function renderRunbookExternalResearchWarning(taskText) {

@@ -707,6 +707,43 @@ function completedProbeNodePaths(events, maxSequence) {
     .map(event => event.nodePath));
 }
 
+function hasNonEmptyStringArray(value) {
+  return Array.isArray(value) && value.some(entry => typeof entry === 'string' && entry.trim());
+}
+
+function hasConcreteInspectedTargets(value) {
+  return Array.isArray(value) && value.some(entry => (
+    entry
+    && typeof entry === 'object'
+    && typeof entry.targetId === 'string'
+    && entry.targetId.trim()
+    && hasNonEmptyStringArray(entry.evidenceIds)
+  ));
+}
+
+function missingInventoryTraceabilityFields(item) {
+  const missing = [];
+  if (!hasNonEmptyStringArray(item.evidenceIds)) missing.push('evidenceIds');
+  if (!hasNonEmptyStringArray(item.targetIds)) missing.push('targetIds');
+  if (!hasNonEmptyStringArray(item.riskCheckIds)) missing.push('riskCheckIds');
+  if (typeof item.checkResult !== 'string' || !item.checkResult.trim()) missing.push('checkResult');
+  if (!hasConcreteInspectedTargets(item.inspectedTargets)) missing.push('inspectedTargets');
+  return missing;
+}
+
+function missingNegativeCheckFields(item) {
+  const negativeCheck = item.negativeCheck;
+  if (!negativeCheck || typeof negativeCheck !== 'object' || Array.isArray(negativeCheck)) {
+    return ['negativeCheck'];
+  }
+  const missing = [];
+  for (const field of ['method', 'expected', 'observed']) {
+    if (typeof negativeCheck[field] !== 'string' || !negativeCheck[field].trim()) missing.push(`negativeCheck.${field}`);
+  }
+  if (!hasNonEmptyStringArray(negativeCheck.evidenceIds)) missing.push('negativeCheck.evidenceIds');
+  return missing;
+}
+
 async function auditCandidateInventory(runRoot, manifest, events) {
   const diagnostics = [];
   const files = candidateInventoryFiles(manifest);
@@ -741,7 +778,7 @@ async function auditCandidateInventory(runRoot, manifest, events) {
         path: file.path,
         errors: validation.errors,
       }));
-      continue;
+      if (!Array.isArray(inventory.items)) continue;
     }
 
     itemCount += inventory.items.length;
@@ -786,6 +823,26 @@ async function auditCandidateInventory(runRoot, manifest, events) {
           itemId: item.id,
           nodePath: item.nodePath,
         }));
+      }
+      const missingTraceability = missingInventoryTraceabilityFields(item);
+      if (missingTraceability.length) {
+        diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_TRACEABILITY_MISSING', 'Candidate inventory rows must include risk-check-level traceability evidence.', {
+          path: file.path,
+          itemId: item.id,
+          nodePath: item.nodePath,
+          missingFields: missingTraceability,
+        }));
+      }
+      if (item.status === 'empty-pass') {
+        const missingNegativeCheck = missingNegativeCheckFields(item);
+        if (missingNegativeCheck.length) {
+          diagnostics.push(diagnostic('MACHINE_CANDIDATE_INVENTORY_EMPTY_PASS_NEGATIVE_CHECK_MISSING', 'Candidate inventory empty-pass rows must include concrete negativeCheck evidence.', {
+            path: file.path,
+            itemId: item.id,
+            nodePath: item.nodePath,
+            missingFields: missingNegativeCheck,
+          }));
+        }
       }
     }
 

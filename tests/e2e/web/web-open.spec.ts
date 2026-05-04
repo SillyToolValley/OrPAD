@@ -338,8 +338,21 @@ async function installPipelineSkillTreeValidationWorkspaceMock(page: Page): Prom
           { id: 'missing-skill-id', type: 'orpad.skill', label: 'Missing skill id', config: { skillRef: 'not-declared' } },
           { id: 'missing-skill-file', type: 'orpad.skill', label: 'Missing skill file', config: { file: '../skills/missing.md' } },
           { id: 'missing-tree', type: 'orpad.tree', label: 'Missing tree', config: { treeRef: '../trees/missing.or-tree' } },
+          { id: 'cyclic-tree', type: 'orpad.tree', label: 'Cyclic tree', config: { treeRef: '../trees/cycle.or-tree' } },
         ],
         transitions: [],
+      },
+    });
+
+    const cycleTree = JSON.stringify({
+      kind: 'orpad.tree',
+      version: '1.0',
+      id: 'cycle',
+      root: {
+        id: 'cycle-root',
+        type: 'orpad.tree',
+        label: 'Loop back to this tree',
+        config: { treeRef: 'cycle.or-tree' },
       },
     });
 
@@ -361,7 +374,9 @@ async function installPipelineSkillTreeValidationWorkspaceMock(page: Page): Prom
               'main.or-graph': fileHandle('main.or-graph', mainGraph),
             }),
             skills: dirHandle('skills', {}),
-            trees: dirHandle('trees', {}),
+            trees: dirHandle('trees', {
+              'cycle.or-tree': fileHandle('cycle.or-tree', cycleTree),
+            }),
           }),
         }),
       }),
@@ -532,6 +547,7 @@ test('web pipeline validator checks OrPAD skill and tree graph refs', async ({ p
   expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'SKILL_FILE_MISSING', nodeId: 'missing-skill-id' }));
   expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'SKILL_FILE_NOT_FOUND', nodeId: 'missing-skill-file' }));
   expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'ORCH_TREE_NOT_FOUND', nodeId: 'missing-tree' }));
+  expect(diagnostics).toContainEqual(expect.objectContaining({ code: 'ORCH_TREE_REF_CYCLE', nodeId: 'cycle-root' }));
 
   await close();
 });

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator } from '@playwright/test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -9,6 +9,48 @@ function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
     version: 1,
     workspaceRoot,
   }));
+}
+
+async function readInlineDiagnosticColorTreatment(field: Locator): Promise<{
+  className: string;
+  color: string;
+  borderLeftColor: string;
+  backgroundColor: string;
+  warningColor: string;
+  warningBackgroundColor: string;
+  dangerColor: string;
+  dangerBackgroundColor: string;
+}> {
+  return field.locator('.pipeline-inline-diagnostic').evaluate((element) => {
+    const style = getComputedStyle(element);
+    const root = getComputedStyle(document.documentElement);
+    const probe = document.createElement('span');
+    document.body.appendChild(probe);
+    const resolveColor = (value: string): string => {
+      probe.style.color = '';
+      probe.style.color = value.trim();
+      return getComputedStyle(probe).color;
+    };
+    const resolveBackground = (value: string): string => {
+      probe.style.background = '';
+      probe.style.background = value.trim();
+      return getComputedStyle(probe).backgroundColor;
+    };
+    const warningToken = root.getPropertyValue('--syntax-meta').trim() || '#e0af68';
+    const dangerToken = root.getPropertyValue('--danger-color').trim() || '#ff7676';
+    const treatment = {
+      className: element.className,
+      color: style.color,
+      borderLeftColor: style.borderLeftColor,
+      backgroundColor: style.backgroundColor,
+      warningColor: resolveColor(warningToken),
+      warningBackgroundColor: resolveBackground(`color-mix(in srgb, ${warningToken} 10%, transparent)`),
+      dangerColor: resolveColor(dangerToken),
+      dangerBackgroundColor: resolveBackground(`color-mix(in srgb, ${dangerToken} 10%, transparent)`),
+    };
+    probe.remove();
+    return treatment;
+  });
 }
 
 function writePipelineWorkspace(): { workspace: string; pipelinePath: string } {
@@ -335,6 +377,12 @@ test('pipeline check shows actionable broken entryGraph ref diagnostic', async (
   await expect(entryInlineDiagnostic).toContainText('PIPELINE_ENTRY_GRAPH_NOT_FOUND');
   await expect(entryInlineDiagnostic).toContainText('Pipeline entryGraph file does not exist.');
   await expect(entryInlineDiagnostic).toContainText('ref: graphs/missing.or-graph');
+  const entryErrorTreatment = await readInlineDiagnosticColorTreatment(entryInlineDiagnostic);
+  expect(entryErrorTreatment.className).toContain('error');
+  expect(entryErrorTreatment.className).not.toContain('warning');
+  expect(entryErrorTreatment.color).toBe(entryErrorTreatment.dangerColor);
+  expect(entryErrorTreatment.borderLeftColor).toBe(entryErrorTreatment.dangerColor);
+  expect(entryErrorTreatment.backgroundColor).toBe(entryErrorTreatment.dangerBackgroundColor);
 
   await app.close();
 
@@ -427,6 +475,13 @@ test('pipeline check surfaces warning when entry graph is omitted from graph dec
   await expect(entryInlineDiagnostic).toContainText('PIPELINE_ENTRY_GRAPH_NOT_DECLARED');
   await expect(entryInlineDiagnostic).toContainText('Pipeline entryGraph should also be listed in graphs for clearer replay and editing.');
   await expect(entryInlineDiagnostic).toContainText('ref: graphs/main.or-graph');
+  const entryWarningTreatment = await readInlineDiagnosticColorTreatment(entryInlineDiagnostic);
+  expect(entryWarningTreatment.className).toContain('warning');
+  expect(entryWarningTreatment.className).not.toContain('error');
+  expect(entryWarningTreatment.color).toBe(entryWarningTreatment.warningColor);
+  expect(entryWarningTreatment.borderLeftColor).toBe(entryWarningTreatment.warningColor);
+  expect(entryWarningTreatment.backgroundColor).toBe(entryWarningTreatment.warningBackgroundColor);
+  expect(entryWarningTreatment.backgroundColor).not.toBe(entryWarningTreatment.dangerBackgroundColor);
   await win.locator('button[data-pipeline-mode="readwrite"]').click();
   await expect(win.locator('[data-pipeline-field="entryGraph"]')).not.toHaveAttribute('aria-invalid', 'true');
 

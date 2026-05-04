@@ -89,6 +89,30 @@ test('Machine execution blocks unreviewed trust levels separately from validatio
   assert.deepEqual(result.machineBlockedReasons, ['trust-review-required']);
 });
 
+test('Machine execution blocks imported-review trust level until explicit review', () => {
+  const result = validateRunbookObject({
+    kind: 'orpad.graph',
+    version: '1.0',
+    trustLevel: 'imported-review',
+    graph: {
+      nodes: [
+        {
+          id: 'context',
+          type: 'orpad.context',
+        },
+      ],
+      edges: [],
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.canExecute, false);
+  assert.equal(result.canMachineExecute, false);
+  assert.equal(result.canMachineExecuteStep, false);
+  assert.deepEqual(result.executionModes, []);
+  assert.equal(result.machineBlockedReasons.includes('trust-review-required'), true);
+});
+
 test('workstream node pack declares Machine runtime metadata and adapter capabilities', async () => {
   const nodePack = JSON.parse(await fs.readFile(workstreamNodePackPath, 'utf8'));
   const declaredCapabilities = new Set(nodePack.capabilities);

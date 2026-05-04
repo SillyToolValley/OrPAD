@@ -1391,15 +1391,25 @@ async function webValidateReferencedTree(ref, state, nodeId) {
     state.diagnostics.push({ level: 'error', code: 'ORCH_TREE_OUTSIDE_BASE', message: 'Tree reference must stay inside the pipeline or runbook directory.', nodeId, ref });
     return;
   }
-  if (state.visitedTrees.has(treePath.toLowerCase())) return;
-  state.visitedTrees.add(treePath.toLowerCase());
-  const treeDoc = await webReadJsonRef(treePath, state.diagnostics, 'ORCH_TREE_NOT_FOUND', 'Referenced tree file does not exist.', { nodeId, ref });
-  if (!treeDoc) return;
-  state.treeCount += 1;
+  const treeKey = treePath.toLowerCase();
+  if (state.treeStack.includes(treeKey)) {
+    state.diagnostics.push({ level: 'error', code: 'ORCH_TREE_REF_CYCLE', message: 'Tree references must not form a cycle.', nodeId, ref });
+    return;
+  }
+  if (state.visitedTrees.has(treeKey)) return;
+  state.visitedTrees.add(treeKey);
+  state.treeStack.push(treeKey);
   const previousBaseDir = state.baseDir;
-  state.baseDir = dirOf(treePath);
-  for (const tree of webTreeEntries(treeDoc)) await webWalkNodeDeep(tree.root, state);
-  state.baseDir = previousBaseDir;
+  try {
+    const treeDoc = await webReadJsonRef(treePath, state.diagnostics, 'ORCH_TREE_NOT_FOUND', 'Referenced tree file does not exist.', { nodeId, ref });
+    if (!treeDoc) return;
+    state.treeCount += 1;
+    state.baseDir = dirOf(treePath);
+    for (const tree of webTreeEntries(treeDoc)) await webWalkNodeDeep(tree.root, state);
+  } finally {
+    state.baseDir = previousBaseDir;
+    state.treeStack.pop();
+  }
 }
 
 function webNodeConfig(node) {
@@ -1789,6 +1799,7 @@ async function webValidateRunbookFile(filePath, options = {}) {
     allowedRoot: baseDir,
     pipelineSkills: new Map(),
     graphStack: [],
+    treeStack: [],
     visitedGraphs: new Set(),
     visitedTrees: new Set(),
   };

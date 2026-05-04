@@ -286,9 +286,43 @@ function normalizeRuntimeTaskText(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 2000);
 }
 
+function normalizeExternalResearchState(value) {
+  if (!value || typeof value !== 'object' || value.intentDetected !== true) return null;
+  const mode = value.mode === 'approved-or-attached-evidence'
+    ? 'approved-or-attached-evidence'
+    : 'local-only-research-gap';
+  return {
+    schemaVersion: 'orpad.externalResearchRun.v1',
+    intentDetected: true,
+    mode,
+    evidence: {
+      status: mode === 'approved-or-attached-evidence' ? 'approved-or-attached' : 'not-provided',
+      source: String(value.evidence?.source || 'user-prelaunch-choice').slice(0, 160),
+    },
+    limitation: String(value.limitation || '').slice(0, 1000),
+    requiredEvidence: String(value.requiredEvidence || '').slice(0, 500),
+    fallback: String(value.fallback || '').slice(0, 500),
+    downstreamInstruction: String(value.downstreamInstruction || '').slice(0, 1000),
+  };
+}
+
+function externalResearchPromptLines(externalResearch) {
+  if (!externalResearch?.intentDetected) return [];
+  const localOnly = externalResearch.mode === 'local-only-research-gap';
+  return [
+    '',
+    'External research launch state:',
+    JSON.stringify(externalResearch, null, 2),
+    localOnly
+      ? 'This run is local-only research-gap mode. Do not present competitor, market, benchmark, web, or online claims as verified; report the external research gap and use only local workspace evidence.'
+      : 'This run declares approved browsing or attached research evidence. Use only that approved or attached evidence for external claims; do not invent competitor claims.',
+  ];
+}
+
 function liveProbePrompt(input = {}) {
   const { request, node, pipelinePath, pipeline, adapter } = input;
   const taskText = normalizeRuntimeTaskText(input.taskText);
+  const externalResearch = normalizeExternalResearchState(input.externalResearch);
   const candidateLimit = Number.isFinite(Number(adapter.candidateLimit))
     ? Math.max(0, Math.min(5, Math.trunc(Number(adapter.candidateLimit))))
     : 1;
@@ -315,6 +349,7 @@ function liveProbePrompt(input = {}) {
       'Use this request as the primary prioritization context when ranking candidate proposals.',
       'If the request needs external competitor research and this adapter has no approved browsing capability, do not invent external claims; propose only evidence-backed local work or report the research gap.',
     ] : []),
+    ...externalResearchPromptLines(externalResearch),
     '',
     'Result contract:',
     JSON.stringify({
@@ -371,6 +406,7 @@ async function codexCliWorkerCommandSpec(input = {}) {
     runRoot,
   } = input;
   const taskText = normalizeRuntimeTaskText(input.taskText);
+  const externalResearch = normalizeExternalResearchState(input.externalResearch);
   const prompt = [
     'You are the OrPAD managed-run worker adapter.',
     'The current working directory is a temporary Machine overlay containing only the active write set.',
@@ -395,6 +431,7 @@ async function codexCliWorkerCommandSpec(input = {}) {
       '</user-task>',
       'Use this request to preserve product intent while implementing the claimed work item. Do not expand beyond the Machine-approved write set.',
     ] : []),
+    ...externalResearchPromptLines(externalResearch),
     '',
     'Claimed work item:',
     JSON.stringify(claim.item || candidate || {}, null, 2),
@@ -838,7 +875,50 @@ function candidatesForProbeNode(probeNode, probeNodes, candidates) {
   return [];
 }
 
+function uniqueStrings(values = []) {
+  return [...new Set(values
+    .flat()
+    .map(value => String(value || '').trim())
+    .filter(Boolean))];
+}
+
+function evidenceIdsFromEvidence(evidence = []) {
+  return uniqueStrings((Array.isArray(evidence) ? evidence : []).map((entry) => {
+    if (typeof entry === 'string') return entry;
+    if (!entry || typeof entry !== 'object') return '';
+    return entry.id || entry.file || entry.path || '';
+  }));
+}
+
+function candidateEvidenceIds(candidateProposal) {
+  return uniqueStrings([
+    candidateProposal.coverageEvidenceIds || [],
+    evidenceIdsFromEvidence(candidateProposal.evidence || []),
+    candidateProposal.proposalId || '',
+    candidateProposal.suggestedWorkItemId || '',
+  ]);
+}
+
+function inspectedTargets(targetIds, evidenceIds, status) {
+  return targetIds.map(targetId => ({
+    targetId,
+    status,
+    evidenceIds,
+  }));
+}
+
 function candidateInventoryRowForProposal(probeEntry, candidateProposal) {
+  const evidenceIds = candidateEvidenceIds(candidateProposal);
+  const targetIds = uniqueStrings([
+    candidateProposal.sourceOfTruthTargets || [],
+    candidateProposal.sourceNode || '',
+    probeEntry.nodePath || '',
+  ]);
+  const riskCheckIds = uniqueStrings([
+    candidateProposal.coverageEvidenceIds || [],
+    candidateProposal.fingerprint || '',
+    candidateProposal.proposalId || candidateProposal.suggestedWorkItemId || '',
+  ]);
   return {
     id: candidateProposal.proposalId || candidateProposal.suggestedWorkItemId,
     status: 'candidate',
@@ -850,17 +930,43 @@ function candidateInventoryRowForProposal(probeEntry, candidateProposal) {
     severity: candidateProposal.severity || '',
     confidence: candidateProposal.confidence ?? null,
     evidence: candidateProposal.evidence || [],
+    evidenceIds,
+    targetIds,
+    riskCheckIds,
+    checkResult: 'candidate',
+    inspectedTargets: inspectedTargets(targetIds, evidenceIds, 'candidate-found'),
     sourceOfTruthTargets: candidateProposal.sourceOfTruthTargets || [],
   };
 }
 
 function emptyPassInventoryRow(probeEntry) {
+  const resultEmptyPass = probeEntry.result?.emptyPass || {};
+  const evidence = Array.isArray(resultEmptyPass.evidence) && resultEmptyPass.evidence.length
+    ? resultEmptyPass.evidence
+    : [`node:${probeEntry.nodePath}`];
+  const evidenceIds = uniqueStrings([
+    `node:${probeEntry.nodePath}`,
+    evidenceIdsFromEvidence(evidence),
+  ]);
+  const targetIds = [`node:${probeEntry.nodePath}`];
+  const riskCheckIds = [`risk-check:${idSegment(probeEntry.nodePath)}:no-candidate`];
   return {
     id: `empty-pass-${idSegment(probeEntry.nodePath)}`,
     status: 'empty-pass',
     nodePath: probeEntry.nodePath,
-    reason: 'No deterministic harness candidate was assigned to this probe node.',
-    evidence: [`node:${probeEntry.nodePath}`],
+    reason: resultEmptyPass.reason || 'No deterministic harness candidate was assigned to this probe node.',
+    evidence,
+    evidenceIds,
+    targetIds,
+    riskCheckIds,
+    checkResult: 'empty-pass',
+    inspectedTargets: inspectedTargets(targetIds, evidenceIds, 'no-candidate-found'),
+    negativeCheck: {
+      method: 'candidate-proposal-result-count',
+      expected: 'At least one candidate proposal should be returned when the probe finds actionable discovery coverage.',
+      observed: `No candidate proposals were returned for probe node ${probeEntry.nodePath}.`,
+      evidenceIds,
+    },
   };
 }
 
@@ -919,6 +1025,7 @@ async function executeMachineRunStep(options = {}) {
     allowDangerousSandboxBypass = false,
     timeoutMs = 60_000,
     taskText = '',
+    externalResearch = null,
   } = options;
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   if (!pipelinePath) throw new Error('pipelinePath is required.');
@@ -937,6 +1044,7 @@ async function executeMachineRunStep(options = {}) {
   const hasLiveAdapter = isRunnableMachineAdapter(adapterSource);
   const usingLiveAdapter = !hasHarness && hasLiveAdapter;
   const runtimeTaskText = normalizeRuntimeTaskText(taskText);
+  const runtimeExternalResearch = normalizeExternalResearchState(externalResearch);
   if (!hasHarness && !hasLiveAdapter) {
     throw machineExecutionError(
       'MACHINE_EXECUTION_HARNESS_REQUIRED',
@@ -1065,6 +1173,7 @@ async function executeMachineRunStep(options = {}) {
             pipeline,
             adapter,
             taskText: runtimeTaskText,
+            externalResearch: runtimeExternalResearch,
           }),
         }),
       })));
@@ -1122,6 +1231,7 @@ async function executeMachineRunStep(options = {}) {
         harness,
         patchConfig,
         taskText: runtimeTaskText,
+        externalResearch: runtimeExternalResearch,
       })
       : (hasHarness
         ? nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable })
@@ -1134,6 +1244,7 @@ async function executeMachineRunStep(options = {}) {
           workerNode,
           runRoot,
           taskText: runtimeTaskText,
+          externalResearch: runtimeExternalResearch,
         }));
     adapterRequest.commandSpec = {
       command: commandSpec.command,

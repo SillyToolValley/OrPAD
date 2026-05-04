@@ -328,6 +328,17 @@ function validateNode(node, currentPath, state, options, diagnostics) {
       ));
     }
     if (isSkillNodeType(type)) validateSkillFile(node, currentPath, options, diagnostics);
+    if (isTreeNodeType(type)) {
+      const embeddedTree = node.tree || node.config?.tree || null;
+      const ref = node.treeRef || node.config?.treeRef || node.ref || node.config?.ref || '';
+      if (embeddedTree && typeof embeddedTree === 'object' && !Array.isArray(embeddedTree)) {
+        const treeIds = state.ids;
+        validateTreeEntry(embeddedTree, `${currentPath}.tree`, state, options, diagnostics);
+        state.ids = treeIds;
+      } else if (ref) {
+        validateReferencedTree(ref, currentPath, state, options, diagnostics, id || undefined);
+      }
+    }
   }
 
   const outputs = maybeArray(node.config?.outputs);
@@ -585,13 +596,28 @@ function validateReferencedTree(ref, currentPath, state, options, diagnostics, n
     return;
   }
   if (!options.checkFiles) return;
+
+  const stack = new Set(options.treeValidationStack || []);
+  const realResolved = realpathIfExists(resolved) || path.resolve(resolved);
+  if (stack.has(realResolved)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'ORCH_TREE_REF_CYCLE',
+      'Tree references must not form a cycle.',
+      { nodeId, path: currentPath, ref },
+    ));
+    return;
+  }
+
   try {
     const parsed = JSON.parse(fs.readFileSync(resolved, 'utf-8'));
     const nested = validateRunbookObject(parsed, {
       ...options,
       baseDir: path.dirname(resolved),
+      refRootDir: options.refRootDir || options.baseDir,
       filePath: resolved,
       suppressTrustWarning: true,
+      treeValidationStack: new Set([...stack, realResolved]),
     });
     mergeNestedValidation(nested, state, diagnostics, ref);
   } catch (err) {

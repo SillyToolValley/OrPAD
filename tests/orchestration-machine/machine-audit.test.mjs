@@ -124,6 +124,53 @@ function runAudit(runRoot, latestRunExportRoot = '') {
   };
 }
 
+async function lastEventSequence(runRoot) {
+  const eventsPath = path.join(runRoot, 'events.jsonl');
+  const lines = (await fs.readFile(eventsPath, 'utf8')).trim().split(/\r?\n/).filter(Boolean);
+  if (!lines.length) return 0;
+  return JSON.parse(lines[lines.length - 1]).sequence;
+}
+
+async function makeCompletedProbeRun(runId) {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-empty-pass-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample-machine-pipeline',
+    entryGraph: 'graphs/main.or-graph',
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId,
+    now: fixedNow,
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    status: 'scheduled',
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    status: 'started',
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    status: 'completed',
+    payload: { proposalCount: 0 },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+  return run;
+}
+
 test('audit-orpad-machine-run passes on a durable Machine run and export', async () => {
   const run = await makeAuditableRun();
   const result = runAudit(run.runRoot, run.latestRunExportRoot);
@@ -337,6 +384,71 @@ test('audit-orpad-machine-run fails when candidate inventory counts are corrupte
 
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_COUNT_MISMATCH'), true);
+});
+
+test('audit-orpad-machine-run accepts a concrete risk-check-scoped empty-pass inventory row', async () => {
+  const run = await makeCompletedProbeRun('run_20260430_audit_empty_pass_concrete');
+  await registerCandidateInventoryArtifact(run.runRoot, {
+    runId: run.runId,
+    probes: [
+      {
+        nodePath: 'main/probe',
+        candidateProposals: [],
+        result: {
+          emptyPass: {
+            reason: 'Adapter inspected the requested improvement surface and found no deterministic local candidate.',
+            evidence: ['adapter:empty-pass:main/probe'],
+          },
+        },
+      },
+    ],
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+  assert.equal(result.json.ok, true);
+  assert.equal(result.json.candidateInventoryItemCount, 1);
+});
+
+test('audit-orpad-machine-run rejects a shallow empty-pass inventory row without negativeCheck evidence', async () => {
+  const run = await makeCompletedProbeRun('run_20260430_audit_empty_pass_shallow');
+  const shallowInventory = {
+    schemaVersion: 'orpad.machineCandidateInventory.v1',
+    runId: run.runId,
+    createdAt: '2026-04-30T00:00:05.000Z',
+    sourceEventSequence: await lastEventSequence(run.runRoot),
+    selectedProbeNodes: ['main/probe'],
+    candidateCount: 0,
+    emptyPassCount: 1,
+    items: [
+      {
+        id: 'empty-pass-main-probe',
+        status: 'empty-pass',
+        nodePath: 'main/probe',
+        reason: 'No deterministic harness candidate was assigned to this probe node.',
+        evidence: ['node:main/probe'],
+      },
+    ],
+  };
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/discovery/candidate-inventory.json',
+    content: `${JSON.stringify(shallowInventory, null, 2)}\n`,
+    producedBy: 'orpad.machine.candidate-inventory',
+    registeredBy: 'machine',
+    schemaVersion: 'orpad.machineCandidateInventory.v1',
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_SCHEMA_INVALID'), true);
+  assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_TRACEABILITY_MISSING'), true);
+  assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_EMPTY_PASS_NEGATIVE_CHECK_MISSING'), true);
 });
 
 test('audit-orpad-machine-run fails when candidate inventory names a probe that did not complete', async () => {

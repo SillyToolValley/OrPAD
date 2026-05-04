@@ -1870,6 +1870,11 @@ body.json-diff-mode #preview-pane {
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
+.pipeline-inline-diagnostic.warning {
+  border-left-color: var(--syntax-meta, #e0af68);
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 10%, transparent);
+  color: var(--syntax-meta, #e0af68);
+}
 .pipeline-runbar-actions {
   position: relative;
   display: inline-flex;

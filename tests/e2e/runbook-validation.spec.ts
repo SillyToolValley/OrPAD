@@ -289,6 +289,65 @@ test('pipeline validator accepts manifest with external graph and tree and creat
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('pipeline validator reports deterministic tree ref cycles', async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-pipeline-tree-cycle-'));
+  const pipelineRoot = path.join(workspace, '.orpad', 'pipelines', 'tree-cycle');
+  fs.mkdirSync(path.join(pipelineRoot, 'graphs'), { recursive: true });
+  fs.mkdirSync(path.join(pipelineRoot, 'trees'), { recursive: true });
+  fs.writeFileSync(path.join(pipelineRoot, 'trees', 'loop.or-tree'), JSON.stringify({
+    kind: 'orpad.tree',
+    version: '1.0',
+    id: 'loop',
+    root: {
+      id: 'loop-root',
+      type: 'orpad.tree',
+      label: 'Loop back to this tree',
+      config: { treeRef: 'loop.or-tree' },
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(pipelineRoot, 'graphs', 'main.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'tree-cycle',
+      nodes: [
+        { id: 'cyclic-tree', type: 'orpad.tree', label: 'Cyclic tree', config: { treeRef: '../trees/loop.or-tree' } },
+      ],
+      transitions: [],
+    },
+  }, null, 2));
+  const pipelinePath = path.join(pipelineRoot, 'pipeline.or-pipeline');
+  fs.writeFileSync(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'tree-cycle',
+    trustLevel: 'local-authored',
+    entryGraph: 'graphs/main.or-graph',
+    graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
+    trees: [{ id: 'loop', file: 'trees/loop.or-tree' }],
+  }, null, 2));
+
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+  await win.evaluate(async () => {
+    await (window as any).orpad.getApprovedWorkspace();
+  });
+
+  const validation = await win.evaluate(async (filePath) => {
+    return await (window as any).orpad.pipelines.validateFile(filePath);
+  }, pipelinePath);
+  const codes = validation.diagnostics.map((item: { code: string }) => item.code);
+
+  expect(validation.ok).toBe(false);
+  expect(codes).toContain('ORCH_TREE_REF_CYCLE');
+  expect(codes).not.toContain('ORCH_TREE_PARSE_FAILED');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('pipeline validator recognizes built-in OrPAD node pack graph types', async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-pipeline-node-pack-'));
   const pipelineRoot = path.join(workspace, '.orpad', 'pipelines', 'node-pack-validation');

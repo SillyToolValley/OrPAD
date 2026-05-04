@@ -1,7 +1,60 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, _electron as electron } from '@playwright/test';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { launchElectron } from '../helpers';
+
+function createOrpadFileLaunchFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-file-launch-'));
+  const graphPath = path.join(dir, 'entry.or-graph');
+  const pipelinePath = path.join(dir, 'pipeline.or-pipeline');
+
+  const graph = JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'entry',
+      nodes: [
+        { id: 'context', type: 'orpad.context', label: 'Review desktop graph launch' },
+        { id: 'gate', type: 'orpad.gate', label: 'Confirm OrPAD association', config: { criteria: ['File launch renders'] } },
+      ],
+      transitions: [{ from: 'context', to: 'gate' }],
+    },
+  }, null, 2);
+
+  const pipeline = JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'competitive-file-launch',
+    title: 'Competitive file launch fixture',
+    trustLevel: 'local-authored',
+    entryGraph: 'entry.or-graph',
+    graphs: [{ id: 'entry', file: 'entry.or-graph' }],
+    run: {
+      queueProtocol: {
+        schema: 'orpad.workItem.v1',
+        states: ['candidate', 'queued', 'claimed', 'done'],
+      },
+    },
+  }, null, 2);
+
+  fs.writeFileSync(graphPath, graph, 'utf-8');
+  fs.writeFileSync(pipelinePath, pipeline, 'utf-8');
+
+  return { dir, graphPath, pipelinePath };
+}
+
+async function launchElectronWithFileArg(filePath: string) {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-file-launch-user-data-'));
+  const app = await electron.launch({
+    args: [path.resolve('src/main/main.js'), filePath],
+    env: {
+      ...process.env,
+      ORPAD_TEST_USER_DATA: userData,
+    },
+  });
+  return { app, userData };
+}
 
 test('desktop app launches, window title contains OrPAD', async () => {
   const app = await launchElectron();
@@ -145,6 +198,53 @@ test('desktop app launches, window title contains OrPAD', async () => {
   await expect(win.locator('#fmt-modal')).toBeVisible();
 
   await app.close();
+});
+
+test('OrPAD file launch opens pipeline file argument', async () => {
+  const fixture = createOrpadFileLaunchFixture();
+  const { app, userData } = await launchElectronWithFileArg(fixture.pipelinePath);
+
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    await expect(win).toHaveTitle(/pipeline\.or-pipeline - OrPAD/);
+    await expect(win.locator('.tab-item')).toContainText('pipeline.or-pipeline');
+    await expect(win.locator('.cm-content')).toContainText('competitive-file-launch');
+    await expect(win.locator('.cm-content')).toContainText('"entryGraph": "entry.or-graph"');
+    await expect.poll(async () => app.windows().length).toBe(1);
+  } finally {
+    await app.close();
+    fs.rmSync(fixture.dir, { recursive: true, force: true });
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
+});
+
+test('OrPAD file launch opens graph file from second instance argument', async () => {
+  const fixture = createOrpadFileLaunchFixture();
+  const app = await launchElectron();
+
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    await app.evaluate(({ app: electronApp }, graphPath) => {
+      electronApp.emit('second-instance', {}, [
+        process.execPath,
+        process.argv[1] || 'src/main/main.js',
+        graphPath,
+      ]);
+    }, fixture.graphPath);
+
+    await expect(win).toHaveTitle(/entry\.or-graph - OrPAD/);
+    await expect(win.locator('.tab-item')).toContainText('entry.or-graph');
+    await expect(win.locator('.cm-content')).toContainText('Review desktop graph launch');
+    await expect(win.locator('.cm-content')).toContainText('"transitions"');
+    await expect.poll(async () => app.windows().length).toBe(1);
+  } finally {
+    await app.close();
+    fs.rmSync(fixture.dir, { recursive: true, force: true });
+  }
 });
 
 test('closing the main window also closes detached terminal windows', async () => {
