@@ -1,0 +1,88 @@
+{
+  "kind": "orpad.graph",
+  "schemaVersion": "1.0",
+  "version": "1.0",
+  "id": "tutorial-worker-patch-review-main",
+  "label": "Tutorial: Worker patch review",
+  "role": "entry",
+  "graph": {
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Begin tutorial run",
+        "config": {
+          "summary": "Enter the worker patch review tutorial."
+        }
+      },
+      {
+        "id": "probe",
+        "type": "orpad.probe",
+        "label": "Discover one candidate",
+        "config": {
+          "lens": "tutorial",
+          "candidateLimitPolicy": "strict"
+        }
+      },
+      {
+        "id": "queue",
+        "type": "orpad.workQueue",
+        "label": "Hold candidate work",
+        "config": {
+          "queueRoot": "harness/generated/latest-run/queue",
+          "schema": "orpad.workItem.v1"
+        }
+      },
+      {
+        "id": "triage",
+        "type": "orpad.triage",
+        "label": "Prioritize work",
+        "config": {
+          "queueRef": "queue"
+        }
+      },
+      {
+        "id": "dispatcher",
+        "type": "orpad.dispatcher",
+        "label": "Claim one item",
+        "config": {
+          "queueRef": "queue",
+          "workerLoopRef": "worker"
+        }
+      },
+      {
+        "id": "worker",
+        "type": "orpad.workerLoop",
+        "label": "Apply tutorial fixture",
+        "config": {
+          "queueRef": "queue"
+        }
+      },
+      {
+        "id": "patch-review",
+        "type": "orpad.patchReview",
+        "label": "Review patch",
+        "config": {
+          "reviewMode": "user-selected-files"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Finish tutorial",
+        "config": {
+          "summary": "Tutorial complete after the patch is approved or skipped."
+        }
+      }
+    ],
+    "transitions": [
+      { "id": "edge-entry-probe", "from": "entry", "to": "probe" },
+      { "id": "edge-probe-queue", "from": "probe", "to": "queue" },
+      { "id": "edge-queue-triage", "from": "queue", "to": "triage" },
+      { "id": "edge-triage-dispatcher", "from": "triage", "to": "dispatcher" },
+      { "id": "edge-dispatcher-worker", "from": "dispatcher", "to": "worker" },
+      { "id": "edge-worker-review", "from": "worker", "to": "patch-review" },
+      { "id": "edge-review-exit", "from": "patch-review", "to": "exit" }
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "kind": "orpad.pipeline",
+  "schemaVersion": "1.0",
+  "version": "1.0",
+  "id": "tutorial-selector-branching",
+  "title": "Tutorial: Selector branching",
+  "description": "Demonstrates how an orpad.selector node forks execution down one of several declared options. The selector picks the default route at runtime; downstream context nodes show the chosen branch. Switch the default value or add custom selector kinds to explore branching behavior.",
+  "template": true,
+  "trustLevel": "local-authored",
+  "entryGraph": "graphs/main.or-graph",
+  "graphs": {
+    "main": {
+      "file": "graphs/main.or-graph",
+      "description": "Branching graph: entry -> selector -> happy-path | escalation-path -> exit."
+    }
+  },
+  "nodePacks": [
+    {
+      "id": "orpad.core",
+      "version": ">=1.0.0-beta.3"
+    }
+  ],
+  "executionPolicy": {
+    "mode": "template-only",
+    "copyBeforeRun": true,
+    "description": "Built-in tutorial. Copy the pipeline into a workspace before running so any generated evidence stays out of the app bundle."
+  },
+  "run": {
+    "artifactRoot": ".orpad/harness/generated/latest-run/artifacts",
+    "artifactRootResolution": "workspace-root",
+    "queueRoot": ".orpad/harness/generated/latest-run/queue",
+    "queueRootResolution": "workspace-root",
+    "summaryPath": ".orpad/harness/generated/latest-run/summary.md",
+    "summaryPathResolution": "workspace-root"
+  }
+}

@@ -57,5 +57,18 @@
   "trees": [],
   "skills": [],
   "rules": [],
-  "examples": []
+  "examples": [
+    {
+      "id": "tutorial-gate-decision",
+      "path": "examples/tutorial-gate-decision/pipeline.or-pipeline",
+      "label": "Tutorial: Gate decision",
+      "description": "Smallest pipeline with an orpad.gate guarding the rest of the flow."
+    },
+    {
+      "id": "tutorial-selector-branching",
+      "path": "examples/tutorial-selector-branching/pipeline.or-pipeline",
+      "label": "Tutorial: Selector branching",
+      "description": "Demonstrates orpad.selector forking into named branches that converge at exit."
+    }
+  ]
 }

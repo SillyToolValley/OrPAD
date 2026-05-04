@@ -1,0 +1,60 @@
+{
+  "kind": "orpad.pipeline",
+  "schemaVersion": "1.0",
+  "version": "1.0",
+  "id": "tutorial-worker-patch-review",
+  "title": "Tutorial: Worker patch review",
+  "description": "Smallest end-to-end machine workflow that exercises the queue path. Probe -> workQueue -> triage -> dispatcher -> workerLoop -> patchReview -> exit, backed by a deterministic harness fixture (no codex CLI cost). Run produces one worker.result against tutorial-target.md and the Review Patch modal demonstrates approve/skip/apply.",
+  "template": true,
+  "trustLevel": "local-authored",
+  "entryGraph": "graphs/main.or-graph",
+  "graphs": {
+    "main": {
+      "file": "graphs/main.or-graph",
+      "description": "Single-candidate machine flow: entry -> probe -> queue -> triage -> dispatcher -> worker -> patch-review -> exit."
+    }
+  },
+  "nodePacks": [
+    {
+      "id": "orpad.core",
+      "version": ">=1.0.0-beta.3"
+    },
+    {
+      "id": "orpad.workstream",
+      "version": ">=0.1.0"
+    }
+  ],
+  "executionPolicy": {
+    "mode": "template-only",
+    "copyBeforeRun": true,
+    "description": "Built-in tutorial. Copy the pipeline into a workspace before running so harness evidence files do not write into the app bundle. tutorial-target.md must exist next to the pipeline directory in the workspace root before the worker fires."
+  },
+  "run": {
+    "artifactRoot": "harness/generated/latest-run/artifacts",
+    "queueRoot": "harness/generated/latest-run/queue",
+    "metadataPath": "harness/generated/latest-run/run-metadata.json",
+    "summaryPath": "harness/generated/latest-run/summary.md",
+    "machineHarness": {
+      "candidateProposal": {
+        "schemaVersion": "orpad.candidateProposal.v1",
+        "proposalId": "tutorial-worker-patch-review-proposal",
+        "suggestedWorkItemId": "tutorial-target-update",
+        "sourceNode": "main/probe",
+        "title": "Update tutorial-target.md with worker output",
+        "fingerprint": "tutorial:tutorial-target.md",
+        "evidence": [
+          { "id": "target-before", "file": "tutorial-target.md" }
+        ],
+        "acceptanceCriteria": [
+          "Patch artifact records the tutorial target file change."
+        ],
+        "sourceOfTruthTargets": ["tutorial-target.md"]
+      },
+      "expectedChangedFiles": ["tutorial-target.md"],
+      "nodeCliPatch": {
+        "file": "tutorial-target.md",
+        "content": "Updated by tutorial worker fixture.\n"
+      }
+    }
+  }
+}

@@ -111,6 +111,12 @@
     {
       "id": "maintenance-workstream-example",
       "path": "examples/maintenance-workstream.or-pipeline"
+    },
+    {
+      "id": "tutorial-worker-patch-review",
+      "path": "examples/tutorial-worker-patch-review/pipeline.or-pipeline",
+      "label": "Tutorial: Worker patch review",
+      "description": "Single-candidate machine flow with a deterministic harness fixture so the Review Patch modal has a concrete diff to inspect."
     }
   ]
 }

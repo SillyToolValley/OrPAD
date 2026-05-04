@@ -1,0 +1,61 @@
+{
+  "kind": "orpad.graph",
+  "schemaVersion": "1.0",
+  "version": "1.0",
+  "id": "tutorial-selector-branching-main",
+  "label": "Tutorial: Selector branching",
+  "role": "entry",
+  "graph": {
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Begin tutorial run",
+        "config": {
+          "summary": "Enter the selector branching tutorial."
+        }
+      },
+      {
+        "id": "route-selector",
+        "type": "orpad.selector",
+        "label": "Pick a route",
+        "config": {
+          "summary": "Choose between happy-path and escalation-path. The selector defaults to happy-path; change the default to see the other branch.",
+          "options": ["happy-path", "escalation-path"],
+          "default": "happy-path"
+        }
+      },
+      {
+        "id": "happy-path",
+        "type": "orpad.context",
+        "label": "Happy path branch",
+        "config": {
+          "summary": "Reached when the selector resolves to happy-path."
+        }
+      },
+      {
+        "id": "escalation-path",
+        "type": "orpad.context",
+        "label": "Escalation branch",
+        "config": {
+          "summary": "Reached when the selector resolves to escalation-path."
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Finish tutorial",
+        "config": {
+          "summary": "Both branches converge here."
+        }
+      }
+    ],
+    "transitions": [
+      { "id": "edge-entry-selector", "from": "entry", "to": "route-selector" },
+      { "id": "edge-selector-happy", "from": "route-selector", "to": "happy-path", "condition": "happy-path" },
+      { "id": "edge-selector-escalation", "from": "route-selector", "to": "escalation-path", "condition": "escalation-path" },
+      { "id": "edge-happy-exit", "from": "happy-path", "to": "exit" },
+      { "id": "edge-escalation-exit", "from": "escalation-path", "to": "exit" }
+    ]
+  }
+}
