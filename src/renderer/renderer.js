@@ -13575,13 +13575,20 @@ async function renderMermaidBlocks() {
 }
 
 // ==================== Keyboard Shortcuts ====================
+function isSaveShortcut(event) {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 's';
+}
+
 function shouldIgnoreGlobalShortcut(event) {
   const target = event.target;
   const el = target instanceof Element ? target : target?.parentElement;
   if (!el) return false;
   if (el.closest('.cm-editor')) return false;
   if (typeof fmtModalEl !== 'undefined' && fmtModalEl && !fmtModalEl.classList.contains('hidden')) return true;
-  return !!el.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]');
+  const editableField = el.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""], [role="textbox"]');
+  if (!editableField) return false;
+  if (isSaveShortcut(event) && editableField.closest('.orch-preview')) return false;
+  return true;
 }
 
 document.addEventListener('keydown', (e) => {

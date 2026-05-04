@@ -96,6 +96,9 @@ fileAssociations:
   - ext: markdown
     name: Markdown File
     description: Markdown Document
+  - ext: mkd
+    name: Markdown File
+    description: Markdown Document
   - ext: mdx
     name: MDX File
     description: MDX Document
@@ -105,6 +108,12 @@ fileAssociations:
   - ext: json
     name: JSON File
     description: JSON Document
+  - ext: jsonl
+    name: JSON Lines File
+    description: JSON Lines Document
+  - ext: ndjson
+    name: NDJSON File
+    description: Newline Delimited JSON Document
   - ext: or-pipeline
     name: OrPAD Pipeline
     description: OrPAD Pipeline

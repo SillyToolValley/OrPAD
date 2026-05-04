@@ -235,7 +235,7 @@
       "workerSandbox": "workspace-write",
       "approvalPolicy": "never",
       "ephemeral": true,
-      "candidateLimit": 1,
+      "candidateLimit": 5,
       "proposalTimeoutMs": 600000,
       "workerTimeoutMs": 900000,
       "claimLeaseMs": 1800000,

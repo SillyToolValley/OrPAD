@@ -320,9 +320,11 @@ test('pipeline details preview exposes editable contract fields', async () => {
     }, null, 2);
     input.dispatchEvent(new Event('change', { bubbles: true }));
   });
-  await win.evaluate(async () => {
-    await (window as any).orpadCommands.runCommand('file.save');
-  });
+  const metadataField = win.locator('[data-pipeline-json-section="metadata"]');
+  await metadataField.focus();
+  await expect(metadataField).toBeFocused();
+  await win.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S');
+  await expect(metadataField).toBeFocused();
 
   await expect.poll(() => JSON.parse(fs.readFileSync(pipelinePath, 'utf-8')).title).toBe('Edited pipeline contract');
   const updated = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));

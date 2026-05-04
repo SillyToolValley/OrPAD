@@ -32,10 +32,17 @@
       "accept": {
         "text/markdown": [
           ".md",
-          ".markdown"
+          ".markdown",
+          ".mkd",
+          ".mdx"
+        ],
+        "text/vnd.mermaid": [
+          ".mmd"
         ],
         "application/json": [
           ".json",
+          ".jsonl",
+          ".ndjson",
           ".or-pipeline",
           ".or-graph",
           ".or-tree",
@@ -46,9 +53,27 @@
           ".yaml",
           ".yml"
         ],
+        "text/html": [
+          ".html",
+          ".htm"
+        ],
+        "application/xml": [
+          ".xml"
+        ],
         "text/csv": [
           ".csv",
           ".tsv"
+        ],
+        "application/toml": [
+          ".toml"
+        ],
+        "text/plain": [
+          ".ini",
+          ".conf",
+          ".properties",
+          ".env",
+          ".log",
+          ".txt"
         ]
       }
     }

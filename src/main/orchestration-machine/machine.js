@@ -38,6 +38,7 @@ const contractValidator = createContractValidator();
 const MACHINE_CANDIDATE_INVENTORY_SCHEMA = SCHEMA_VERSIONS.candidateInventory;
 const TERMINAL_RUN_LIFECYCLE_STATUSES = new Set(['completed', 'cancelled', 'failed']);
 const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(competing products?|competitors?|competition|market|benchmark|benchmarks|web research|browse|internet|online|search for competing|external research)\b/i;
+const MANAGED_PROPOSAL_CANDIDATE_SAFE_CAP = 5;
 const SUPPORT_NODE_TYPES = new Set([
   'orpad.context',
   'orpad.workQueue',
@@ -325,13 +326,31 @@ function externalResearchPromptLines(externalResearch) {
   ];
 }
 
+function configuredProbeCandidateLimit(adapter = {}) {
+  return Number.isFinite(Number(adapter.candidateLimit))
+    ? Math.max(0, Math.min(MANAGED_PROPOSAL_CANDIDATE_SAFE_CAP, Math.trunc(Number(adapter.candidateLimit))))
+    : 1;
+}
+
+function effectiveProbeCandidateLimit(input = {}) {
+  const configuredLimit = configuredProbeCandidateLimit(input.adapter);
+  const runSelection = input.pipeline?.run?.runSelection || {};
+  const collectAllVisiblePolicy = input.node?.config?.candidateLimitPolicy === 'collect-all-visible';
+  const queueAllBacklog = (
+    runSelection.collectAllVisibleCandidates === true
+    && runSelection.queueAllActionableCandidates === true
+  );
+  if (collectAllVisiblePolicy && queueAllBacklog) {
+    return Math.max(configuredLimit, MANAGED_PROPOSAL_CANDIDATE_SAFE_CAP);
+  }
+  return configuredLimit;
+}
+
 function liveProbePrompt(input = {}) {
   const { request, node, pipelinePath, pipeline, adapter } = input;
   const taskText = normalizeRuntimeTaskText(input.taskText);
   const externalResearch = normalizeExternalResearchState(input.externalResearch);
-  const candidateLimit = Number.isFinite(Number(adapter.candidateLimit))
-    ? Math.max(0, Math.min(5, Math.trunc(Number(adapter.candidateLimit))))
-    : 1;
+  const candidateLimit = effectiveProbeCandidateLimit({ adapter, node, pipeline });
   return [
     'You are the OrPAD managed-run proposal adapter.',
     'Inspect the local workspace from the current working directory, but do not modify files.',
@@ -1590,8 +1609,10 @@ async function executeMachineRunStep(options = {}) {
 
 module.exports = {
   executeMachineRunStep,
+  effectiveProbeCandidateLimit,
   flattenTraversalNodes,
   harnessFromPipeline,
+  liveProbePrompt,
   registerCandidateInventoryArtifact,
   validateBarrierNode,
   validateArtifactContract,

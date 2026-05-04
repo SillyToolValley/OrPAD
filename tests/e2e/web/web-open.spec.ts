@@ -4,6 +4,38 @@ import * as path from 'path';
 import { startStaticServer } from '../../helpers';
 
 const docsDir = path.resolve('docs');
+const sourceManifestPath = path.resolve('src/web/manifest.webmanifest');
+const INTENTIONAL_FILE_HANDLER_EXCLUSIONS = new Set<string>();
+
+function extractSupportedExts(sourcePath: string): string[] {
+  const source = fs.readFileSync(sourcePath, 'utf-8');
+  const match = source.match(/const SUPPORTED_EXTS = \[([\s\S]*?)\];/);
+  if (!match) throw new Error(`Missing SUPPORTED_EXTS in ${sourcePath}`);
+  return Array.from(match[1].matchAll(/'([^']+)'/g), item => item[1]);
+}
+
+function extractDesktopAssociationExts(sourcePath: string): string[] {
+  const source = fs.readFileSync(sourcePath, 'utf-8');
+  const section = source.match(/^fileAssociations:\r?\n([\s\S]*)$/m)?.[1];
+  if (!section) throw new Error(`Missing fileAssociations in ${sourcePath}`);
+  return Array.from(section.matchAll(/^\s*-\s+ext:\s+([^\s]+)/gm), item => item[1]);
+}
+
+function extractManifestFileHandlerExts(sourcePath: string): string[] {
+  const manifest = JSON.parse(fs.readFileSync(sourcePath, 'utf-8'));
+  const handlers = manifest.file_handlers || [];
+  const exts: string[] = [];
+  for (const handler of handlers as Array<{ accept?: Record<string, string[]> }>) {
+    for (const accepted of Object.values(handler.accept || {})) {
+      for (const ext of accepted) exts.push(ext.replace(/^\./, ''));
+    }
+  }
+  return exts;
+}
+
+function expectSameExtSet(actual: string[], expected: string[]): void {
+  expect([...new Set(actual)].sort()).toEqual([...new Set(expected)].sort());
+}
 
 async function installHangingAiMock(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -830,6 +862,19 @@ test('AI edit apply returns to the source tab after tab switching', async ({ pag
   }
 });
 
+test('file handler extension registrations match runtime-supported extensions', async () => {
+  const desktopRuntime = extractSupportedExts(path.resolve('src/main/main.js'));
+  const webRuntime = extractSupportedExts(path.resolve('src/web/platform-adapter.js'));
+  const desktopAssociations = extractDesktopAssociationExts(path.resolve('electron-builder.yml'));
+  const webManifestHandlers = extractManifestFileHandlerExts(sourceManifestPath);
+  const manifestExpected = webRuntime.filter(ext => !INTENTIONAL_FILE_HANDLER_EXCLUSIONS.has(ext));
+
+  expectSameExtSet(webRuntime, desktopRuntime);
+  expectSameExtSet(desktopAssociations, desktopRuntime);
+  expectSameExtSet(webManifestHandlers, manifestExpected);
+  expect([...INTENTIONAL_FILE_HANDLER_EXCLUSIONS]).toEqual([]);
+});
+
 test('web PWA assets are self-contained for offline install', async () => {
   if (!fs.existsSync(path.join(docsDir, 'index.html'))) {
     test.skip(true, 'docs/ not built - run npm run build:web:min first');
@@ -840,6 +885,12 @@ test('web PWA assets are self-contained for offline install', async () => {
   expect(manifest.start_url).toBe('./');
   expect(manifest.scope).toBe('./');
   expect(manifest.file_handlers?.[0]?.action).toBe('./');
+  expect(manifest.file_handlers?.[0]?.accept?.['text/markdown']).toEqual(expect.arrayContaining([
+    '.md',
+    '.markdown',
+    '.mkd',
+    '.mdx',
+  ]));
   expect(manifest.file_handlers?.[0]?.accept?.['application/json']).toEqual(expect.arrayContaining([
     '.or-pipeline',
     '.or-graph',
@@ -864,16 +915,27 @@ test('web file launch consumer and non-FSA save fallback work', async ({ page })
   await page.goto(url);
   await page.waitForLoadState('domcontentloaded');
 
-  const opened = await page.evaluate(async () => {
-    return await (window as any).orpad.openFileHandles([{
+  const launchFiles = [
+    { name: 'launch.md', type: 'text/markdown', content: '# Launched\n\nfrom file handler', expected: 'from file handler' },
+    { name: 'notes.mkd', type: 'text/markdown', content: '# MKD\n\nmarkdown variant launch', expected: 'markdown variant launch' },
+    { name: 'brief.mdx', type: 'text/markdown', content: '# MDX\n\nexport const mode = "launch";', expected: 'export const mode' },
+    { name: 'diagram.mmd', type: 'text/vnd.mermaid', content: 'graph TD\n  A[Launch] --> B[Preview]', expected: 'graph TD' },
+    { name: 'flow.or-pipeline', type: 'application/json', content: '{"kind":"orpad.pipeline","id":"web-launch-pipeline"}', expected: 'web-launch-pipeline' },
+    { name: 'flow.or-graph', type: 'application/json', content: '{"kind":"orpad.graph","graph":{"nodes":[]}}', expected: 'orpad.graph' },
+  ];
+  const opened = await page.evaluate(async (files) => {
+    return await (window as any).orpad.openFileHandles(files.map(file => ({
       kind: 'file',
-      name: 'launch.md',
-      getFile: async () => new File(['# Launched\n\nfrom file handler'], 'launch.md', { type: 'text/markdown' }),
-    }]);
-  });
+      name: file.name,
+      getFile: async () => new File([file.content], file.name, { type: file.type }),
+    })));
+  }, launchFiles);
   expect(opened).toBe(true);
-  await expect(page.locator('.tab-item')).toContainText('launch.md');
-  await expect(page.locator('.cm-content')).toContainText('from file handler');
+  await expect(page.locator('.tab-item')).toContainText(launchFiles.map(file => file.name));
+  for (const file of launchFiles) {
+    await page.locator('.tab-item').filter({ hasText: file.name }).click();
+    await expect(page.locator('.cm-content')).toContainText(file.expected);
+  }
 
   const downloadPromise = page.waitForEvent('download');
   const saved = await page.evaluate(async () => {

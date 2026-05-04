@@ -18,6 +18,10 @@ const {
   validateGateNode,
   validateSelectorNode,
 } = require('../../src/main/orchestration-machine');
+const {
+  effectiveProbeCandidateLimit,
+  liveProbePrompt,
+} = require('../../src/main/orchestration-machine/machine.js');
 
 async function createTestSymlink(testContext, target, linkPath, type = 'file') {
   try {
@@ -324,6 +328,42 @@ async function writeFakeCodexCliScript(dir) {
   ].join('\n'), 'utf8');
   return scriptPath;
 }
+
+test('live proposal prompt gives collect-all-visible probes the managed safe candidate cap', () => {
+  const request = {
+    adapterCallId: 'proposal-call',
+    attemptId: 'proposal-call-attempt-1',
+    idempotencyKey: 'proposal-call:attempt-1',
+  };
+  const adapter = { candidateLimit: 1 };
+  const node = {
+    nodePath: 'discovery-lenses/pipeline-quality-probe',
+    nodeType: 'orpad.probe',
+    config: { candidateLimitPolicy: 'collect-all-visible' },
+  };
+  const pipeline = {
+    id: 'maintenance-quality',
+    run: {
+      runSelection: {
+        collectAllVisibleCandidates: true,
+        queueAllActionableCandidates: true,
+      },
+    },
+  };
+
+  assert.equal(effectiveProbeCandidateLimit({ adapter, node, pipeline }), 5);
+
+  const prompt = liveProbePrompt({
+    request,
+    adapter,
+    node,
+    pipeline,
+    pipelinePath: '.orpad/pipelines/maintenance/pipeline.or-pipeline',
+  });
+
+  assert.equal(prompt.includes('Return at most 5 candidateProposals.'), true);
+  assert.equal(prompt.includes('Return at most 1 candidateProposals.'), false);
+});
 
 test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes in graph order', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace();
