@@ -37,6 +37,7 @@ const fsp = fs.promises;
 const contractValidator = createContractValidator();
 const MACHINE_CANDIDATE_INVENTORY_SCHEMA = SCHEMA_VERSIONS.candidateInventory;
 const TERMINAL_RUN_LIFECYCLE_STATUSES = new Set(['completed', 'cancelled', 'failed']);
+const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(competing products?|competitors?|competition|market|benchmark|benchmarks|web research|browse|internet|online|search for competing|external research)\b/i;
 const SUPPORT_NODE_TYPES = new Set([
   'orpad.context',
   'orpad.workQueue',
@@ -284,6 +285,10 @@ async function mapWithConcurrency(items, concurrency, worker) {
 
 function normalizeRuntimeTaskText(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 2000);
+}
+
+function hasMachineExternalResearchIntent(taskText) {
+  return EXTERNAL_RESEARCH_INTENT_PATTERN.test(normalizeRuntimeTaskText(taskText));
 }
 
 function normalizeExternalResearchState(value) {
@@ -762,6 +767,27 @@ function evaluateGateCriterion(criterion, input = {}) {
   if (!normalized) {
     return { criterion, supported: false, passed: false, reason: 'empty-criterion' };
   }
+  if (normalized.includes('external research') && normalized.includes('mode')) {
+    const externalIntent = hasMachineExternalResearchIntent(input.taskText);
+    if (!externalIntent) {
+      return {
+        criterion,
+        supported: true,
+        passed: true,
+        reason: 'external-research-not-needed',
+      };
+    }
+    const mode = input.externalResearch?.mode || '';
+    const passed = input.externalResearch?.intentDetected === true
+      && ['local-only-research-gap', 'approved-or-attached-evidence'].includes(mode);
+    return {
+      criterion,
+      supported: true,
+      passed,
+      reason: passed ? `external-research-mode-${mode}` : 'external-research-mode-missing',
+      mode,
+    };
+  }
   if (normalized.includes('worker proof accepted') || normalized.includes('work result accepted')) {
     const event = acceptedWorkerProof(input.events);
     return {
@@ -789,7 +815,7 @@ function evaluateGateCriterion(criterion, input = {}) {
   };
 }
 
-async function validateGateNode(runRoot, config = {}) {
+async function validateGateNode(runRoot, config = {}, options = {}) {
   const criteria = stringArrayConfig(config.criteria, 'Gate.criteria');
   const onFail = config.onFail || 'block';
   if (!['block', 'warn', 'continue', 'continue-with-warning'].includes(onFail)) {
@@ -797,7 +823,12 @@ async function validateGateNode(runRoot, config = {}) {
   }
   const events = await readMachineEvents(runRoot);
   const inventory = await summarizeQueueInventory(runRoot);
-  const evaluations = criteria.map(criterion => evaluateGateCriterion(criterion, { events, inventory }));
+  const evaluations = criteria.map(criterion => evaluateGateCriterion(criterion, {
+    events,
+    inventory,
+    taskText: options.taskText || '',
+    externalResearch: options.externalResearch || null,
+  }));
   const failed = evaluations.filter(entry => !entry.passed);
   const result = {
     valid: failed.length === 0,
@@ -850,7 +881,7 @@ async function executeSupportNode(runRoot, node, options = {}) {
       return validateBarrierNode(runRoot, node, config);
     }
     if (node.nodeType === 'orpad.gate') {
-      return validateGateNode(runRoot, config);
+      return validateGateNode(runRoot, config, options);
     }
     if (node.nodeType === 'orpad.artifactContract') {
       return validateArtifactContract(runRoot, config);
@@ -1418,6 +1449,8 @@ async function executeMachineRunStep(options = {}) {
           runId,
           attempt,
           supportMode: usingLiveAdapter ? 'live-adapter' : 'harness',
+          taskText: runtimeTaskText,
+          externalResearch: runtimeExternalResearch,
         }),
       });
     }

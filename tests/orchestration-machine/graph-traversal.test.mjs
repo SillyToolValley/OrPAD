@@ -44,8 +44,9 @@ test('graph loader reads the current maintenance pipeline graph set', async () =
   const inventory = buildNodeInventory(graphSet);
 
   assert.equal(graphSet.graphs.length, 4);
-  assert.equal(inventory.length, 24);
+  assert.equal(inventory.length, 25);
   assert.equal(inventory.some(node => node.nodePath === 'main/reference-context'), true);
+  assert.equal(inventory.some(node => node.nodePath === 'main/external-research-gate'), true);
   assert.equal(inventory.some(node => node.nodePath === 'worker-loop/worker'), true);
   assert.equal(inventory.find(node => node.nodePath === 'main/reference-context').runtimeHandlerKind, 'machine-builtin');
   assert.equal(inventory.find(node => node.nodePath === 'discovery-lenses/ux-ui-probe').runtimeHandlerKind, 'adapter-required');
@@ -112,7 +113,7 @@ test('traversal plan uses stable topological order per graph', async () => {
   const mainPlan = plan.graphPlans.find(graph => graph.graphKey === 'main');
 
   assert.equal(plan.graphCount, 4);
-  assert.equal(plan.nodeCount, 24);
+  assert.equal(plan.nodeCount, 25);
   assert.equal(mainPlan.nodePaths[0], 'main/reference-context');
   assert.equal(mainPlan.nodePaths.at(-1), 'main/artifact-contract');
 });
@@ -123,9 +124,10 @@ test('traversal plan expands inline nested graph containers at their source posi
   const paths = plan.inlinePlan.nodePaths;
 
   assert.equal(plan.inlinePlan.entryGraphKey, 'main');
-  assert.deepEqual(paths.slice(0, 4), [
+  assert.deepEqual(paths.slice(0, 5), [
     'main/reference-context',
     'main/authority-gate',
+    'main/external-research-gate',
     'main/discovery-lenses',
     'discovery-lenses/source-quality',
   ]);

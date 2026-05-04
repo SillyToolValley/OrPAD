@@ -613,6 +613,38 @@ test('runtime support nodes reject non-string contract arrays before coercion', 
   );
 });
 
+test('external research gate requires a launch mode only for external research tasks', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_external_research_gate');
+  const config = {
+    criteria: ['external research mode selected or not needed'],
+    onFail: 'block',
+  };
+
+  const localTask = await validateGateNode(run.runRoot, config, {
+    taskText: 'Improve local graph rendering.',
+  });
+  assert.equal(localTask.valid, true);
+  assert.equal(localTask.evaluations[0].reason, 'external-research-not-needed');
+
+  await assert.rejects(
+    validateGateNode(run.runRoot, config, {
+      taskText: 'Search for competing products and verify benchmarks.',
+    }),
+    error => error?.code === 'MACHINE_GATE_CRITERIA_UNMET',
+  );
+
+  const approved = await validateGateNode(run.runRoot, config, {
+    taskText: 'Search for competing products and verify benchmarks.',
+    externalResearch: {
+      schemaVersion: 'orpad.externalResearchRun.v1',
+      intentDetected: true,
+      mode: 'local-only-research-gap',
+    },
+  });
+  assert.equal(approved.valid, true);
+  assert.equal(approved.evaluations[0].reason, 'external-research-mode-local-only-research-gap');
+});
+
 test('Barrier fail policy rejects when declared dependencies have not completed', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_barrier_wait_fail');
   await updateMainNodeConfig(pipelineDir, 'barrier', {

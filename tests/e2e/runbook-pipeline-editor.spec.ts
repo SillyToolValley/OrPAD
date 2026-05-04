@@ -529,6 +529,7 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
   await expect(win.locator('.orch-graph-node')).toContainText([
     'Prepare workspace',
+    'External research evidence gate',
     'Run parallel discovery lenses',
     'Ingest, dedupe, and triage queue',
     'Dispatch and execute bounded work',

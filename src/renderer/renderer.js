@@ -10736,6 +10736,53 @@ async function createOrpadRunbookStarter() {
   const contextRulePath = workspaceChildPath('.orpad', 'pipelines', slug, 'rules', 'context.or-rule');
   const skillPath = `skills/${skillName}`;
   const skillFilePath = workspaceChildPath('.orpad', 'pipelines', slug, skillPath);
+  const graphNodes = [
+    { id: 'context', type: 'orpad.context', label: 'Prepare workspace', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
+    ...(externalResearchIntent ? [{
+      id: 'external-research-gate',
+      type: 'orpad.gate',
+      label: 'Confirm external research mode',
+      config: {
+        criteria: ['external research mode selected or not needed'],
+        onFail: 'block',
+        externalResearchLimitation,
+        requiredEvidence: 'approved browsing or attached research evidence',
+        fallback: 'report a research gap and propose only local evidence-backed work',
+      },
+    }] : []),
+    { id: 'probe', type: 'orpad.probe', label: 'Find evidence-backed candidate work', config: { lens: 'request-focused', userTask: taskText, skillRef: 'request-context', ...(externalResearchIntent ? { externalResearchLimitation } : {}) } },
+    { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+    { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
+    { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+    { id: 'worker', type: 'orpad.workerLoop', label: 'Implement claimed work in overlay', config: { queueRef: 'queue' } },
+    { id: 'verification-gate', type: 'orpad.gate', label: 'Verify work result', config: { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' } },
+    {
+      id: 'artifact',
+      type: 'orpad.artifactContract',
+      label: 'Record run evidence',
+      config: {
+        artifactRoot: 'harness/generated/latest-run/artifacts',
+        queueRoot: 'harness/generated/latest-run/queue',
+        required: ['discovery/candidate-inventory.json'],
+        requiredQueue: ['journal.jsonl'],
+        onMissing: 'mark-partial',
+      },
+    },
+  ];
+  const graphTransitions = [
+    ...(externalResearchIntent ? [
+      { id: 'context-to-external-research-gate', from: 'context', to: 'external-research-gate' },
+      { id: 'external-research-gate-to-probe', from: 'external-research-gate', to: 'probe' },
+    ] : [
+      { id: 'context-to-probe', from: 'context', to: 'probe' },
+    ]),
+    { id: 'probe-to-queue', from: 'probe', to: 'queue' },
+    { id: 'queue-to-triage', from: 'queue', to: 'triage' },
+    { id: 'triage-to-dispatch', from: 'triage', to: 'dispatch' },
+    { id: 'dispatch-to-worker', from: 'dispatch', to: 'worker' },
+    { id: 'worker-to-verification-gate', from: 'worker', to: 'verification-gate' },
+    { id: 'verification-gate-to-artifact', from: 'verification-gate', to: 'artifact' },
+  ];
   const graph = {
     $schema: 'https://orpad.dev/schemas/or-graph/v1.json',
     kind: 'orpad.graph',
@@ -10744,36 +10791,8 @@ async function createOrpadRunbookStarter() {
       id: 'orpad-improvement',
       label: taskText.slice(0, 96),
       start: 'context',
-      nodes: [
-        { id: 'context', type: 'orpad.context', label: 'Prepare workspace', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
-        { id: 'probe', type: 'orpad.probe', label: 'Find evidence-backed candidate work', config: { lens: 'request-focused', userTask: taskText, skillRef: 'request-context', ...(externalResearchIntent ? { externalResearchLimitation } : {}) } },
-        { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
-        { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
-        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
-        { id: 'worker', type: 'orpad.workerLoop', label: 'Implement claimed work in overlay', config: { queueRef: 'queue' } },
-        { id: 'verification-gate', type: 'orpad.gate', label: 'Verify work result', config: { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' } },
-        {
-          id: 'artifact',
-          type: 'orpad.artifactContract',
-          label: 'Record run evidence',
-          config: {
-            artifactRoot: 'harness/generated/latest-run/artifacts',
-            queueRoot: 'harness/generated/latest-run/queue',
-            required: ['discovery/candidate-inventory.json'],
-            requiredQueue: ['journal.jsonl'],
-            onMissing: 'mark-partial',
-          },
-        },
-      ],
-      transitions: [
-        { id: 'context-to-probe', from: 'context', to: 'probe' },
-        { id: 'probe-to-queue', from: 'probe', to: 'queue' },
-        { id: 'queue-to-triage', from: 'queue', to: 'triage' },
-        { id: 'triage-to-dispatch', from: 'triage', to: 'dispatch' },
-        { id: 'dispatch-to-worker', from: 'dispatch', to: 'worker' },
-        { id: 'worker-to-verification-gate', from: 'worker', to: 'verification-gate' },
-        { id: 'verification-gate-to-artifact', from: 'verification-gate', to: 'artifact' },
-      ],
+      nodes: graphNodes,
+      transitions: graphTransitions,
     },
   };
   const pipeline = {
