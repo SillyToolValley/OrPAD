@@ -554,6 +554,50 @@ test('web pipeline validator follows nested graph refs and queue contracts', asy
   await close();
 });
 
+test('web pipeline validator accepts built-in OrPAD managed-run graph nodes', async ({ page }) => {
+  if (!fs.existsSync(path.join(docsDir, 'index.html'))) {
+    test.skip(true, 'docs/ not built - run npm run build:web:min first');
+    return;
+  }
+
+  const { url, close } = await startStaticServer(docsDir);
+
+  await page.goto(url);
+  await page.waitForLoadState('domcontentloaded');
+  const validation = await page.evaluate(async () => {
+    return await (window as any).orpad.pipelines.validateText(JSON.stringify({
+      kind: 'orpad.graph',
+      version: '1.0',
+      graph: {
+        id: 'managed-run-node-parity',
+        nodes: [
+          { id: 'entry', type: 'orpad.entry', label: 'Entry', config: { summary: 'Begin managed run.' } },
+          { id: 'selector', type: 'orpad.selector', label: 'Select work', config: { mode: 'claimed-work-item' } },
+          { id: 'patch-review', type: 'orpad.patchReview', label: 'Review patch results', config: { reviewMode: 'user-selected-files' } },
+          { id: 'exit', type: 'orpad.exit', label: 'Exit', config: { summary: 'Close after review and evidence checks.' } },
+        ],
+        transitions: [
+          { from: 'entry', to: 'selector' },
+          { from: 'selector', to: 'patch-review' },
+          { from: 'patch-review', to: 'exit' },
+        ],
+      },
+    }));
+  });
+  const diagnosticCodes = validation.diagnostics.map((item: { code: string }) => item.code);
+
+  expect(validation.ok).toBe(true);
+  expect(validation.nodeTypes).toEqual(expect.arrayContaining([
+    'orpad.entry',
+    'orpad.exit',
+    'orpad.patchReview',
+    'orpad.selector',
+  ]));
+  expect(diagnosticCodes).not.toContain('GRAPH_NODE_TYPE_UNKNOWN');
+
+  await close();
+});
+
 test('web pipeline validator checks OrPAD skill and tree graph refs', async ({ page }) => {
   if (!fs.existsSync(path.join(docsDir, 'index.html'))) {
     test.skip(true, 'docs/ not built - run npm run build:web:min first');

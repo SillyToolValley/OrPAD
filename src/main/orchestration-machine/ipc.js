@@ -271,7 +271,22 @@ async function resolveMachinePipelineContext(event, authority, request) {
 
 async function readRunSnapshot(runRoot) {
   const events = await readMachineEvents(runRoot);
-  const runState = await readRunState(runRoot) || projectRunStateFromEvents(events);
+  const storedRunState = await readRunState(runRoot);
+  const projectedRunState = projectRunStateFromEvents(events);
+  const runState = storedRunState && projectedRunState
+    ? {
+      ...projectedRunState,
+      ...storedRunState,
+      lifecycleStatus: projectedRunState.lifecycleStatus,
+      summaryStatus: projectedRunState.summaryStatus,
+      updatedAt: projectedRunState.updatedAt,
+      eventSequence: projectedRunState.eventSequence,
+      metadata: {
+        ...(projectedRunState.metadata || {}),
+        ...(storedRunState.metadata || {}),
+      },
+    }
+    : storedRunState || projectedRunState;
   if (!runState) return null;
   return {
     runState,
@@ -496,7 +511,25 @@ async function applyPatchHandler(event, authority, request) {
         mismatches: Array.isArray(err?.mismatches) ? err.mismatches : [],
       },
     }).catch(() => null);
-    throw err;
+    const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+    return {
+      success: false,
+      ok: false,
+      code: err?.code || 'MACHINE_PATCH_APPLY_FAILED',
+      error: err?.message || 'Patch could not be applied.',
+      runId,
+      patchArtifact,
+      selectedFiles,
+      path: err?.path || '',
+      mismatches: Array.isArray(err?.mismatches) ? err.mismatches : [],
+      runState: failureSnapshot.runState,
+      events: failureSnapshot.events,
+      candidateInventory: failureSnapshot.candidateInventory,
+      worker: failureSnapshot.worker,
+      approvals: failureSnapshot.approvals,
+      activeClaims: failureSnapshot.activeClaims,
+      activeWriteSets: failureSnapshot.activeWriteSets,
+    };
   }
   const appliedEvent = await appendMachineEvent(runRoot, {
     runId,

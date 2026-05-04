@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import test from 'node:test';
+import { auditRun, RUN_METADATA_SCHEMA } from '../../scripts/audit-orpad-run.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -29,6 +30,17 @@ async function makeRun() {
     version: '1.0',
     id: 'sample-machine-pipeline',
     entryGraph: 'graphs/main.or-graph',
+    run: {
+      artifactRoot: 'harness/generated/latest-run/artifacts',
+      queueRoot: 'harness/generated/latest-run/queue',
+      metadataPath: 'harness/generated/latest-run/run-metadata.json',
+      summaryPath: 'harness/generated/latest-run/summary.md',
+      requiredArtifacts: [],
+      requiredQueueArtifacts: [],
+    },
+    executionPolicy: {
+      verificationDefaults: [],
+    },
   }, null, 2), 'utf8');
   const run = await createMachineRun({
     workspaceRoot,
@@ -184,6 +196,7 @@ test('evidence snapshot materializes provenance from durable run state', async (
     producedBy: 'adapter:proposal-only',
     registeredBy: 'machine',
   });
+  await fs.writeFile(path.join(run.runRoot, 'summary.md'), '# Summary\n\n## Status: done\n', 'utf8');
 
   const exported = await exportLatestRun({
     runRoot: run.runRoot,
@@ -193,12 +206,21 @@ test('evidence snapshot materializes provenance from durable run state', async (
   const metadata = JSON.parse(await fs.readFile(path.join(exported.targetRoot, 'run-metadata.json'), 'utf8'));
 
   assert.equal(exported.targetRoot, latestRunExportRoot(run.pipelineDir));
-  assert.equal(metadata.schemaVersion, 'orpad.machineLatestRunExport.v1');
+  assert.equal(metadata.schemaVersion, RUN_METADATA_SCHEMA);
+  assert.equal(metadata.pipelineId, 'sample-machine-pipeline');
   assert.equal(metadata.runId, run.runId);
-  assert.equal(metadata.status, 'exported');
-  assert.equal(metadata.artifactManifest.files.length, 1);
+  assert.equal(metadata.status, 'done');
+  assert.equal(metadata.headSha.length > 0, true);
+  assert.equal(metadata.workspaceStatusDigest.length, 64);
+  assert.equal(metadata.artifactManifest.files.some(file => file.path === 'harness/generated/latest-run/summary.md'), true);
+  assert.equal(metadata.artifactManifest.files.some(file => file.path === 'harness/generated/latest-run/artifacts/queue/triage-log.md'), true);
+  assert.equal(metadata.artifactManifest.files.some(file => file.path === 'harness/generated/latest-run/queue/journal.jsonl'), true);
   assert.equal((await fs.stat(path.join(exported.targetRoot, 'artifacts/manifest.json'))).isFile(), true);
   assert.equal((await fs.stat(path.join(exported.targetRoot, 'queue/journal.jsonl'))).isFile(), true);
+
+  const audit = await auditRun(path.join(run.pipelineDir, 'pipeline.or-pipeline'));
+  assert.equal(audit.diagnostics.some(item => item.code === 'RUN_METADATA_SCHEMA_UNSUPPORTED'), false);
+  assert.equal(audit.diagnostics.some(item => item.code === 'RUN_METADATA_STATUS_INVALID'), false);
 });
 
 test('artifact registry refuses to continue after registered evidence changes', async () => {

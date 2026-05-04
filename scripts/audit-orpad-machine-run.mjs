@@ -1046,8 +1046,8 @@ async function auditLatestRunExport(runRoot, latestRunExportRoot, events) {
       actual: metadata.sourceEventSequence,
     }));
   }
-  if (metadata.status !== 'exported') {
-    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_STATUS_INVALID', 'Evidence snapshot metadata status must be exported.', {
+  if (!['exported', 'done', 'partial', 'blocked'].includes(String(metadata.status || ''))) {
+    diagnostics.push(diagnostic('MACHINE_LATEST_RUN_EXPORT_STATUS_INVALID', 'Evidence snapshot metadata status must be exported, done, partial, or blocked.', {
       actual: metadata.status,
     }));
   }

@@ -390,8 +390,9 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
   validating the run artifact path, patch schema, write-set membership, and pre-image SHA for each
   selected workspace file. Selected files are preflighted as a batch before any canonical write, so
   an overlapping or stale patch cannot partially apply earlier files before a later base mismatch.
-  Failed applications are recorded as Machine events. The renderer exposes this through a supervised
-  review modal rather than automatic canonical workspace mutation.
+  Failed applications are recorded as Machine events and return a refreshed durable run snapshot to
+  the renderer. The renderer exposes this through a supervised review modal rather than automatic
+  canonical workspace mutation.
 - `machine-review-patch` records a renderer-supervised decision to keep a Machine-owned patch
   artifact as review-only evidence. It validates the same run-relative patch artifact path and schema
   but does not write workspace files or execute external tools.

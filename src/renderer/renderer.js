@@ -2283,6 +2283,7 @@ const ORCH_X_GAP = 72;
 const ORCH_Y_GAP = 110;
 const ORCH_GRAPH_MARGIN = 80;
 const ORCH_ZOOM_MIN = 0.35;
+const ORCH_FIT_ZOOM_MIN = 0.18;
 const ORCH_ZOOM_MAX = 2.2;
 const ORCH_GRID_SIZE = 28;
 const ORCH_HISTORY_LIMIT = 80;
@@ -3991,8 +3992,8 @@ function collectOrchStateGraph(doc) {
   };
 }
 
-function clampOrchZoom(scale) {
-  return Math.max(ORCH_ZOOM_MIN, Math.min(ORCH_ZOOM_MAX, scale));
+function clampOrchZoom(scale, minScale = ORCH_ZOOM_MIN) {
+  return Math.max(minScale, Math.min(ORCH_ZOOM_MAX, scale));
 }
 
 function orchViewportTransform() {
@@ -4024,11 +4025,13 @@ function updateOrchViewportDom() {
   });
 }
 
-function setOrchViewport(next) {
+function setOrchViewport(next, options = {}) {
+  const defaultMinScale = orchGraphViewport.scale < ORCH_ZOOM_MIN ? ORCH_FIT_ZOOM_MIN : ORCH_ZOOM_MIN;
+  const minScale = Number.isFinite(options.minScale) ? options.minScale : defaultMinScale;
   orchGraphViewport = {
     x: Number.isFinite(next.x) ? next.x : orchGraphViewport.x,
     y: Number.isFinite(next.y) ? next.y : orchGraphViewport.y,
-    scale: clampOrchZoom(Number.isFinite(next.scale) ? next.scale : orchGraphViewport.scale),
+    scale: clampOrchZoom(Number.isFinite(next.scale) ? next.scale : orchGraphViewport.scale, minScale),
   };
   updateOrchViewportDom();
 }
@@ -4060,12 +4063,39 @@ function zoomOrchGraph(frame, scaleMultiplier, origin) {
   const localY = origin?.y ?? rect.height / 2;
   const graphX = (localX - orchGraphViewport.x) / orchGraphViewport.scale;
   const graphY = (localY - orchGraphViewport.y) / orchGraphViewport.scale;
-  const scale = clampOrchZoom(orchGraphViewport.scale * scaleMultiplier);
+  const minScale = orchGraphViewport.scale < ORCH_ZOOM_MIN ? ORCH_FIT_ZOOM_MIN : ORCH_ZOOM_MIN;
+  const scale = clampOrchZoom(orchGraphViewport.scale * scaleMultiplier, minScale);
   setOrchViewport({
     scale,
     x: localX - graphX * scale,
     y: localY - graphY * scale,
-  });
+  }, { minScale });
+}
+
+function orchGraphFitRect(frame, frameRect) {
+  const padding = 22;
+  const fitRect = {
+    left: padding,
+    top: padding,
+    right: Math.max(padding, frameRect.width - padding),
+    bottom: Math.max(padding, frameRect.height - padding),
+  };
+  const inspector = frame.closest('.orch-graph-main')?.querySelector('.orch-floating-inspector');
+  if (!inspector) return fitRect;
+  const inspectorStyle = getComputedStyle(inspector);
+  const inspectorRect = inspector.getBoundingClientRect();
+  const visible = inspectorStyle.display !== 'none'
+    && inspectorStyle.visibility !== 'hidden'
+    && inspectorRect.width > 0
+    && inspectorRect.height > 0;
+  if (!visible) return fitRect;
+  const overlapsFrame = inspectorRect.left < frameRect.right
+    && inspectorRect.right > frameRect.left
+    && inspectorRect.top < frameRect.bottom
+    && inspectorRect.bottom > frameRect.top;
+  if (!overlapsFrame) return fitRect;
+  fitRect.right = Math.max(fitRect.left, Math.min(fitRect.right, inspectorRect.left - frameRect.left - 12));
+  return fitRect;
 }
 
 function fitOrchGraphToFrame(frame = contentEl.querySelector('[data-orch-frame]')) {
@@ -4076,12 +4106,15 @@ function fitOrchGraphToFrame(frame = contentEl.querySelector('[data-orch-frame]'
   const minX = Number(frame.dataset.x) || 0;
   const minY = Number(frame.dataset.y) || 0;
   if (!rect.width || !rect.height) return;
-  const scale = clampOrchZoom(Math.min(1.1, (rect.width - 44) / width, (rect.height - 44) / height));
+  const fitRect = orchGraphFitRect(frame, rect);
+  const fitWidth = Math.max(1, fitRect.right - fitRect.left);
+  const fitHeight = Math.max(1, fitRect.bottom - fitRect.top);
+  const scale = clampOrchZoom(Math.min(1.1, fitWidth / width, fitHeight / height), ORCH_FIT_ZOOM_MIN);
   setOrchViewport({
     scale,
-    x: (rect.width - width * scale) / 2 - minX * scale,
-    y: (rect.height - height * scale) / 2 - minY * scale,
-  });
+    x: fitRect.left + (fitWidth - width * scale) / 2 - minX * scale,
+    y: fitRect.top + (fitHeight - height * scale) / 2 - minY * scale,
+  }, { minScale: ORCH_FIT_ZOOM_MIN });
 }
 
 function orchFramePoint(frame, event) {
@@ -8982,7 +9015,9 @@ function machineActiveNodeExecutions(record) {
   return [...active.values()];
 }
 
-function machineNodeRuntimeStatusFromEventType(type) {
+function machineNodeRuntimeStatusFromEvent(event) {
+  const type = String(event?.eventType || '');
+  const reason = String(event?.payload?.reason || event?.reason || '');
   switch (type) {
     case 'node.scheduled':
       return { state: 'queued', label: 'Queued' };
@@ -8991,6 +9026,7 @@ function machineNodeRuntimeStatusFromEventType(type) {
     case 'node.completed':
       return { state: 'completed', label: 'Done' };
     case 'node.blocked':
+      if (reason === 'exit.evidence-incomplete') return { state: 'blocked', label: 'Evidence incomplete' };
       return { state: 'blocked', label: 'Blocked' };
     case 'node.failed':
       return { state: 'failed', label: 'Failed' };
@@ -9025,7 +9061,7 @@ function machineRuntimeNodeProjection(record) {
     if (!type.startsWith('node.')) continue;
     const nodePath = String(event?.nodePath || '').trim();
     if (!nodePath) continue;
-    const status = machineNodeRuntimeStatusFromEventType(type);
+    const status = machineNodeRuntimeStatusFromEvent(event);
     if (!status) continue;
     const sequence = Number(event?.sequence) || 0;
     statuses.set(nodePath, {
@@ -9191,10 +9227,21 @@ function isMachineRunInProgress(record, runbookPath = selectedRunbookPath) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
   if (isMachineRunTerminal(runState)) return false;
-  if (isMachineRunActionPending(runbookPath, runId)) return true;
   const activeNodes = machineActiveNodeExecutions(record);
+  const activeClaims = record?.activeClaims || [];
+  const freshActiveClaims = activeClaims.length - machineStaleActiveClaims(record).length;
+  if (isMachineRunActionPending(runbookPath, runId)) {
+    if (
+      !activeNodes.length
+      && freshActiveClaims <= 0
+      && ['waiting', 'approval-required', 'completed', 'cancelled', 'canceled', 'failed'].includes(String(runState.lifecycleStatus || '').toLowerCase())
+    ) {
+      return false;
+    }
+    return true;
+  }
   if (['running', 'cancelling'].includes(String(runState.lifecycleStatus || '').toLowerCase())) {
-    return !(activeNodes.length === 0 && machineHasOnlyStaleActiveClaims(record));
+    return activeNodes.length > 0 || freshActiveClaims > 0;
   }
   return activeNodes.length > 0;
 }
@@ -9225,6 +9272,14 @@ async function refreshMachineRunPanelSnapshot(runbookPath, runId) {
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
   return record;
+}
+
+async function refreshVisibleMachineRunSnapshot() {
+  if (document.hidden || !selectedRunbookPath) return;
+  const record = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, selectedRunbookPath);
+  const runId = record?.runState?.runId || record?.runId || '';
+  if (!runId) return;
+  await refreshMachineRunPanelSnapshot(selectedRunbookPath, runId);
 }
 
 function startMachineRunProgressPolling(runbookPath, runId) {
@@ -9272,6 +9327,16 @@ function markMachineRunExecuting(runbookPath, runId) {
   rerenderPipelinePreviewIfActive(runbookPath);
   return record;
 }
+
+window.addEventListener('focus', () => {
+  refreshVisibleMachineRunSnapshot().catch(err => notifyFormatError('Pipes', err));
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    refreshVisibleMachineRunSnapshot().catch(err => notifyFormatError('Pipes', err));
+  }
+});
 
 function machineExecuteControlDetails(record, validation = null, runbookPath = selectedRunbookPath) {
   const runState = record?.runState || {};
@@ -10183,6 +10248,20 @@ function machineLineCount(value, exists = true) {
   return text.replace(/\r?\n$/, '').split(/\r?\n/).length;
 }
 
+async function machineSha256Text(value) {
+  if (!window.crypto?.subtle || typeof TextEncoder === 'undefined') return '';
+  const bytes = new TextEncoder().encode(String(value ?? ''));
+  const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function machineWorkspacePatchPath(relativePath) {
+  const root = runbookNormalizePath(workspacePath || '').replace(/\/+$/g, '');
+  const rel = runbookNormalizePath(relativePath || '').replace(/^\/+/g, '');
+  if (!root || !rel || rel === '.' || rel === '..' || rel.startsWith('../') || /^[a-z]:\//i.test(rel)) return '';
+  return normalizeRunbookFilePath(`${root}/${rel}`);
+}
+
 function machinePatchChangeStats(change) {
   const beforeLines = machineLineCount(change?.beforeContent, change?.beforeExists !== false);
   const afterLines = machineLineCount(change?.afterContent, change?.afterExists !== false);
@@ -10201,6 +10280,33 @@ function machinePatchChangeStats(change) {
   };
 }
 
+async function machinePatchChangeSummary(change) {
+  const expectedSha = change?.beforeExists === false ? '' : String(change?.beforeSha256 || '');
+  const summary = {
+    path: change.path,
+    ...machinePatchChangeStats(change),
+    baseMatches: null,
+    currentSha: '',
+    expectedSha: expectedSha.slice(0, 12),
+    baseMessage: '',
+  };
+  const filePath = machineWorkspacePatchPath(change.path);
+  if (!filePath || !window.orpad?.readFile || !window.crypto?.subtle) return summary;
+  try {
+    const result = await window.orpad.readFile(filePath);
+    const currentText = result?.error ? null : String(result?.content ?? '');
+    const currentSha = currentText === null ? '' : await machineSha256Text(currentText);
+    summary.currentSha = currentSha.slice(0, 12);
+    summary.baseMatches = currentSha === expectedSha;
+    summary.baseMessage = summary.baseMatches
+      ? 'Workspace matches this patch base.'
+      : 'Workspace already differs from this patch base.';
+  } catch (err) {
+    summary.baseMessage = `Workspace base could not be checked: ${err?.message || err}`;
+  }
+  return summary;
+}
+
 async function machinePatchArtifactSummary(record, workerReview) {
   if (!workerReview?.patchArtifact) return null;
   const filePath = machineSafeRunArtifactPath(record, workerReview.patchArtifact);
@@ -10216,16 +10322,17 @@ async function machinePatchArtifactSummary(record, workerReview) {
     const changes = Array.isArray(patch.changes) ? patch.changes : [];
     const violations = Array.isArray(patch.violations) ? patch.violations : [];
     const allowedFiles = Array.isArray(patch.allowedFiles) ? patch.allowedFiles : [];
+    const summarizedChanges = await Promise.all(changes
+      .filter(change => change?.path)
+      .slice(0, 12)
+      .map(change => machinePatchChangeSummary(change)));
     return {
       schemaVersion: patch.schemaVersion,
       createdAt: patch.createdAt || '',
       allowedFileCount: allowedFiles.length,
       changeCount: changes.length,
       violationCount: violations.length,
-      changes: changes
-        .filter(change => change?.path)
-        .slice(0, 12)
-        .map(change => ({ path: change.path, ...machinePatchChangeStats(change) })),
+      changes: summarizedChanges,
       hasMoreChanges: changes.length > 12,
       violations: violations
         .filter(violation => violation?.path || violation?.reason)
@@ -10289,7 +10396,18 @@ async function applyMachinePatchSelection(runbookPath, runId, workerReview, sele
   });
   if (!applied?.success) {
     if (applied?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
-    alert(applied?.error || 'Patch could not be applied.');
+    if (applied?.runState || applied?.events) {
+      lastMachineRunRecord = machineUpdateRunRecord(runbookPath, applied);
+      await refreshMachineRunList(runbookPath);
+      renderRunbooksPanel();
+      rerenderPipelinePreviewIfActive(runbookPath);
+    }
+    const mismatchText = Array.isArray(applied?.mismatches) && applied.mismatches.length
+      ? `\n\nConflicting files:\n${applied.mismatches.slice(0, 5).map(item => `- ${item.path || 'unknown'}`).join('\n')}`
+      : '';
+    alert(applied?.code === 'PATCH_BASE_MISMATCH'
+      ? `This patch no longer matches the current workspace. Another approved patch probably changed the same file first.${mismatchText}`
+      : (applied?.error || 'Patch could not be applied.'));
     return null;
   }
   selectedRunbookPath = runbookPath;
@@ -10365,11 +10483,14 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   const reviewTitle = reviewCount > 1 ? `Review Patch ${reviewIndex} of ${reviewCount}` : 'Review Patch';
   const hasNextReview = reviewIndex < reviewCount;
   const criteria = (itemDetails?.acceptanceCriteria || []).slice(0, 3);
+  const conflictCount = patchSummary.changes.filter(change => change.baseMatches === false).length;
+  const applicableCount = patchSummary.changes.filter(change => change.baseMatches !== false).length;
   const changeRows = patchSummary.changes.map((change, index) => `
-    <label class="runbook-diagnostic" style="display:block; margin:8px 0;">
-      <input type="checkbox" data-machine-patch-file value="${escapeHtml(change.path)}" ${index < 20 ? 'checked' : ''}>
+    <label class="runbook-diagnostic ${change.baseMatches === false ? 'warning' : ''}" style="display:block; margin:8px 0;">
+      <input type="checkbox" data-machine-patch-file value="${escapeHtml(change.path)}" ${change.baseMatches === false ? 'disabled' : ''} ${change.baseMatches !== false && index < 20 ? 'checked' : ''}>
       <strong>${escapeHtml(change.path)}</strong><br>
       <span>${escapeHtml(String(change.action))}; ${escapeHtml(String(change.beforeLines))} -> ${escapeHtml(String(change.afterLines))} lines (${escapeHtml(String(change.deltaLabel))}); SHA ${escapeHtml(change.beforeSha || 'none')} -> ${escapeHtml(change.afterSha || 'none')}</span>
+      ${change.baseMessage ? `<br><span>${escapeHtml(change.baseMessage)}${change.baseMatches === false ? ` Expected ${escapeHtml(change.expectedSha || 'none')}, current ${escapeHtml(change.currentSha || 'none')}.` : ''}</span>` : ''}
     </label>
   `).join('');
   const openNextReview = () => {
@@ -10385,6 +10506,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     ${itemDetails?.actualBehavior || itemDetails?.expectedBehavior ? `<div class="runbook-diagnostic"><strong>Change goal</strong> ${escapeHtml([itemDetails.actualBehavior, itemDetails.expectedBehavior].filter(Boolean).join(' -> '))}</div>` : ''}
     ${criteria.length ? `<div class="runbook-diagnostic"><strong>Acceptance</strong><ul>${criteria.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>` : ''}
     <div class="runbook-diagnostic warning"><strong>Workspace not changed yet.</strong> Applying writes the selected files to your workspace after base SHA checks.</div>
+    ${conflictCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(conflictCount, 'conflicting file'))}</strong> already changed in the workspace, likely by an earlier approved patch. Conflicting files are unchecked and cannot be applied from this patch without a follow-up run.</div>` : ''}
     <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
     <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
     <div style="max-height:280px; overflow:auto; margin-top:8px;">${changeRows}</div>
@@ -10431,6 +10553,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       {
         label: 'Apply Selected',
         primary: true,
+        disabled: applicableCount === 0,
         onClick: async () => {
           const files = selectedFiles();
           if (!files.length) {

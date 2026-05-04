@@ -1,4 +1,4 @@
-import { test, expect, type Locator } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -9,6 +9,47 @@ function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
     version: 1,
     workspaceRoot,
   }));
+}
+
+async function expectFittedGraphNodesClearOfFloatingInspector(win: Page, label: string): Promise<void> {
+  await win.locator('.orch-graph-frame [data-orch-action="fit"]').first().click();
+  await win.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+
+  const clearance = await win.locator('.orch-graph-frame').first().evaluate((frame) => {
+    const frameRect = frame.getBoundingClientRect();
+    const inspector = frame.closest('.orch-graph-main')?.querySelector('.orch-floating-inspector');
+    const inspectorRect = inspector?.getBoundingClientRect();
+    const inspectorStyle = inspector ? getComputedStyle(inspector) : null;
+    const inspectorVisible = !!inspectorRect
+      && inspectorStyle?.display !== 'none'
+      && inspectorStyle?.visibility !== 'hidden'
+      && inspectorRect.width > 0
+      && inspectorRect.height > 0;
+    const tolerance = 1;
+    const nodes = [...frame.querySelectorAll<HTMLElement>('.orch-graph-node')].map((node) => {
+      const rect = node.getBoundingClientRect();
+      return {
+        label: node.textContent?.trim().replace(/\s+/g, ' ') || node.dataset.orchPath || 'node',
+        inFrame: rect.left >= frameRect.left - tolerance
+          && rect.top >= frameRect.top - tolerance
+          && rect.right <= frameRect.right + tolerance
+          && rect.bottom <= frameRect.bottom + tolerance,
+        overlapsInspector: inspectorVisible
+          && rect.left < inspectorRect!.right - tolerance
+          && rect.right > inspectorRect!.left + tolerance
+          && rect.top < inspectorRect!.bottom - tolerance
+          && rect.bottom > inspectorRect!.top + tolerance,
+      };
+    });
+    return { inspectorVisible, nodes };
+  });
+
+  expect(clearance.inspectorVisible, `${label}: floating inspector should be visible`).toBe(true);
+  expect(clearance.nodes.length, `${label}: graph should render nodes`).toBeGreaterThan(0);
+  expect(
+    clearance.nodes.filter(item => !item.inFrame || item.overlapsInspector),
+    `${label}: fitted nodes should stay inside the frame and outside the floating inspector`,
+  ).toEqual([]);
 }
 
 async function readInlineDiagnosticColorTreatment(field: Locator): Promise<{
@@ -538,6 +579,7 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
     'Done and proof gate',
     'Required evidence and work journal',
   ]);
+  await expectFittedGraphNodesClearOfFloatingInspector(win, 'main flow fit');
 
   const discoveryNode = win.locator('.orch-graph-node.type-orpad-graph').filter({ hasText: 'Run parallel discovery lenses' });
   await discoveryNode.dblclick();
@@ -557,24 +599,12 @@ test('maintenance pipeline opens by path and exposes nested graph layers', async
     'Pipeline quality probe',
     'Merge staged probe results',
   ]);
-
-  const layerNodeBounds = await win.locator('.orch-graph-frame').evaluate((frame) => {
-    const frameRect = frame.getBoundingClientRect();
-    return [...frame.querySelectorAll('.orch-graph-node')].map((node) => {
-      const rect = (node as HTMLElement).getBoundingClientRect();
-      return {
-        left: rect.left >= frameRect.left,
-        top: rect.top >= frameRect.top,
-        right: rect.right <= frameRect.right,
-        bottom: rect.bottom <= frameRect.bottom,
-      };
-    });
-  });
-  expect(layerNodeBounds.every(item => item.left && item.top && item.right && item.bottom)).toBe(true);
+  await expectFittedGraphNodesClearOfFloatingInspector(win, 'nested discovery layer fit');
 
   await win.locator('.orch-layer-up').click();
   await expect(win.locator('.orch-layer-up')).toHaveCount(0);
   await expect(win.locator('.orch-graph-node').filter({ hasText: 'Run parallel discovery lenses' })).toBeVisible();
+  await expectFittedGraphNodesClearOfFloatingInspector(win, 'returned main flow fit');
 
   await app.close();
 });

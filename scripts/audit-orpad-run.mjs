@@ -109,7 +109,7 @@ function timestampMs(value) {
 
 function auditRunMetadata(metadata, metadataPath, summaryStatus) {
   const diagnostics = [];
-  for (const field of ['runId', 'startedAt', 'endedAt', 'status']) {
+  for (const field of ['pipelineId', 'runId', 'startedAt', 'endedAt', 'status', 'headSha', 'workspaceStatusDigest']) {
     if (isBlank(metadata?.[field])) {
       diagnostics.push(diagnostic('RUN_METADATA_FIELD_MISSING', `Run metadata must include ${field}.`, {
         field,

@@ -1,13 +1,17 @@
+const { createHash } = require('crypto');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const { buildArtifactManifest, writeArtifactManifest } = require('../artifacts');
+const { writeArtifactManifest } = require('../artifacts');
 const { readMachineEvents } = require('../events');
 const { atomicWriteFile, ensureDir, writeJsonAtomic } = require('../metadata-store');
 const { latestRunExportRoot } = require('../path-resolver');
 
 const fsp = fs.promises;
 const LATEST_RUN_EXPORT_RELATIVE_PATH = 'harness/generated/latest-run';
+const RUN_METADATA_SCHEMA = 'orpad.runEvidence.v1';
+const STATUS_MARKER_RE = /## Status: (done|partial|blocked)\s*$/;
 
 function unsafeLatestRunExportSymlink(relativePath) {
   const err = new Error(`Evidence snapshot path crosses a symbolic link: ${relativePath}`);
@@ -42,12 +46,89 @@ async function copyIfExists(source, target) {
   }
 }
 
+function tryGit(args, cwd) {
+  try {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function gitStatusDigest(statusText) {
+  return createHash('sha256').update(String(statusText || '').replace(/\r\n/g, '\n')).digest('hex');
+}
+
+function normalizeManifestPath(relativePath) {
+  return `${LATEST_RUN_EXPORT_RELATIVE_PATH}/${String(relativePath || '').replace(/\\/g, '/')}`;
+}
+
+async function readJsonIfExists(filePath) {
+  try {
+    return JSON.parse(await fsp.readFile(filePath, 'utf8'));
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function readSummaryStatus(filePath) {
+  try {
+    const summary = await fsp.readFile(filePath, 'utf8');
+    return summary.match(STATUS_MARKER_RE)?.[1] || '';
+  } catch (err) {
+    if (err?.code === 'ENOENT') return '';
+    throw err;
+  }
+}
+
+function eventTimestamp(event) {
+  const value = event?.timestamp || event?.createdAt || event?.at || event?.time;
+  if (typeof value !== 'string') return '';
+  return Number.isFinite(Date.parse(value)) ? value : '';
+}
+
+async function collectSnapshotFiles(root, current = root, results = []) {
+  let entries = [];
+  try {
+    entries = await fsp.readdir(current, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === 'ENOENT') return results;
+    throw err;
+  }
+  for (const entry of entries) {
+    const entryPath = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      await collectSnapshotFiles(root, entryPath, results);
+    } else if (entry.isFile()) {
+      const bytes = await fsp.readFile(entryPath);
+      const relativePath = path.relative(root, entryPath).replace(/\\/g, '/');
+      results.push({
+        path: normalizeManifestPath(relativePath),
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        size: bytes.length,
+      });
+    }
+  }
+  return results;
+}
+
 async function exportLatestRun(options = {}) {
   const {
     runRoot,
     pipelineDir,
     allowOverwrite = false,
     exportedAt = new Date().toISOString(),
+    startedAt,
+    endedAt,
+    status,
+    pipelineId,
+    headSha,
+    workspaceStatusDigest,
+    auditCommands = [],
   } = options;
   if (!runRoot) throw new Error('runRoot is required.');
   if (!pipelineDir) throw new Error('pipelineDir is required.');
@@ -72,25 +153,43 @@ async function exportLatestRun(options = {}) {
     const manifest = await writeArtifactManifest(runRoot);
     await copyIfExists(path.join(runRoot, 'artifacts'), path.join(tempRoot, 'artifacts'));
     await copyIfExists(path.join(runRoot, 'queue'), path.join(tempRoot, 'queue'));
+    await copyIfExists(path.join(runRoot, 'summary.md'), path.join(tempRoot, 'summary.md'));
     const events = await readMachineEvents(runRoot);
     const sourceEventSequence = events.length ? events[events.length - 1].sequence : 0;
+    const pipeline = await readJsonIfExists(path.join(pipelineDir, 'pipeline.or-pipeline'));
+    const currentHead = tryGit(['rev-parse', 'HEAD'], pipelineDir);
+    const currentStatus = tryGit(['status', '--short'], pipelineDir);
+    const snapshotFiles = await collectSnapshotFiles(tempRoot);
+    const firstEventAt = eventTimestamp(events[0]);
+    const lastEventAt = eventTimestamp(events[events.length - 1]);
+    const summaryStatus = await readSummaryStatus(path.join(tempRoot, 'summary.md'));
     const metadata = {
-      schemaVersion: 'orpad.machineLatestRunExport.v1',
+      schemaVersion: RUN_METADATA_SCHEMA,
+      pipelineId: pipelineId || pipeline?.id || path.basename(path.resolve(pipelineDir)),
       runId: manifest.runId,
+      startedAt: startedAt || firstEventAt || exportedAt,
+      endedAt: endedAt || lastEventAt || exportedAt,
+      status: status || summaryStatus || 'partial',
+      headSha: headSha || currentHead || 'unavailable',
+      workspaceStatusDigest: workspaceStatusDigest || gitStatusDigest(currentStatus),
       sourceRunRoot: path.resolve(runRoot),
       sourceEventSequence,
       exportedAt,
-      status: 'exported',
+      auditCommands,
       artifactManifest: {
         schemaVersion: manifest.schemaVersion,
         sourceEventSequence: manifest.sourceEventSequence,
-        files: manifest.files.map(file => ({
-          path: file.path,
-          sha256: file.sha256,
-          size: file.size,
-          producedBy: file.producedBy,
-          registeredBy: file.registeredBy,
-        })),
+        files: snapshotFiles.map(file => {
+          const durablePath = file.path.slice(`${LATEST_RUN_EXPORT_RELATIVE_PATH}/`.length);
+          const registered = manifest.files.find(item => item.path === durablePath);
+          return {
+            path: file.path,
+            sha256: file.sha256,
+            size: file.size,
+            producedBy: registered?.producedBy,
+            registeredBy: registered?.registeredBy,
+          };
+        }),
       },
     };
     await writeJsonAtomic(path.join(tempRoot, 'run-metadata.json'), metadata);

@@ -1,0 +1,18 @@
+{
+  "kind": "orpad.node",
+  "schemaVersion": "1.0",
+  "type": "orpad.entry",
+  "title": "Entry",
+  "description": "Marks the entry point for an OrPAD graph.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "summary": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": ["summary"]
+  }
+}

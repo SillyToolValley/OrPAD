@@ -42,6 +42,15 @@
       "selected": {
         "type": "string"
       },
+      "externalResearchLimitation": {
+        "type": "string"
+      },
+      "requiredEvidence": {
+        "type": "string"
+      },
+      "fallback": {
+        "type": "string"
+      },
       "inputs": {
         "type": "array"
       },

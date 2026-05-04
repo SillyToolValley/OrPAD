@@ -582,6 +582,47 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   assert.equal(repeated.runState.eventSequence, snapshot.runState.eventSequence);
 });
 
+test('Machine IPC apply patch returns refreshed evidence on base mismatch', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_patch_mismatch',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(executed.success, true);
+  const patchArtifact = executed.worker.event.payload.patchArtifact;
+  assert.equal(typeof patchArtifact, 'string');
+  assert.notEqual(patchArtifact, '');
+
+  await fs.writeFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'changed before review\n', 'utf8');
+  const applied = await handlers.get(MACHINE_IPC_CHANNELS.applyPatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact,
+    selectedFiles: ['src/smoke-target.md'],
+  });
+
+  assert.equal(applied.success, false);
+  assert.equal(applied.code, 'PATCH_BASE_MISMATCH');
+  assert.equal(applied.mismatches[0].path, 'src/smoke-target.md');
+  assert.equal(applied.events.at(-1).eventType, 'patch.apply_failed');
+  assert.equal(applied.runState.eventSequence, applied.events.at(-1).sequence);
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'changed before review\n');
+});
+
 test('Machine IPC carries external research mode into selector execution', async () => {
   const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
   const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
