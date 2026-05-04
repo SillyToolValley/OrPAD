@@ -8,24 +8,159 @@
   "graph": {
     "nodes": [
       {
-        "id": "maintenance-workstream",
-        "type": "orpad.graph",
-        "label": "Maintenance Workstream",
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Begin maintenance run",
         "config": {
-          "graphRef": "orpad.workstream:maintenance-workstream",
-          "viewMode": "nested-layer",
-          "executionMode": "inline",
-          "inputs": {
-            "workspaceContext": "context.workspace"
-          },
-          "outputs": {
-            "doneItems": "queue.done",
-            "blockedItems": "queue.blocked",
-            "rejectedItems": "queue.rejected"
-          }
+          "summary": "Enter the bundled maintenance workstream example."
+        }
+      },
+      {
+        "id": "product-probe",
+        "type": "orpad.probe",
+        "label": "Product Intent Probe",
+        "config": {
+          "lens": "product-intent",
+          "queueRef": "maintenance-queue",
+          "queueStageRoot": "harness/generated/latest-run/queue/inbox/product-probe",
+          "canonicalQueueWrites": false,
+          "requiresCurrentEvidence": true,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "bug-risk-probe",
+        "type": "orpad.probe",
+        "label": "Bug Risk Probe",
+        "config": {
+          "lens": "bug-risk",
+          "queueRef": "maintenance-queue",
+          "queueStageRoot": "harness/generated/latest-run/queue/inbox/bug-risk-probe",
+          "canonicalQueueWrites": false,
+          "requiresCurrentEvidence": true,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "ux-ui-probe",
+        "type": "orpad.probe",
+        "label": "UX/UI Journey Probe",
+        "config": {
+          "lens": "ux-ui",
+          "queueRef": "maintenance-queue",
+          "queueStageRoot": "harness/generated/latest-run/queue/inbox/ux-ui-probe",
+          "canonicalQueueWrites": false,
+          "requiresCurrentEvidence": true,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "discovery-barrier",
+        "type": "orpad.barrier",
+        "label": "Discovery Barrier",
+        "config": {
+          "waitFor": ["product-probe", "bug-risk-probe", "ux-ui-probe"],
+          "onPartialFailure": "continue-with-warning"
+        }
+      },
+      {
+        "id": "maintenance-queue",
+        "type": "orpad.workQueue",
+        "label": "Maintenance Work Queue",
+        "config": {
+          "queueRoot": "harness/generated/latest-run/queue",
+          "inboxRoot": "harness/generated/latest-run/queue/inbox",
+          "schema": "orpad.workItem.v1",
+          "states": ["candidate", "queued", "claimed", "done", "blocked", "rejected"],
+          "singleWriter": true,
+          "ingestAfter": "discovery-barrier",
+          "ingestFrom": ["product-probe", "bug-risk-probe", "ux-ui-probe"]
+        }
+      },
+      {
+        "id": "triage",
+        "type": "orpad.triage",
+        "label": "Triage Candidates",
+        "config": {
+          "queueRef": "maintenance-queue",
+          "requiresCurrentEvidence": true,
+          "rejectDuplicates": true,
+          "classifyApprovalRequired": true,
+          "stateWrites": ["queued", "blocked", "rejected"]
+        }
+      },
+      {
+        "id": "dispatcher",
+        "type": "orpad.dispatcher",
+        "label": "Task Dispatcher",
+        "config": {
+          "queueRef": "maintenance-queue",
+          "workerLoopRef": "worker-loop",
+          "concurrency": 1,
+          "defaultAction": "continue-claiming",
+          "processUntil": [
+            "queue-empty",
+            "approval-required-next",
+            "scope-split-required",
+            "verification-blocked",
+            "risk-budget-exceeded",
+            "handoff-required"
+          ],
+          "stopWhenQueueEmpty": true,
+          "stopOnApprovalRequired": true,
+          "fileLocking": "declared-write-set"
+        }
+      },
+      {
+        "id": "worker-loop",
+        "type": "orpad.workerLoop",
+        "label": "Worker Loop",
+        "config": {
+          "queueRef": "maintenance-queue",
+          "outcomes": ["done", "blocked", "requeued"]
+        }
+      },
+      {
+        "id": "artifact-contract",
+        "type": "orpad.artifactContract",
+        "label": "Evidence Contract",
+        "config": {
+          "artifactRoot": "harness/generated/latest-run/artifacts",
+          "required": ["workstream-proof.md"],
+          "onMissing": "mark-partial"
+        }
+      },
+      {
+        "id": "patch-review",
+        "type": "orpad.patchReview",
+        "label": "Review Patches",
+        "config": {
+          "reviewMode": "user-selected-files"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Finish run",
+        "config": {
+          "summary": "Maintenance workstream example complete."
         }
       }
     ],
-    "transitions": []
+    "transitions": [
+      { "id": "edge-entry-product", "from": "entry", "to": "product-probe" },
+      { "id": "edge-entry-bug", "from": "entry", "to": "bug-risk-probe" },
+      { "id": "edge-entry-uxui", "from": "entry", "to": "ux-ui-probe" },
+      { "id": "edge-product-barrier", "from": "product-probe", "to": "discovery-barrier" },
+      { "id": "edge-bug-barrier", "from": "bug-risk-probe", "to": "discovery-barrier" },
+      { "id": "edge-uxui-barrier", "from": "ux-ui-probe", "to": "discovery-barrier" },
+      { "id": "edge-barrier-queue", "from": "discovery-barrier", "to": "maintenance-queue" },
+      { "id": "edge-queue-triage", "from": "maintenance-queue", "to": "triage" },
+      { "id": "edge-triage-dispatcher", "from": "triage", "to": "dispatcher" },
+      { "id": "edge-dispatcher-worker", "from": "dispatcher", "to": "worker-loop" },
+      { "id": "edge-worker-contract", "from": "worker-loop", "to": "artifact-contract" },
+      { "id": "edge-contract-review", "from": "artifact-contract", "to": "patch-review" },
+      { "id": "edge-review-exit", "from": "patch-review", "to": "exit" }
+    ]
   }
 }
