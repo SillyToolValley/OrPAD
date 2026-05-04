@@ -1,0 +1,54 @@
+{
+  "kind": "orpad.node",
+  "schemaVersion": "1.0",
+  "type": "orpad.selector",
+  "label": "Selector",
+  "category": "Core",
+  "description": "Records a user or policy choice and routes the graph through the selected mode.",
+  "inputs": [
+    {
+      "name": "input",
+      "type": "any",
+      "multiple": true
+    }
+  ],
+  "outputs": [
+    {
+      "name": "selected",
+      "type": "control"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string"
+      },
+      "selectorKind": {
+        "type": "string"
+      },
+      "modeSource": {
+        "type": "string"
+      },
+      "options": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "default": {
+        "type": "string"
+      },
+      "selected": {
+        "type": "string"
+      },
+      "inputs": {
+        "type": "array"
+      },
+      "outputs": {
+        "type": "array"
+      }
+    }
+  },
+  "capabilities": []
+}

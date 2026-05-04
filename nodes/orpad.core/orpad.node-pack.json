@@ -45,6 +45,10 @@
       "path": "nodes/gate.or-node"
     },
     {
+      "type": "orpad.selector",
+      "path": "nodes/selector.or-node"
+    },
+    {
       "type": "orpad.artifactContract",
       "path": "nodes/artifact-contract.or-node"
     }

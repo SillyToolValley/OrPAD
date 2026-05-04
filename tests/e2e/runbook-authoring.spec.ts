@@ -99,7 +99,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   const graph = JSON.parse(fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8'));
   expect(graph.graph.nodes.map((node: { type: string }) => node.type)).toEqual([
     'orpad.context',
-    'orpad.gate',
+    'orpad.selector',
     'orpad.probe',
     'orpad.workQueue',
     'orpad.triage',

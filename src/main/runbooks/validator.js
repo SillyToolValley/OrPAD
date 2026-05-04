@@ -13,6 +13,7 @@ const BUILT_IN_ORPAD_NODE_TYPES = new Set([
   'orpad.gate',
   'orpad.probe',
   'orpad.rule',
+  'orpad.selector',
   'orpad.skill',
   'orpad.graph',
   'orpad.tree',
@@ -57,6 +58,7 @@ const MVP_EXECUTABLE_NODE_TYPES = new Set([
   'OrchTree',
   'orpad.context',
   'orpad.gate',
+  'orpad.selector',
   'orpad.skill',
   'orpad.tree',
 ]);

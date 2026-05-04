@@ -581,6 +581,61 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   assert.equal(repeated.runState.eventSequence, snapshot.runState.eventSequence);
 });
 
+test('Machine IPC carries external research mode into selector execution', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  graph.graph.nodes.unshift({
+    id: 'external-research-mode',
+    type: 'orpad.selector',
+    config: {
+      selector: 'externalResearchMode',
+      options: ['local-only-research-gap', 'approved-or-attached-evidence'],
+      default: 'local-only-research-gap',
+    },
+  });
+  await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const externalResearch = {
+    schemaVersion: 'orpad.externalResearchRun.v1',
+    intentDetected: true,
+    mode: 'local-only-research-gap',
+  };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_external_research_selector',
+    capabilityToken: 'test-token',
+    options: {
+      taskText: 'Search for competing products and verify benchmarks.',
+      externalResearch,
+    },
+  });
+  assert.equal(created.success, true);
+  assert.equal(created.runState.metadata.externalResearch.mode, 'local-only-research-gap');
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    exportLatestRun: false,
+    options: {
+      taskText: 'Search for competing products and verify benchmarks.',
+      externalResearch,
+    },
+  });
+  assert.equal(executed.success, true, executed.error);
+  const selectorEvent = executed.events.find(item => (
+    item.eventType === 'node.completed'
+    && item.nodePath === 'main/external-research-mode'
+  ));
+  assert.equal(selectorEvent?.payload?.selectedRoute, 'local-only-research-gap');
+  assert.equal(selectorEvent?.payload?.source, 'user-prelaunch-choice');
+});
+
 test('Machine IPC execute step returns refreshed run evidence when a runtime node fails', async () => {
   const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
   await appendHarnessArtifactContract(pipelineDir, {

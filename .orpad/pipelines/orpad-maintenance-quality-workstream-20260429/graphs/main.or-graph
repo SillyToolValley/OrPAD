@@ -84,14 +84,16 @@
         }
       },
       {
-        "id": "external-research-gate",
-        "type": "orpad.gate",
-        "label": "External research evidence gate",
+        "id": "external-research-mode",
+        "type": "orpad.selector",
+        "label": "External research mode selector",
         "config": {
-          "criteria": [
-            "external research mode selected or not needed"
+          "selector": "externalResearchMode",
+          "options": [
+            "local-only-research-gap",
+            "approved-or-attached-evidence"
           ],
-          "onFail": "block",
+          "default": "local-only-research-gap",
           "externalResearchLimitation": "External competitor, market, benchmark, or web research claims require approved browsing or attached research evidence. Without that evidence, the run must report a research gap and propose only local evidence-backed work.",
           "requiredEvidence": "approved browsing or attached research evidence",
           "fallback": "report a research gap and propose only local evidence-backed work",
@@ -233,11 +235,11 @@
       },
       {
         "from": "authority-gate",
-        "to": "external-research-gate",
+        "to": "external-research-mode",
         "label": "authority checked"
       },
       {
-        "from": "external-research-gate",
+        "from": "external-research-mode",
         "to": "discovery-lenses",
         "label": "research mode"
       },

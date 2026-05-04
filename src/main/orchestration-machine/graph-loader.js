@@ -114,7 +114,7 @@ async function loadPipelineGraphSet({ pipelinePath }) {
 }
 
 function runtimeHandlerKind(nodeType) {
-  if (['orpad.context', 'orpad.gate', 'orpad.barrier', 'orpad.artifactContract', 'orpad.graph'].includes(nodeType)) {
+  if (['orpad.context', 'orpad.gate', 'orpad.selector', 'orpad.barrier', 'orpad.artifactContract', 'orpad.graph'].includes(nodeType)) {
     return 'machine-builtin';
   }
   if (['orpad.probe', 'orpad.skill', 'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop'].includes(nodeType)) {

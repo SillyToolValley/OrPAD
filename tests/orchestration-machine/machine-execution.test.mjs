@@ -16,6 +16,7 @@ const {
   validateArtifactContract,
   validateBarrierNode,
   validateGateNode,
+  validateSelectorNode,
 } = require('../../src/main/orchestration-machine');
 
 async function createTestSymlink(testContext, target, linkPath, type = 'file') {
@@ -613,27 +614,28 @@ test('runtime support nodes reject non-string contract arrays before coercion', 
   );
 });
 
-test('external research gate requires a launch mode only for external research tasks', async () => {
-  const { run } = await makeGraphHarnessWorkspace('run_20260430_external_research_gate');
+test('external research selector records local-only mode without failing the graph', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_external_research_selector');
   const config = {
-    criteria: ['external research mode selected or not needed'],
-    onFail: 'block',
+    selector: 'externalResearchMode',
+    options: ['local-only-research-gap', 'approved-or-attached-evidence'],
+    default: 'local-only-research-gap',
   };
 
-  const localTask = await validateGateNode(run.runRoot, config, {
+  const localTask = await validateSelectorNode(run.runRoot, config, {
     taskText: 'Improve local graph rendering.',
   });
   assert.equal(localTask.valid, true);
-  assert.equal(localTask.evaluations[0].reason, 'external-research-not-needed');
+  assert.equal(localTask.selectedRoute, 'not-needed');
 
-  await assert.rejects(
-    validateGateNode(run.runRoot, config, {
-      taskText: 'Search for competing products and verify benchmarks.',
-    }),
-    error => error?.code === 'MACHINE_GATE_CRITERIA_UNMET',
-  );
+  const defaulted = await validateSelectorNode(run.runRoot, config, {
+    taskText: 'Search for competing products and verify benchmarks.',
+  });
+  assert.equal(defaulted.valid, true);
+  assert.equal(defaulted.selectedRoute, 'local-only-research-gap');
+  assert.equal(defaulted.source, 'safe-local-only-default');
 
-  const approved = await validateGateNode(run.runRoot, config, {
+  const selected = await validateSelectorNode(run.runRoot, config, {
     taskText: 'Search for competing products and verify benchmarks.',
     externalResearch: {
       schemaVersion: 'orpad.externalResearchRun.v1',
@@ -641,8 +643,9 @@ test('external research gate requires a launch mode only for external research t
       mode: 'local-only-research-gap',
     },
   });
-  assert.equal(approved.valid, true);
-  assert.equal(approved.evaluations[0].reason, 'external-research-mode-local-only-research-gap');
+  assert.equal(selected.valid, true);
+  assert.equal(selected.selectedRoute, 'local-only-research-gap');
+  assert.equal(selected.source, 'user-prelaunch-choice');
 });
 
 test('Barrier fail policy rejects when declared dependencies have not completed', async () => {

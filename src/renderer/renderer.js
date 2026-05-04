@@ -2249,7 +2249,7 @@ const ORCH_TREE_NODE_TYPES = [
   'Timeout', 'Retry', 'Catch', 'CrossCheck', 'Skill', 'Planner', 'OrchTree',
 ];
 const ORCH_GRAPH_NODE_TYPES = [
-  'orpad.context', 'orpad.gate', 'orpad.skill', 'orpad.tree', 'orpad.graph',
+  'orpad.context', 'orpad.gate', 'orpad.selector', 'orpad.skill', 'orpad.tree', 'orpad.graph',
   'orpad.rule', 'orpad.artifactContract', 'orpad.probe', 'orpad.workQueue',
   'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop', 'orpad.barrier',
   'State', 'Tool', 'Human', 'Wait',
@@ -2257,6 +2257,7 @@ const ORCH_GRAPH_NODE_TYPES = [
 const ORCH_NODE_TYPE_LABELS = {
   'orpad.context': 'Context',
   'orpad.gate': 'Gate',
+  'orpad.selector': 'Selector',
   'orpad.skill': 'Skill',
   'orpad.tree': 'Tree layer',
   'orpad.graph': 'Flow layer',
@@ -3446,6 +3447,7 @@ function orchNodeDefaultLabel(type) {
     OrchTree: 'New tree subflow',
     'orpad.context': 'New context',
     'orpad.gate': 'New gate',
+    'orpad.selector': 'New selector',
     'orpad.skill': 'New skill',
     'orpad.tree': 'New tree reference',
     'orpad.graph': 'New flow reference',
@@ -10570,7 +10572,7 @@ function requestExternalResearchRunState(context) {
       <div class="runbook-diagnostic"><strong>Evidence mode</strong> Choose whether approved browsing or attached research evidence is available, or run local-only and record a research gap.</div>
     `;
     openFmtModal({
-      title: 'External Research Gate',
+      title: 'External Research Mode',
       body,
       onClose: () => finish(null),
       footer: [
@@ -10739,12 +10741,13 @@ async function createOrpadRunbookStarter() {
   const graphNodes = [
     { id: 'context', type: 'orpad.context', label: 'Prepare workspace', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
     ...(externalResearchIntent ? [{
-      id: 'external-research-gate',
-      type: 'orpad.gate',
+      id: 'external-research-mode',
+      type: 'orpad.selector',
       label: 'Confirm external research mode',
       config: {
-        criteria: ['external research mode selected or not needed'],
-        onFail: 'block',
+        selector: 'externalResearchMode',
+        options: ['local-only-research-gap', 'approved-or-attached-evidence'],
+        default: 'local-only-research-gap',
         externalResearchLimitation,
         requiredEvidence: 'approved browsing or attached research evidence',
         fallback: 'report a research gap and propose only local evidence-backed work',
@@ -10771,8 +10774,8 @@ async function createOrpadRunbookStarter() {
   ];
   const graphTransitions = [
     ...(externalResearchIntent ? [
-      { id: 'context-to-external-research-gate', from: 'context', to: 'external-research-gate' },
-      { id: 'external-research-gate-to-probe', from: 'external-research-gate', to: 'probe' },
+      { id: 'context-to-external-research-mode', from: 'context', to: 'external-research-mode' },
+      { id: 'external-research-mode-to-probe', from: 'external-research-mode', to: 'probe' },
     ] : [
       { id: 'context-to-probe', from: 'context', to: 'probe' },
     ]),

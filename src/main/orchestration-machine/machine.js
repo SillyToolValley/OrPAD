@@ -42,6 +42,7 @@ const SUPPORT_NODE_TYPES = new Set([
   'orpad.context',
   'orpad.workQueue',
   'orpad.gate',
+  'orpad.selector',
   'orpad.barrier',
   'orpad.artifactContract',
   'orpad.graph',
@@ -767,27 +768,6 @@ function evaluateGateCriterion(criterion, input = {}) {
   if (!normalized) {
     return { criterion, supported: false, passed: false, reason: 'empty-criterion' };
   }
-  if (normalized.includes('external research') && normalized.includes('mode')) {
-    const externalIntent = hasMachineExternalResearchIntent(input.taskText);
-    if (!externalIntent) {
-      return {
-        criterion,
-        supported: true,
-        passed: true,
-        reason: 'external-research-not-needed',
-      };
-    }
-    const mode = input.externalResearch?.mode || '';
-    const passed = input.externalResearch?.intentDetected === true
-      && ['local-only-research-gap', 'approved-or-attached-evidence'].includes(mode);
-    return {
-      criterion,
-      supported: true,
-      passed,
-      reason: passed ? `external-research-mode-${mode}` : 'external-research-mode-missing',
-      mode,
-    };
-  }
   if (normalized.includes('worker proof accepted') || normalized.includes('work result accepted')) {
     const event = acceptedWorkerProof(input.events);
     return {
@@ -851,6 +831,51 @@ async function validateGateNode(runRoot, config = {}, options = {}) {
   return result;
 }
 
+function selectExternalResearchMode(input = {}) {
+  const externalIntent = hasMachineExternalResearchIntent(input.taskText);
+  if (!externalIntent) {
+    return {
+      selected: 'not-needed',
+      selectedRoute: 'not-needed',
+      source: 'task-intent',
+      intentDetected: false,
+      valid: true,
+    };
+  }
+  const mode = input.externalResearch?.mode === 'approved-or-attached-evidence'
+    ? 'approved-or-attached-evidence'
+    : 'local-only-research-gap';
+  return {
+    selected: mode,
+    selectedRoute: mode,
+    source: input.externalResearch?.intentDetected === true ? 'user-prelaunch-choice' : 'safe-local-only-default',
+    intentDetected: true,
+    valid: true,
+    localOnly: mode === 'local-only-research-gap',
+  };
+}
+
+async function validateSelectorNode(runRoot, config = {}, options = {}) {
+  const selectorKind = config.selector || config.selectorKind || config.modeSource || '';
+  if (selectorKind === 'externalResearchMode') {
+    return {
+      selectorKind,
+      options: Array.isArray(config.options) ? config.options : ['local-only-research-gap', 'approved-or-attached-evidence'],
+      ...selectExternalResearchMode(options),
+    };
+  }
+  const configuredOptions = Array.isArray(config.options) ? config.options.map(item => String(item || '').trim()).filter(Boolean) : [];
+  const selected = String(config.selected || config.default || configuredOptions[0] || '').trim();
+  return {
+    selectorKind: selectorKind || 'static',
+    options: configuredOptions,
+    selected,
+    selectedRoute: selected,
+    source: selected ? 'config' : 'none',
+    valid: Boolean(selected),
+  };
+}
+
 async function executeSupportNode(runRoot, node, options = {}) {
   const { runId, attempt = 1 } = options;
   return withNodeLifecycle(runRoot, node, {
@@ -882,6 +907,9 @@ async function executeSupportNode(runRoot, node, options = {}) {
     }
     if (node.nodeType === 'orpad.gate') {
       return validateGateNode(runRoot, config, options);
+    }
+    if (node.nodeType === 'orpad.selector') {
+      return validateSelectorNode(runRoot, config, options);
     }
     if (node.nodeType === 'orpad.artifactContract') {
       return validateArtifactContract(runRoot, config);
@@ -1075,7 +1103,9 @@ async function executeMachineRunStep(options = {}) {
   const hasLiveAdapter = isRunnableMachineAdapter(adapterSource);
   const usingLiveAdapter = !hasHarness && hasLiveAdapter;
   const runtimeTaskText = normalizeRuntimeTaskText(taskText);
-  const runtimeExternalResearch = normalizeExternalResearchState(externalResearch);
+  const runStateBeforeStep = await readRunState(runRoot);
+  const runtimeExternalResearch = normalizeExternalResearchState(externalResearch)
+    || normalizeExternalResearchState(runStateBeforeStep?.metadata?.externalResearch);
   if (!hasHarness && !hasLiveAdapter) {
     throw machineExecutionError(
       'MACHINE_EXECUTION_HARNESS_REQUIRED',
@@ -1566,6 +1596,7 @@ module.exports = {
   validateBarrierNode,
   validateArtifactContract,
   validateGateNode,
+  validateSelectorNode,
   nodeCliPatchCommandSpec,
   nodeExecutableForHarness,
   proposalResultForRequest,

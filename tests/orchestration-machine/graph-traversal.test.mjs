@@ -46,7 +46,7 @@ test('graph loader reads the current maintenance pipeline graph set', async () =
   assert.equal(graphSet.graphs.length, 4);
   assert.equal(inventory.length, 25);
   assert.equal(inventory.some(node => node.nodePath === 'main/reference-context'), true);
-  assert.equal(inventory.some(node => node.nodePath === 'main/external-research-gate'), true);
+  assert.equal(inventory.some(node => node.nodePath === 'main/external-research-mode'), true);
   assert.equal(inventory.some(node => node.nodePath === 'worker-loop/worker'), true);
   assert.equal(inventory.find(node => node.nodePath === 'main/reference-context').runtimeHandlerKind, 'machine-builtin');
   assert.equal(inventory.find(node => node.nodePath === 'discovery-lenses/ux-ui-probe').runtimeHandlerKind, 'adapter-required');
@@ -127,7 +127,7 @@ test('traversal plan expands inline nested graph containers at their source posi
   assert.deepEqual(paths.slice(0, 5), [
     'main/reference-context',
     'main/authority-gate',
-    'main/external-research-gate',
+    'main/external-research-mode',
     'main/discovery-lenses',
     'discovery-lenses/source-quality',
   ]);
@@ -187,6 +187,7 @@ test('node lifecycle events are recorded as Machine events', async () => {
 
 test('runtime handler kind classification is explicit for known node families', () => {
   assert.equal(runtimeHandlerKind('orpad.context'), 'machine-builtin');
+  assert.equal(runtimeHandlerKind('orpad.selector'), 'machine-builtin');
   assert.equal(runtimeHandlerKind('orpad.workQueue'), 'machine-builtin');
   assert.equal(runtimeHandlerKind('orpad.workerLoop'), 'adapter-required');
   assert.equal(runtimeHandlerKind('custom.unknown'), 'render-validate-only');

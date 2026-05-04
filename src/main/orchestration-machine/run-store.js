@@ -82,6 +82,26 @@ function normalizeRunTaskText(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 2000);
 }
 
+function normalizeRunExternalResearch(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.intentDetected !== true) return null;
+  const mode = value.mode === 'approved-or-attached-evidence'
+    ? 'approved-or-attached-evidence'
+    : 'local-only-research-gap';
+  return {
+    schemaVersion: 'orpad.externalResearchRun.v1',
+    intentDetected: true,
+    mode,
+    evidence: {
+      status: mode === 'approved-or-attached-evidence' ? 'approved-or-attached' : 'not-provided',
+      source: String(value.evidence?.source || 'user-prelaunch-choice').slice(0, 160),
+    },
+    limitation: String(value.limitation || '').slice(0, 1000),
+    requiredEvidence: String(value.requiredEvidence || '').slice(0, 500),
+    fallback: String(value.fallback || '').slice(0, 500),
+    downstreamInstruction: String(value.downstreamInstruction || '').slice(0, 1000),
+  };
+}
+
 async function createMachineRun(options = {}) {
   const {
     workspaceRoot,
@@ -90,6 +110,7 @@ async function createMachineRun(options = {}) {
     now = new Date(),
     canonicalStoreKind = 'jsonl',
     taskText = '',
+    externalResearch = null,
   } = options;
   const context = resolvePipelineContext({ workspaceRoot, pipelinePath });
   await assertNoSymlinkInWorkspacePath(context.workspaceRoot, context.pipelinePath, {
@@ -114,6 +135,8 @@ async function createMachineRun(options = {}) {
     entryGraph: pipeline.entryGraph || '',
   };
   if (normalizedTaskText) metadata.taskText = normalizedTaskText;
+  const normalizedExternalResearch = normalizeRunExternalResearch(externalResearch);
+  if (normalizedExternalResearch) metadata.externalResearch = normalizedExternalResearch;
   const createdEvent = await appendMachineEvent(targetRunRoot, {
     runId,
     timestamp,

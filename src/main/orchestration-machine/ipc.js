@@ -124,6 +124,11 @@ function optionalTaskText(options) {
   return optionalString(options.taskText, 'options.taskText').trim().replace(/\s+/g, ' ').slice(0, 2000);
 }
 
+function optionalExternalResearch(options) {
+  if (options.externalResearch == null) return null;
+  return assertPlainObject(options.externalResearch, 'options.externalResearch');
+}
+
 function requiredString(value, label) {
   if (typeof value !== 'string' || !value.trim()) {
     throw machineError('MACHINE_IPC_SCHEMA_INVALID', `${label} is required.`);
@@ -346,6 +351,7 @@ async function createRunHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const options = assertPlainObject(request.options == null ? {} : request.options, 'options');
   const taskText = optionalTaskText(options);
+  const externalResearch = optionalExternalResearch(options);
   const validation = await validateRunbookFile(context.pipelinePath, {
     trustLevel: normalizeTrustLevel(options),
     checkFiles: options.checkFiles !== false,
@@ -364,6 +370,7 @@ async function createRunHandler(event, authority, request) {
     pipelinePath: context.pipelinePath,
     runId: assertOptionalRunId(request.runId) || undefined,
     taskText,
+    externalResearch,
   });
   return {
     success: true,
@@ -779,6 +786,7 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
   const runId = assertRunId(request.runId);
   const options = assertPlainObject(request.options == null ? {} : request.options, 'options');
   const taskText = optionalTaskText(options);
+  const externalResearch = optionalExternalResearch(options);
   const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
@@ -794,6 +802,7 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
       runId,
       exportLatestRunAfterStep: request.exportLatestRun !== false,
       taskText,
+      externalResearch,
     });
     const updatedSnapshot = await readRunSnapshot(runRoot);
     return {
