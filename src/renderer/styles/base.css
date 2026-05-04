@@ -2229,6 +2229,68 @@ body.json-diff-mode #preview-pane {
     box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-color) 26%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
   }
 }
+.orch-node-progress-badge {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg-primary) 96%, var(--bg-secondary));
+  border-radius: 50%;
+  z-index: 3;
+  pointer-events: none;
+  box-shadow: 0 2px 8px color-mix(in srgb, #000 28%, transparent);
+}
+.orch-node-progress-spinner {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent-color) 28%, transparent);
+  border-top-color: var(--accent-color);
+  border-right-color: color-mix(in srgb, var(--accent-color) 70%, transparent);
+}
+.orch-node-progress-badge.active .orch-node-progress-spinner {
+  animation: orch-progress-spin 1.4s linear infinite;
+}
+.orch-node-progress-percent {
+  position: relative;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--accent-color);
+  letter-spacing: -0.02em;
+}
+.orch-node-progress-bar {
+  display: flex;
+  gap: 2px;
+  margin-top: calc(7px * var(--us));
+}
+.orch-node-progress-step {
+  flex: 1 1 auto;
+  min-width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-muted, #888) 28%, transparent);
+}
+.orch-node-progress-step.state-completed {
+  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 78%, transparent);
+}
+.orch-node-progress-step.state-running {
+  background: var(--accent-color);
+  animation: orch-progress-blink 1s ease-in-out infinite;
+}
+.orch-node-progress-step.state-failed {
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 80%, transparent);
+}
+@keyframes orch-progress-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes orch-progress-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 .orch-graph-node.draggable {
   cursor: grab;
 }

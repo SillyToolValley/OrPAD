@@ -4511,6 +4511,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
   const typeLabel = orchNodeTypeLabel(node?.type) || 'Node';
   const runtime = machineRuntimeStatusForGraphNode(item, runProjection);
   const runtimeClass = runtime ? ` runtime-${runtime.state}` : '';
+  const progress = machineNodeProgress(item, runProjection);
   return `
     <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}"
       data-orch-path="${escapeHtml(path)}"
@@ -4518,6 +4519,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
       role="button"
       tabindex="0"
       style="left:${Math.round(x)}px;top:${Math.round(y)}px">
+      ${renderMachineNodeProgressBadge(progress)}
       <div class="orch-graph-node-top">
         <strong>${escapeHtml(title)}</strong>
         <span title="${escapeHtml(node?.type || '')}">${escapeHtml(typeLabel)}</span>
@@ -4527,6 +4529,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
         ${treeNodes ? `<span>${treeNodes} tree nodes</span>` : children ? `<span>${children} child${children === 1 ? '' : 'ren'}</span>` : '<span>leaf</span>'}
       </div>
       ${runtime ? `<div class="orch-runtime-status" title="${escapeHtml(runtime.title)}"><span class="orch-runtime-dot"></span><span>${escapeHtml(runtime.label)}</span></div>` : ''}
+      ${renderMachineNodeProgressBar(progress)}
       ${isOrchSkillType(node?.type) && (node?.file || node?.config?.skillRef) ? `<small>${escapeHtml(node.file || node.config.skillRef)}</small>` : ''}
     </div>
   `;
@@ -9214,6 +9217,128 @@ function machineRunRecordForPipelinePath(runbookPath) {
   return getRunbookCache(machineRunRecordCache, runbookPath) || (selectedMatches ? lastMachineRunRecord : null);
 }
 
+const MACHINE_QUEUE_TERMINAL_STATES = ['done', 'blocked', 'skipped', 'cancelled', 'partial'];
+const MACHINE_PROGRESS_TERMINAL_STATES = ['completed', 'failed', 'blocked', 'skipped', 'cancelled'];
+
+function machineQueueProgressFromEvents(record) {
+  const events = record?.events || [];
+  if (!events.length) return null;
+  const itemOrder = [];
+  const seen = new Set();
+  const itemStates = new Map();
+  for (const event of events) {
+    if (event?.eventType !== 'queue.transition' || !event.itemId) continue;
+    if (!seen.has(event.itemId)) {
+      seen.add(event.itemId);
+      itemOrder.push(event.itemId);
+    }
+    itemStates.set(event.itemId, event.toState);
+  }
+  if (!itemStates.size) return null;
+  const total = itemStates.size;
+  let done = 0;
+  let active = 0;
+  const steps = itemOrder.map(itemId => {
+    const state = itemStates.get(itemId);
+    if (MACHINE_QUEUE_TERMINAL_STATES.includes(state)) {
+      done += 1;
+      return { state: 'completed', label: itemId };
+    }
+    if (state === 'claimed') {
+      active += 1;
+      return { state: 'running', label: itemId };
+    }
+    return { state: 'queued', label: itemId };
+  });
+  return {
+    pattern: 'queue',
+    total,
+    done,
+    active,
+    percent: Math.round((done / total) * 100),
+    steps,
+  };
+}
+
+function machineParallelProgressFromStatuses(childStatuses) {
+  const distinct = new Map();
+  for (const status of childStatuses) {
+    if (!status?.nodePath) continue;
+    const existing = distinct.get(status.nodePath);
+    if (!existing || (Number(status.sequence) || 0) > (Number(existing.sequence) || 0)) {
+      distinct.set(status.nodePath, status);
+    }
+  }
+  const total = distinct.size;
+  if (!total) return null;
+  let done = 0;
+  let active = 0;
+  const steps = [];
+  for (const status of distinct.values()) {
+    const state = String(status.state || '');
+    if (MACHINE_PROGRESS_TERMINAL_STATES.includes(state)) {
+      done += 1;
+      steps.push({ state: state === 'failed' ? 'failed' : 'completed', label: status.nodePath });
+    } else if (state === 'running' || state === 'queued') {
+      active += 1;
+      steps.push({ state: 'running', label: status.nodePath });
+    } else {
+      steps.push({ state: 'queued', label: status.nodePath });
+    }
+  }
+  return {
+    pattern: 'parallel',
+    total,
+    done,
+    active,
+    percent: Math.round((done / total) * 100),
+    steps,
+  };
+}
+
+function machineNodeProgress(item, runProjection) {
+  if (!runProjection?.statuses?.size) return null;
+  if (item?.node?.type !== 'orpad.graph') return null;
+  const graphRef = item.node?.config?.graphRef || item.node?.graphRef || '';
+  const candidates = machineRuntimeGraphRefKeyCandidates(graphRef);
+  if (!candidates.length) return null;
+  const childStatuses = [...runProjection.statuses.entries()]
+    .filter(([nodePath]) => candidates.some(key => nodePath.startsWith(`${key}/`)))
+    .map(([nodePath, status]) => ({ nodePath, ...status }));
+  if (!childStatuses.length) return null;
+  const hasIteration = childStatuses.some(status => /\/(dispatcher|workerLoop|worker)$/.test(status.nodePath));
+  if (hasIteration) {
+    const queue = machineQueueProgressFromEvents(runProjection.record);
+    if (queue && queue.total > 0) return queue;
+  }
+  return machineParallelProgressFromStatuses(childStatuses);
+}
+
+function renderMachineNodeProgressBadge(progress) {
+  if (!progress || progress.total <= 1) return '';
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const counter = `${progress.done}/${progress.total}`;
+  const titleText = `${counter} (${percent}%)`;
+  return `<div class="orch-node-progress-badge${progress.active > 0 ? ' active' : ''}" title="${escapeHtml(titleText)}">
+      <span class="orch-node-progress-spinner" aria-hidden="true"></span>
+      <span class="orch-node-progress-percent">${percent}%</span>
+    </div>`;
+}
+
+function renderMachineNodeProgressBar(progress) {
+  if (!progress || progress.total <= 1) return '';
+  const MAX_VISIBLE_STEPS = 40;
+  const steps = progress.steps.slice(0, MAX_VISIBLE_STEPS);
+  const overflow = progress.steps.length - steps.length;
+  const segments = steps.map(step => (
+    `<span class="orch-node-progress-step state-${escapeHtml(step.state || 'queued')}" title="${escapeHtml(step.label || '')}"></span>`
+  )).join('');
+  const counter = overflow > 0
+    ? `${progress.done}/${progress.total} (+${overflow} more)`
+    : `${progress.done}/${progress.total}`;
+  return `<div class="orch-node-progress-bar" aria-label="${escapeHtml(counter)}">${segments}</div>`;
+}
+
 function isPipelineMachineRunInProgress(runbookPath) {
   if (!runbookPath) return false;
   if (machineRunStartPendingPaths.has(runbookNormalizePath(runbookPath).toLowerCase())) return true;
@@ -9229,6 +9354,7 @@ function machineRuntimeProjectionForGraph(context, graphDoc) {
     graphKeys: machineRuntimeGraphKeyCandidates(context, graphDoc),
     runInProgress: isMachineRunInProgress(record, context.pipelinePath),
     statuses,
+    record,
   };
 }
 
