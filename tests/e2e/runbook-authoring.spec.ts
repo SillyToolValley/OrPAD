@@ -98,6 +98,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(pipeline.run.machineAdapter.probeNodePaths).toEqual(['main/probe']);
   const graph = JSON.parse(fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8'));
   expect(graph.graph.nodes.map((node: { type: string }) => node.type)).toEqual([
+    'orpad.entry',
     'orpad.context',
     'orpad.selector',
     'orpad.probe',
@@ -105,8 +106,10 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
     'orpad.triage',
     'orpad.dispatcher',
     'orpad.workerLoop',
+    'orpad.patchReview',
     'orpad.gate',
     'orpad.artifactContract',
+    'orpad.exit',
   ]);
   const generatedSkill = fs.readFileSync(path.join(runbookDir, 'skills', skillFiles[0]), 'utf-8');
   expect(generatedSkill).toContain('Search for competing products');
@@ -120,7 +123,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
   await expect(win.locator('.orch-inspector')).not.toContainText('Step key');
   await expect(win.locator('.orch-inspector')).not.toContainText(/\bID\b/);
-  await expect(win.locator('.orch-graph-node')).toHaveCount(9);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(12);
   await expect(win.locator('.orch-graph-node')).toContainText(['Prepare workspace', 'Confirm external research mode', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
   await expect(win.locator('button[data-orch-tool="select"]')).toHaveClass(/active/);
   await expect(win.locator('.orch-graph-tools .ogi')).toHaveCount(8);
@@ -340,8 +343,8 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.tab-item.active')).toContainText(graphFile);
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await win.locator('button[data-orch-mode="readwrite"]').click();
-  const graphContextNode = win.locator('.orch-graph-node[data-orch-path="graph.nodes.0"]');
-  const graphApprovalNode = win.locator('.orch-graph-node[data-orch-path="graph.nodes.1"]');
+  const graphContextNode = win.locator('.orch-graph-node[data-orch-path="graph.nodes.1"]');
+  const graphApprovalNode = win.locator('.orch-graph-node[data-orch-path="graph.nodes.2"]');
   await expect(graphContextNode).toBeVisible();
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await expect(win.locator('.orch-inspector')).toContainText('Step key');
@@ -386,18 +389,27 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect.poll(() => fs.existsSync(graphMetaPath)).toBe(true);
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await win.locator('button[data-orch-action="add-child"]').click();
-  await expect(win.locator('.orch-graph-node')).toHaveCount(10);
-  await expect(win.locator('.orch-transition')).toHaveCount(9);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(13);
+  await expect(win.locator('.orch-transition')).toHaveCount(12);
   await expect(win.locator('.orch-graph-node.selected')).toContainText('New context');
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Context');
   await win.keyboard.press('Delete');
-  await expect(win.locator('.orch-graph-node')).toHaveCount(9);
-  await expect(win.locator('.orch-transition')).toHaveCount(8);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(12);
+  await expect(win.locator('.orch-transition')).toHaveCount(11);
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
-  await win.locator('.orch-graph-node[data-orch-path="graph.nodes.2"]').click({ button: 'right' });
+  await win.locator('.orch-graph-node[data-orch-path="graph.nodes.3"]').evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: rect.left + 18,
+      clientY: rect.top + 18,
+    }));
+  });
   await expect(win.locator('.orch-context-menu')).toContainText('Connect selected');
   await win.locator('button[data-orch-context-action="connect-selected"]').click();
-  await expect(win.locator('.orch-transition')).toHaveCount(9);
+  await expect(win.locator('.orch-transition')).toHaveCount(12);
   await win.locator('.orch-transition-hit').first().evaluate((pathEl) => {
     const rect = pathEl.getBoundingClientRect();
     pathEl.dispatchEvent(new MouseEvent('mousedown', {
@@ -413,8 +425,8 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-transition.selected')).toHaveClass(/style-straight/);
   await expect(win.locator('.orch-transition-handle')).toBeVisible();
   await win.locator('button[data-orch-action="delete-transition"]').click();
-  await expect(win.locator('.orch-graph-node')).toHaveCount(9);
-  await expect(win.locator('.orch-transition')).toHaveCount(8);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(12);
+  await expect(win.locator('.orch-transition')).toHaveCount(11);
   await win.keyboard.press('Control+S');
   await expect.poll(() => fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8')).toContain('Edited graph context');
 

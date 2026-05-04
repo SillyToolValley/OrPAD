@@ -342,7 +342,7 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
   process, and generates an in-memory session capability token when no environment token exists.
   It returns only that generated session token; environment-provided tokens still require user or
   process-level provisioning and are not reflected back through this IPC.
-- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-cancel-run`, `machine-cancel-claim`, `machine-decide-approval`, `machine-export-latest-run`, `machine-apply-patch`) require
+- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-cancel-run`, `machine-cancel-claim`, `machine-decide-approval`, `machine-export-latest-run`, `machine-apply-patch`, `machine-review-patch`) require
   either `ORPAD_MACHINE_IPC_TOKEN` or the generated session token and a matching
   `capabilityToken` in the request. Read-only validate, list, and get-run actions still require
   the feature gate and sender/path/schema checks.
@@ -392,6 +392,9 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
   an overlapping or stale patch cannot partially apply earlier files before a later base mismatch.
   Failed applications are recorded as Machine events. The renderer exposes this through a supervised
   review modal rather than automatic canonical workspace mutation.
+- `machine-review-patch` records a renderer-supervised decision to keep a Machine-owned patch
+  artifact as review-only evidence. It validates the same run-relative patch artifact path and schema
+  but does not write workspace files or execute external tools.
 
 ## OrPAD Orchestration Machine adapter security model
 
@@ -534,6 +537,7 @@ features that intentionally launch configured/user-requested child processes.
 | `machine-decide-approval` | handle | Record a Machine-owned approval decision for a pending approval, optionally exporting latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, pending approval event only |
 | `machine-export-latest-run` | handle | Export durable Machine run evidence and queue metadata to `harness/generated/latest-run` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / pipeline evidence snapshot export only |
 | `machine-apply-patch` | handle | Apply selected files from a Machine patch artifact to the canonical workspace after write-set and base-SHA checks | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, run-relative patch artifact, selected workspace files only |
+| `machine-review-patch` | handle | Record a supervised review-only decision for one Machine patch artifact without applying it | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, run-relative patch artifact only |
 | `save-binary` | handle | Save dialog then binary write | reads `event.sender` | Dialog enforces |
 | `svg-to-png` | handle | Offscreen BrowserWindow render | reads `event.sender` | Validates dimensions |
 | `save-text` | handle | Save dialog then text write | reads `event.sender` | Dialog enforces |
@@ -582,7 +586,8 @@ recognized `run.machineAdapter` declarations. Worker execution remains overlay-c
 proposal execution is read-only, and arbitrary adapter execution, provider calls, terminal
 commands, and MCP tools remain out of scope for renderer IPC. Source workspace writes are limited
 to explicit `machine-apply-patch` review selections from Machine-owned patch artifacts with
-write-set and pre-image hash checks.
+write-set and pre-image hash checks; review-only patch decisions are event-only through
+`machine-review-patch`.
 
 **Command execution boundaries:** General filesystem/editor IPC still does not expose arbitrary
 shell execution. P1-3 MCP uses the official SDK `StdioClientTransport`, which spawns the

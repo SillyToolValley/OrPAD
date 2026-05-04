@@ -22,7 +22,7 @@
   "graphs": {
     "main": {
       "file": "graphs/main.or-graph",
-      "description": "Entry graph that loads context, checks authority, runs discovery, ingests queue work, dispatches workers, and closes proof gates."
+      "description": "Entry graph that loads context, checks authority, runs discovery, ingests queue work, dispatches workers, reviews patches, and closes proof gates."
     },
     "discovery-lenses": {
       "file": "graphs/discovery-lenses.or-graph",

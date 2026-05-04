@@ -2249,12 +2249,13 @@ const ORCH_TREE_NODE_TYPES = [
   'Timeout', 'Retry', 'Catch', 'CrossCheck', 'Skill', 'Planner', 'OrchTree',
 ];
 const ORCH_GRAPH_NODE_TYPES = [
-  'orpad.context', 'orpad.gate', 'orpad.selector', 'orpad.skill', 'orpad.tree', 'orpad.graph',
-  'orpad.rule', 'orpad.artifactContract', 'orpad.probe', 'orpad.workQueue',
+  'orpad.entry', 'orpad.context', 'orpad.gate', 'orpad.selector', 'orpad.skill', 'orpad.tree', 'orpad.graph',
+  'orpad.rule', 'orpad.artifactContract', 'orpad.patchReview', 'orpad.exit', 'orpad.probe', 'orpad.workQueue',
   'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop', 'orpad.barrier',
   'State', 'Tool', 'Human', 'Wait',
 ];
 const ORCH_NODE_TYPE_LABELS = {
+  'orpad.entry': 'Entry',
   'orpad.context': 'Context',
   'orpad.gate': 'Gate',
   'orpad.selector': 'Selector',
@@ -2263,6 +2264,8 @@ const ORCH_NODE_TYPE_LABELS = {
   'orpad.graph': 'Flow layer',
   'orpad.rule': 'Rule',
   'orpad.artifactContract': 'Evidence contract',
+  'orpad.patchReview': 'Patch review',
+  'orpad.exit': 'Exit',
   'orpad.probe': 'Probe',
   'orpad.workQueue': 'Work queue',
   'orpad.triage': 'Triage',
@@ -3445,6 +3448,7 @@ function orchNodeDefaultLabel(type) {
     Sequence: 'New sequence',
     Skill: 'New skill',
     OrchTree: 'New tree subflow',
+    'orpad.entry': 'Entry',
     'orpad.context': 'New context',
     'orpad.gate': 'New gate',
     'orpad.selector': 'New selector',
@@ -3453,6 +3457,8 @@ function orchNodeDefaultLabel(type) {
     'orpad.graph': 'New flow reference',
     'orpad.rule': 'New rule',
     'orpad.artifactContract': 'New evidence contract',
+    'orpad.patchReview': 'Review patch results',
+    'orpad.exit': 'Exit',
     'orpad.probe': 'New probe',
     'orpad.workQueue': 'New work queue',
     'orpad.triage': 'New triage',
@@ -8343,6 +8349,12 @@ function machineEventLabel(event) {
     }
     case 'artifact.registered':
       return 'Evidence file saved';
+    case 'patch.applied':
+      return 'Patch applied';
+    case 'patch.review_skipped':
+      return 'Patch kept as evidence';
+    case 'patch.apply_failed':
+      return 'Patch apply blocked';
     case 'approval.requested':
       return 'Permission requested';
     case 'approval.decided': {
@@ -8455,15 +8467,41 @@ function machineWorkerReviewInfo(record) {
   return machineWorkerReviewInfoForEvent(record, event);
 }
 
+function machinePatchReviewDecisionForArtifact(record, patchArtifact) {
+  const artifact = String(patchArtifact || '').trim();
+  if (!artifact) return null;
+  return [...(record?.events || [])].reverse().find(event => (
+    ['patch.applied', 'patch.review_skipped'].includes(event?.eventType)
+    && event?.payload?.patchArtifact === artifact
+  )) || null;
+}
+
+function machineHasBlockedPatchReviewNode(record) {
+  const latestByPath = new Map();
+  for (const event of record?.events || []) {
+    if (!String(event?.eventType || '').startsWith('node.')) continue;
+    if (!event?.nodePath) continue;
+    latestByPath.set(event.nodePath, event);
+  }
+  return [...latestByPath.values()].some(event => (
+    event?.eventType === 'node.blocked'
+    && event?.payload?.nodeType === 'orpad.patchReview'
+  ));
+}
+
 function machineWorkerReviewInfoForEvent(record, event) {
   if (!event) return null;
   const payload = event.payload || {};
   const verification = payload.verification || [];
+  const patchArtifact = payload.patchArtifact || '';
+  const patchReviewDecision = machinePatchReviewDecisionForArtifact(record, patchArtifact);
   return {
     event,
     itemId: event.itemId || '',
     status: String(payload.status || ''),
-    patchArtifact: payload.patchArtifact || '',
+    patchArtifact,
+    patchReviewDecision,
+    patchReviewResolved: Boolean(patchReviewDecision),
     changedFiles: payload.changedFiles || [],
     evidenceArtifacts: event.artifactRefs || [],
     missingExpectedChanges: [...new Set(verification.flatMap(item => item.missingExpectedChanges || []))],
@@ -8483,13 +8521,13 @@ function machineRunAttentionDetails(record) {
   const notices = [];
   const workerReview = machineWorkerReviewInfo(record);
   const workerStatus = String(workerReview?.status || '').toLowerCase();
-  if (workerReview?.patchArtifact && workerReview.changedFiles.length && workerStatus !== 'blocked') {
+  if (workerReview?.patchArtifact && !workerReview.patchReviewResolved && workerReview.changedFiles.length && workerStatus !== 'blocked') {
     notices.push({
       state: 'warning',
       title: 'Patch ready',
       text: `${machineCountLabel(workerReview.changedFiles.length, 'changed file')} staged in run evidence. Review Patch to apply selected files or cancel to keep evidence only.`,
     });
-  } else if (workerStatus === 'blocked') {
+  } else if (workerStatus === 'blocked' && !workerReview?.patchReviewResolved) {
     notices.push({
       state: 'warning',
       title: 'Review required',
@@ -8622,7 +8660,7 @@ function machineDisplayStatus(record, runInProgress) {
   const incompleteEvidence = !!machineLatestPartialArtifactContract(record);
   const lifecycleValue = String(runState.lifecycleStatus || '').toLowerCase();
   const summaryValue = String(runState.summaryStatus || '').toLowerCase();
-  const needsReview = !!workerReview?.patchArtifact
+  const needsReview = (!!workerReview?.patchArtifact && !workerReview.patchReviewResolved)
     || workerStatus === 'blocked'
     || summaryValue === 'blocked'
     || (workerReview?.missingExpectedChanges || []).length > 0;
@@ -9030,6 +9068,63 @@ function machineRuntimeGraphKeyCandidates(context, graphDoc) {
   return keys;
 }
 
+function machineRuntimeGraphRefKeyCandidates(graphRef) {
+  const normalized = runbookNormalizePath(graphRef || '');
+  const fileName = normalized.split('/').pop() || '';
+  const withoutExt = fileName.replace(/\.or-graph$/i, '');
+  return [...new Set([
+    withoutExt,
+    fileName,
+    normalized.replace(/\.or-graph$/i, ''),
+    normalized,
+  ].map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+function machineRuntimeAggregateGraphStatus(item, runProjection) {
+  if (item?.node?.type !== 'orpad.graph' || !runProjection?.statuses?.size) return null;
+  const candidates = machineRuntimeGraphRefKeyCandidates(item.node?.config?.graphRef || item.node?.graphRef || '');
+  if (!candidates.length) return null;
+  const childStatuses = [...runProjection.statuses.entries()]
+    .filter(([nodePath]) => candidates.some(graphKey => nodePath.startsWith(`${graphKey}/`)))
+    .map(([, status]) => status);
+  if (!childStatuses.length) return null;
+  const hasState = state => childStatuses.some(status => status.state === state);
+  const childPath = candidates.find(graphKey => childStatuses.some(status => status.nodePath?.startsWith(`${graphKey}/`))) || candidates[0];
+  if (hasState('running') || hasState('queued')) {
+    return {
+      state: 'running',
+      label: 'Running',
+      nodePath: childPath,
+      title: `Running inside ${item.node?.label || item.node?.id || childPath}`,
+    };
+  }
+  if (hasState('failed')) {
+    return {
+      state: 'failed',
+      label: 'Failed',
+      nodePath: childPath,
+      title: `Failed inside ${item.node?.label || item.node?.id || childPath}`,
+    };
+  }
+  if (hasState('blocked')) {
+    return {
+      state: 'blocked',
+      label: 'Blocked',
+      nodePath: childPath,
+      title: `Blocked inside ${item.node?.label || item.node?.id || childPath}`,
+    };
+  }
+  if (hasState('cancelled')) {
+    return {
+      state: 'cancelled',
+      label: 'Stopped',
+      nodePath: childPath,
+      title: `Stopped inside ${item.node?.label || item.node?.id || childPath}`,
+    };
+  }
+  return null;
+}
+
 function machineRunRecordForPipelinePath(runbookPath) {
   if (!runbookPath) return null;
   const selectedMatches = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
@@ -9056,6 +9151,8 @@ function machineRuntimeProjectionForGraph(context, graphDoc) {
 
 function machineRuntimeStatusForGraphNode(item, runProjection) {
   if (!runProjection?.statuses?.size) return null;
+  const aggregate = machineRuntimeAggregateGraphStatus(item, runProjection);
+  if (aggregate) return aggregate;
   const nodeId = String(item?.node?.id || '').trim();
   if (!nodeId) return null;
   const direct = runProjection.statuses.get(nodeId);
@@ -10204,6 +10301,32 @@ async function applyMachinePatchSelection(runbookPath, runId, workerReview, sele
   return applied;
 }
 
+async function recordMachinePatchReviewDecision(runbookPath, runId, workerReview, decision = 'skipped') {
+  if (!workspacePath || !runbookPath || !runId || !workerReview?.patchArtifact || !window.orpad?.machine?.reviewPatch) return null;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return null;
+  const reviewed = await window.orpad.machine.reviewPatch({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    capabilityToken: token,
+    patchArtifact: workerReview.patchArtifact,
+    decision,
+    exportLatestRun: true,
+  });
+  if (!reviewed?.success) {
+    if (reviewed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+    alert(reviewed?.error || 'Patch review could not be recorded.');
+    return null;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = machineUpdateRunRecord(runbookPath, reviewed);
+  await refreshMachineRunList(runbookPath);
+  renderRunbooksPanel();
+  void refreshWorkspaceRunbookSummary();
+  return reviewed;
+}
+
 async function machineWorkerItemDetails(record, workerReview) {
   const itemId = workerReview?.itemId || machineLatestWorkerEvent(record)?.itemId || '';
   if (!itemId || !window.orpad?.readFile) return null;
@@ -10240,6 +10363,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   const reviewIndex = Number(options.reviewIndex) || 1;
   const reviewCount = Number(options.reviewCount) || 1;
   const reviewTitle = reviewCount > 1 ? `Review Patch ${reviewIndex} of ${reviewCount}` : 'Review Patch';
+  const hasNextReview = reviewIndex < reviewCount;
   const criteria = (itemDetails?.acceptanceCriteria || []).slice(0, 3);
   const changeRows = patchSummary.changes.map((change, index) => `
     <label class="runbook-diagnostic" style="display:block; margin:8px 0;">
@@ -10278,9 +10402,15 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     footer: [
       {
         label: reviewCount > 1 ? 'Skip Patch' : 'Cancel',
-        onClick: () => {
-          closeFmtModal();
-          if (reviewCount > 1) openNextReview();
+        onClick: async () => {
+          const reviewed = await recordMachinePatchReviewDecision(runbookPath, runId, workerReview, 'skipped');
+          if (reviewed) {
+            closeFmtModal();
+            if (hasNextReview) openNextReview();
+            else if (machineHasBlockedPatchReviewNode(lastMachineRunRecord || record)) {
+              await executeSelectedMachineRunStep(runbookPath, runId);
+            }
+          }
         },
       },
       {
@@ -10291,8 +10421,11 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
             runbookDraftTask = prompt;
             localStorage.setItem(RUNBOOK_TASK_STORAGE_KEY, runbookDraftTask);
           }
-          closeFmtModal();
-          await executeSelectedMachineRunStep(runbookPath, runId);
+          const reviewed = await recordMachinePatchReviewDecision(runbookPath, runId, workerReview, 'follow-up');
+          if (reviewed) {
+            closeFmtModal();
+            await executeSelectedMachineRunStep(runbookPath, runId);
+          }
         },
       },
       {
@@ -10307,7 +10440,10 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
           const applied = await applyMachinePatchSelection(runbookPath, runId, workerReview, files);
           if (applied) {
             closeFmtModal();
-            if (reviewCount > 1) openNextReview();
+            if (hasNextReview) openNextReview();
+            else if (machineHasBlockedPatchReviewNode(lastMachineRunRecord || record)) {
+              await executeSelectedMachineRunStep(runbookPath, runId);
+            }
           }
         },
       },
@@ -10320,7 +10456,7 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   if (!runbookPath || !runId) return;
   if (isMachineRunInProgress(record, runbookPath)) return;
   const workerReviews = machineWorkerReviewInfos(record)
-    .filter(review => review?.patchArtifact);
+    .filter(review => review?.patchArtifact && !review.patchReviewResolved);
   const workerReview = workerReviews.find(review => (
     !machinePatchReviewShown.has(machinePatchReviewKey(runbookPath, runId, review.patchArtifact))
   ));
@@ -10739,6 +10875,7 @@ async function createOrpadRunbookStarter() {
   const skillPath = `skills/${skillName}`;
   const skillFilePath = workspaceChildPath('.orpad', 'pipelines', slug, skillPath);
   const graphNodes = [
+    { id: 'entry', type: 'orpad.entry', label: 'Entry', config: { summary: 'Begin managed run.' } },
     { id: 'context', type: 'orpad.context', label: 'Prepare workspace', config: { ruleRef: 'context', skillRef: 'request-context', summary: taskText } },
     ...(externalResearchIntent ? [{
       id: 'external-research-mode',
@@ -10758,6 +10895,7 @@ async function createOrpadRunbookStarter() {
     { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
     { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
     { id: 'worker', type: 'orpad.workerLoop', label: 'Implement claimed work in overlay', config: { queueRef: 'queue' } },
+    { id: 'patch-review', type: 'orpad.patchReview', label: 'Review patch results', config: { reviewMode: 'user-selected-files' } },
     { id: 'verification-gate', type: 'orpad.gate', label: 'Verify work result', config: { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' } },
     {
       id: 'artifact',
@@ -10771,8 +10909,10 @@ async function createOrpadRunbookStarter() {
         onMissing: 'mark-partial',
       },
     },
+    { id: 'exit', type: 'orpad.exit', label: 'Exit', config: { summary: 'Close after review and evidence checks.' } },
   ];
   const graphTransitions = [
+    { id: 'entry-to-context', from: 'entry', to: 'context' },
     ...(externalResearchIntent ? [
       { id: 'context-to-external-research-mode', from: 'context', to: 'external-research-mode' },
       { id: 'external-research-mode-to-probe', from: 'external-research-mode', to: 'probe' },
@@ -10783,8 +10923,10 @@ async function createOrpadRunbookStarter() {
     { id: 'queue-to-triage', from: 'queue', to: 'triage' },
     { id: 'triage-to-dispatch', from: 'triage', to: 'dispatch' },
     { id: 'dispatch-to-worker', from: 'dispatch', to: 'worker' },
-    { id: 'worker-to-verification-gate', from: 'worker', to: 'verification-gate' },
+    { id: 'worker-to-patch-review', from: 'worker', to: 'patch-review' },
+    { id: 'patch-review-to-verification-gate', from: 'patch-review', to: 'verification-gate' },
     { id: 'verification-gate-to-artifact', from: 'verification-gate', to: 'artifact' },
+    { id: 'artifact-to-exit', from: 'artifact', to: 'exit' },
   ];
   const graph = {
     $schema: 'https://orpad.dev/schemas/or-graph/v1.json',
@@ -10793,7 +10935,7 @@ async function createOrpadRunbookStarter() {
     graph: {
       id: 'orpad-improvement',
       label: taskText.slice(0, 96),
-      start: 'context',
+      start: 'entry',
       nodes: graphNodes,
       transitions: graphTransitions,
     },

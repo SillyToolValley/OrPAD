@@ -170,6 +170,7 @@ test('Machine IPC registers only typed channels and preload exposes no generic m
   assert.equal(preloadSource.includes('machine-resume-run'), true);
   assert.equal(preloadSource.includes('machine-cancel-claim'), true);
   assert.equal(preloadSource.includes('machine-decide-approval'), true);
+  assert.equal(preloadSource.includes('machine-review-patch'), true);
   assert.equal(preloadSource.includes('machine.invoke'), false);
   assert.equal(preloadSource.includes("ipcRenderer.invoke(channel"), false);
 });

@@ -37,7 +37,16 @@
     "queueNamespaces": ["maintenance-quality-queue"]
   },
   "graph": {
+    "start": "entry",
     "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Entry",
+        "config": {
+          "summary": "Begin a supervised maintenance run."
+        }
+      },
       {
         "id": "reference-context",
         "type": "orpad.context",
@@ -188,6 +197,19 @@
         }
       },
       {
+        "id": "patch-review",
+        "type": "orpad.patchReview",
+        "label": "Review patch results",
+        "config": {
+          "reviewMode": "user-selected-files",
+          "inputs": [
+            {
+              "ref": "harness/generated/latest-run/artifacts/patches"
+            }
+          ]
+        }
+      },
+      {
         "id": "artifact-contract",
         "type": "orpad.artifactContract",
         "label": "Required evidence and work journal",
@@ -225,9 +247,22 @@
             "journal.jsonl"
           ]
         }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Exit",
+        "config": {
+          "summary": "Close the run only after patch review and evidence checks are resolved."
+        }
       }
     ],
     "transitions": [
+      {
+        "from": "entry",
+        "to": "reference-context",
+        "label": "start"
+      },
       {
         "from": "reference-context",
         "to": "authority-gate",
@@ -255,13 +290,23 @@
       },
       {
         "from": "worker-loop",
-        "to": "done-gate",
+        "to": "patch-review",
         "label": "work results"
+      },
+      {
+        "from": "patch-review",
+        "to": "done-gate",
+        "label": "reviewed patches"
       },
       {
         "from": "done-gate",
         "to": "artifact-contract",
         "label": "close"
+      },
+      {
+        "from": "artifact-contract",
+        "to": "exit",
+        "label": "evidence closed"
       }
     ]
   }

@@ -40,13 +40,21 @@ const TERMINAL_RUN_LIFECYCLE_STATUSES = new Set(['completed', 'cancelled', 'fail
 const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(competing products?|competitors?|competition|market|benchmark|benchmarks|web research|browse|internet|online|search for competing|external research)\b/i;
 const MANAGED_PROPOSAL_CANDIDATE_SAFE_CAP = 5;
 const SUPPORT_NODE_TYPES = new Set([
+  'orpad.entry',
   'orpad.context',
   'orpad.workQueue',
   'orpad.gate',
   'orpad.selector',
   'orpad.barrier',
   'orpad.artifactContract',
+  'orpad.patchReview',
+  'orpad.exit',
   'orpad.graph',
+]);
+const PATCH_REVIEW_RESOLUTION_EVENT_TYPES = new Set(['patch.applied', 'patch.review_skipped']);
+const PATCH_REVIEW_EVENT_TYPES = new Set([
+  ...PATCH_REVIEW_RESOLUTION_EVENT_TYPES,
+  'patch.apply_failed',
 ]);
 
 function machineExecutionError(code, message) {
@@ -595,6 +603,153 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
   }
 }
 
+async function executeBlockingSupportNode(runRoot, node, options = {}, evaluate) {
+  const { runId } = options;
+  const attempt = options.attempt || 1;
+  await recordNodeLifecycleEvent(runRoot, {
+    runId,
+    nodePath: node.nodePath,
+    nodeType: node.nodeType,
+    attempt,
+    status: 'scheduled',
+    payload: options.scheduledPayload || {},
+  });
+  await recordNodeLifecycleEvent(runRoot, {
+    runId,
+    nodePath: node.nodePath,
+    nodeType: node.nodeType,
+    attempt,
+    status: 'started',
+    payload: options.startedPayload || {},
+  });
+  try {
+    const result = await evaluate();
+    if (result?.blocked) {
+      await recordNodeLifecycleEvent(runRoot, {
+        runId,
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        attempt,
+        status: 'blocked',
+        payload: result,
+      });
+      return result;
+    }
+    await recordNodeLifecycleEvent(runRoot, {
+      runId,
+      nodePath: node.nodePath,
+      nodeType: node.nodeType,
+      attempt,
+      status: 'completed',
+      payload: result || {},
+    });
+    return result || {};
+  } catch (err) {
+    await recordNodeLifecycleEvent(runRoot, {
+      runId,
+      nodePath: node.nodePath,
+      nodeType: node.nodeType,
+      attempt,
+      status: 'failed',
+      payload: {
+        code: err?.code || 'MACHINE_NODE_FAILED',
+        message: err?.message || String(err),
+      },
+    });
+    throw err;
+  }
+}
+
+async function executePatchReviewNode(runRoot, node, options = {}) {
+  return executeBlockingSupportNode(runRoot, node, options, async () => {
+    const review = patchReviewStateFromEvents(await readMachineEvents(runRoot));
+    if (review.required && !review.resolved) {
+      return {
+        blocked: true,
+        summaryStatus: 'blocked',
+        reason: review.failedCount ? 'patch-review.apply-failed' : 'patch-review.required',
+        status: 'blocked',
+        reviewRequired: true,
+        patchCount: review.patchCount,
+        pendingCount: review.pendingCount,
+        appliedCount: review.appliedCount,
+        skippedCount: review.skippedCount,
+        failedCount: review.failedCount,
+        pendingPatchArtifacts: review.pending.map(entry => entry.patchArtifact),
+      };
+    }
+    return {
+      status: review.required ? 'reviewed' : 'not-required',
+      reviewRequired: false,
+      patchCount: review.patchCount,
+      appliedCount: review.appliedCount,
+      skippedCount: review.skippedCount,
+    };
+  });
+}
+
+function latestLifecycleStatusByNode(events = []) {
+  const statuses = new Map();
+  for (const event of events) {
+    const type = String(event?.eventType || '');
+    if (!type.startsWith('node.')) continue;
+    const nodePath = String(event?.nodePath || '').trim();
+    if (!nodePath) continue;
+    statuses.set(nodePath, event);
+  }
+  return statuses;
+}
+
+function latestArtifactContractPartials(events = []) {
+  return [...latestLifecycleStatusByNode(events).values()]
+    .filter(event => (
+      event?.eventType === 'node.completed'
+      && event?.payload?.nodeType === 'orpad.artifactContract'
+      && event?.payload?.valid === false
+      && event?.payload?.onMissing === 'mark-partial'
+    ))
+    .map(event => ({
+      nodePath: event.nodePath,
+      missingArtifactCount: event.payload.missingArtifactCount,
+      missingQueueCount: event.payload.missingQueueCount,
+      missingArtifacts: event.payload.missingArtifacts,
+      missingQueue: event.payload.missingQueue,
+    }));
+}
+
+async function executeExitNode(runRoot, node, options = {}) {
+  return executeBlockingSupportNode(runRoot, node, options, async () => {
+    const events = await readMachineEvents(runRoot);
+    const review = patchReviewStateFromEvents(events);
+    if (review.required && !review.resolved) {
+      return {
+        blocked: true,
+        summaryStatus: 'blocked',
+        reason: 'exit.patch-review-required',
+        status: 'blocked',
+        patchCount: review.patchCount,
+        pendingPatchArtifacts: review.pending.map(entry => entry.patchArtifact),
+      };
+    }
+    const partialContracts = latestArtifactContractPartials(events);
+    if (partialContracts.length) {
+      return {
+        blocked: true,
+        summaryStatus: 'partial',
+        reason: 'exit.evidence-incomplete',
+        status: 'blocked',
+        artifactContracts: partialContracts,
+      };
+    }
+    return {
+      status: 'completed',
+      patchCount: review.patchCount,
+      appliedCount: review.appliedCount,
+      skippedCount: review.skippedCount,
+    };
+  });
+}
+
 function outputRefs(config = {}) {
   return Array.isArray(config.outputs) ? config.outputs : [];
 }
@@ -721,6 +876,17 @@ function latestNodeCompletedEvent(events, nodePath) {
   )) || null;
 }
 
+function hasUnresolvedSupportBlock(events, orderedNodes) {
+  const supportBlockPaths = new Set(
+    orderedNodes
+      .filter(node => ['orpad.patchReview', 'orpad.exit'].includes(node.nodeType))
+      .map(node => node.nodePath),
+  );
+  if (!supportBlockPaths.size) return false;
+  const latestByPath = latestLifecycleStatusByNode(events);
+  return [...supportBlockPaths].some(nodePath => latestByPath.get(nodePath)?.eventType === 'node.blocked');
+}
+
 function nextNodeAttempt(events, nodePath) {
   const attempts = events
     .filter(event => String(event.eventType || '').startsWith('node.') && event.nodePath === nodePath)
@@ -776,6 +942,66 @@ function acceptedWorkerProof(events) {
     )
     && (event.payload?.verification || []).length > 0
   )) || null;
+}
+
+function patchReviewStateFromEvents(events = []) {
+  const patchArtifacts = [];
+  const seen = new Set();
+  for (const event of events) {
+    if (event?.eventType !== 'worker.result') continue;
+    const payload = event.payload || {};
+    const patchArtifact = String(payload.patchArtifact || '').trim();
+    const changedFiles = Array.isArray(payload.changedFiles) ? payload.changedFiles.filter(Boolean) : [];
+    if (!patchArtifact || !changedFiles.length || seen.has(patchArtifact)) continue;
+    seen.add(patchArtifact);
+    patchArtifacts.push({
+      patchArtifact,
+      itemId: event.itemId || payload.itemId || '',
+      workerStatus: payload.status || '',
+      changedFiles,
+      sourceSequence: event.sequence ?? null,
+    });
+  }
+
+  const decisions = new Map();
+  for (const event of events) {
+    const type = String(event?.eventType || '');
+    if (!PATCH_REVIEW_EVENT_TYPES.has(type)) continue;
+    const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+    if (!patchArtifact) continue;
+    decisions.set(patchArtifact, {
+      eventType: type,
+      sequence: event.sequence ?? null,
+      decision: event?.payload?.decision || (type === 'patch.applied' ? 'applied' : ''),
+      code: event?.payload?.code || '',
+      message: event?.payload?.message || '',
+    });
+  }
+
+  const reviews = patchArtifacts.map(review => {
+    const decision = decisions.get(review.patchArtifact) || null;
+    const resolved = decision && PATCH_REVIEW_RESOLUTION_EVENT_TYPES.has(decision.eventType);
+    return {
+      ...review,
+      decision,
+      status: resolved ? (decision.eventType === 'patch.applied' ? 'applied' : 'skipped') : 'pending',
+      resolved: Boolean(resolved),
+    };
+  });
+  const pending = reviews.filter(review => !review.resolved);
+  const failed = pending.filter(review => review.decision?.eventType === 'patch.apply_failed');
+  return {
+    required: reviews.length > 0,
+    resolved: pending.length === 0,
+    patchCount: reviews.length,
+    pendingCount: pending.length,
+    appliedCount: reviews.filter(review => review.status === 'applied').length,
+    skippedCount: reviews.filter(review => review.status === 'skipped').length,
+    failedCount: failed.length,
+    reviews,
+    pending,
+    failed,
+  };
 }
 
 function normalizeCriterion(value) {
@@ -897,6 +1123,12 @@ async function validateSelectorNode(runRoot, config = {}, options = {}) {
 
 async function executeSupportNode(runRoot, node, options = {}) {
   const { runId, attempt = 1 } = options;
+  if (node.nodeType === 'orpad.patchReview') {
+    return executePatchReviewNode(runRoot, node, options);
+  }
+  if (node.nodeType === 'orpad.exit') {
+    return executeExitNode(runRoot, node, options);
+  }
   return withNodeLifecycle(runRoot, node, {
     runId,
     attempt,
@@ -906,6 +1138,12 @@ async function executeSupportNode(runRoot, node, options = {}) {
     if (options.supportMode === 'live-adapter') {
       if (node.nodeType === 'orpad.gate' && !config.onFail) config.onFail = 'warn';
       if (node.nodeType === 'orpad.artifactContract' && !config.onMissing) config.onMissing = 'mark-partial';
+    }
+    if (node.nodeType === 'orpad.entry') {
+      return {
+        summary: config.summary || 'Run entered.',
+        outputCount: outputRefs(config).length,
+      };
     }
     if (node.nodeType === 'orpad.context') {
       return {
@@ -1192,12 +1430,14 @@ async function executeMachineRunStep(options = {}) {
   let workerLoop = null;
   let candidateInventory = null;
   const support = [];
+  let blockedSupport = null;
   const initialEvents = await readMachineEvents(runRoot);
   const approvalGrants = summarizeApprovalsFromEvents(initialEvents)
     .all
     .filter(approval => approval.status === 'approved')
     .flatMap(approval => approval.grants || []);
   const resumeAfterApproval = approvalGrants.length > 0;
+  const resumeAfterSupportBlock = hasUnresolvedSupportBlock(initialEvents, orderedNodes);
   let probeFanoutExecuted = false;
   const executeProbeNode = async (currentProbeNode) => {
     const attempt = nextNodeAttempt(initialEvents, currentProbeNode.nodePath);
@@ -1420,6 +1660,12 @@ async function executeMachineRunStep(options = {}) {
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
     if (
+      resumeAfterSupportBlock
+      && latestNodeCompletedEvent(initialEvents, node.nodePath)
+    ) {
+      continue;
+    }
+    if (
       resumeAfterApproval
       && node.nodePath !== dispatcherNode.nodePath
       && node.nodePath !== workerNode.nodePath
@@ -1491,17 +1737,23 @@ async function executeMachineRunStep(options = {}) {
         workerLoopExecuted = true;
       }
     } else {
-      support.push({
+      const supportResult = await executeSupportNode(runRoot, node, {
+        runId,
+        attempt,
+        supportMode: usingLiveAdapter ? 'live-adapter' : 'harness',
+        taskText: runtimeTaskText,
+        externalResearch: runtimeExternalResearch,
+      });
+      const supportEntry = {
         nodePath: node.nodePath,
         nodeType: node.nodeType,
-        result: await executeSupportNode(runRoot, node, {
-          runId,
-          attempt,
-          supportMode: usingLiveAdapter ? 'live-adapter' : 'harness',
-          taskText: runtimeTaskText,
-          externalResearch: runtimeExternalResearch,
-        }),
-      });
+        result: supportResult,
+      };
+      support.push(supportEntry);
+      if (supportResult?.blocked) {
+        blockedSupport = supportEntry;
+        break;
+      }
     }
   }
 
@@ -1519,7 +1771,36 @@ async function executeMachineRunStep(options = {}) {
       missingQueue: entry.result.missingQueue,
     }));
   let finalization = null;
-  if (claim?.stopReason === 'approval-required') {
+  if (blockedSupport) {
+    const inventory = await summarizeQueueInventory(runRoot);
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'waiting',
+      reason: blockedSupport.result?.reason || 'support-node.blocked',
+      payload: {
+        nodePath: blockedSupport.nodePath,
+        nodeType: blockedSupport.nodeType,
+        result: blockedSupport.result,
+      },
+    });
+    const summaryStatus = blockedSupport.result?.summaryStatus || 'blocked';
+    const runState = await appendRunSummaryStatus(runRoot, {
+      runId,
+      summaryStatus,
+      reason: blockedSupport.result?.reason || 'support-node.blocked',
+      payload: {
+        nodePath: blockedSupport.nodePath,
+        nodeType: blockedSupport.nodeType,
+        result: blockedSupport.result,
+      },
+    });
+    finalization = {
+      inventory,
+      summaryStatus,
+      runState,
+      supportBlocked: blockedSupport,
+    };
+  } else if (claim?.stopReason === 'approval-required') {
     const inventory = await summarizeQueueInventory(runRoot);
     finalization = {
       inventory,
@@ -1613,6 +1894,7 @@ module.exports = {
   flattenTraversalNodes,
   harnessFromPipeline,
   liveProbePrompt,
+  patchReviewStateFromEvents,
   registerCandidateInventoryArtifact,
   validateBarrierNode,
   validateArtifactContract,

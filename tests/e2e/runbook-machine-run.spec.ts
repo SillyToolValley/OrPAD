@@ -137,6 +137,40 @@ function addParallelProbeHarness(pipelinePath: string): void {
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
+function addNestedGraphProjectionFixture(pipelinePath: string): void {
+  const pipelineDir = path.dirname(pipelinePath);
+  const graphPath = path.join(pipelineDir, 'graphs', 'main.or-graph');
+  const graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
+  graph.graph.nodes.splice(1, 0, {
+    id: 'discovery-stage',
+    type: 'orpad.graph',
+    label: 'Discovery stage',
+    config: { graphRef: 'discovery.or-graph', executionMode: 'inline' },
+  });
+  graph.graph.transitions = graph.graph.transitions
+    .filter((edge: { from?: string; to?: string }) => !(edge.from === 'context' && edge.to === 'probe'));
+  graph.graph.transitions.push(
+    { from: 'context', to: 'discovery-stage' },
+    { from: 'discovery-stage', to: 'probe' },
+  );
+  fs.writeFileSync(graphPath, JSON.stringify(graph, null, 2));
+  fs.writeFileSync(path.join(pipelineDir, 'graphs', 'discovery.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'discovery',
+      nodes: [
+        { id: 'probe-a', type: 'orpad.probe', label: 'Nested probe', config: { lens: 'nested' } },
+      ],
+      transitions: [],
+    },
+  }, null, 2));
+
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.graphs.push({ id: 'discovery', file: 'graphs/discovery.or-graph' });
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+}
+
 function makeParallelProbeWorkersReviewBlocked(pipelinePath: string): void {
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
   pipeline.run.machineHarness.continueAfterReviewableBlockedPatch = true;
@@ -268,7 +302,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
-  const taskText = 'Find competitor gaps and improve Pipes.';
+  const taskText = 'Improve Pipes UI smoke flow.';
   await win.locator('[data-runbook-task]').fill(taskText);
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
@@ -590,6 +624,83 @@ test('Machine UI does not animate inactive transitions after a waiting run', asy
   await expect(completedContextNode).toHaveClass(/runtime-completed/);
   await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(0);
   await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(0);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI bubbles nested graph runtime state to the parent node', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  addNestedGraphProjectionFixture(pipelinePath);
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_nested_projection',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'running',
+    reason: 'machine-ui.fixture.nested-active',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/context',
+    eventType: 'node.completed',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/context:attempt-1`,
+      nodeType: 'orpad.context',
+      status: 'completed',
+      attempt: 1,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/discovery-stage',
+    eventType: 'node.completed',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/discovery-stage:attempt-1`,
+      nodeType: 'orpad.graph',
+      status: 'completed',
+      attempt: 1,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'discovery/probe-a',
+    eventType: 'node.started',
+    payload: {
+      nodeExecutionId: `${run.runId}:discovery/probe-a:attempt-1`,
+      nodeType: 'orpad.probe',
+      status: 'started',
+      attempt: 1,
+    },
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  const parentNode = win.locator('.orch-graph-node').filter({ hasText: 'Discovery stage' });
+  await expect(parentNode).toContainText('Running');
+  await expect(parentNode).toHaveClass(/runtime-running/);
+  await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(1);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

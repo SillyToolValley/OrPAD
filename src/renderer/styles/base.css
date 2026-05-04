@@ -2281,6 +2281,8 @@ body.json-diff-mode #preview-pane {
   color: var(--text-primary);
 }
 .orch-graph-node.type-skill { border-top-color: var(--syntax-string, #9ece6a); }
+.orch-graph-node.type-orpad-entry,
+.orch-graph-node.type-orpad-exit { border-top-color: var(--syntax-function, #7aa2f7); }
 .orch-graph-node.type-gate { border-top-color: var(--syntax-meta, #e0af68); }
 .orch-graph-node.type-state,
 .orch-graph-node.type-context { border-top-color: var(--accent-color); }

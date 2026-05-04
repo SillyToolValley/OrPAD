@@ -44,9 +44,12 @@ test('graph loader reads the current maintenance pipeline graph set', async () =
   const inventory = buildNodeInventory(graphSet);
 
   assert.equal(graphSet.graphs.length, 4);
-  assert.equal(inventory.length, 25);
+  assert.equal(inventory.length, 28);
+  assert.equal(inventory.some(node => node.nodePath === 'main/entry'), true);
   assert.equal(inventory.some(node => node.nodePath === 'main/reference-context'), true);
   assert.equal(inventory.some(node => node.nodePath === 'main/external-research-mode'), true);
+  assert.equal(inventory.some(node => node.nodePath === 'main/patch-review'), true);
+  assert.equal(inventory.some(node => node.nodePath === 'main/exit'), true);
   assert.equal(inventory.some(node => node.nodePath === 'worker-loop/worker'), true);
   assert.equal(inventory.find(node => node.nodePath === 'main/reference-context').runtimeHandlerKind, 'machine-builtin');
   assert.equal(inventory.find(node => node.nodePath === 'discovery-lenses/ux-ui-probe').runtimeHandlerKind, 'adapter-required');
@@ -113,9 +116,9 @@ test('traversal plan uses stable topological order per graph', async () => {
   const mainPlan = plan.graphPlans.find(graph => graph.graphKey === 'main');
 
   assert.equal(plan.graphCount, 4);
-  assert.equal(plan.nodeCount, 25);
-  assert.equal(mainPlan.nodePaths[0], 'main/reference-context');
-  assert.equal(mainPlan.nodePaths.at(-1), 'main/artifact-contract');
+  assert.equal(plan.nodeCount, 28);
+  assert.equal(mainPlan.nodePaths[0], 'main/entry');
+  assert.equal(mainPlan.nodePaths.at(-1), 'main/exit');
 });
 
 test('traversal plan expands inline nested graph containers at their source position', async () => {
@@ -125,16 +128,17 @@ test('traversal plan expands inline nested graph containers at their source posi
 
   assert.equal(plan.inlinePlan.entryGraphKey, 'main');
   assert.deepEqual(paths.slice(0, 5), [
+    'main/entry',
     'main/reference-context',
     'main/authority-gate',
     'main/external-research-mode',
     'main/discovery-lenses',
-    'discovery-lenses/source-quality',
   ]);
   assert.equal(paths.indexOf('discovery-lenses/discovery-barrier') < paths.indexOf('main/queue-and-triage'), true);
   assert.equal(paths.indexOf('queue-and-triage/scope-gate') < paths.indexOf('main/worker-loop'), true);
-  assert.equal(paths.indexOf('worker-loop/retrospective') < paths.indexOf('main/done-gate'), true);
-  assert.equal(paths.at(-1), 'main/artifact-contract');
+  assert.equal(paths.indexOf('worker-loop/retrospective') < paths.indexOf('main/patch-review'), true);
+  assert.equal(paths.indexOf('main/patch-review') < paths.indexOf('main/done-gate'), true);
+  assert.equal(paths.at(-1), 'main/exit');
 });
 
 test('topological order falls back to source order for cyclic leftovers', () => {
@@ -188,6 +192,8 @@ test('node lifecycle events are recorded as Machine events', async () => {
 test('runtime handler kind classification is explicit for known node families', () => {
   assert.equal(runtimeHandlerKind('orpad.context'), 'machine-builtin');
   assert.equal(runtimeHandlerKind('orpad.selector'), 'machine-builtin');
+  assert.equal(runtimeHandlerKind('orpad.patchReview'), 'machine-builtin');
+  assert.equal(runtimeHandlerKind('orpad.exit'), 'machine-builtin');
   assert.equal(runtimeHandlerKind('orpad.workQueue'), 'machine-builtin');
   assert.equal(runtimeHandlerKind('orpad.workerLoop'), 'adapter-required');
   assert.equal(runtimeHandlerKind('custom.unknown'), 'render-validate-only');

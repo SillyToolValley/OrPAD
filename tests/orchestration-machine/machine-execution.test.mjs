@@ -128,6 +128,33 @@ async function makeGraphHarnessWorkspace(runId = 'run_20260430_graph_harness') {
   return { workspaceRoot, pipelineDir, pipelinePath, run };
 }
 
+async function addPatchReviewAndExitNodes(pipelineDir) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  const nodes = graph.graph.nodes;
+  const verificationIndex = nodes.findIndex(node => node.id === 'verification-gate');
+  nodes.splice(verificationIndex, 0, {
+    id: 'patch-review',
+    type: 'orpad.patchReview',
+    label: 'Review patch results',
+    config: { reviewMode: 'user-selected-files' },
+  });
+  nodes.push({
+    id: 'exit',
+    type: 'orpad.exit',
+    label: 'Exit',
+    config: { summary: 'Close after patch review and evidence checks.' },
+  });
+  graph.graph.transitions = graph.graph.transitions
+    .filter(edge => !(edge.from === 'worker' && edge.to === 'verification-gate'));
+  graph.graph.transitions.push(
+    { from: 'worker', to: 'patch-review' },
+    { from: 'patch-review', to: 'verification-gate' },
+    { from: 'artifact', to: 'exit' },
+  );
+  await fs.writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf8');
+}
+
 async function makeNestedGraphHarnessWorkspace(runId = 'run_20260430_nested_graph_harness') {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-nested-graph-harness-'));
   const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/nested-graph-harness-pipeline');
@@ -452,6 +479,58 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
     error => error?.code === 'MACHINE_RUN_TERMINAL',
   );
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCountAfterCompletion);
+});
+
+test('graph-driven execute step waits at patch review before exit', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_patch_review_exit');
+  await addPatchReviewAndExitNodes(pipelineDir);
+
+  const first = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  const workerEvent = first.events.find(event => event.eventType === 'worker.result');
+  const patchArtifact = workerEvent?.payload?.patchArtifact;
+  assert.equal(first.finalization.summaryStatus, 'blocked');
+  assert.equal(first.finalization.supportBlocked.nodePath, 'main/patch-review');
+  assert.equal(first.events.some(event => event.eventType === 'node.blocked' && event.nodePath === 'main/patch-review'), true);
+  assert.equal(first.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), false);
+  assert.equal(typeof patchArtifact, 'string');
+
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'renderer',
+    eventType: 'patch.review_skipped',
+    reason: 'machine-ui.patch-review.skip',
+    artifactRefs: [patchArtifact],
+    payload: {
+      patchArtifact,
+      decision: 'skipped',
+    },
+  });
+
+  const second = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  assert.equal(second.finalization.summaryStatus, 'done');
+  assert.equal(second.events.filter(event => event.eventType === 'worker.result').length, 1);
+  assert.equal(second.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/patch-review'), true);
+  assert.equal(second.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), true);
+
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
 });
 
 test('graph-driven execute step rejects overlapping running executions', async () => {

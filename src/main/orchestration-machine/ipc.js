@@ -45,6 +45,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   decideApproval: 'machine-decide-approval',
   exportLatestRun: 'machine-export-latest-run',
   applyPatch: 'machine-apply-patch',
+  reviewPatch: 'machine-review-patch',
 });
 
 function featureGateFromEnv(env = process.env) {
@@ -535,6 +536,61 @@ async function applyPatchHandler(event, authority, request) {
   };
 }
 
+async function reviewPatchHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const patchArtifact = requiredString(request.patchArtifact, 'patchArtifact').trim();
+  const decision = optionalString(request.decision, 'decision').trim() || 'skipped';
+  if (!['skipped', 'follow-up'].includes(decision)) {
+    throw machineError('MACHINE_PATCH_REVIEW_DECISION_INVALID', 'Patch review decision must be skipped or follow-up.');
+  }
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const artifactPath = await runRelativeArtifactPath(runRoot, patchArtifact);
+  if (!artifactPath) {
+    throw machineError('MACHINE_PATCH_ARTIFACT_DENIED', 'Patch artifact path is not readable for this run.');
+  }
+  const patch = JSON.parse(await fsp.readFile(artifactPath, 'utf8'));
+  if (patch?.schemaVersion !== 'orpad.patchArtifact.v1') {
+    throw machineError('MACHINE_PATCH_SCHEMA_INVALID', 'Patch artifact schema is not recognized.');
+  }
+  const reviewedEvent = await appendMachineEvent(runRoot, {
+    runId,
+    actor: 'renderer',
+    eventType: 'patch.review_skipped',
+    reason: 'machine-ui.patch-review.skip',
+    artifactRefs: [patchArtifact],
+    payload: {
+      patchArtifact,
+      decision,
+      changeCount: Array.isArray(patch.changes) ? patch.changes.length : 0,
+    },
+  });
+  const updated = await readRunSnapshot(runRoot);
+  const exported = request.exportLatestRun === false
+    ? null
+    : await exportLatestRun({
+      runRoot,
+      pipelineDir: context.pipelineDir,
+      allowOverwrite: true,
+    });
+  return {
+    success: true,
+    ok: true,
+    runId,
+    patchArtifact,
+    decision,
+    reviewedEvent,
+    runState: updated.runState,
+    events: updated.events,
+    candidateInventory: updated.candidateInventory,
+    worker: updated.worker,
+    approvals: updated.approvals,
+    activeClaims: updated.activeClaims,
+    activeWriteSets: updated.activeWriteSets,
+    exported,
+  };
+}
+
 async function decideApprovalHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
@@ -936,6 +992,7 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.exportLatestRun, exportLatestRunHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.applyPatch, applyPatchHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.reviewPatch, reviewPatchHandler, { mutating: true });
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };
 }
