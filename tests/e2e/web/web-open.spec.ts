@@ -966,6 +966,9 @@ test('web file launch consumer and non-FSA save fallback work', async ({ page })
     { name: 'diagram.mmd', type: 'text/vnd.mermaid', content: 'graph TD\n  A[Launch] --> B[Preview]', expected: 'graph TD' },
     { name: 'flow.or-pipeline', type: 'application/json', content: '{"kind":"orpad.pipeline","id":"web-launch-pipeline"}', expected: 'web-launch-pipeline' },
     { name: 'flow.or-graph', type: 'application/json', content: '{"kind":"orpad.graph","graph":{"nodes":[]}}', expected: 'orpad.graph' },
+    { name: 'flow.or-tree', type: 'application/json', content: '{"kind":"orpad.tree","id":"web-launch-tree","root":{"id":"root","type":"orpad.context"}}', expected: 'web-launch-tree' },
+    { name: 'flow.or-rule', type: 'application/json', content: '{"kind":"orpad.rule","id":"web-launch-rule","criteria":["launch parity"]}', expected: 'web-launch-rule' },
+    { name: 'flow.or-run', type: 'application/json', content: '{"kind":"orpad.run","id":"web-launch-run","status":"queued"}', expected: 'web-launch-run' },
   ];
   const opened = await page.evaluate(async (files) => {
     return await (window as any).orpad.openFileHandles(files.map(file => ({

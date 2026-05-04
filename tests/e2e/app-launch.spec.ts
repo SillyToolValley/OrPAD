@@ -8,6 +8,9 @@ function createOrpadFileLaunchFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-file-launch-'));
   const graphPath = path.join(dir, 'entry.or-graph');
   const pipelinePath = path.join(dir, 'pipeline.or-pipeline');
+  const treePath = path.join(dir, 'decision.or-tree');
+  const rulePath = path.join(dir, 'guardrail.or-rule');
+  const runPath = path.join(dir, 'launch.or-run');
 
   const graph = JSON.stringify({
     kind: 'orpad.graph',
@@ -38,10 +41,52 @@ function createOrpadFileLaunchFixture() {
     },
   }, null, 2);
 
+  const tree = JSON.stringify({
+    kind: 'orpad.tree',
+    version: '1.0',
+    id: 'desktop-tree-launch',
+    title: 'Desktop tree launch fixture',
+    root: {
+      id: 'root',
+      label: 'Choose desktop launch branch',
+      children: [
+        { id: 'open-tab', label: 'Tree file launch opens a tab' },
+        { id: 'read-content', label: 'Tree fixture content is visible' },
+      ],
+    },
+  }, null, 2);
+
+  const rule = JSON.stringify({
+    kind: 'orpad.rule',
+    version: '1.0',
+    id: 'desktop-rule-launch',
+    title: 'Desktop rule launch fixture',
+    rule: {
+      when: 'file association invokes OrPAD',
+      then: 'show rule fixture content',
+      checks: ['Rule file launch opens a tab'],
+    },
+  }, null, 2);
+
+  const run = JSON.stringify({
+    kind: 'orpad.run',
+    version: '1.0',
+    id: 'desktop-run-launch',
+    title: 'Desktop run launch fixture',
+    status: 'done',
+    events: [
+      { type: 'launch.argument.received', message: 'Run fixture content is visible' },
+      { type: 'document.tab.opened', message: 'Run file launch opens a tab' },
+    ],
+  }, null, 2);
+
   fs.writeFileSync(graphPath, graph, 'utf-8');
   fs.writeFileSync(pipelinePath, pipeline, 'utf-8');
+  fs.writeFileSync(treePath, tree, 'utf-8');
+  fs.writeFileSync(rulePath, rule, 'utf-8');
+  fs.writeFileSync(runPath, run, 'utf-8');
 
-  return { dir, graphPath, pipelinePath };
+  return { dir, graphPath, pipelinePath, treePath, rulePath, runPath };
 }
 
 async function launchElectronWithFileArg(filePath: string) {
@@ -200,27 +245,61 @@ test('desktop app launches, window title contains OrPAD', async () => {
   await app.close();
 });
 
-test('OrPAD file launch opens pipeline file argument', async () => {
+test('OrPAD file launch opens every registered OrPAD extension file argument', async () => {
   const fixture = createOrpadFileLaunchFixture();
-  const { app, userData } = await launchElectronWithFileArg(fixture.pipelinePath);
+  const launchCases = [
+    {
+      filePath: fixture.pipelinePath,
+      fileName: 'pipeline.or-pipeline',
+      content: ['competitive-file-launch', '"entryGraph": "entry.or-graph"'],
+    },
+    {
+      filePath: fixture.graphPath,
+      fileName: 'entry.or-graph',
+      content: ['Review desktop graph launch', '"transitions"'],
+    },
+    {
+      filePath: fixture.treePath,
+      fileName: 'decision.or-tree',
+      content: ['desktop-tree-launch', 'Tree fixture content is visible'],
+    },
+    {
+      filePath: fixture.rulePath,
+      fileName: 'guardrail.or-rule',
+      content: ['desktop-rule-launch', 'Rule file launch opens a tab'],
+    },
+    {
+      filePath: fixture.runPath,
+      fileName: 'launch.or-run',
+      content: ['desktop-run-launch', 'Run fixture content is visible'],
+    },
+  ];
 
   try {
-    const win = await app.firstWindow();
-    await win.waitForLoadState('domcontentloaded');
+    for (const launchCase of launchCases) {
+      const { app, userData } = await launchElectronWithFileArg(launchCase.filePath);
 
-    await expect(win).toHaveTitle(/pipeline\.or-pipeline - OrPAD/);
-    await expect(win.locator('.tab-item')).toContainText('pipeline.or-pipeline');
-    await expect(win.locator('.cm-content')).toContainText('competitive-file-launch');
-    await expect(win.locator('.cm-content')).toContainText('"entryGraph": "entry.or-graph"');
-    await expect.poll(async () => app.windows().length).toBe(1);
+      try {
+        const win = await app.firstWindow();
+        await win.waitForLoadState('domcontentloaded');
+
+        await expect(win).toHaveTitle(new RegExp(`${launchCase.fileName.replace('.', '\\.')} - OrPAD`));
+        await expect(win.locator('.tab-item')).toContainText(launchCase.fileName);
+        for (const expectedContent of launchCase.content) {
+          await expect(win.locator('.cm-content')).toContainText(expectedContent);
+        }
+        await expect.poll(async () => app.windows().length).toBe(1);
+      } finally {
+        await app.close();
+        fs.rmSync(userData, { recursive: true, force: true });
+      }
+    }
   } finally {
-    await app.close();
     fs.rmSync(fixture.dir, { recursive: true, force: true });
-    fs.rmSync(userData, { recursive: true, force: true });
   }
 });
 
-test('OrPAD file launch opens graph file from second instance argument', async () => {
+test('OrPAD file launch opens tree file from second instance argument', async () => {
   const fixture = createOrpadFileLaunchFixture();
   const app = await launchElectron();
 
@@ -228,18 +307,18 @@ test('OrPAD file launch opens graph file from second instance argument', async (
     const win = await app.firstWindow();
     await win.waitForLoadState('domcontentloaded');
 
-    await app.evaluate(({ app: electronApp }, graphPath) => {
+    await app.evaluate(({ app: electronApp }, treePath) => {
       electronApp.emit('second-instance', {}, [
         process.execPath,
         process.argv[1] || 'src/main/main.js',
-        graphPath,
+        treePath,
       ]);
-    }, fixture.graphPath);
+    }, fixture.treePath);
 
-    await expect(win).toHaveTitle(/entry\.or-graph - OrPAD/);
-    await expect(win.locator('.tab-item')).toContainText('entry.or-graph');
-    await expect(win.locator('.cm-content')).toContainText('Review desktop graph launch');
-    await expect(win.locator('.cm-content')).toContainText('"transitions"');
+    await expect(win).toHaveTitle(/decision\.or-tree - OrPAD/);
+    await expect(win.locator('.tab-item')).toContainText('decision.or-tree');
+    await expect(win.locator('.cm-content')).toContainText('desktop-tree-launch');
+    await expect(win.locator('.cm-content')).toContainText('Tree file launch opens a tab');
     await expect.poll(async () => app.windows().length).toBe(1);
   } finally {
     await app.close();
