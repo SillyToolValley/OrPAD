@@ -5,7 +5,7 @@ const path = require('path');
 const { registerArtifact } = require('../artifacts');
 const { assertCommandGranted } = require('../command-grants');
 const { assertCliProcessContainment } = require('./process-containment');
-const { runMachineProcess } = require('./process-runner');
+const { redactCommandArgs, runMachineProcess } = require('./process-runner');
 const {
   collectOverlayPatch,
   copyAllowedFilesToOverlay,
@@ -189,6 +189,33 @@ function resultStatusForCodexProcess(processResult, parsedResult) {
   return 'blocked';
 }
 
+function failedProcessResult(commandSpec = {}, err) {
+  const redactedArgs = redactCommandArgs(commandSpec.args || []);
+  const now = new Date().toISOString();
+  return {
+    command: commandSpec.command || '',
+    args: redactedArgs.args,
+    cwd: commandSpec.cwd || '',
+    code: null,
+    signal: null,
+    timedOut: false,
+    cancelled: false,
+    stdout: '',
+    stderr: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    redactedArgCount: redactedArgs.redactedCount,
+    maskedEnvCount: 0,
+    maskedEnvNames: [],
+    startedAt: now,
+    finishedAt: now,
+    spawnError: {
+      code: err?.code || '',
+      message: err?.message || 'Process failed before Machine could collect output.',
+    },
+  };
+}
+
 function createCodexCliProposalAdapter(options = {}) {
   return {
     adapter: 'codex-cli-proposal',
@@ -221,17 +248,22 @@ function createCodexCliProposalAdapter(options = {}) {
         }),
         cwd: workspaceRoot,
       };
-      const processResult = await runMachineProcess({
-        command: commandSpec.command,
-        args: commandSpec.args,
-        cwd: commandSpec.cwd,
-        runId,
-        adapterCallId: request.adapterCallId,
-        env: options.env,
-        extraEnv: options.extraEnv,
-        timeoutMs: options.timeoutMs || DEFAULT_CODEX_CLI_TIMEOUT_MS,
-        maxOutputBytes: options.maxOutputBytes || 64 * 1024,
-      });
+      let processResult;
+      try {
+        processResult = await runMachineProcess({
+          command: commandSpec.command,
+          args: commandSpec.args,
+          cwd: commandSpec.cwd,
+          runId,
+          adapterCallId: request.adapterCallId,
+          env: options.env,
+          extraEnv: options.extraEnv,
+          timeoutMs: options.timeoutMs || DEFAULT_CODEX_CLI_TIMEOUT_MS,
+          maxOutputBytes: options.maxOutputBytes || 64 * 1024,
+        });
+      } catch (err) {
+        processResult = failedProcessResult(commandSpec, err);
+      }
 
       let parsed = null;
       let rawLastMessage = '';
@@ -299,6 +331,8 @@ function createCodexCliProposalAdapter(options = {}) {
             args: processResult.args || [],
             cwdKind: 'canonical-readonly',
             exitCode: processResult.code,
+            spawnErrorCode: processResult.spawnError?.code || '',
+            spawnErrorMessage: processResult.spawnError?.message || '',
             timedOut: processResult.timedOut,
             stdoutTruncated: processResult.stdoutTruncated,
             stderrTruncated: processResult.stderrTruncated,
@@ -323,6 +357,8 @@ function createCodexCliProposalAdapter(options = {}) {
           args: processResult.args || [],
           cwdKind: 'canonical-readonly',
           exitCode: processResult.code,
+          spawnErrorCode: processResult.spawnError?.code || '',
+          spawnErrorMessage: processResult.spawnError?.message || '',
           timedOut: processResult.timedOut,
           stdoutTruncated: processResult.stdoutTruncated,
           stderrTruncated: processResult.stderrTruncated,
@@ -518,17 +554,22 @@ function createCliAgentAdapter(options = {}) {
           allowDangerousSandboxBypass: options.allowDangerousSandboxBypass === true,
         });
 
-        const processResult = await runMachineProcess({
-          command: commandSpec.command,
-          args: commandSpec.args || [],
-          cwd: commandSpec.cwd,
-          runId,
-          adapterCallId: request.adapterCallId,
-          env: options.env,
-          extraEnv: options.extraEnv,
-          timeoutMs: options.timeoutMs,
-          maxOutputBytes: options.maxOutputBytes,
-        });
+        let processResult;
+        try {
+          processResult = await runMachineProcess({
+            command: commandSpec.command,
+            args: commandSpec.args || [],
+            cwd: commandSpec.cwd,
+            runId,
+            adapterCallId: request.adapterCallId,
+            env: options.env,
+            extraEnv: options.extraEnv,
+            timeoutMs: options.timeoutMs,
+            maxOutputBytes: options.maxOutputBytes,
+          });
+        } catch (err) {
+          processResult = failedProcessResult(commandSpec, err);
+        }
         const patch = await collectOverlayPatch({
           workspaceRoot: overlay.workspaceRoot,
           overlayRoot: overlay.overlayRoot,
@@ -580,7 +621,11 @@ function createCliAgentAdapter(options = {}) {
           status,
           summary: status === 'done'
             ? 'CLI adapter completed in overlay and produced a Machine-owned result.'
-            : 'CLI adapter result requires Machine review before any canonical mutation.',
+            : (
+              processResult.spawnError
+                ? `CLI adapter process could not start: ${processResult.spawnError.message}`
+                : 'CLI adapter result requires Machine review before any canonical mutation.'
+            ),
           artifacts,
           patchArtifact: patchArtifactPath,
           changedFiles: (patch.changes || []).map(change => change.path),
@@ -590,6 +635,8 @@ function createCliAgentAdapter(options = {}) {
             cwdKind: 'overlay',
             containment,
             exitCode: processResult.code,
+            spawnErrorCode: processResult.spawnError?.code || '',
+            spawnErrorMessage: processResult.spawnError?.message || '',
             timedOut: processResult.timedOut,
             stdoutTruncated: processResult.stdoutTruncated,
             stderrTruncated: processResult.stderrTruncated,

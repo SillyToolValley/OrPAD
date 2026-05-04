@@ -13,6 +13,9 @@ const {
   executeMachineRunStep,
   findQueueItem,
   readMachineEvents,
+  readActiveClaimLeases,
+  readActiveWriteSetLocks,
+  readRunState,
   validateArtifactContract,
   validateBarrierNode,
   validateGateNode,
@@ -641,6 +644,40 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
   assert.equal(leaseCreated.payload.leaseMs, 123_456);
 });
 
+test('graph-driven worker spawn failures close claimed work as blocked instead of leaving the run active', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260504_worker_spawn_failure');
+  await updateMainNodeConfig(pipelineDir, 'verification-gate', {
+    onFail: 'warn',
+  });
+
+  const missingNodeExecutable = process.platform === 'win32'
+    ? 'C:\\orpad-missing-node\\node.exe'
+    : '/orpad-missing-node/node';
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    nodeExecutable: missingNodeExecutable,
+    exportLatestRunAfterStep: false,
+  });
+
+  assert.equal(executed.worker.result.event.payload.status, 'failed');
+  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'blocked');
+  assert.equal(executed.runState.lifecycleStatus, 'waiting');
+  assert.equal(executed.runState.summaryStatus, 'blocked');
+  assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+  assert.equal(executed.events.some(event => event.eventType === 'node.failed' && event.nodePath === 'main/worker'), false);
+
+  const workerEvent = executed.events.find(event => event.eventType === 'worker.result');
+  const transcriptPath = workerEvent.artifactRefs.find(item => item.endsWith('.transcript.json'));
+  const transcript = await readRunArtifactJson(run.runRoot, transcriptPath);
+  assert.equal(transcript.process.spawnError.code, 'ENOENT');
+  assert.equal(transcript.process.command, missingNodeExecutable);
+});
+
 test('graph-driven execute step rejects pipelines without a deterministic MVP harness', async () => {
   const { workspaceRoot, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_graph_harness_missing');
   const source = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
@@ -684,6 +721,9 @@ test('ArtifactContract fail-run blocks completion when required artifacts are mi
   const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/artifact');
   assert.equal(failed.payload.code, 'MACHINE_ARTIFACT_CONTRACT_MISSING');
   assert.equal(events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
+  const state = await readRunState(run.runRoot);
+  assert.equal(state.lifecycleStatus, 'waiting');
+  assert.equal(state.summaryStatus, 'blocked');
 });
 
 test('ArtifactContract rejects symlinked queue requirements before treating them as present', async t => {

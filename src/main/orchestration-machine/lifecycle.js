@@ -173,6 +173,13 @@ async function finalizeRunFromInventory(runRoot, options = {}) {
       reason,
       payload: { inventory },
     });
+  } else {
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'waiting',
+      reason,
+      payload: { inventory },
+    });
   }
   const runState = await appendRunSummaryStatus(runRoot, {
     runId,

@@ -588,17 +588,40 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
     });
     return result;
   } catch (err) {
+    const failurePayload = {
+      code: err?.code || 'MACHINE_NODE_FAILED',
+      message: err?.message || String(err),
+    };
     await recordNodeLifecycleEvent(runRoot, {
       runId,
       nodePath: node.nodePath,
       nodeType: node.nodeType,
       attempt,
       status: 'failed',
-      payload: {
-        code: err?.code || 'MACHINE_NODE_FAILED',
-        message: err?.message || String(err),
-      },
+      payload: failurePayload,
     });
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'waiting',
+      reason: 'machine-node.failed',
+      payload: {
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        attempt,
+        ...failurePayload,
+      },
+    }).catch(() => null);
+    await appendRunSummaryStatus(runRoot, {
+      runId,
+      summaryStatus: 'blocked',
+      reason: 'machine-node.failed',
+      payload: {
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        attempt,
+        ...failurePayload,
+      },
+    }).catch(() => null);
     throw err;
   }
 }
@@ -645,17 +668,40 @@ async function executeBlockingSupportNode(runRoot, node, options = {}, evaluate)
     });
     return result || {};
   } catch (err) {
+    const failurePayload = {
+      code: err?.code || 'MACHINE_NODE_FAILED',
+      message: err?.message || String(err),
+    };
     await recordNodeLifecycleEvent(runRoot, {
       runId,
       nodePath: node.nodePath,
       nodeType: node.nodeType,
       attempt,
       status: 'failed',
-      payload: {
-        code: err?.code || 'MACHINE_NODE_FAILED',
-        message: err?.message || String(err),
-      },
+      payload: failurePayload,
     });
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'waiting',
+      reason: 'machine-node.failed',
+      payload: {
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        attempt,
+        ...failurePayload,
+      },
+    }).catch(() => null);
+    await appendRunSummaryStatus(runRoot, {
+      runId,
+      summaryStatus: 'blocked',
+      reason: 'machine-node.failed',
+      payload: {
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        attempt,
+        ...failurePayload,
+      },
+    }).catch(() => null);
     throw err;
   }
 }
