@@ -3,6 +3,75 @@ const SAFE_TRUST_LEVELS = new Set(['official', 'signed', 'local']);
 const BLOCKED_LIFECYCLE_SCRIPTS = new Set(['preinstall', 'install', 'postinstall', 'prepare']);
 const EXECUTABLE_HANDLER_KINDS = new Set(['executable', 'unsafe-executable', 'native', 'process']);
 const PACK_ASSET_COLLECTIONS = ['graphs', 'trees', 'skills', 'rules', 'examples'];
+const BUILT_IN_NODE_PACK_MANIFESTS = [
+  {
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'orpad.core',
+    name: 'OrPAD Core Node Pack',
+    version: '1.0.0-beta.3',
+    origin: 'built-in',
+    trustLevel: 'official',
+    compatibility: {
+      orpad: '>=1.0.0-beta.3',
+      packFormat: 'orpad.nodePack.v1',
+    },
+    capabilities: [],
+    installPolicy: {
+      allowLifecycleScripts: false,
+      allowExecutableHandlers: false,
+    },
+    nodes: [
+      'orpad.context',
+      'orpad.gate',
+      'orpad.graph',
+      'orpad.rule',
+      'orpad.selector',
+      'orpad.skill',
+      'orpad.tree',
+    ].map(type => ({
+      type,
+      path: `nodes/${type.slice('orpad.'.length)}.or-node`,
+      runtimeHandlerKind: 'metadata-only',
+      capabilities: [],
+    })),
+  },
+  {
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'orpad.workstream',
+    name: 'OrPAD Workstream Node Pack',
+    version: '1.0.0-beta.3',
+    origin: 'built-in',
+    trustLevel: 'official',
+    compatibility: {
+      orpad: '>=1.0.0-beta.3',
+      packFormat: 'orpad.nodePack.v1',
+    },
+    capabilities: [],
+    installPolicy: {
+      allowLifecycleScripts: false,
+      allowExecutableHandlers: false,
+    },
+    nodes: [
+      'orpad.artifactContract',
+      'orpad.barrier',
+      'orpad.dispatcher',
+      'orpad.entry',
+      'orpad.exit',
+      'orpad.patchReview',
+      'orpad.probe',
+      'orpad.triage',
+      'orpad.workQueue',
+      'orpad.workerLoop',
+    ].map(type => ({
+      type,
+      path: `nodes/${type.slice('orpad.'.length)}.or-node`,
+      runtimeHandlerKind: 'metadata-only',
+      capabilities: [],
+    })),
+  },
+];
 
 function diagnostic(level, code, message, details = {}) {
   return { level, code, message, ...details };
@@ -234,15 +303,159 @@ function createNodePackLockEntry(pack, options = {}) {
   };
 }
 
+function normalizeNodePackDeclaration(value, path = 'nodePacks') {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? { id: trimmed, path } : null;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const id = String(value.id || value.packId || '').trim();
+  const versionRange = String(
+    value.versionRange
+      || value.range
+      || value.requiredVersion
+      || value.version
+      || '',
+  ).trim();
+  const origin = String(value.origin || value.source || '').trim();
+  return {
+    ...value,
+    id,
+    versionRange,
+    origin,
+    path,
+  };
+}
+
+function collectNodePackDeclarations(nodePacks) {
+  if (Array.isArray(nodePacks)) {
+    return nodePacks
+      .map((item, index) => normalizeNodePackDeclaration(item, `nodePacks[${index}]`))
+      .filter(Boolean);
+  }
+  if (nodePacks && typeof nodePacks === 'object') {
+    return Object.entries(nodePacks)
+      .map(([id, item]) => {
+        if (item === true) return normalizeNodePackDeclaration({ id }, `nodePacks.${id}`);
+        if (typeof item === 'string') return normalizeNodePackDeclaration({ id, versionRange: item }, `nodePacks.${id}`);
+        return normalizeNodePackDeclaration({ id, ...item }, `nodePacks.${id}`);
+      })
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function validatePipelineNodePacks(nodePacks, options = {}) {
+  const diagnostics = [];
+  const declarations = collectNodePackDeclarations(nodePacks);
+  const availablePacks = options.availableNodePacks
+    || options.nodePackManifests
+    || options.builtInNodePacks
+    || BUILT_IN_NODE_PACK_MANIFESTS;
+  const availableById = new Map((Array.isArray(availablePacks) ? availablePacks : [])
+    .filter(pack => pack && typeof pack === 'object' && !Array.isArray(pack))
+    .map(pack => [String(pack.id || '').trim(), pack])
+    .filter(([id]) => id));
+  const resolved = [];
+
+  for (const declaration of declarations) {
+    if (!declaration.id) {
+      diagnostics.push(diagnostic(
+        'error',
+        'PIPELINE_NODE_PACK_ID_MISSING',
+        'Pipeline nodePacks entries must include a pack id.',
+        { path: declaration.path },
+      ));
+      continue;
+    }
+
+    const pack = availableById.get(declaration.id);
+    if (!pack) {
+      diagnostics.push(diagnostic(
+        'error',
+        'PIPELINE_NODE_PACK_UNKNOWN',
+        'Pipeline declares a node pack that is not available.',
+        { path: declaration.path, packId: declaration.id },
+      ));
+      resolved.push({ id: declaration.id, resolutionState: 'missing' });
+      continue;
+    }
+
+    const packResult = validateNodePackManifest(pack, {
+      currentOrpadVersion: options.currentOrpadVersion,
+      installMode: options.installMode || 'normal',
+      grantedCapabilities: options.grantedCapabilities || pack.capabilities || [],
+    });
+    const origin = String(pack.origin || '').trim();
+    const result = {
+      id: declaration.id,
+      requestedVersion: declaration.versionRange,
+      requestedOrigin: declaration.origin,
+      version: pack.version || '',
+      origin,
+      resolutionState: packResult.resolutionState,
+      declaredNodeTypes: packResult.declaredNodeTypes || [],
+    };
+    resolved.push(result);
+
+    if (declaration.origin && origin && declaration.origin !== origin) {
+      diagnostics.push(diagnostic(
+        'error',
+        'PIPELINE_NODE_PACK_ORIGIN_MISMATCH',
+        'Pipeline nodePacks origin must match the resolved pack origin.',
+        { path: declaration.path, packId: declaration.id, expectedOrigin: declaration.origin, actualOrigin: origin },
+      ));
+    }
+    if (declaration.versionRange && !satisfiesSimpleRange(pack.version, declaration.versionRange)) {
+      diagnostics.push(diagnostic(
+        'error',
+        'PIPELINE_NODE_PACK_VERSION_INCOMPATIBLE',
+        'Pipeline nodePacks version range is not satisfied by the resolved pack.',
+        { path: declaration.path, packId: declaration.id, required: declaration.versionRange, current: pack.version || '' },
+      ));
+    }
+    if (packResult.resolutionState === 'disabled') {
+      diagnostics.push(diagnostic(
+        'error',
+        'PIPELINE_NODE_PACK_DISABLED',
+        'Pipeline declares a disabled node pack.',
+        { path: declaration.path, packId: declaration.id },
+      ));
+    } else if (!packResult.ok || packResult.resolutionState !== 'resolved') {
+      diagnostics.push(diagnostic(
+        'error',
+        'PIPELINE_NODE_PACK_INCOMPATIBLE',
+        'Pipeline declares a node pack that is not launch-compatible.',
+        {
+          path: declaration.path,
+          packId: declaration.id,
+          resolutionState: packResult.resolutionState,
+          packDiagnostics: packResult.diagnostics,
+        },
+      ));
+    }
+  }
+
+  return {
+    ok: !diagnostics.some(item => item.level === 'error'),
+    nodePacks: resolved,
+    diagnostics,
+  };
+}
+
 module.exports = {
   BLOCKED_LIFECYCLE_SCRIPTS,
+  BUILT_IN_NODE_PACK_MANIFESTS,
   EXECUTABLE_HANDLER_KINDS,
   PACK_ASSET_COLLECTIONS,
   RESERVED_TYPE_PREFIX,
+  collectNodePackDeclarations,
   createLosslessNodePlaceholder,
   createNodePackLockEntry,
   declaredNodeTypes,
   resolveNodeTypeCompatibility,
   satisfiesSimpleRange,
+  validatePipelineNodePacks,
   validateNodePackManifest,
 };

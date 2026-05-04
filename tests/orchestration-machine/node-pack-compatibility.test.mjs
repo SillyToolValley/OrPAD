@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
+import Module from 'node:module';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -7,15 +7,30 @@ import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const {
+  BUILT_IN_NODE_PACK_MANIFESTS,
   createLosslessNodePlaceholder,
   createNodePackLockEntry,
   resolveNodeTypeCompatibility,
+  validatePipelineNodePacks,
   validateNodePackManifest,
-} = require('../../src/main/orchestration-machine');
+} = require('../../src/main/orchestration-machine/node-packs');
+
+const originalLoad = Module._load;
+Module._load = function loadWithWorkItemFallback(request, parent, isMain) {
+  if (request === './work-items' && parent?.filename?.endsWith(path.join('src', 'main', 'runbooks', 'validator.js'))) {
+    return {
+      WORK_ITEM_SCHEMA_VERSION: 'orpad.workItem.v1',
+      WORK_ITEM_STATES: ['open', 'claimed', 'done', 'blocked'],
+    };
+  }
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+const {
+  validateRunbookSource,
+} = require('../../src/main/runbooks/validator');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '../..');
-const workstreamNodePackPath = path.join(repoRoot, 'nodes/orpad.workstream/orpad.node-pack.json');
 
 function communityPack(overrides = {}) {
   return {
@@ -41,8 +56,8 @@ function communityPack(overrides = {}) {
   };
 }
 
-test('built-in workstream node pack validates with safe install policy and lock metadata', async () => {
-  const nodePack = JSON.parse(await fs.readFile(workstreamNodePackPath, 'utf8'));
+test('built-in workstream node pack validates with safe install policy and lock metadata', () => {
+  const nodePack = BUILT_IN_NODE_PACK_MANIFESTS.find(pack => pack.id === 'orpad.workstream');
   const result = validateNodePackManifest(nodePack, {
     installMode: 'normal',
     grantedCapabilities: nodePack.capabilities,
@@ -60,6 +75,68 @@ test('built-in workstream node pack validates with safe install policy and lock 
   assert.equal(result.nodeTypeMap['orpad.workerLoop'].packId, 'orpad.workstream');
   assert.equal(lock.id, 'orpad.workstream');
   assert.equal(lock.resolvedNodeTypes.includes('orpad.workerLoop'), true);
+});
+
+test('maintenance pipeline node pack declarations validate before launch', () => {
+  const result = validateRunbookSource(JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'orpad-maintenance-quality-workstream',
+    entryGraph: 'graphs/maintenance.or-graph',
+    nodePacks: [
+      { id: 'orpad.core', version: '>=1.0.0', origin: 'built-in' },
+      { id: 'orpad.workstream', version: '>=1.0.0', origin: 'built-in' },
+    ],
+  }), {
+    checkFiles: false,
+    suppressTrustWarning: true,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.nodePacks.map(pack => pack.id), ['orpad.core', 'orpad.workstream']);
+  assert.equal(result.diagnostics.some(item => item.code?.startsWith('PIPELINE_NODE_PACK_')), false);
+});
+
+test('pipeline node pack declarations reject missing or incompatible packs before launch', () => {
+  const result = validateRunbookSource(JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'node-pack-negative',
+    entryGraph: 'graphs/entry.or-graph',
+    nodePacks: [
+      { id: 'orpad.unknown', version: '>=1.0.0', origin: 'built-in' },
+      { id: 'orpad.core', version: '>=9.0.0', origin: 'built-in' },
+    ],
+  }), {
+    checkFiles: false,
+    suppressTrustWarning: true,
+  });
+  const codes = new Set(result.diagnostics.map(item => item.code));
+
+  assert.equal(result.ok, false);
+  assert.equal(codes.has('PIPELINE_NODE_PACK_UNKNOWN'), true);
+  assert.equal(codes.has('PIPELINE_NODE_PACK_VERSION_INCOMPATIBLE'), true);
+});
+
+test('pipeline node pack resolver reports disabled and origin-mismatched packs', () => {
+  const availableNodePacks = [
+    {
+      ...BUILT_IN_NODE_PACK_MANIFESTS.find(pack => pack.id === 'orpad.core'),
+      enabled: false,
+    },
+    BUILT_IN_NODE_PACK_MANIFESTS.find(pack => pack.id === 'orpad.workstream'),
+  ];
+  const result = validatePipelineNodePacks([
+    { id: 'orpad.core', version: '>=1.0.0', origin: 'built-in' },
+    { id: 'orpad.workstream', version: '>=1.0.0', origin: 'community' },
+  ], {
+    availableNodePacks,
+  });
+  const codes = new Set(result.diagnostics.map(item => item.code));
+
+  assert.equal(result.ok, false);
+  assert.equal(codes.has('PIPELINE_NODE_PACK_DISABLED'), true);
+  assert.equal(codes.has('PIPELINE_NODE_PACK_ORIGIN_MISMATCH'), true);
 });
 
 test('community packs cannot override reserved orpad namespace', () => {

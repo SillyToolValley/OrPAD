@@ -4,6 +4,9 @@ const {
   WORK_ITEM_SCHEMA_VERSION,
   WORK_ITEM_STATES,
 } = require('./work-items');
+const {
+  validatePipelineNodePacks,
+} = require('../orchestration-machine/node-packs');
 
 const BUILT_IN_ORPAD_NODE_TYPES = new Set([
   'orpad.artifactContract',
@@ -968,6 +971,8 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
   if (!pipeline.id) diagnostics.push(diagnostic('warning', 'PIPELINE_ID_MISSING', 'Pipeline should include an id field.'));
   if (!entryGraph) diagnostics.push(diagnostic('error', 'PIPELINE_ENTRY_GRAPH_MISSING', 'Pipeline must include an entryGraph file reference.'));
   validatePipelineQueueProtocol(pipeline, diagnostics);
+  const nodePackValidation = validatePipelineNodePacks(pipeline.nodePacks, options);
+  diagnostics.push(...nodePackValidation.diagnostics);
   if (entryGraph && graphRefs.length && !graphRefs.some(item => splitRefAnchor(item.file).file === splitRefAnchor(entryGraph).file)) {
     diagnostics.push(diagnostic(
       'warning',
@@ -1061,6 +1066,7 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
     executableNodeTypes: [...state.nodeTypes].filter(type => GRAPH_EXECUTABLE_NODE_TYPES.has(type) || MVP_EXECUTABLE_NODE_TYPES.has(type)).sort(),
     renderOnlyNodeTypes: [...state.renderOnlyNodeTypes].sort(),
     entryGraph,
+    nodePacks: nodePackValidation.nodePacks,
     skillCount: skillRefs.length,
     ruleCount: ruleRefs.length,
     diagnostics,
