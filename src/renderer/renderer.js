@@ -2824,6 +2824,76 @@ function pipelinePreviewLocationLabel(context) {
   return 'Pipeline package';
 }
 
+function machineFailedAdapterCalls(record) {
+  const events = record?.events || [];
+  // Index events newest-first so we keep the latest attempt per adapterCallId.
+  const seen = new Map();
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event || event.eventType !== 'adapter.result') continue;
+    const status = event.payload?.status;
+    if (status !== 'failed' && status !== 'blocked') continue;
+    const adapterCallId = event.payload?.adapterCallId || '';
+    if (!adapterCallId || seen.has(adapterCallId)) continue;
+    const refs = Array.isArray(event.artifactRefs) ? event.artifactRefs : [];
+    seen.set(adapterCallId, {
+      nodePath: event.nodePath || '',
+      adapterCallId,
+      attemptId: event.payload?.attemptId || '',
+      status,
+      reason: event.reason || '',
+      adapter: event.payload?.adapter || '',
+      timestamp: event.timestamp || '',
+      transcriptRef: refs.find(ref => /\.transcript\.json$/i.test(ref)) || '',
+      lastMessageRef: refs.find(ref => /\.last-message\.json$/i.test(ref)) || '',
+      patchRef: refs.find(ref => /\.patch\.json$/i.test(ref)) || '',
+    });
+  }
+  return [...seen.values()].sort((a, b) => (a.nodePath || '').localeCompare(b.nodePath || ''));
+}
+
+function machineRunArtifactAbsPath(record, ref) {
+  if (!ref || !record) return '';
+  const runRoot = record.runRoot || record.runState?.runRoot || '';
+  if (!runRoot) return '';
+  const cleanRoot = String(runRoot).replace(/[\\/]+$/, '');
+  const cleanRef = String(ref).replace(/^[\\/]+/, '');
+  return `${cleanRoot}/${cleanRef}`;
+}
+
+function renderMachineFailedAdaptersHtml(record) {
+  const failures = machineFailedAdapterCalls(record);
+  if (!failures.length) return '';
+  const items = failures.map(f => {
+    const transcriptAbs = machineRunArtifactAbsPath(record, f.transcriptRef);
+    const lastMessageAbs = machineRunArtifactAbsPath(record, f.lastMessageRef);
+    const links = [];
+    if (transcriptAbs) {
+      links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(transcriptAbs)}" title="${escapeHtml(transcriptAbs)}">View transcript</button>`);
+    }
+    if (lastMessageAbs) {
+      links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(lastMessageAbs)}" title="${escapeHtml(lastMessageAbs)}">Last message</button>`);
+    }
+    return `
+      <div class="pipe-failed-probe">
+        <div class="pipe-failed-probe-meta">
+          <span class="pipe-failed-probe-node">${escapeHtml(f.nodePath || '(no node path)')}</span>
+          <span class="pipe-failed-probe-status status-${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>
+          ${f.adapter ? `<span class="pipe-failed-probe-adapter">${escapeHtml(f.adapter)}</span>` : ''}
+        </div>
+        ${f.reason ? `<div class="pipe-failed-probe-reason">${escapeHtml(f.reason)}</div>` : ''}
+        ${links.length ? `<div class="pipe-failed-probe-actions">${links.join('')}</div>` : `<div class="pipe-failed-probe-reason">No transcript artifact attached. Try the run root file tree.</div>`}
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="pipe-failed-probes">
+      <div class="pipe-failed-probes-title">Failed adapter calls (${failures.length}) — click to inspect</div>
+      ${items}
+    </div>
+  `;
+}
+
 function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelineDoc = null) {
   if (!context?.pipelinePath) return '';
   const runbookPath = context.pipelinePath;
@@ -2890,6 +2960,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         </details>
       </div>
     </div>
+    ${renderMachineFailedAdaptersHtml(previewRunRecord)}
   `;
 }
 
@@ -11652,6 +11723,23 @@ function openObsidianImportReview() {
 }
 
 contentEl?.addEventListener('click', async (event) => {
+  const probeButton = event.target.closest?.('[data-probe-action]');
+  if (probeButton && contentEl.contains(probeButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    const probeAction = probeButton.dataset.probeAction || '';
+    if (probeAction === 'open-artifact') {
+      const artifactPath = probeButton.dataset.artifactPath || '';
+      if (artifactPath) {
+        try {
+          await openFileInTab(artifactPath);
+        } catch (err) {
+          notifyFormatError('Probe artifact', err);
+        }
+      }
+    }
+    return;
+  }
   const button = event.target.closest?.('[data-pipeline-run-action]');
   if (!button || !contentEl.contains(button)) return;
   event.preventDefault();

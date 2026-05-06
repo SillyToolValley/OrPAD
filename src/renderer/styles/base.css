@@ -1823,6 +1823,79 @@ body.json-diff-mode #preview-pane {
   border-radius: calc(8px * var(--us));
   background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
 }
+.pipe-failed-probes {
+  margin: calc(-6px * var(--us)) 0 calc(12px * var(--us));
+  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--danger-color, #ff7676) 50%, transparent);
+  border-radius: calc(8px * var(--us));
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 12%, transparent);
+  display: grid;
+  gap: calc(8px * var(--us));
+  font-size: calc(12px * var(--us));
+  color: var(--text-primary);
+}
+.pipe-failed-probes-title {
+  font-weight: 600;
+  font-size: calc(12px * var(--us));
+  color: var(--danger-color, #ff7676);
+}
+.pipe-failed-probe {
+  display: grid;
+  gap: calc(4px * var(--us));
+  padding: calc(6px * var(--us)) calc(8px * var(--us));
+  border-radius: calc(6px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+}
+.pipe-failed-probe-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(8px * var(--us));
+  align-items: center;
+}
+.pipe-failed-probe-node {
+  font-weight: 600;
+  word-break: break-all;
+}
+.pipe-failed-probe-status {
+  padding: calc(1px * var(--us)) calc(6px * var(--us));
+  border-radius: calc(10px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--danger-color, #ff7676) 60%, transparent);
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 18%, transparent);
+  color: var(--danger-color, #ff7676);
+  font-size: calc(10.5px * var(--us));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pipe-failed-probe-status.status-blocked {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 60%, transparent);
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 18%, transparent);
+  color: var(--syntax-meta, #e0af68);
+}
+.pipe-failed-probe-adapter {
+  font-size: calc(10.5px * var(--us));
+  opacity: 0.7;
+}
+.pipe-failed-probe-reason {
+  font-size: calc(11.5px * var(--us));
+  opacity: 0.85;
+}
+.pipe-failed-probe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6px * var(--us));
+}
+.pipe-failed-probe-link {
+  font-size: calc(11.5px * var(--us));
+  padding: calc(3px * var(--us)) calc(8px * var(--us));
+  border-radius: calc(4px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-color) 70%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.pipe-failed-probe-link:hover {
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 18%, transparent);
+}
 .pipeline-runbar-meta {
   min-width: 0;
   display: grid;
