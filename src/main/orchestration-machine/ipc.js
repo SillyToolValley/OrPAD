@@ -1166,7 +1166,7 @@ async function cancelRunHandler(event, authority, request) {
   };
 }
 
-async function executeRunStepWithHarnessHandler(event, authority, request) {
+async function executeRunStepWithHarnessHandler(event, authority, request, runtimeOptions = {}) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
   const options = assertPlainObject(request.options == null ? {} : request.options, 'options');
@@ -1188,6 +1188,8 @@ async function executeRunStepWithHarnessHandler(event, authority, request) {
       exportLatestRunAfterStep: request.exportLatestRun !== false,
       taskText,
       externalResearch,
+      loadProviderKey: runtimeOptions?.loadProviderKey || null,
+      fetchImpl: runtimeOptions?.fetchImpl || null,
     });
     const updatedSnapshot = await readRunSnapshot(runRoot);
     return {
@@ -1245,6 +1247,8 @@ function registerMachineHandlers({
   authority,
   featureGate = featureGateFromEnv(),
   allowSessionEnable = false,
+  loadProviderKey = null,
+  fetchImpl = null,
 } = {}) {
   if (!ipcMain?.handle) throw new Error('ipcMain.handle is required.');
   if (!authority) throw new Error('Machine IPC requires an authority manager.');
@@ -1252,6 +1256,7 @@ function registerMachineHandlers({
   const gate = normalizeFeatureGate(featureGate);
   const sessionEnableAllowed = allowSessionEnable === true;
   let sessionCapabilityToken = '';
+  const machineRuntimeOptions = { loadProviderKey, fetchImpl };
 
   function handle(channel, handler, { mutating = false } = {}) {
     ipcMain.handle(channel, async (event, request = {}) => {
@@ -1260,7 +1265,7 @@ function registerMachineHandlers({
         assertMachineGate(gate);
         assertPlainObject(request);
         if (mutating) assertMutatingCapability(request, gate);
-        return await handler(event, authority, request);
+        return await handler(event, authority, request, machineRuntimeOptions);
       } catch (err) {
         return rejectResponse(err);
       }

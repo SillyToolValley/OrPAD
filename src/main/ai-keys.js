@@ -460,7 +460,23 @@ function registerAiKeyHandlers({ ipcMain, app, safeStorage }) {
   });
 }
 
+function createMachineProviderKeyLoader({ app, safeStorage }) {
+  return async function loadProviderKey(providerId) {
+    if (!providerId) return '';
+    if (!hasProviderEntry(providerId)) return '';
+    if (isKeylessProvider(providerId)) return '';
+    if (!safeStorage?.isEncryptionAvailable?.()) {
+      const err = new Error('safeStorage encryption is not available on this device.');
+      err.code = 'KEY_MISSING';
+      throw err;
+    }
+    const { key } = decryptStoredKey(app, safeStorage, providerId);
+    return key || '';
+  };
+}
+
 module.exports = {
+  createMachineProviderKeyLoader,
   keyMask,
   providerStatus,
   registerAiKeyHandlers,

@@ -574,6 +574,81 @@ function buildLiveWorkerPrompt(input = {}) {
   ].join('\n');
 }
 
+function defaultModelForLiveAdapter(adapter) {
+  if (adapter && typeof adapter === 'object' && adapter.default && typeof adapter.default === 'object') {
+    return String(adapter.default.model || '').trim();
+  }
+  return '';
+}
+
+function selectionForLiveApiPlugin(adapter, plugin) {
+  const defaults = (adapter && typeof adapter === 'object' && adapter.default && typeof adapter.default === 'object')
+    ? adapter.default
+    : {};
+  return {
+    providerId: plugin.id,
+    family: plugin.family,
+    model: defaults.model || plugin.defaultModel || '',
+    qualityTier: defaults.qualityTier || 'standard',
+    sessionStrategy: defaults.sessionStrategy || 'none',
+    toolPolicy: defaults.toolPolicy || 'none',
+  };
+}
+
+function createApiProbeInvocationAdapter(input = {}) {
+  const {
+    plugin,
+    adapter,
+    node,
+    pipelinePath,
+    pipeline,
+    taskText,
+    externalResearch,
+    loadProviderKey,
+    fetchImpl,
+  } = input;
+  return {
+    adapter: `${plugin.id}-api-proposal`,
+    async invoke(request) {
+      const prompt = liveProbePrompt({
+        request,
+        node,
+        pipelinePath,
+        pipeline,
+        adapter,
+        taskText,
+        externalResearch,
+      });
+      const selection = selectionForLiveApiPlugin(adapter, plugin);
+      let providerKey = '';
+      if (typeof loadProviderKey === 'function') {
+        try {
+          providerKey = String(await loadProviderKey(plugin.id) || '').trim();
+        } catch (err) {
+          const wrapped = new Error(`Could not load provider key for ${plugin.id}: ${err?.message || err}`);
+          wrapped.code = 'KEY_MISSING';
+          wrapped.classification = 'KEY_MISSING';
+          throw wrapped;
+        }
+      }
+      if (plugin.needsKey && !providerKey) {
+        const err = new Error(`Provider "${plugin.id}" requires an API key. Save one through Settings → AI Keys, then retry.`);
+        err.code = 'KEY_MISSING';
+        err.classification = 'KEY_MISSING';
+        throw err;
+      }
+      const out = await plugin.invokeApi({
+        request,
+        prompt,
+        selection,
+        providerKey,
+        fetchImpl,
+      });
+      return out?.result || out;
+    },
+  };
+}
+
 async function liveWorkerCommandSpec(input = {}) {
   const { adapter, request, overlayRoot } = input;
   const plugin = getProviderPluginForAdapter(adapter);
@@ -1512,6 +1587,8 @@ async function executeMachineRunStep(options = {}) {
     timeoutMs = 60_000,
     taskText = '',
     externalResearch = null,
+    loadProviderKey = null,
+    fetchImpl = null,
   } = options;
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   if (!pipelinePath) throw new Error('pipelinePath is required.');
@@ -1543,21 +1620,28 @@ async function executeMachineRunStep(options = {}) {
       'This execute step requires a deterministic run.machineHarness fixture or a runnable run.machineAdapter.',
     );
   }
+  // Live API-family providers route the probe through plugin.invokeApi via the
+  // router. Worker overlay execution is still CLI-only — when the lifted v2
+  // envelope chose an API plugin, the worker site honest-fails with a clear
+  // message so the user knows to switch back to a CLI provider for that step.
+  let liveApiPlugin = null;
   if (hasLiveAdapter && !hasHarness) {
     const liveProviderId = resolveProviderIdFromAdapter(adapterSource);
     const livePlugin = liveProviderId ? getProviderPlugin(liveProviderId) : null;
     if (livePlugin && livePlugin.family === 'api') {
-      const overlaySource = adapterOverrides?.pipelineDefault?.providerId === liveProviderId
-        ? `<pipeline-stem>.adapter-overrides.json`
-        : 'pipeline.run.machineAdapter';
-      throw machineExecutionError(
-        'MACHINE_API_DISPATCH_NOT_WIRED',
-        `The selected provider "${liveProviderId}" is an API plugin (family: api), wired in via ${overlaySource}. `
-          + `Live invocation through the router is the next PR — picking an API provider does override the lifted v2 envelope, `
-          + `but executeMachineRunStep currently only dispatches CLI plugins through createProposalAdapter / buildWorkerCommandSpec. `
-          + `For now, re-open "Choose AI Provider…" and pick a CLI provider (codex-cli or claude-code) to actually run the pipeline. `
-          + `Removing the .adapter-overrides.json file restores the pipeline.or-pipeline default.`,
-      );
+      const isStub = typeof livePlugin.invokeApi !== 'function'
+        || String(livePlugin.implementationStatus || '').toLowerCase() === 'stub';
+      if (isStub) {
+        const overlaySource = adapterOverrides?.pipelineDefault?.providerId === liveProviderId
+          ? `<pipeline-stem>.adapter-overrides.json`
+          : 'pipeline.run.machineAdapter';
+        throw machineExecutionError(
+          'MACHINE_API_PLUGIN_STUB',
+          `Provider plugin "${liveProviderId}" is registered as family:api but invokeApi is a stub (status: ${livePlugin.implementationStatus || 'unknown'}). `
+            + `Override source: ${overlaySource}. Pick a different provider in the AI Provider picker.`,
+        );
+      }
+      liveApiPlugin = livePlugin;
     }
   }
   const harness = hasHarness ? assertPlainObject(harnessSource, 'run.machineHarness') : null;
@@ -1666,27 +1750,39 @@ async function executeMachineRunStep(options = {}) {
         runId,
         nodePath: currentProbeNode.nodePath,
         workspaceRoot,
-        adapter: getProviderPluginForAdapter(adapter).createProposalAdapter({
-          runRoot,
-          runId,
-          workspaceRoot,
-          command: adapter.command,
-          commandPrefixArgs: adapter.commandPrefixArgs,
-          sandbox: adapter.proposalSandbox || adapter.sandbox || 'read-only',
-          approvalPolicy: adapter.approvalPolicy || 'never',
-          timeoutMs: adapter.proposalTimeoutMs || timeoutMs,
-          maxOutputBytes: 64 * 1024,
-          ephemeral: adapter.ephemeral,
-          prompt: request => liveProbePrompt({
-            request,
+        adapter: liveApiPlugin
+          ? createApiProbeInvocationAdapter({
+            plugin: liveApiPlugin,
+            adapter,
             node: currentProbeNode,
             pipelinePath,
             pipeline,
-            adapter,
             taskText: runtimeTaskText,
             externalResearch: runtimeExternalResearch,
+            loadProviderKey,
+            fetchImpl,
+          })
+          : getProviderPluginForAdapter(adapter).createProposalAdapter({
+            runRoot,
+            runId,
+            workspaceRoot,
+            command: adapter.command,
+            commandPrefixArgs: adapter.commandPrefixArgs,
+            sandbox: adapter.proposalSandbox || adapter.sandbox || 'read-only',
+            approvalPolicy: adapter.approvalPolicy || 'never',
+            timeoutMs: adapter.proposalTimeoutMs || timeoutMs,
+            maxOutputBytes: 64 * 1024,
+            ephemeral: adapter.ephemeral,
+            prompt: request => liveProbePrompt({
+              request,
+              node: currentProbeNode,
+              pipelinePath,
+              pipeline,
+              adapter,
+              taskText: runtimeTaskText,
+              externalResearch: runtimeExternalResearch,
+            }),
           }),
-        }),
       })));
     const probeCandidates = hasHarness
       ? harnessProbeCandidates
@@ -2087,6 +2183,7 @@ module.exports = {
   applyAdapterOverridesToPipelineAdapter,
   batchApplyStateFromEvents,
   buildLiveWorkerPrompt,
+  createApiProbeInvocationAdapter,
   executeMachineRunStep,
   effectiveProbeCandidateLimit,
   flattenTraversalNodes,

@@ -68,18 +68,20 @@ async function makePipelineFixture(runId) {
   await fs.writeFile(path.join(pipelineDir, 'graphs/main.or-graph'), JSON.stringify({
     kind: 'orpad.graph',
     version: '1.0',
-    id: 'main',
-    nodes: [
-      { id: 'main/probe', type: 'orpad.probe', config: {} },
-      { id: 'main/triage', type: 'orpad.triage', config: {} },
-      { id: 'main/dispatcher', type: 'orpad.dispatcher', config: {} },
-      { id: 'main/worker', type: 'orpad.workerLoop', config: {} },
-    ],
-    transitions: [
-      { from: 'main/probe', to: 'main/triage' },
-      { from: 'main/triage', to: 'main/dispatcher' },
-      { from: 'main/dispatcher', to: 'main/worker' },
-    ],
+    graph: {
+      id: 'sample',
+      nodes: [
+        { id: 'probe', type: 'orpad.probe', config: {} },
+        { id: 'triage', type: 'orpad.triage', config: {} },
+        { id: 'dispatcher', type: 'orpad.dispatcher', config: {} },
+        { id: 'worker', type: 'orpad.workerLoop', config: {} },
+      ],
+      transitions: [
+        { from: 'probe', to: 'triage' },
+        { from: 'triage', to: 'dispatcher' },
+        { from: 'dispatcher', to: 'worker' },
+      ],
+    },
   }, null, 2), 'utf8');
   const run = await createMachineRun({
     workspaceRoot,
@@ -196,18 +198,19 @@ test('applyAdapterOverridesToPipelineAdapter carries pipeline orchestration fiel
   assert.equal(lifted.command, undefined);
 });
 
-test('executeMachineRunStep refuses to dispatch when the override picks an API provider', async () => {
+test('executeMachineRunStep refuses to dispatch when the override picks a stub API provider', async () => {
   const { workspaceRoot, pipelinePath, pipelineDir, run } = await makePipelineFixture('run_overrides_api_gate_001');
   try {
-    // Write a v2 override that picks anthropic as the pipeline default.
+    // openai plugin is registered but invokeApi is a stub — should reject up
+    // front with MACHINE_API_PLUGIN_STUB before any traversal work.
     await fs.writeFile(
       adapterOverridesPathFor(pipelinePath),
       JSON.stringify({
         schemaVersion: 'orpad.adapterOverrides.v1',
         updatedAt: '2026-05-06T00:00:00.000Z',
         pipelineDefault: {
-          providerId: 'anthropic',
-          model: 'claude-3-5-sonnet-latest',
+          providerId: 'openai',
+          model: 'gpt-4o-mini',
           family: 'api',
           qualityTier: 'standard',
           sessionStrategy: 'none',
@@ -225,7 +228,7 @@ test('executeMachineRunStep refuses to dispatch when the override picks an API p
         runRoot: run.runRoot,
         runId: run.runId,
       }),
-      error => error?.code === 'MACHINE_API_DISPATCH_NOT_WIRED' && /Choose AI Provider/.test(error.message || ''),
+      error => error?.code === 'MACHINE_API_PLUGIN_STUB' && /openai/.test(error.message || ''),
     );
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });

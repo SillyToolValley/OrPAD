@@ -465,10 +465,12 @@ ipcMain.handle('get-app-info', () => ({
 registerAiKeyHandlers({ ipcMain, app, safeStorage });
 registerAiConversationHandlers({ ipcMain, authority });
 registerMcpHandlers({ ipcMain, app, authority });
+const { createMachineProviderKeyLoader } = require('./ai-keys');
 registerMachineHandlers({
   ipcMain,
   authority,
   allowSessionEnable: !app.isPackaged,
+  loadProviderKey: createMachineProviderKeyLoader({ app, safeStorage }),
 });
 registerRunbookHandlers({ ipcMain, app, authority });
 registerTerminalHandlers({ ipcMain, app, authority });
