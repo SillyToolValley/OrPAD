@@ -428,6 +428,14 @@ harness command assembled by main process.
   `assertCliProcessContainment`. The codex bypass flag remains the default fallback when no
   plugin supplies a list, but any new CLI provider plugin (claude-code, generic) must declare
   its own dangerous args to receive the same enforcement.
+- The shared provider catalog at `src/shared/ai/provider-catalog.js` is metadata-only. It must
+  never embed ciphertext, raw API keys, or any other secret material. Renderer
+  (`src/renderer/ai/providers/index.js`) and the Machine plugin registry both read this catalog
+  for display name, models, default model, costs, family, and `needsKey`; ciphertext continues
+  to live exclusively under safeStorage in `ai-keys.json`. Catalog entries declared with
+  `needsKey: false` (codex-cli, ollama, openai-compatible) cannot be assigned a stored key
+  through the `ai-key-set` IPC, and `validateProvider` rejects any provider id that is not
+  registered in the catalog.
 - The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
   and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
 - Stdout/stderr are captured with output limits and written only as Machine artifacts when a

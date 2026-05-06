@@ -1,13 +1,22 @@
 const fs = require('fs');
 const path = require('path');
 
-const PROVIDERS = ['openai', 'anthropic', 'openrouter', 'openai-compatible'];
+const {
+  PROVIDER_IDS,
+  defaultEndpointFor,
+  getProviderEntry,
+  hasProviderEntry,
+  isKeylessProvider,
+  summarizeForIpc,
+} = require('../shared/ai/provider-catalog');
+
+const STREAMING_PROVIDERS = Object.freeze(['openai', 'anthropic', 'openrouter', 'openai-compatible']);
 const PROVIDER_RE = /^[a-z0-9-]{1,48}$/;
 const DEFAULT_ENDPOINTS = {
-  openai: 'https://api.openai.com/v1',
-  anthropic: 'https://api.anthropic.com/v1/messages',
-  openrouter: 'https://openrouter.ai/api/v1',
-  'openai-compatible': 'https://api.openai.com/v1',
+  openai: defaultEndpointFor('openai'),
+  anthropic: defaultEndpointFor('anthropic'),
+  openrouter: defaultEndpointFor('openrouter'),
+  'openai-compatible': defaultEndpointFor('openai-compatible'),
 };
 
 const chatControllers = new Map();
@@ -35,6 +44,16 @@ function writeStore(app, store) {
 function validateProvider(provider) {
   if (typeof provider !== 'string' || !PROVIDER_RE.test(provider)) {
     throw new Error('Invalid provider id');
+  }
+  if (!hasProviderEntry(provider)) {
+    throw new Error(`Unknown provider id: ${provider}`);
+  }
+}
+
+function validateStreamingProvider(provider) {
+  validateProvider(provider);
+  if (!STREAMING_PROVIDERS.includes(provider)) {
+    throw new Error(`Provider does not support sidebar streaming chat: ${provider}`);
   }
 }
 
@@ -66,15 +85,22 @@ function keyMask(key) {
 }
 
 function providerStatus(store) {
-  const ids = new Set([...PROVIDERS, ...Object.keys(store || {})]);
+  const ids = new Set([...PROVIDER_IDS, ...Object.keys(store || {})]);
   const providers = {};
   for (const id of ids) {
     const entry = store[id];
+    const catalog = getProviderEntry(id);
     providers[id] = {
       hasKey: !!entry?.ciphertext,
       mask: entry?.mask || '',
       updatedAt: entry?.updatedAt || null,
-      endpoint: entry?.endpoint || null,
+      endpoint: entry?.endpoint || (catalog?.defaultEndpoint || null),
+      family: catalog?.family || 'unknown',
+      needsKey: catalog ? Boolean(catalog.needsKey) : true,
+      configurableEndpoint: Boolean(catalog?.configurableEndpoint),
+      defaultModel: catalog?.defaultModel || '',
+      models: catalog?.models?.map(model => model.id) || [],
+      costs: catalog?.costs ? { input: catalog.costs.input, output: catalog.costs.output } : { input: 0, output: 0 },
     };
   }
   return providers;
@@ -278,14 +304,15 @@ async function streamAnthropic({ apiKey, messages, model, tools, signal, emit })
 
 async function runProviderChat({ app, safeStorage, request, signal, emit }) {
   const provider = String(request?.provider || '');
-  validateProvider(provider);
+  validateStreamingProvider(provider);
   const model = String(request?.model || '').trim();
   if (!model) throw new Error('AI model is required.');
   const messages = normalizeMessages(request?.messages);
   const tools = normalizeTools(request?.tools);
   const { key, entry } = decryptStoredKey(app, safeStorage, provider);
+  const keyless = isKeylessProvider(provider);
 
-  if (provider !== 'openai-compatible' && !key) {
+  if (!keyless && provider !== 'openai-compatible' && !key) {
     throw new Error(`${provider} API key is not set.`);
   }
 
@@ -349,12 +376,16 @@ function registerAiKeyHandlers({ ipcMain, app, safeStorage }) {
     const store = readStore(app);
     return {
       encryptionAvailable: !!safeStorage?.isEncryptionAvailable?.(),
+      catalog: summarizeForIpc(),
       providers: providerStatus(store),
     };
   });
 
   ipcMain.handle('ai-key-set', (_event, provider, key, metadata = {}) => {
     validateProvider(provider);
+    if (isKeylessProvider(provider)) {
+      return { error: `Provider "${provider}" does not require an API key.` };
+    }
     const trimmed = String(key || '').trim();
     if (!trimmed) return { error: 'API key is empty' };
     if (!safeStorage?.isEncryptionAvailable?.()) {
@@ -429,4 +460,10 @@ function registerAiKeyHandlers({ ipcMain, app, safeStorage }) {
   });
 }
 
-module.exports = { registerAiKeyHandlers };
+module.exports = {
+  keyMask,
+  providerStatus,
+  registerAiKeyHandlers,
+  validateProvider,
+  validateStreamingProvider,
+};

@@ -8,6 +8,9 @@ const {
   registerJsonArtifact,
 } = require('../../adapters/cli-agent');
 const { runMachineProcess } = require('../../adapters/process-runner');
+const { getProviderEntry } = require('../../../../shared/ai/provider-catalog');
+
+const CATALOG_ENTRY = getProviderEntry('codex-cli');
 
 const fsp = fs.promises;
 const DEFAULT_CODEX_CLI_TIMEOUT_MS = 10 * 60 * 1000;
@@ -343,10 +346,10 @@ function buildWorkerCommandSpec(input = {}) {
 }
 
 module.exports = {
-  id: 'codex-cli',
-  displayName: 'OpenAI Codex CLI',
-  family: 'cli',
-  needsKey: false,
+  id: CATALOG_ENTRY?.id || 'codex-cli',
+  displayName: CATALOG_ENTRY?.displayName || 'OpenAI Codex CLI',
+  family: CATALOG_ENTRY?.family || 'cli',
+  needsKey: CATALOG_ENTRY ? Boolean(CATALOG_ENTRY.needsKey) : false,
   capabilities: Object.freeze({
     sessionStrategies: ['none'],
     toolPolicies: ['none'],
@@ -354,7 +357,7 @@ module.exports = {
     structuredOutput: 'free-text',
     sandbox: 'workspace-write',
   }),
-  models: Object.freeze([
+  models: CATALOG_ENTRY?.models || Object.freeze([
     Object.freeze({
       id: 'codex',
       qualityTier: 'standard',
@@ -363,6 +366,7 @@ module.exports = {
       costPerMTokensOut: 0,
     }),
   ]),
+  defaultModel: CATALOG_ENTRY?.defaultModel || 'codex',
   dangerousArgs: Object.freeze([DANGEROUS_CODEX_BYPASS_ARG]),
   buildWorkerCommandSpec,
   createProposalAdapter,
