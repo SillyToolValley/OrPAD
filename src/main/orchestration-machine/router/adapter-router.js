@@ -18,6 +18,16 @@ const {
   nextEstimateFromUsage,
   readBudgetLedger,
 } = require('./budget-ledger');
+const {
+  applyCacheHitToResult,
+  buildCacheEntry,
+  computeCacheKey,
+  hashAllowedFiles,
+  hashPrompt,
+  readCacheEntry,
+  shouldAttemptCacheLookup,
+  writeCacheEntry,
+} = require('./response-cache');
 
 const ERROR_CLASSES = Object.freeze([
   'KEY_MISSING',
@@ -240,6 +250,8 @@ async function dispatchAdapter(input = {}) {
     runRoot = '',
     budgetConfig: explicitBudget,
     estimateNextCostUsd,
+    cacheConfig: explicitCache,
+    cachePrompt,
   } = input;
   if (!request) {
     const err = new Error('dispatchAdapter requires an adapter request.');
@@ -264,7 +276,68 @@ async function dispatchAdapter(input = {}) {
 
   const lifted = liftedPipelineAdapter(pipelineAdapter);
   const budgetConfig = explicitBudget || lifted?.budget || null;
+  const cacheConfig = explicitCache || lifted?.cache || null;
   const ledger = runRoot ? await readBudgetLedger(runRoot) : null;
+
+  // Cache lookup before any network/process work.
+  let cacheKey = '';
+  let cacheLookupOutcome = null;
+  if (runRoot && cacheConfig && cacheConfig.mode && cacheConfig.mode !== 'off') {
+    const lookup = shouldAttemptCacheLookup({
+      mode: cacheConfig.mode,
+      prompt: cachePrompt,
+      idempotencyKey: request.idempotencyKey,
+    });
+    cacheLookupOutcome = lookup;
+    if (lookup.eligible) {
+      cacheKey = computeCacheKey({
+        mode: cacheConfig.mode,
+        providerId,
+        model: candidate.selection.model,
+        prompt: cachePrompt,
+        allowedFiles: request.allowedFiles,
+        taskKind: request.taskKind,
+        outputContract: request.outputContract,
+        qualityTier: candidate.selection.qualityTier || 'standard',
+        idempotencyKey: request.idempotencyKey,
+      });
+      const existing = await readCacheEntry(runRoot, cacheKey);
+      if (existing && existing.result) {
+        const hitResult = applyCacheHitToResult(existing.result, cacheKey);
+        const enriched = attachRoutingDecisionToResult(hitResult, candidate);
+        if (typeof beforeAttempt === 'function') {
+          await beforeAttempt({
+            eventType: 'cache.hit',
+            nodePath: request.nodePath,
+            payload: {
+              adapterCallId: request.adapterCallId,
+              attemptId: request.attemptId,
+              providerId,
+              model: candidate.selection.model,
+              cacheKey,
+              cacheMode: cacheConfig.mode,
+              recordedAt: existing.recordedAt,
+            },
+          });
+        }
+        if (runRoot) {
+          await appendBudgetEntry(runRoot, {
+            runId: request.runId,
+            adapterCallId: request.adapterCallId,
+            attemptId: request.attemptId,
+            nodePath: request.nodePath,
+            providerId,
+            model: candidate.selection.model,
+            family: candidate.selection.family,
+            cacheHit: true,
+            usage: enriched.usage,
+            sourceEventSequence: Number.isFinite(input.sourceEventSequence) ? input.sourceEventSequence : null,
+          });
+        }
+        return enriched;
+      }
+    }
+  }
   let preCallEstimateUsd = 0;
   if (budgetConfig && ledger) {
     if (typeof estimateNextCostUsd === 'function') {
@@ -314,6 +387,23 @@ async function dispatchAdapter(input = {}) {
       usage: result.usage,
       sourceEventSequence: Number.isFinite(input.sourceEventSequence) ? input.sourceEventSequence : null,
     });
+  }
+  if (runRoot && cacheConfig && cacheLookupOutcome?.eligible && cacheKey && result && !result.cacheHit) {
+    const entry = buildCacheEntry({
+      cacheKey,
+      mode: cacheConfig.mode,
+      ttlSeconds: Number.isFinite(cacheConfig.ttlSeconds) ? cacheConfig.ttlSeconds : 0,
+      providerId,
+      model: candidate.selection.model,
+      promptHash: hashPrompt(cachePrompt),
+      allowedFilesHash: hashAllowedFiles(request.allowedFiles),
+      taskKind: request.taskKind,
+      outputContract: request.outputContract,
+      qualityTier: candidate.selection.qualityTier || 'standard',
+      idempotencyKey: request.idempotencyKey,
+      result,
+    });
+    await writeCacheEntry(runRoot, entry).catch(() => {});
   }
   if (runRoot && budgetConfig && result?.usage) {
     const observedNext = nextEstimateFromUsage(result.usage);

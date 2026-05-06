@@ -448,6 +448,18 @@ harness command assembled by main process.
   Anthropic). The provider key MUST NOT be serialized into the request body, the adapter
   request envelope, the adapter result envelope, or any artifact written under
   `runs/<runId>/`.
+- The response cache at `runs/<runId>/cache/<sha256>.json` is opt-in via the v2
+  `pipeline.run.machineAdapter.cache.mode` value (`off` | `deterministic` | `idempotent-only`).
+  Cache files store only the SHA-256 of the prompt and the parsed adapter result envelope —
+  never the raw prompt text — so an inadvertent secret in a prompt does not become a long-lived
+  cache leak. `apiSession` and `apiTrace` are stripped from the result before write.
+  `deterministic` mode rejects prompts that match ISO timestamps, UUIDs, OrPAD run ids, or
+  attempt ids; `idempotent-only` mode requires a non-empty `idempotencyKey` and only hits when
+  the same key has been seen before. Cache hits are recorded in events.jsonl as `cache.hit`
+  (so audit/replay can recompute cost without a network call) and the budget ledger entry
+  for a cache hit always reports `costEstimateUsd: 0` and `cacheHit: true`. Plugin authors are
+  responsible for sanitizing prompts before they reach the cache key path; OrPAD's threat
+  model assumes cache files are inside the local-first run directory and not exported.
 - The budget ledger at `runs/<runId>/budget-ledger.json` is a derived view, not authoritative.
   Cost values are plugin-reported *estimates* drawn from the provider catalog's per-model
   rates; provider invoice reconcile is out of scope. Any UI that surfaces a hard budget
