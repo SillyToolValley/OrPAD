@@ -151,6 +151,51 @@ test('setProviderSelection IPC merges sequential pipeline-default + node-overrid
   }
 });
 
+test('applyAdapterOverridesToPipelineAdapter carries pipeline orchestration fields across provider swap', async () => {
+  const { applyAdapterOverridesToPipelineAdapter } = orchestration;
+  const v1Adapter = {
+    type: 'codex-cli',
+    enabled: true,
+    sandbox: 'read-only',
+    workerSandbox: 'workspace-write',
+    approvalPolicy: 'never',
+    parallelProbes: true,
+    probeConcurrency: 'all',
+    probeNodePaths: ['main/probe', 'main/probe-2', 'main/probe-3'],
+    candidateLimit: 5,
+    proposalTimeoutMs: 600000,
+    workerTimeoutMs: 900000,
+    claimLeaseMs: 1800000,
+    continueAfterReviewableBlockedPatch: true,
+    supportNodePolicy: 'record-gate-warnings-and-mark-artifact-partial',
+  };
+  const overrides = {
+    schemaVersion: 'orpad.adapterOverrides.v1',
+    pipelineDefault: {
+      providerId: 'claude-code',
+      model: 'claude-code',
+      family: 'cli',
+      qualityTier: 'standard',
+      sessionStrategy: 'none',
+      toolPolicy: 'none',
+    },
+    nodeOverrides: {},
+  };
+  const lifted = applyAdapterOverridesToPipelineAdapter(v1Adapter, overrides);
+  assert.equal(lifted.schemaVersion, 'orpad.machineAdapter.v2');
+  assert.equal(lifted.default.providerId, 'claude-code');
+  assert.equal(lifted.parallelProbes, true);
+  assert.equal(lifted.probeConcurrency, 'all');
+  assert.deepEqual(lifted.probeNodePaths, ['main/probe', 'main/probe-2', 'main/probe-3']);
+  assert.equal(lifted.candidateLimit, 5);
+  assert.equal(lifted.workerTimeoutMs, 900000);
+  assert.equal(lifted.claimLeaseMs, 1800000);
+  assert.equal(lifted.continueAfterReviewableBlockedPatch, true);
+  // Provider-specific fields must NOT carry over (claude-code uses its own).
+  assert.equal(lifted.workerSandbox, undefined);
+  assert.equal(lifted.command, undefined);
+});
+
 test('executeMachineRunStep refuses to dispatch when the override picks an API provider', async () => {
   const { workspaceRoot, pipelinePath, pipelineDir, run } = await makePipelineFixture('run_overrides_api_gate_001');
   try {

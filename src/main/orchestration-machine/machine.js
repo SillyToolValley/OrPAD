@@ -173,6 +173,29 @@ async function readAdapterOverridesForPipeline(pipelinePath) {
   }
 }
 
+// Pipeline-orchestration fields that are not provider-specific. The picker
+// only changes provider/model selection, so these fields must survive an
+// override (otherwise probe fanout, claim limits, and timeouts collapse to
+// defaults — e.g. parallelProbes:true gets dropped → only 1 probe runs).
+const PIPELINE_ORCHESTRATION_FIELDS = Object.freeze([
+  'probeNodePaths',
+  'probeNodePath',
+  'probeConcurrency',
+  'parallelProbes',
+  'triageNodePath',
+  'dispatcherNodePath',
+  'workerNodePath',
+  'candidateLimit',
+  'proposalTimeoutMs',
+  'workerTimeoutMs',
+  'claimLeaseMs',
+  'workerClaimLimit',
+  'maxWorkerClaims',
+  'claimLimit',
+  'continueAfterReviewableBlockedPatch',
+  'supportNodePolicy',
+]);
+
 function applyAdapterOverridesToPipelineAdapter(adapter, overrides) {
   if (!overrides) return adapter;
   if (!overrides.pipelineDefault) return adapter;
@@ -189,12 +212,22 @@ function applyAdapterOverridesToPipelineAdapter(adapter, overrides) {
     ephemeral: true,
   };
   const merged = { ...baseSelection, ...overrides.pipelineDefault };
+  // Carry over orchestration fields from the original v1 envelope so the
+  // picker's provider/model swap does not also reset the pipeline's probe
+  // fanout, timeouts, claim leases, etc.
+  const carried = {};
+  if (adapter && typeof adapter === 'object' && !Array.isArray(adapter)) {
+    for (const field of PIPELINE_ORCHESTRATION_FIELDS) {
+      if (adapter[field] !== undefined) carried[field] = adapter[field];
+    }
+  }
   return {
     schemaVersion: 'orpad.machineAdapter.v2',
     enabled: true,
     default: merged,
     nodeOverrides: overrides.nodeOverrides || {},
     legacy: adapter || null,
+    ...carried,
   };
 }
 
@@ -2050,6 +2083,8 @@ async function executeMachineRunStep(options = {}) {
 }
 
 module.exports = {
+  PIPELINE_ORCHESTRATION_FIELDS,
+  applyAdapterOverridesToPipelineAdapter,
   batchApplyStateFromEvents,
   buildLiveWorkerPrompt,
   executeMachineRunStep,
@@ -2061,6 +2096,7 @@ module.exports = {
   liveWorkerCommandSpec,
   machineAdapterFromPipeline,
   patchReviewStateFromEvents,
+  readAdapterOverridesForPipeline,
   registerCandidateInventoryArtifact,
   validateBarrierNode,
   validateArtifactContract,
