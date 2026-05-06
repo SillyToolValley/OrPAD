@@ -95,13 +95,22 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-function describeProvider(plugin, catalogEntry) {
-  const family = (plugin?.family || catalogEntry?.family || 'api').toUpperCase();
-  const needsKey = (plugin?.needsKey ?? catalogEntry?.needsKey) === true ? 'API key required' : 'Keyless';
-  const isStub = plugin && typeof plugin.invokeApi !== 'function' && family === 'API'
-    ? '· stub (invokeApi not yet implemented)'
-    : '';
-  return `${family} · ${needsKey} ${isStub}`.trim();
+function describeProvider(provider) {
+  const family = (provider?.family || 'api').toUpperCase();
+  const needsKey = provider?.needsKey === true ? 'API key required' : 'Keyless';
+  const status = provider?.implementationStatus || 'unknown';
+  const statusLabel = status === 'ready'
+    ? '✓ ready'
+    : status === 'stub'
+      ? '· stub (not yet implemented)'
+      : '';
+  return [family, needsKey, statusLabel].filter(Boolean).join(' · ');
+}
+
+function statusBadgeColor(status) {
+  if (status === 'ready') return { color: '#9be0a3', bg: 'rgba(34,197,94,0.14)', border: 'rgba(34,197,94,0.5)' };
+  if (status === 'stub') return { color: '#ffd58a', bg: 'rgba(202,138,4,0.18)', border: 'rgba(202,138,4,0.5)' };
+  return { color: '#cccccc', bg: 'rgba(255,255,255,0.06)', border: 'rgba(255,255,255,0.18)' };
 }
 
 function mergeProviderInventory(plugins, catalog) {
@@ -114,6 +123,8 @@ function mergeProviderInventory(plugins, catalog) {
       needsKey: Boolean(entry.needsKey),
       defaultModel: entry.defaultModel,
       models: [...(entry.models || [])],
+      implementationStatus: entry.implementationStatus || 'unknown',
+      statusNote: entry.statusNote || '',
       registered: false,
     });
   }
@@ -125,6 +136,8 @@ function mergeProviderInventory(plugins, catalog) {
       needsKey: Boolean(plugin.needsKey),
       defaultModel: plugin.defaultModel,
       models: [...(plugin.models || [])],
+      implementationStatus: 'unknown',
+      statusNote: '',
       registered: false,
     };
     slot.registered = true;
@@ -132,6 +145,8 @@ function mergeProviderInventory(plugins, catalog) {
     slot.family = plugin.family || slot.family;
     slot.needsKey = plugin.needsKey ?? slot.needsKey;
     slot.defaultModel = plugin.defaultModel || slot.defaultModel;
+    if (plugin.implementationStatus) slot.implementationStatus = plugin.implementationStatus;
+    if (plugin.statusNote) slot.statusNote = plugin.statusNote;
     if ((!slot.models || slot.models.length === 0) && plugin.models) slot.models = [...plugin.models];
     byId.set(plugin.id, slot);
   }
@@ -148,6 +163,8 @@ function fallbackInventoryFromCatalog() {
       family: entry.family,
       needsKey: Boolean(entry.needsKey),
       defaultModel: entry.defaultModel,
+      implementationStatus: entry.implementationStatus || 'unknown',
+      statusNote: entry.statusNote || '',
       models: entry.models.map(model => model.id),
     })),
   };
@@ -186,6 +203,18 @@ function createAdapterPicker({
     class: 'orpad-adapter-picker__banner',
     style: 'display:none;padding:8px 10px;border-radius:6px;font-size:12px;line-height:1.4;border:1px solid transparent;',
   });
+
+  const ipcRow = el('div', {
+    class: 'orpad-adapter-picker__ipc',
+    style: 'display:none;padding:10px 12px;border-radius:6px;border:1px solid rgba(202,138,4,0.5);background:rgba(202,138,4,0.12);font-size:12px;line-height:1.5;',
+  });
+  const ipcRowText = el('div', {}, []);
+  const ipcRowEnableButton = el('button', {
+    type: 'button',
+    style: 'margin-top:6px;padding:5px 10px;font-size:12px;background:#ca8a04;color:#1d1f23;border:0;border-radius:4px;cursor:pointer;font-weight:600;',
+  }, ['Enable Machine IPC for this session']);
+  ipcRow.appendChild(ipcRowText);
+  ipcRow.appendChild(ipcRowEnableButton);
 
   const currentRow = el('div', {
     class: 'orpad-adapter-picker__current',
@@ -231,6 +260,7 @@ function createAdapterPicker({
 
   if (root) {
     root.appendChild(banner);
+    root.appendChild(ipcRow);
     root.appendChild(currentRow);
     root.appendChild(providerHeading);
     root.appendChild(providerGrid);
@@ -238,6 +268,16 @@ function createAdapterPicker({
     root.appendChild(modelSelect);
     root.appendChild(tierRow);
     root.appendChild(actionRow);
+  }
+
+  function setIpcGateMessage(message) {
+    if (!ipcRow) return;
+    if (!message) {
+      ipcRow.style.display = 'none';
+      return;
+    }
+    ipcRowText.textContent = message;
+    ipcRow.style.display = 'block';
   }
 
   function setBanner(message, kind = 'info') {
@@ -300,10 +340,12 @@ function createAdapterPicker({
       return;
     }
     for (const provider of state.providers) {
+      const badge = statusBadgeColor(provider.implementationStatus);
       const card = el('button', {
         type: 'button',
         dataset: { providerId: provider.id },
-        style: 'display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px;border:1px solid rgba(255,255,255,0.12);border-radius:6px;background:rgba(255,255,255,0.03);color:inherit;cursor:pointer;text-align:left;font-family:inherit;',
+        title: provider.statusNote || '',
+        style: `display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:10px;border:1px solid rgba(255,255,255,0.12);border-radius:6px;background:rgba(255,255,255,0.03);color:inherit;cursor:pointer;text-align:left;font-family:inherit;transition:border-color 0.1s ease,background 0.1s ease;`,
         onClick: () => {
           state.selection.providerId = provider.id;
           state.selection.family = provider.family;
@@ -314,10 +356,18 @@ function createAdapterPicker({
           });
         },
       });
-      card.appendChild(el('div', { style: 'font-size:13px;font-weight:600;' }, [provider.displayName || provider.id]));
-      card.appendChild(el('div', { style: 'font-size:11px;opacity:0.7;' }, [describeProvider(provider, provider)]));
+      const titleRow = el('div', { style: 'display:flex;align-items:center;gap:6px;width:100%;justify-content:space-between;' });
+      titleRow.appendChild(el('div', { style: 'font-size:13px;font-weight:600;' }, [provider.displayName || provider.id]));
+      titleRow.appendChild(el('span', {
+        style: `font-size:10px;padding:2px 6px;border-radius:10px;border:1px solid ${badge.border};background:${badge.bg};color:${badge.color};`,
+      }, [provider.implementationStatus === 'ready' ? 'ready' : provider.implementationStatus === 'stub' ? 'stub' : 'unknown']));
+      card.appendChild(titleRow);
+      card.appendChild(el('div', { style: 'font-size:11px;opacity:0.75;' }, [describeProvider(provider)]));
+      if (provider.statusNote) {
+        card.appendChild(el('div', { style: 'font-size:10.5px;opacity:0.7;line-height:1.4;' }, [provider.statusNote]));
+      }
       if (provider.registered === false) {
-        card.appendChild(el('div', { style: 'font-size:10px;color:#ffd58a;' }, ['Catalog metadata only — IPC plugin lookup failed']));
+        card.appendChild(el('div', { style: 'font-size:10px;color:#ffd58a;' }, ['Plugin registry IPC 미응답 — catalog metadata 사용']));
       }
       providerGrid.appendChild(card);
     }
@@ -372,22 +422,57 @@ function createAdapterPicker({
 
   applyButton.addEventListener('click', () => { commit().catch(() => {}); });
 
+  async function tryEnableSession() {
+    const safeBridge = ensureBridge(bridge);
+    setIpcGateMessage('Enabling Machine IPC for this session…');
+    try {
+      const response = await safeBridge.invoke('machine-enable-session', {});
+      if (!response || response.ok === false || response.success === false) {
+        const reason = response?.error || 'machine-enable-session rejected.';
+        setIpcGateMessage(`Enable 실패: ${reason}. OrPAD를 ORPAD_MACHINE_IPC=1 환경변수와 함께 다시 시작하세요.`);
+        return false;
+      }
+      setIpcGateMessage('Machine IPC가 켜졌습니다. provider 목록을 새로 불러옵니다…');
+      return true;
+    } catch (err) {
+      setIpcGateMessage(`Enable 실패: ${err.message}. ORPAD_MACHINE_IPC=1로 다시 시작하세요.`);
+      return false;
+    }
+  }
+  ipcRowEnableButton.addEventListener('click', async () => {
+    ipcRowEnableButton.disabled = true;
+    ipcRowEnableButton.style.opacity = '0.6';
+    const enabled = await tryEnableSession();
+    ipcRowEnableButton.disabled = false;
+    ipcRowEnableButton.style.opacity = '1';
+    if (enabled) {
+      setIpcGateMessage('');
+      await refresh();
+    }
+  });
+
   async function refresh() {
     state.busy = true;
     setBanner('Loading providers…', 'info');
     let inventory = state.inventory;
     let registryFailed = false;
+    let gateBlocked = false;
     try {
       inventory = await fetchProviderInventory(bridge);
+      setIpcGateMessage('');
     } catch (err) {
       registryFailed = true;
       state.lastError = err;
+      gateBlocked = err?.code === 'MACHINE_IPC_FEATURE_DISABLED';
       const fallback = fallbackInventoryFromCatalog();
       inventory = fallback;
-      const reason = err?.code === 'MACHINE_IPC_FEATURE_DISABLED'
-        ? 'Machine IPC가 꺼져 있습니다. ORPAD_MACHINE_IPC=1 환경변수로 OrPAD를 다시 시작하세요. 그 동안 catalog metadata로만 표시합니다.'
-        : `Plugin registry IPC 실패 (${err.message}). catalog metadata로 fallback합니다.`;
-      setBanner(reason, err?.code === 'MACHINE_IPC_FEATURE_DISABLED' ? 'warn' : 'error');
+      if (gateBlocked) {
+        setBanner('Machine IPC가 꺼져 있어 catalog metadata만 표시합니다. 아래 버튼으로 이 세션에서 IPC를 켜거나, OrPAD를 ORPAD_MACHINE_IPC=1 환경변수와 함께 다시 시작하세요.', 'warn');
+        setIpcGateMessage('Machine IPC가 꺼져 있습니다. 이 세션에서만 IPC를 켜려면 아래 버튼을 누르세요.');
+      } else {
+        setBanner(`Plugin registry IPC 실패 (${err.message}). catalog metadata로 fallback합니다.`, 'error');
+        setIpcGateMessage('');
+      }
     }
     state.inventory = inventory;
     state.providers = mergeProviderInventory(inventory.plugins, inventory.catalog);

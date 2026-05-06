@@ -9900,6 +9900,8 @@ function buildAdapterPickerBridge() {
       if (channel === 'machine-list-models') return machine.listModels(payload || {});
       if (channel === 'machine-set-provider-selection') return machine.setProviderSelection(payload || {});
       if (channel === 'machine-read-budget-ledger') return machine.readBudgetLedger(payload || {});
+      if (channel === 'machine-enable-session') return machine.enableSession();
+      if (channel === 'machine-status') return machine.status();
       throw new Error(`AdapterPicker bridge: unsupported channel ${channel}`);
     },
   };
