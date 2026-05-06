@@ -28,6 +28,8 @@ const providerRegistry = require('./providers/registry');
 const providerCatalog = require('../../shared/ai/provider-catalog');
 const codexCliPlugin = require('./providers/plugins/codex-cli');
 const anthropicPlugin = require('./providers/plugins/anthropic');
+const claudeCodePlugin = require('./providers/plugins/claude-code');
+const genericCliPlugin = require('./providers/plugins/generic-cli');
 const adapterRouter = require('./router/adapter-router');
 const budgetLedger = require('./router/budget-ledger');
 const responseCache = require('./router/response-cache');
@@ -83,6 +85,11 @@ module.exports = {
   anthropicParseUsage: anthropicPlugin.parseUsage,
   anthropicEstimateCost: anthropicPlugin.estimateCost,
   classifyAnthropicHttpStatus: anthropicPlugin.classifyAnthropicHttpStatus,
+  claudeCodeCommand: claudeCodePlugin.claudeCodeCommand,
+  claudeCodeExecArgs: claudeCodePlugin.claudeCodeExecArgs,
+  claudeCodeInvocation: claudeCodePlugin.claudeCodeInvocation,
+  parseClaudeAdapterResultFromStdout: claudeCodePlugin.parseClaudeAdapterResultFromStdout,
+  ...genericCliPlugin,
   ...queueStore,
   ...runStore,
   ...triageRunner,

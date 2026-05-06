@@ -448,6 +448,17 @@ harness command assembled by main process.
   Anthropic). The provider key MUST NOT be serialized into the request body, the adapter
   request envelope, the adapter result envelope, or any artifact written under
   `runs/<runId>/`.
+- CLI provider plugins added in PR M8 (`claude-code.js`, generic CLI factory) follow the same
+  M1 process-containment, M1 dangerous-arg metadata, and M0 lift-to-v2 contracts that
+  `codex-cli.js` does. `claude-code` declares `--dangerously-skip-permissions` as its
+  dangerous arg so the M1 containment gate refuses to spawn a Claude Code child process with
+  that flag unless an explicit Machine grant + approval is in place. Generic CLI plugin
+  registration (`createGenericCliPlugin`) is **rejected** at registration time when either
+  `commandAllowlist` (non-empty array of `{ command, argsPrefix? }`) or
+  `outputContractParser` (function) is missing — there is no path that lets a caller register
+  an unbounded "run anything" CLI provider. Each generic plugin's `assertCommandAllowed`
+  blocks any commandSpec whose command is not in the allowlist, with optional `argsPrefix`
+  enforcement, before the M1 process-containment runs.
 - The router fallback chain (`router/error-classifier.js`) does not weaken the approval and
   containment boundary applied to any single attempt. Each fallback target goes through the
   same `assertProviderKeySourceAllowed` / `assertCommandGranted` / `assertCliProcessContainment`

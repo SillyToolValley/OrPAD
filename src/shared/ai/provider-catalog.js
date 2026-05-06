@@ -93,6 +93,19 @@ const PROVIDER_CATALOG = Object.freeze({
     ]),
     costs: Object.freeze({ input: 0, output: 0 }),
   }),
+  'claude-code': Object.freeze({
+    id: 'claude-code',
+    displayName: 'Anthropic Claude Code CLI',
+    family: 'cli',
+    needsKey: false,
+    configurableEndpoint: false,
+    defaultEndpoint: '',
+    defaultModel: 'claude-code',
+    models: Object.freeze([
+      Object.freeze({ id: 'claude-code', qualityTier: 'standard', costPerMTokensIn: 0, costPerMTokensOut: 0 }),
+    ]),
+    costs: Object.freeze({ input: 0, output: 0 }),
+  }),
 });
 
 const PROVIDER_IDS = Object.freeze(Object.keys(PROVIDER_CATALOG));
