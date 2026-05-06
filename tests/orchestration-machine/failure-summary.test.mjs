@@ -207,6 +207,92 @@ async function makeFailingProbeWorkspace(runId) {
   return { workspaceRoot, pipelineDir, pipelinePath, run };
 }
 
+test('end-to-end: skip-node IPC writes a node.skipped event for the failing probe', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeFailingProbeWorkspace('run_failing_skip_001');
+  try {
+    try {
+      await orchestration.executeMachineRunStep({
+        workspaceRoot,
+        pipelinePath,
+        pipelineDir,
+        runRoot: run.runRoot,
+        runId: run.runId,
+        exportLatestRunAfterStep: false,
+      });
+    } catch { /* failure expected */ }
+
+    const ipcMain = (() => {
+      const handlers = new Map();
+      return {
+        handle(channel, fn) { handlers.set(channel, fn); },
+        invoke(channel, request = {}, event = { senderFrame: { url: 'file:///orpad/index.html', parent: null }, sender: { id: 1 } }) {
+          const fn = handlers.get(channel);
+          if (!fn) throw new Error(`no handler for ${channel}`);
+          return fn(event, request);
+        },
+      };
+    })();
+    orchestration.registerMachineHandlers({
+      ipcMain,
+      authority: {
+        assertWorkspaceContains() {},
+        getWorkspaceRoot() { return ''; },
+        assertWorkspacePath(_sender, value) { return value; },
+      },
+      featureGate: { enabled: true, mutatingCapabilityToken: 'token' },
+    });
+
+    const skipResponse = await ipcMain.invoke(orchestration.MACHINE_IPC_CHANNELS.skipNode, {
+      capabilityToken: 'token',
+      workspacePath: workspaceRoot,
+      pipelinePath,
+      runId: run.runId,
+      nodePath: 'main/probe',
+      nodeType: 'orpad.probe',
+      reason: 'user-skipped-after-spawn-failure',
+    });
+    assert.equal(skipResponse.ok, true, `skip-node should succeed: ${JSON.stringify(skipResponse)}`);
+    assert.equal(skipResponse.nodePath, 'main/probe');
+    assert.equal(skipResponse.attempt >= 1, true);
+
+    // Reload events and confirm a node.skipped row exists for the probe.
+    const events = await orchestration.readMachineEvents(run.runRoot);
+    const skipEvent = events.find(e => e.eventType === 'node.skipped' && e.nodePath === 'main/probe');
+    assert.equal(Boolean(skipEvent), true, 'expected node.skipped event for main/probe');
+    assert.equal(skipEvent.payload?.reason, 'user-skipped-after-spawn-failure');
+    assert.equal(skipEvent.payload?.decidedBy, 'renderer');
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('skip-node IPC rejects without nodePath', async () => {
+  const ipcMain = (() => {
+    const handlers = new Map();
+    return {
+      handle(channel, fn) { handlers.set(channel, fn); },
+      invoke(channel, request = {}, event = { senderFrame: { url: 'file:///orpad/index.html', parent: null }, sender: { id: 1 } }) {
+        const fn = handlers.get(channel);
+        return fn(event, request);
+      },
+    };
+  })();
+  orchestration.registerMachineHandlers({
+    ipcMain,
+    authority: { assertWorkspaceContains() {} },
+    featureGate: { enabled: true, mutatingCapabilityToken: 'token' },
+  });
+  const response = await ipcMain.invoke(orchestration.MACHINE_IPC_CHANNELS.skipNode, {
+    capabilityToken: 'token',
+    workspacePath: '/tmp',
+    pipelinePath: '/tmp/sample/pipeline.or-pipeline',
+    runId: 'run_x',
+    nodePath: '',
+  });
+  assert.equal(response.ok, false);
+  assert.equal(response.code, 'MACHINE_IPC_NODE_PATH_REQUIRED');
+});
+
 test('end-to-end: fake-failing CLI pipeline produces failure events that pass detection', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeFailingProbeWorkspace('run_failing_e2e_001');
   try {

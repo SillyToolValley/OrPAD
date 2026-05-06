@@ -134,6 +134,7 @@ contextBridge.exposeInMainWorld('orpad', {
     listModels: (request) => ipcRenderer.invoke('machine-list-models', request),
     setProviderSelection: (request) => ipcRenderer.invoke('machine-set-provider-selection', request),
     readBudgetLedger: (request) => ipcRenderer.invoke('machine-read-budget-ledger', request),
+    skipNode: (request) => ipcRenderer.invoke('machine-skip-node', request),
   },
   userSnippets: {
     read: () => ipcRenderer.invoke('snippets-read'),

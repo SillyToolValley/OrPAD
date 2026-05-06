@@ -2839,6 +2839,14 @@ function machineRunArtifactAbsPath(record, ref) {
   return sharedRunArtifactAbsPath(record, ref);
 }
 
+function renderProbeActionButtons(f, runIdAttr, nodePathAttr) {
+  const buttons = [];
+  if (runIdAttr && nodePathAttr) {
+    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this probe.">Skip node</button>`);
+  }
+  return buttons.join('');
+}
+
 function renderMachineFailedAdaptersHtml(record) {
   const failures = machineFailedAdapterCalls(record);
   const runRoot = record?.runRoot || record?.runState?.runRoot || '';
@@ -2863,6 +2871,7 @@ function renderMachineFailedAdaptersHtml(record) {
       </div>`
     : '';
 
+  const runIdAttr = String(record?.runState?.runId || record?.runId || '');
   const items = failures.map(f => {
     const transcriptAbs = machineRunArtifactAbsPath(record, f.transcriptRef);
     const lastMessageAbs = machineRunArtifactAbsPath(record, f.lastMessageRef);
@@ -2881,6 +2890,7 @@ function renderMachineFailedAdaptersHtml(record) {
     if (eventsAbs) {
       links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(eventsAbs)}" title="${escapeHtml(eventsAbs)}">events.jsonl</button>`);
     }
+    const actions = renderProbeActionButtons(f, runIdAttr, f.nodePath || '');
     return `
       <div class="pipe-failed-probe">
         <div class="pipe-failed-probe-meta">
@@ -2890,6 +2900,7 @@ function renderMachineFailedAdaptersHtml(record) {
         </div>
         ${f.reason ? `<div class="pipe-failed-probe-reason">${escapeHtml(f.reason)}</div>` : ''}
         ${links.length ? `<div class="pipe-failed-probe-actions">${links.join('')}</div>` : `<div class="pipe-failed-probe-reason">No transcript artifact attached. Open events.jsonl from the run root.</div>`}
+        ${actions ? `<div class="pipe-failed-probe-actions">${actions}</div>` : ''}
       </div>
     `;
   }).join('');
@@ -11763,6 +11774,41 @@ contentEl?.addEventListener('click', async (event) => {
         } catch (err) {
           notifyFormatError('Probe artifact', err);
         }
+      }
+    } else if (probeAction === 'skip-node') {
+      const runId = probeButton.dataset.runId || '';
+      const nodePath = probeButton.dataset.nodePath || '';
+      const nodeType = probeButton.dataset.nodeType || '';
+      const runbookPath = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      if (!runId || !nodePath || !runbookPath) {
+        notifyFormatError('Skip node', new Error('Missing runId / nodePath / pipelinePath.'));
+        return;
+      }
+      probeButton.disabled = true;
+      probeButton.textContent = 'Skipping…';
+      try {
+        const response = await window.orpad.machine.skipNode({
+          capabilityToken: machineCapabilityToken,
+          workspacePath,
+          pipelinePath: runbookPath,
+          runId,
+          nodePath,
+          nodeType,
+          reason: 'user-skipped-from-failed-card',
+        });
+        if (!response?.success) {
+          notifyFormatError('Skip node', new Error(response?.error || 'skip-node IPC rejected.'));
+          probeButton.disabled = false;
+          probeButton.textContent = 'Skip node';
+          return;
+        }
+        notifyFormatError('Skip node', new Error(`${nodePath} marked skipped (event seq ${response.eventSequence ?? '?'})`));
+        // Force a polling refresh so the skip event reflects in the UI immediately.
+        await refreshVisibleMachineRunSnapshot().catch(() => {});
+      } catch (err) {
+        notifyFormatError('Skip node', err);
+        probeButton.disabled = false;
+        probeButton.textContent = 'Skip node';
       }
     }
     return;

@@ -35,6 +35,7 @@ const {
 } = require('./providers/registry');
 const { getProviderEntry, listProviderEntries } = require('../../shared/ai/provider-catalog');
 const { readBudgetLedger, summarizeLedger } = require('./router/budget-ledger');
+const { recordNodeLifecycleEvent } = require('./node-lifecycle');
 
 const fsp = fs.promises;
 
@@ -59,6 +60,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   listModels: 'machine-list-models',
   setProviderSelection: 'machine-set-provider-selection',
   readBudgetLedger: 'machine-read-budget-ledger',
+  skipNode: 'machine-skip-node',
 });
 
 const APPLY_BATCH_MUTEXES = new Map();
@@ -1326,8 +1328,53 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.listModels, listModelsHandler);
   handle(MACHINE_IPC_CHANNELS.setProviderSelection, setProviderSelectionHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.readBudgetLedger, readBudgetLedgerHandler);
+  handle(MACHINE_IPC_CHANNELS.skipNode, skipNodeHandler, { mutating: true });
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };
+}
+
+async function skipNodeHandler(event, authority, request = {}) {
+  // Validate nodePath up front so renderer typos surface a precise error code
+  // before we touch the workspace / pipeline files.
+  const nodePath = String(request.nodePath || '').trim();
+  if (!nodePath) {
+    throw machineError('MACHINE_IPC_NODE_PATH_REQUIRED', 'nodePath is required.');
+  }
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const reason = String(request.reason || 'user-skipped').trim() || 'user-skipped';
+  const events = await readMachineEvents(runRoot);
+  // Use the next attempt index for this node to avoid duplicating an existing
+  // attempt id. node.skipped events are append-only so an already-skipped node
+  // stays skipped — re-skip just records another decision marker.
+  let priorAttempts = 0;
+  for (const e of events) {
+    if (!e || (e.nodePath || '') !== nodePath) continue;
+    const attempt = Number(e.payload?.attempt || 0);
+    if (Number.isFinite(attempt) && attempt > priorAttempts) priorAttempts = attempt;
+  }
+  const attempt = priorAttempts + 1;
+  const skippedEvent = await recordNodeLifecycleEvent(runRoot, {
+    runId,
+    nodePath,
+    nodeType: String(request.nodeType || '').trim() || 'orpad.unknown',
+    status: 'skipped',
+    attempt,
+    payload: {
+      reason,
+      decidedBy: 'renderer',
+      decidedAt: new Date().toISOString(),
+    },
+  });
+  return {
+    success: true,
+    ok: true,
+    runId,
+    nodePath,
+    attempt,
+    eventSequence: skippedEvent?.sequence,
+  };
 }
 
 async function listProvidersHandler(event, authority, request = {}) {

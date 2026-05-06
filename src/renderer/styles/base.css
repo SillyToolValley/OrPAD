@@ -1896,6 +1896,17 @@ body.json-diff-mode #preview-pane {
 .pipe-failed-probe-link:hover {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 18%, transparent);
 }
+.pipe-failed-probe-skip {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 60%, transparent);
+  color: var(--syntax-meta, #e0af68);
+}
+.pipe-failed-probe-skip:hover {
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 18%, transparent);
+}
+.pipe-failed-probe-skip:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
 .pipeline-runbar-meta {
   min-width: 0;
   display: grid;
