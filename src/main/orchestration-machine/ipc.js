@@ -1331,27 +1331,36 @@ function registerMachineHandlers({
 }
 
 async function listProvidersHandler(event, authority, request = {}) {
-  const plugins = listProviderPlugins().map(plugin => ({
-    id: plugin.id,
-    displayName: plugin.displayName,
-    family: plugin.family,
-    needsKey: plugin.needsKey === true,
-    defaultModel: plugin.defaultModel || '',
-    capabilities: {
-      sessionStrategies: [...(plugin.capabilities?.sessionStrategies || ['none'])],
-      toolPolicies: [...(plugin.capabilities?.toolPolicies || ['none'])],
-      streaming: plugin.capabilities?.streaming === true,
-      structuredOutput: plugin.capabilities?.structuredOutput || 'free-text',
-      sandbox: plugin.capabilities?.sandbox || null,
-    },
-    dangerousArgs: [...(plugin.dangerousArgs || [])],
-  }));
+  const plugins = listProviderPlugins().map(plugin => {
+    const catalogEntry = getProviderEntry(plugin.id);
+    return {
+      id: plugin.id,
+      displayName: plugin.displayName,
+      family: plugin.family,
+      needsKey: plugin.needsKey === true,
+      defaultModel: plugin.defaultModel || '',
+      implementationStatus: plugin.implementationStatus
+        || catalogEntry?.implementationStatus
+        || 'unknown',
+      statusNote: plugin.statusNote || catalogEntry?.statusNote || '',
+      capabilities: {
+        sessionStrategies: [...(plugin.capabilities?.sessionStrategies || ['none'])],
+        toolPolicies: [...(plugin.capabilities?.toolPolicies || ['none'])],
+        streaming: plugin.capabilities?.streaming === true,
+        structuredOutput: plugin.capabilities?.structuredOutput || 'free-text',
+        sandbox: plugin.capabilities?.sandbox || null,
+      },
+      dangerousArgs: [...(plugin.dangerousArgs || [])],
+    };
+  });
   const catalog = listProviderEntries().map(entry => ({
     id: entry.id,
     displayName: entry.displayName,
     family: entry.family,
     needsKey: Boolean(entry.needsKey),
     defaultModel: entry.defaultModel,
+    implementationStatus: entry.implementationStatus || 'unknown',
+    statusNote: entry.statusNote || '',
     models: entry.models.map(model => model.id),
   }));
   return { success: true, ok: true, plugins, catalog };

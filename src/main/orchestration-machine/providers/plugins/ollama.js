@@ -29,6 +29,8 @@ module.exports = {
   displayName: CATALOG_ENTRY?.displayName || 'Ollama (local)',
   family: CATALOG_ENTRY?.family || 'api',
   needsKey: CATALOG_ENTRY ? Boolean(CATALOG_ENTRY.needsKey) : false,
+  implementationStatus: CATALOG_ENTRY?.implementationStatus || 'stub',
+  statusNote: CATALOG_ENTRY?.statusNote || '',
   capabilities: Object.freeze({
     sessionStrategies: ['none'],
     toolPolicies: ['none'],

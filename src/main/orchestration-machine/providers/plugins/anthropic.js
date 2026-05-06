@@ -205,6 +205,8 @@ module.exports = {
   displayName: CATALOG_ENTRY?.displayName || 'Anthropic',
   family: CATALOG_ENTRY?.family || 'api',
   needsKey: CATALOG_ENTRY ? Boolean(CATALOG_ENTRY.needsKey) : true,
+  implementationStatus: CATALOG_ENTRY?.implementationStatus || 'ready',
+  statusNote: CATALOG_ENTRY?.statusNote || '',
   capabilities: Object.freeze({
     sessionStrategies: ['none'],
     toolPolicies: ['none'],

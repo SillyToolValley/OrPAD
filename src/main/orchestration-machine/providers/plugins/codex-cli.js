@@ -350,6 +350,8 @@ module.exports = {
   displayName: CATALOG_ENTRY?.displayName || 'OpenAI Codex CLI',
   family: CATALOG_ENTRY?.family || 'cli',
   needsKey: CATALOG_ENTRY ? Boolean(CATALOG_ENTRY.needsKey) : false,
+  implementationStatus: CATALOG_ENTRY?.implementationStatus || 'ready',
+  statusNote: CATALOG_ENTRY?.statusNote || '',
   capabilities: Object.freeze({
     sessionStrategies: ['none'],
     toolPolicies: ['none'],
