@@ -93,3 +93,5 @@ module.exports = {
 
 registerProviderPlugin(require('./plugins/codex-cli'));
 registerProviderPlugin(require('./plugins/anthropic'));
+registerProviderPlugin(require('./plugins/openai'));
+registerProviderPlugin(require('./plugins/ollama'));

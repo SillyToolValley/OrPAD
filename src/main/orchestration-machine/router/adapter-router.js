@@ -253,22 +253,28 @@ async function dispatchAdapter(input = {}) {
     estimateNextCostUsd,
     cacheConfig: explicitCache,
     cachePrompt,
+    retryBudget,
+    onFallback,
+    onRetry,
+    onSelfRepair,
   } = input;
   if (!request) {
     const err = new Error('dispatchAdapter requires an adapter request.');
     err.code = 'ROUTING_REQUEST_MISSING';
     throw err;
   }
-  const candidates = decideAttempts({ pipelineAdapter, nodeAdapter });
-  if (!candidates.length) {
+  const allCandidates = decideAttempts({ pipelineAdapter, nodeAdapter });
+  if (!allCandidates.length) {
     const err = new Error('No adapter candidate available for the requested pipeline.');
     err.code = 'ROUTING_NO_CANDIDATE';
     throw err;
   }
-  // M4 calls only the first candidate. Fallback iteration lands in PR M7.
-  const candidate = candidates[0];
-  const providerId = candidate.selection.providerId;
-  const plugin = providerId ? getProviderPlugin(providerId) : null;
+  // Fallback chain support (M7): the dispatcher walks candidates from the
+  // head of the list and consults the error classifier between attempts.
+  let candidateIndex = 0;
+  let candidate = allCandidates[candidateIndex];
+  let providerId = candidate.selection.providerId;
+  let plugin = providerId ? getProviderPlugin(providerId) : null;
   if (!plugin) {
     const err = new Error(`Provider plugin "${providerId}" is not registered.`);
     err.code = 'MACHINE_PROVIDER_PLUGIN_MISSING';
@@ -370,12 +376,106 @@ async function dispatchAdapter(input = {}) {
     }
   }
 
+  // Lazy import to avoid circular dependency through index-level spreads.
+  const { decideActionForError, DEFAULT_RETRY_BUDGET } = require('./error-classifier');
+  const effectiveRetryBudget = { ...DEFAULT_RETRY_BUDGET, ...(retryBudget || {}) };
+
   let result;
   let dispatchError;
-  try {
-    result = await executeAttempt(candidate, request, { invoker, beforeAttempt, afterAttempt });
-  } catch (err) {
-    dispatchError = err;
+  let sameCandidateAttempts = 0;
+  let selfRepairAttempts = 0;
+  while (true) {
+    sameCandidateAttempts += 1;
+    try {
+      result = await executeAttempt(candidate, request, { invoker, beforeAttempt, afterAttempt });
+      dispatchError = undefined;
+      break;
+    } catch (err) {
+      dispatchError = err;
+    }
+    const remaining = allCandidates.slice(candidateIndex + 1);
+    const decision = decideActionForError({
+      error: dispatchError,
+      candidate,
+      remainingCandidates: remaining,
+      attemptCounters: { sameCandidateAttempts, selfRepairAttempts },
+      retryBudget: effectiveRetryBudget,
+    });
+    if (decision.action === 'fail') {
+      break;
+    }
+    if (decision.action === 'retry') {
+      if (typeof onRetry === 'function') {
+        await onRetry({
+          eventType: 'adapter.attempt.retry',
+          nodePath: request.nodePath,
+          payload: {
+            adapterCallId: request.adapterCallId,
+            attemptId: request.attemptId,
+            providerId,
+            classification: decision.classification,
+            sameCandidateAttempts,
+          },
+        });
+      }
+      const backoff = Number(effectiveRetryBudget.backoffMs) || 0;
+      if (backoff > 0) await new Promise(resolve => setTimeout(resolve, backoff));
+      continue;
+    }
+    if (decision.action === 'self-repair') {
+      selfRepairAttempts += 1;
+      sameCandidateAttempts = 0; // self-repair is a fresh attempt-counter cycle
+      if (typeof onSelfRepair === 'function') {
+        await onSelfRepair({
+          eventType: 'adapter.attempt.self-repair',
+          nodePath: request.nodePath,
+          payload: {
+            adapterCallId: request.adapterCallId,
+            attemptId: request.attemptId,
+            providerId,
+            classification: decision.classification,
+          },
+        });
+      }
+      continue;
+    }
+    if (decision.action === 'fallback') {
+      const targetIdx = decision.target
+        ? allCandidates.indexOf(decision.target, candidateIndex + 1)
+        : candidateIndex + 1;
+      if (targetIdx < 0 || targetIdx >= allCandidates.length) {
+        break; // no remaining candidate
+      }
+      if (typeof onFallback === 'function') {
+        await onFallback({
+          eventType: 'adapter.attempt.fallback',
+          nodePath: request.nodePath,
+          payload: {
+            adapterCallId: request.adapterCallId,
+            attemptId: request.attemptId,
+            fromProviderId: providerId,
+            toProviderId: allCandidates[targetIdx].selection.providerId,
+            classification: decision.classification,
+            reason: decision.reason,
+            consumed: targetIdx,
+          },
+        });
+      }
+      candidateIndex = targetIdx;
+      candidate = allCandidates[candidateIndex];
+      providerId = candidate.selection.providerId;
+      plugin = providerId ? getProviderPlugin(providerId) : null;
+      if (!plugin) {
+        const err = new Error(`Provider plugin "${providerId}" is not registered.`);
+        err.code = 'MACHINE_PROVIDER_PLUGIN_MISSING';
+        dispatchError = err;
+        break;
+      }
+      sameCandidateAttempts = 0;
+      selfRepairAttempts = 0;
+      continue;
+    }
+    break;
   }
   if (runRoot && result?.usage) {
     await appendBudgetEntry(runRoot, {

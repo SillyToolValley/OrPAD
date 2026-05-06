@@ -31,6 +31,7 @@ const anthropicPlugin = require('./providers/plugins/anthropic');
 const adapterRouter = require('./router/adapter-router');
 const budgetLedger = require('./router/budget-ledger');
 const responseCache = require('./router/response-cache');
+const errorClassifier = require('./router/error-classifier');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
 const triageRunner = require('./triage-runner');
@@ -71,6 +72,7 @@ module.exports = {
   ...adapterRouter,
   ...budgetLedger,
   ...responseCache,
+  ...errorClassifier,
   codexCliCommand: codexCliPlugin.codexCliCommand,
   codexCliExecArgs: codexCliPlugin.codexCliExecArgs,
   codexCliInvocation: codexCliPlugin.codexCliInvocation,

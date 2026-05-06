@@ -448,6 +448,21 @@ harness command assembled by main process.
   Anthropic). The provider key MUST NOT be serialized into the request body, the adapter
   request envelope, the adapter result envelope, or any artifact written under
   `runs/<runId>/`.
+- The router fallback chain (`router/error-classifier.js`) does not weaken the approval and
+  containment boundary applied to any single attempt. Each fallback target goes through the
+  same `assertProviderKeySourceAllowed` / `assertCommandGranted` / `assertCliProcessContainment`
+  gates that M1–M3 enforce. Specifically:
+  - `KEY_MISSING` only falls back to a `needsKey: false` provider in the candidate chain;
+    a key-required provider further down the chain is silently skipped, never invoked.
+  - `RATE_LIMIT` and `RETRYABLE` (after the per-call retry budget is exhausted) fall back to
+    the next candidate exactly once each.
+  - `OUTPUT_VIOLATES_CONTRACT` performs at most one self-repair retry against the same
+    candidate before falling back; this prevents a runaway accept-anything loop and bounds
+    the cost of malformed responses.
+  - `BUDGET_EXCEEDED` and `FATAL` short-circuit the chain — no further candidate is invoked.
+  Cross-family fallback (api → cli) does NOT widen the workspace mode: every CLI candidate
+  still receives `read-only-plus-overlay`, the same exact command grants, and the same
+  dangerous-arg metadata its plugin declares.
 - The response cache at `runs/<runId>/cache/<sha256>.json` is opt-in via the v2
   `pipeline.run.machineAdapter.cache.mode` value (`off` | `deterministic` | `idempotent-only`).
   Cache files store only the SHA-256 of the prompt and the parsed adapter result envelope —
