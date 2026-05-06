@@ -448,6 +448,18 @@ harness command assembled by main process.
   Anthropic). The provider key MUST NOT be serialized into the request body, the adapter
   request envelope, the adapter result envelope, or any artifact written under
   `runs/<runId>/`.
+- The budget ledger at `runs/<runId>/budget-ledger.json` is a derived view, not authoritative.
+  Cost values are plugin-reported *estimates* drawn from the provider catalog's per-model
+  rates; provider invoice reconcile is out of scope. Any UI that surfaces a hard budget
+  limit must communicate this provenance and rely on the catalog's costPerMTokens fields
+  staying current. The ledger writer (`router/budget-ledger.js`) only copies a fixed set of
+  usage fields (promptTokens, completionTokens, totalTokens, costEstimateUsd, currency,
+  cacheHit), so a buggy or hostile plugin cannot smuggle additional fields (e.g. an API key)
+  into the ledger by tucking them into `result.usage`. When `pipeline.run.machineAdapter.budget.hardStop`
+  is `true`, the router refuses to invoke the plugin once `assertWithinBudget` reports a
+  per-call or per-run violation; when `false`, the router emits a `budget.warning` event and
+  proceeds. `BUDGET_EXCEEDED` is one of the standard router error classes
+  (`router/adapter-router.js#ERROR_CLASSES`).
 - The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
   and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
 - Stdout/stderr are captured with output limits and written only as Machine artifacts when a

@@ -12,6 +12,12 @@ const {
   getProviderPlugin,
   resolveProviderIdFromAdapter,
 } = require('../providers/registry');
+const {
+  appendBudgetEntry,
+  assertWithinBudget,
+  nextEstimateFromUsage,
+  readBudgetLedger,
+} = require('./budget-ledger');
 
 const ERROR_CLASSES = Object.freeze([
   'KEY_MISSING',
@@ -231,6 +237,9 @@ async function dispatchAdapter(input = {}) {
     invoker,
     beforeAttempt,
     afterAttempt,
+    runRoot = '',
+    budgetConfig: explicitBudget,
+    estimateNextCostUsd,
   } = input;
   if (!request) {
     const err = new Error('dispatchAdapter requires an adapter request.');
@@ -246,12 +255,87 @@ async function dispatchAdapter(input = {}) {
   // M4 calls only the first candidate. Fallback iteration lands in PR M7.
   const candidate = candidates[0];
   const providerId = candidate.selection.providerId;
-  if (!providerId || !getProviderPlugin(providerId)) {
+  const plugin = providerId ? getProviderPlugin(providerId) : null;
+  if (!plugin) {
     const err = new Error(`Provider plugin "${providerId}" is not registered.`);
     err.code = 'MACHINE_PROVIDER_PLUGIN_MISSING';
     throw err;
   }
-  return executeAttempt(candidate, request, { invoker, beforeAttempt, afterAttempt });
+
+  const lifted = liftedPipelineAdapter(pipelineAdapter);
+  const budgetConfig = explicitBudget || lifted?.budget || null;
+  const ledger = runRoot ? await readBudgetLedger(runRoot) : null;
+  let preCallEstimateUsd = 0;
+  if (budgetConfig && ledger) {
+    if (typeof estimateNextCostUsd === 'function') {
+      preCallEstimateUsd = Number(await estimateNextCostUsd({ candidate, request })) || 0;
+    } else if (typeof plugin.estimateCost === 'function') {
+      preCallEstimateUsd = Number(plugin.estimateCost({
+        model: candidate.selection.model,
+        promptTokens: 0,
+        completionTokens: 0,
+      })) || 0;
+    }
+    const guard = assertWithinBudget(budgetConfig, ledger, preCallEstimateUsd);
+    if (!guard.ok && typeof beforeAttempt === 'function') {
+      await beforeAttempt({
+        eventType: 'budget.warning',
+        nodePath: request.nodePath,
+        payload: {
+          adapterCallId: request.adapterCallId,
+          attemptId: request.attemptId,
+          providerId,
+          model: candidate.selection.model,
+          violations: guard.violations,
+          preCallEstimateUsd,
+          phase: 'pre-call',
+        },
+      });
+    }
+  }
+
+  let result;
+  let dispatchError;
+  try {
+    result = await executeAttempt(candidate, request, { invoker, beforeAttempt, afterAttempt });
+  } catch (err) {
+    dispatchError = err;
+  }
+  if (runRoot && result?.usage) {
+    await appendBudgetEntry(runRoot, {
+      runId: request.runId,
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      nodePath: request.nodePath,
+      providerId,
+      model: candidate.selection.model,
+      family: candidate.selection.family,
+      cacheHit: result.cacheHit === true,
+      usage: result.usage,
+    });
+  }
+  if (runRoot && budgetConfig && result?.usage) {
+    const observedNext = nextEstimateFromUsage(result.usage);
+    const updatedLedger = await readBudgetLedger(runRoot);
+    const postGuard = assertWithinBudget(budgetConfig, updatedLedger, 0);
+    if (!postGuard.ok && typeof afterAttempt === 'function') {
+      await afterAttempt({
+        eventType: 'budget.warning',
+        nodePath: request.nodePath,
+        payload: {
+          adapterCallId: request.adapterCallId,
+          attemptId: request.attemptId,
+          providerId,
+          model: candidate.selection.model,
+          violations: postGuard.violations,
+          observedNextUsd: observedNext,
+          phase: 'post-call',
+        },
+      });
+    }
+  }
+  if (dispatchError) throw dispatchError;
+  return result;
 }
 
 module.exports = {
