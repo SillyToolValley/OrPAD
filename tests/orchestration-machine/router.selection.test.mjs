@@ -302,6 +302,69 @@ test('adapter-request schema accepts the routing envelope produced by executeAtt
   assert.equal(result.ok, true, `enriched request must validate: ${JSON.stringify(result.errors)}`);
 });
 
+test('decideAttempts inherits provider/family from default when node override is partial', () => {
+  const fixture = readFixture('v2-mixed-pipeline.json');
+  const sparseOverride = { model: 'claude-3-opus-latest' };
+  const candidates = decideAttempts({
+    pipelineAdapter: fixture.pipeline,
+    nodeAdapter: sparseOverride,
+  });
+  assert.equal(candidates[0].chosenBy, 'node-override');
+  assert.equal(candidates[0].selection.providerId, 'anthropic'); // inherited
+  assert.equal(candidates[0].selection.family, 'api');           // inherited
+  assert.equal(candidates[0].selection.model, 'claude-3-opus-latest'); // overridden
+});
+
+test('decideAttempts returns empty list when pipeline has no v2 default', () => {
+  assert.deepEqual(decideAttempts({}), []);
+  assert.deepEqual(decideAttempts({ pipelineAdapter: null }), []);
+  assert.deepEqual(decideAttempts({ pipelineAdapter: { schemaVersion: 'orpad.machineAdapter.v2' } }), []);
+});
+
+test('decideAttempts returns full chain length: 1 node + 1 default + N fallback', () => {
+  const fixture = readFixture('v2-mixed-pipeline.json');
+  const probeOverride = fixture.nodeOverrides['main/probe'];
+  const fallbackCount = fixture.pipeline.fallback.length;
+  const withOverride = decideAttempts({ pipelineAdapter: fixture.pipeline, nodeAdapter: probeOverride });
+  const withoutOverride = decideAttempts({ pipelineAdapter: fixture.pipeline });
+  assert.equal(withOverride.length, 1 + 1 + fallbackCount);
+  assert.equal(withoutOverride.length, 1 + fallbackCount);
+});
+
+test('decideAttempts does not mutate the pipeline adapter input', () => {
+  const fixture = readFixture('v2-mixed-pipeline.json');
+  const before = JSON.stringify(fixture.pipeline);
+  decideAttempts({
+    pipelineAdapter: fixture.pipeline,
+    nodeAdapter: fixture.nodeOverrides['main/probe'],
+  });
+  const after = JSON.stringify(fixture.pipeline);
+  assert.equal(after, before, 'decideAttempts must not mutate pipelineAdapter');
+});
+
+test('classifyAdapterError prefers explicit code over HTTP status', () => {
+  // When BOTH code and status are present, code wins for known mappings.
+  assert.equal(classifyAdapterError({ code: 'KEY_MISSING', status: 503 }), 'KEY_MISSING');
+  assert.equal(classifyAdapterError({ code: 'OUTPUT_VIOLATES_CONTRACT', status: 401 }), 'OUTPUT_VIOLATES_CONTRACT');
+  // Unknown code with known status: HTTP fallback applies.
+  assert.equal(classifyAdapterError({ code: 'UNKNOWN_CUSTOM', status: 429 }), 'RATE_LIMIT');
+});
+
+test('executeAttempt does not mutate the original request', async () => {
+  const candidate = {
+    selection: { family: 'api', providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+    chosenBy: 'pipeline',
+    attemptIndex: 0,
+  };
+  const request = buildAdapterRequest();
+  const before = JSON.stringify(request);
+  await executeAttempt(candidate, request, {
+    invoker: async () => ({ schemaVersion: 'orpad.workerResult.v1', status: 'done', summary: 'ok', artifacts: [] }),
+  });
+  const after = JSON.stringify(request);
+  assert.equal(after, before, 'executeAttempt must clone the request rather than mutate it');
+});
+
 test('adapter-result schema accepts the routingDecision envelope produced by executeAttempt', () => {
   const orchestration = require('../../src/main/orchestration-machine');
   const validator = orchestration.createContractValidator();
