@@ -351,6 +351,60 @@ test('dispatchAdapter exhausts the fallback chain and surfaces the last error if
   assert.deepEqual(calls, ['anthropic', 'openai', 'codex-cli']);
 });
 
+test('per-fallback budget guard halts the chain when concurrent ledger growth blows the cap', async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const orchestration = require('../../src/main/orchestration-machine');
+  const runRoot = await fs.mkdtemp(pathMod.join(os.tmpdir(), 'orpad-budget-fallback-'));
+  try {
+    const pipeline = {
+      schemaVersion: 'orpad.machineAdapter.v2',
+      enabled: true,
+      default: { family: 'api', providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      fallback: [{ family: 'api', providerId: 'openai', model: 'gpt-4o-mini', reason: 'cost' }],
+      budget: { perCallUsd: 5, perRunUsd: 1, hardStop: true },
+    };
+    let invokerCalls = 0;
+    await assert.rejects(
+      dispatchAdapter({
+        runRoot,
+        pipelineAdapter: pipeline,
+        request: buildAdapterRequest({ adapterCallId: 'next', attemptId: 'next', idempotencyKey: 'next' }),
+        invoker: async () => {
+          invokerCalls += 1;
+          if (invokerCalls === 1) {
+            // Simulate a concurrent ledger update happening between the
+            // first attempt's failure and the fallback dispatch — e.g.
+            // another node in the same run completed an expensive
+            // adapter call. This is exactly what the per-fallback
+            // budget re-check is designed to catch.
+            await orchestration.appendBudgetEntry(runRoot, {
+              runId: 'run_x',
+              adapterCallId: 'concurrent',
+              attemptId: 'concurrent',
+              providerId: 'anthropic',
+              model: 'claude-3-5-sonnet-latest',
+              usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, costEstimateUsd: 0.95 },
+            });
+            const err = new Error('rate-limited');
+            err.code = 'RATE_LIMIT';
+            throw err;
+          }
+          return workerResult({ summary: 'should-not-reach' });
+        },
+        // Pre-call estimate would push past perRunUsd=1.0 only after the
+        // concurrent 0.95 entry lands.
+        estimateNextCostUsd: () => 0.5,
+      }),
+      error => error?.code === 'BUDGET_EXCEEDED' || error?.classification === 'BUDGET_EXCEEDED',
+    );
+    assert.equal(invokerCalls, 1, 'fallback attempt must be blocked by the per-fallback budget guard');
+  } finally {
+    await fs.rm(runRoot, { recursive: true, force: true });
+  }
+});
+
 test('routingDecision.fallbackChainConsumed reports the index of the candidate that succeeded', async () => {
   const result = await dispatchAdapter({
     pipelineAdapter: v2WithFallback,

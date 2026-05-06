@@ -380,6 +380,34 @@ async function dispatchAdapter(input = {}) {
   const { decideActionForError, DEFAULT_RETRY_BUDGET } = require('./error-classifier');
   const effectiveRetryBudget = { ...DEFAULT_RETRY_BUDGET, ...(retryBudget || {}) };
 
+  // Re-check budget before *each* fallback / retry attempt so a long fallback
+  // chain cannot overrun perRunUsd. Returns true if the loop should continue,
+  // false if the dispatcher should halt with the captured BUDGET_EXCEEDED.
+  async function reassertBudgetBeforeNextAttempt(currentPlugin) {
+    if (!runRoot || !budgetConfig) return true;
+    const updatedLedger = await readBudgetLedger(runRoot);
+    let nextEstimate = 0;
+    if (typeof estimateNextCostUsd === 'function') {
+      nextEstimate = Number(await estimateNextCostUsd({ candidate, request })) || 0;
+    } else if (typeof currentPlugin?.estimateCost === 'function') {
+      nextEstimate = Number(currentPlugin.estimateCost({
+        model: candidate.selection.model,
+        promptTokens: 0,
+        completionTokens: 0,
+      })) || 0;
+    }
+    try {
+      assertWithinBudget(budgetConfig, updatedLedger, nextEstimate);
+      return true;
+    } catch (err) {
+      // assertWithinBudget throws BUDGET_EXCEEDED only when hardStop:true.
+      if (err?.code !== 'BUDGET_EXCEEDED') throw err;
+      err.classification = 'BUDGET_EXCEEDED';
+      dispatchError = err;
+      return false;
+    }
+  }
+
   let result;
   let dispatchError;
   let sameCandidateAttempts = 0;
@@ -420,6 +448,7 @@ async function dispatchAdapter(input = {}) {
       }
       const backoff = Number(effectiveRetryBudget.backoffMs) || 0;
       if (backoff > 0) await new Promise(resolve => setTimeout(resolve, backoff));
+      if (!(await reassertBudgetBeforeNextAttempt(plugin))) break;
       continue;
     }
     if (decision.action === 'self-repair') {
@@ -437,6 +466,7 @@ async function dispatchAdapter(input = {}) {
           },
         });
       }
+      if (!(await reassertBudgetBeforeNextAttempt(plugin))) break;
       continue;
     }
     if (decision.action === 'fallback') {
@@ -473,6 +503,7 @@ async function dispatchAdapter(input = {}) {
       }
       sameCandidateAttempts = 0;
       selfRepairAttempts = 0;
+      if (!(await reassertBudgetBeforeNextAttempt(plugin))) break;
       continue;
     }
     break;
