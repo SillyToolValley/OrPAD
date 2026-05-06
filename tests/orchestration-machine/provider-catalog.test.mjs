@@ -35,6 +35,21 @@ test('catalog entries are frozen and metadata-only', () => {
   }
 });
 
+test('catalog model entries are deeply frozen', () => {
+  for (const entry of catalog.listProviderEntries()) {
+    assert.equal(Object.isFrozen(entry.models), true, `${entry.id} models array should be frozen`);
+    for (const model of entry.models) {
+      assert.equal(Object.isFrozen(model), true, `${entry.id}/${model.id} model entry should be frozen`);
+      assert.throws(
+        () => { model.id = 'mutated'; },
+        TypeError,
+        `${entry.id}/${model.id} should reject id mutation`,
+      );
+    }
+    assert.equal(Object.isFrozen(entry.costs), true, `${entry.id} costs object should be frozen`);
+  }
+});
+
 test('isKeylessProvider matches needsKey:false entries', () => {
   assert.equal(catalog.isKeylessProvider('codex-cli'), true);
   assert.equal(catalog.isKeylessProvider('ollama'), true);
@@ -115,6 +130,72 @@ test('providerStatus does not leak ciphertext from the on-disk store', () => {
   assert.equal(serialized.includes('BASE64-FAKE-CIPHERTEXT-DO-NOT-LEAK'), false);
   assert.equal(status.openai.hasKey, true);
   assert.equal(status.openai.mask, 'sk-****abcd');
+});
+
+test('providerStatus reads legacy 4-provider ai-keys.json without losing ciphertext', () => {
+  // Legacy on-disk shape predates the catalog: only the original 4 streaming
+  // providers, no family/needsKey/models on the entry. The store fields are
+  // exactly what the pre-M2 ai-keys.js wrote.
+  const legacyStore = {
+    openai: {
+      ciphertext: 'LEGACY-OPENAI',
+      mask: 'sk-****1111',
+      updatedAt: '2026-03-01T00:00:00.000Z',
+      endpoint: null,
+    },
+    anthropic: {
+      ciphertext: 'LEGACY-ANTHROPIC',
+      mask: 'sk-****2222',
+      updatedAt: '2026-03-01T00:00:00.000Z',
+      endpoint: null,
+    },
+    openrouter: {
+      ciphertext: 'LEGACY-OPENROUTER',
+      mask: 'sk-****3333',
+      updatedAt: '2026-03-01T00:00:00.000Z',
+      endpoint: null,
+    },
+    'openai-compatible': {
+      ciphertext: 'LEGACY-COMPAT',
+      mask: 'sk-****4444',
+      updatedAt: '2026-03-01T00:00:00.000Z',
+      endpoint: 'https://example.test/v1',
+    },
+  };
+  const status = aiKeys.providerStatus(legacyStore);
+  for (const id of ['openai', 'anthropic', 'openrouter', 'openai-compatible']) {
+    assert.equal(status[id].hasKey, true, `${id} legacy hasKey preserved`);
+    assert.equal(typeof status[id].mask, 'string');
+    assert.equal(status[id].mask.length > 0, true, `${id} legacy mask preserved`);
+  }
+  // New catalog providers (codex-cli, ollama) appear with hasKey:false.
+  assert.equal(status['codex-cli'].hasKey, false);
+  assert.equal(status['codex-cli'].needsKey, false);
+  assert.equal(status.ollama.hasKey, false);
+  assert.equal(status.ollama.needsKey, false);
+  // Serialized output never contains legacy ciphertext.
+  const serialized = JSON.stringify(status);
+  for (const ciphertext of ['LEGACY-OPENAI', 'LEGACY-ANTHROPIC', 'LEGACY-OPENROUTER', 'LEGACY-COMPAT']) {
+    assert.equal(serialized.includes(ciphertext), false, `${ciphertext} must not leak via providerStatus`);
+  }
+});
+
+test('providerStatus output is the full shape ai-keys-status IPC must return', () => {
+  const status = aiKeys.providerStatus({});
+  for (const id of catalog.listProviderIds()) {
+    const entry = status[id];
+    assert.equal(typeof entry.hasKey, 'boolean');
+    assert.equal(typeof entry.mask, 'string');
+    assert.equal(['object'].includes(typeof entry.updatedAt) || entry.updatedAt === null, true);
+    assert.equal(['string', 'object'].includes(typeof entry.endpoint), true);
+    assert.equal(['api', 'cli'].includes(entry.family), true);
+    assert.equal(typeof entry.needsKey, 'boolean');
+    assert.equal(typeof entry.configurableEndpoint, 'boolean');
+    assert.equal(typeof entry.defaultModel, 'string');
+    assert.equal(Array.isArray(entry.models), true);
+    assert.equal(typeof entry.costs.input, 'number');
+    assert.equal(typeof entry.costs.output, 'number');
+  }
 });
 
 test('Machine event/manifest writers do not record raw provider keys', async () => {
