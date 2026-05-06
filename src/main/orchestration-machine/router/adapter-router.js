@@ -26,6 +26,7 @@ const {
   hashPrompt,
   readCacheEntry,
   shouldAttemptCacheLookup,
+  sweepRunCacheOnce,
   writeCacheEntry,
 } = require('./response-cache');
 
@@ -279,10 +280,12 @@ async function dispatchAdapter(input = {}) {
   const cacheConfig = explicitCache || lifted?.cache || null;
   const ledger = runRoot ? await readBudgetLedger(runRoot) : null;
 
-  // Cache lookup before any network/process work.
+  // Cache lookup before any network/process work. Sweep expired entries once
+  // per run root so a long-lived run doesn't pile up stale rows.
   let cacheKey = '';
   let cacheLookupOutcome = null;
   if (runRoot && cacheConfig && cacheConfig.mode && cacheConfig.mode !== 'off') {
+    await sweepRunCacheOnce(runRoot).catch(() => {});
     const lookup = shouldAttemptCacheLookup({
       mode: cacheConfig.mode,
       prompt: cachePrompt,

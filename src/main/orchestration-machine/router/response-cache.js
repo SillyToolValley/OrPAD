@@ -77,6 +77,12 @@ function computeCacheKey(input = {}) {
 
 const NON_DETERMINISTIC_PATTERNS = Object.freeze([
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})/,
+  // Bare ISO date (no time component) is also non-deterministic for cycles run
+  // on different days against the same prompt template.
+  /\b\d{4}-\d{2}-\d{2}\b/,
+  // Unix epoch in seconds (10 digits) or milliseconds (13 digits).
+  /\b1\d{9}\b/,
+  /\b1\d{12}\b/,
   /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
   /\brun_\d{8}_\d{6}/,
   /\battempt_\d{17,}/,
@@ -201,6 +207,27 @@ async function writeCacheEntry(runRoot, entry) {
   return entry;
 }
 
+const SWEPT_RUN_ROOTS = new Set();
+
+function rememberSweptRunRoot(runRoot) {
+  SWEPT_RUN_ROOTS.add(path.resolve(runRoot));
+}
+
+function hasSweptRunRoot(runRoot) {
+  return SWEPT_RUN_ROOTS.has(path.resolve(runRoot));
+}
+
+function resetSweptRunRoots() {
+  SWEPT_RUN_ROOTS.clear();
+}
+
+async function sweepRunCacheOnce(runRoot, now = Date.now()) {
+  if (!runRoot) return { removed: 0, scanned: 0, alreadySwept: true };
+  if (hasSweptRunRoot(runRoot)) return { removed: 0, scanned: 0, alreadySwept: true };
+  rememberSweptRunRoot(runRoot);
+  return sweepExpiredEntries(runRoot, now);
+}
+
 async function sweepExpiredEntries(runRoot, now = Date.now()) {
   const dir = cacheDirFor(runRoot);
   let files;
@@ -260,11 +287,14 @@ module.exports = {
   findDeterminismViolations,
   hashAllowedFiles,
   hashPrompt,
+  hasSweptRunRoot,
   idempotencyTuple,
   isExpired,
   readCacheEntry,
+  resetSweptRunRoots,
   scrubResultForCache,
   shouldAttemptCacheLookup,
   sweepExpiredEntries,
+  sweepRunCacheOnce,
   writeCacheEntry,
 };

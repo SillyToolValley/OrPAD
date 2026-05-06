@@ -164,11 +164,16 @@ test('idempotent-only mode keys ignore prompt content', () => {
   assert.equal(a, b);
 });
 
-test('assertPromptIsDeterministic flags ISO timestamps, UUIDs, and run ids', () => {
+test('assertPromptIsDeterministic flags ISO timestamps, UUIDs, run ids, and epoch timestamps', () => {
   assert.equal(assertPromptIsDeterministic('hello').ok, true);
   assert.equal(assertPromptIsDeterministic('the time is 2026-04-30T00:00:00.000Z').ok, false);
   assert.equal(assertPromptIsDeterministic('uuid 550e8400-e29b-41d4-a716-446655440000').ok, false);
   assert.equal(assertPromptIsDeterministic('id run_20260430_142500').ok, false);
+  // Bare ISO date (no time)
+  assert.equal(assertPromptIsDeterministic('cycle 2026-04-30').ok, false);
+  // Unix epoch (seconds and milliseconds)
+  assert.equal(assertPromptIsDeterministic('epoch 1715635200').ok, false);
+  assert.equal(assertPromptIsDeterministic('epoch ms 1715635200000').ok, false);
 });
 
 test('shouldAttemptCacheLookup reflects cache mode policy', () => {
@@ -334,6 +339,18 @@ test('dispatchAdapter does not cache when prompt fails the determinism check', a
   } finally {
     await fs.rm(runRoot, { recursive: true, force: true });
   }
+});
+
+test('idempotent-only mode keys differ when outputContract differs', () => {
+  const base = {
+    mode: 'idempotent-only',
+    providerId: 'anthropic',
+    model: 'claude-3-5-sonnet-latest',
+    idempotencyKey: 'shared-key',
+  };
+  const aV1 = computeCacheKey({ ...base, outputContract: 'orpad.workerResult.v1' });
+  const aV2 = computeCacheKey({ ...base, outputContract: 'orpad.workerResult.v2' });
+  assert.notEqual(aV1, aV2, 'same idempotencyKey with different outputContracts must not collide');
 });
 
 test('idempotent-only mode hits only when idempotencyKey matches a prior entry', async () => {
