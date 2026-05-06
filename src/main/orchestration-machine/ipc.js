@@ -1417,24 +1417,79 @@ async function setProviderSelectionHandler(event, authority, request = {}) {
   if (scope === 'node' && !target) {
     throw machineError('MACHINE_IPC_TARGET_REQUIRED', 'target nodePath is required for node-scope selection.');
   }
-  // M9: this handler validates and returns the canonicalized selection patch
-  // for the renderer / graph editor to apply through the existing pipeline
-  // graph patch flow. Direct file mutation lives in the graph editor IPC,
-  // not here, so a renderer compromise cannot exfiltrate selection state.
+  const canonical = {
+    providerId,
+    model,
+    family: entry.family,
+    qualityTier: selection.qualityTier || 'standard',
+    sessionStrategy: selection.sessionStrategy || 'none',
+    toolPolicy: selection.toolPolicy || 'none',
+    sandbox: selection.sandbox ?? null,
+    approvalPolicy: selection.approvalPolicy || 'never',
+    timeoutMs: Number.isFinite(selection.timeoutMs) ? selection.timeoutMs : 600000,
+    ephemeral: selection.ephemeral !== false,
+  };
+
+  let persistedTo = null;
+  const pipelinePath = String(request.pipelinePath || '').trim();
+  if (pipelinePath) {
+    authority?.assertWorkspaceContains?.(pipelinePath);
+    persistedTo = await writeAdapterOverridesFile(pipelinePath, scope, target, canonical);
+  }
   return {
     success: true,
     ok: true,
     scope,
     target,
-    selection: {
-      providerId,
-      model,
-      family: entry.family,
-      qualityTier: selection.qualityTier || 'standard',
-      sessionStrategy: selection.sessionStrategy || 'none',
-      toolPolicy: selection.toolPolicy || 'none',
+    selection: canonical,
+    persistedTo,
+  };
+}
+
+async function writeAdapterOverridesFile(pipelinePath, scope, target, selection) {
+  const overridesPath = adapterOverridesPathFor(pipelinePath);
+  let existing = null;
+  try {
+    const raw = await fsp.readFile(overridesPath, 'utf8');
+    existing = JSON.parse(raw);
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') throw err;
+  }
+  const next = {
+    schemaVersion: 'orpad.adapterOverrides.v1',
+    updatedAt: new Date().toISOString(),
+    pipelineDefault: scope === 'pipeline'
+      ? selection
+      : (existing?.pipelineDefault || null),
+    nodeOverrides: {
+      ...(existing?.nodeOverrides || {}),
+      ...(scope === 'node' && target ? { [target]: selection } : {}),
     },
   };
+  await fsp.mkdir(path.dirname(overridesPath), { recursive: true });
+  await fsp.writeFile(overridesPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return overridesPath;
+}
+
+function adapterOverridesPathFor(pipelinePath) {
+  const dir = path.dirname(pipelinePath);
+  const base = path.basename(pipelinePath);
+  // Sibling file e.g. pipeline.or-pipeline → pipeline.adapter-overrides.json
+  // Keeps the user's own pipeline.or-pipeline untouched.
+  const stem = base.replace(/\.[^.]+$/, '');
+  return path.join(dir, `${stem}.adapter-overrides.json`);
+}
+
+async function readAdapterOverridesIfPresent(pipelinePath) {
+  try {
+    const raw = await fsp.readFile(adapterOverridesPathFor(pipelinePath), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.schemaVersion === 'orpad.adapterOverrides.v1') return parsed;
+    return null;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    return null;
+  }
 }
 
 async function readBudgetLedgerHandler(event, authority, request = {}) {
@@ -1454,6 +1509,8 @@ async function readBudgetLedgerHandler(event, authority, request = {}) {
 
 module.exports = {
   MACHINE_IPC_CHANNELS,
+  adapterOverridesPathFor,
   featureGateFromEnv,
+  readAdapterOverridesIfPresent,
   registerMachineHandlers,
 };

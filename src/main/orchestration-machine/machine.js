@@ -151,6 +151,53 @@ function machineAdapterFromPipeline(pipeline) {
     : null;
 }
 
+function adapterOverridesPathForPipeline(pipelinePath) {
+  if (!pipelinePath) return '';
+  const dir = path.dirname(pipelinePath);
+  const base = path.basename(pipelinePath);
+  const stem = base.replace(/\.[^.]+$/, '');
+  return path.join(dir, `${stem}.adapter-overrides.json`);
+}
+
+async function readAdapterOverridesForPipeline(pipelinePath) {
+  if (!pipelinePath) return null;
+  const overridesPath = adapterOverridesPathForPipeline(pipelinePath);
+  try {
+    const raw = await fsp.readFile(overridesPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.schemaVersion === 'orpad.adapterOverrides.v1') return parsed;
+    return null;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    return null;
+  }
+}
+
+function applyAdapterOverridesToPipelineAdapter(adapter, overrides) {
+  if (!overrides) return adapter;
+  if (!overrides.pipelineDefault) return adapter;
+  const baseSelection = {
+    family: 'cli',
+    providerId: 'codex-cli',
+    model: 'codex',
+    qualityTier: 'standard',
+    sessionStrategy: 'none',
+    toolPolicy: 'none',
+    sandbox: null,
+    approvalPolicy: 'never',
+    timeoutMs: 600000,
+    ephemeral: true,
+  };
+  const merged = { ...baseSelection, ...overrides.pipelineDefault };
+  return {
+    schemaVersion: 'orpad.machineAdapter.v2',
+    enabled: true,
+    default: merged,
+    nodeOverrides: overrides.nodeOverrides || {},
+    legacy: adapter || null,
+  };
+}
+
 function isRunnableMachineAdapter(adapter) {
   if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter)) return false;
   if (adapter.enabled === false) return false;
@@ -1445,7 +1492,11 @@ async function executeMachineRunStep(options = {}) {
   const orderedNodes = flattenTraversalNodes(plan);
   const pipeline = graphSet.pipeline || await readJsonFile(pipelinePath, 'Machine pipeline');
   const harnessSource = harnessFromPipeline(pipeline);
-  const adapterSource = machineAdapterFromPipeline(pipeline);
+  const rawAdapterSource = machineAdapterFromPipeline(pipeline);
+  const adapterOverrides = await readAdapterOverridesForPipeline(pipelinePath);
+  const adapterSource = adapterOverrides
+    ? applyAdapterOverridesToPipelineAdapter(rawAdapterSource, adapterOverrides)
+    : rawAdapterSource;
   const hasHarness = Boolean(harnessSource);
   const hasLiveAdapter = isRunnableMachineAdapter(adapterSource);
   const usingLiveAdapter = !hasHarness && hasLiveAdapter;

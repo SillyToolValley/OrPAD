@@ -1,4 +1,6 @@
 import { initAnalytics, track, sizeBucket, stackSig } from './analytics.js';
+import { createAdapterPicker } from './orchestration/adapter-picker.js';
+import { createBudgetMeter } from './orchestration/budget-meter.js';
 import { EditorView, basicSetup } from 'codemirror';
 import { Compartment, EditorSelection, EditorState, Prec, Transaction } from '@codemirror/state';
 import { keymap, ViewPlugin } from '@codemirror/view';
@@ -2882,6 +2884,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.')}">Run locally</button>
             <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start and track work state, progress, and evidence files.'))}">Start Run</button>
             <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No handoff is required for this pipeline.' : 'Prepare instructions for running this pipeline with an external agent.')}">Prepare Handoff</button>
+            <button data-pipeline-run-action="choose-adapter" data-path="${escapeHtml(runbookPath)}" title="Choose AI provider and model for this pipeline.">Choose AI Provider…</button>
             <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}">Check</button>
           </div>
         </details>
@@ -9886,6 +9889,111 @@ async function ensurePipelinePreviewValidation(runbookPath) {
   return selectedPipelineValidation(runbookPath);
 }
 
+function buildAdapterPickerBridge() {
+  const machine = window?.orpad?.machine;
+  if (!machine) {
+    throw new Error('Machine IPC bridge is not available. Enable managed runs first.');
+  }
+  return {
+    invoke(channel, payload) {
+      if (channel === 'machine-list-providers') return machine.listProviders(payload || {});
+      if (channel === 'machine-list-models') return machine.listModels(payload || {});
+      if (channel === 'machine-set-provider-selection') return machine.setProviderSelection(payload || {});
+      if (channel === 'machine-read-budget-ledger') return machine.readBudgetLedger(payload || {});
+      throw new Error(`AdapterPicker bridge: unsupported channel ${channel}`);
+    },
+  };
+}
+
+async function openAdapterPickerDialog(runbookPath) {
+  const machine = window?.orpad?.machine;
+  if (!machine) {
+    notifyFormatError('AI Provider', new Error('Machine IPC is not available.'));
+    return;
+  }
+  // Make sure the renderer feature gate is on so the IPC handlers respond.
+  try {
+    await refreshMachineRuntimeStatus();
+  } catch {
+    // Non-fatal; the picker will surface a clearer error if it cannot fetch.
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'orpad-adapter-picker-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;z-index:9000;';
+  const panel = document.createElement('div');
+  panel.className = 'orpad-adapter-picker-panel';
+  panel.style.cssText = 'background:var(--bg-color,#1f1f1f);color:var(--fg-color,#e6e6e6);padding:16px 18px;border-radius:8px;min-width:420px;max-width:560px;box-shadow:0 10px 30px rgba(0,0,0,0.4);';
+  const title = document.createElement('div');
+  title.textContent = `AI provider for ${runbookPath}`;
+  title.style.cssText = 'font-weight:600;margin-bottom:10px;font-size:14px;word-break:break-all;';
+  panel.appendChild(title);
+  const note = document.createElement('div');
+  note.style.cssText = 'opacity:0.75;font-size:12px;margin-bottom:12px;line-height:1.4;';
+  note.textContent = 'Selection is saved next to the pipeline as <stem>.adapter-overrides.json. The pipeline.or-pipeline file is not modified.';
+  panel.appendChild(note);
+  let picker;
+  try {
+    picker = createAdapterPicker({
+      bridge: buildAdapterPickerBridge(),
+      scope: 'pipeline',
+      onCommit: async (response) => {
+        if (response?.persistedTo) {
+          notifyFormat?.('AI Provider', `Saved selection to ${response.persistedTo}`);
+        }
+      },
+      onError: err => notifyFormatError('AI Provider', err),
+    });
+    panel.appendChild(picker.root);
+  } catch (err) {
+    const msg = document.createElement('div');
+    msg.style.cssText = 'color:#ff8a8a;font-size:12px;';
+    msg.textContent = `Could not mount picker: ${err.message}`;
+    panel.appendChild(msg);
+  }
+
+  // Wrap commit so we always include the pipelinePath for persistence.
+  if (picker) {
+    const originalCommit = picker.commit;
+    picker.commit = async () => {
+      try {
+        const inv = picker.getSelection();
+        const machineBridge = window.orpad.machine;
+        const response = await machineBridge.setProviderSelection({
+          scope: 'pipeline',
+          pipelinePath: runbookPath,
+          selection: inv,
+        });
+        if (!response || response.ok === false || response.success === false) {
+          notifyFormatError('AI Provider', new Error(response?.error || 'setProviderSelection rejected.'));
+          return null;
+        }
+        notifyFormat?.('AI Provider', response.persistedTo ? `Saved to ${response.persistedTo}` : 'Selection accepted.');
+        return response;
+      } catch (err) {
+        notifyFormatError('AI Provider', err);
+        return null;
+      }
+    };
+  }
+
+  const buttonRow = document.createElement('div');
+  buttonRow.style.cssText = 'margin-top:12px;display:flex;justify-content:flex-end;gap:8px;';
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.textContent = 'Close';
+  closeButton.addEventListener('click', () => overlay.remove());
+  buttonRow.appendChild(closeButton);
+  panel.appendChild(buttonRow);
+  overlay.appendChild(panel);
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  document.body.appendChild(overlay);
+  if (picker && typeof picker.refresh === 'function') {
+    picker.refresh().catch(() => {});
+  }
+}
+
 async function runPipelinePreviewAction(action, runbookPath) {
   if (!runbookPath) return;
   if (action === 'check') {
@@ -9894,6 +10002,10 @@ async function runPipelinePreviewAction(action, runbookPath) {
   }
   if (action === 'managed') {
     await startSelectedMachineRun(runbookPath);
+    return;
+  }
+  if (action === 'choose-adapter') {
+    await openAdapterPickerDialog(runbookPath);
     return;
   }
   const validation = await ensurePipelinePreviewValidation(runbookPath);

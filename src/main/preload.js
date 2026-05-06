@@ -130,6 +130,10 @@ contextBridge.exposeInMainWorld('orpad', {
     approvePatch: (request) => ipcRenderer.invoke('machine-approve-patch', request),
     applyApprovedPatches: (request) => ipcRenderer.invoke('machine-apply-approved-patches', request),
     reviewPatch: (request) => ipcRenderer.invoke('machine-review-patch', request),
+    listProviders: (request = {}) => ipcRenderer.invoke('machine-list-providers', request),
+    listModels: (request) => ipcRenderer.invoke('machine-list-models', request),
+    setProviderSelection: (request) => ipcRenderer.invoke('machine-set-provider-selection', request),
+    readBudgetLedger: (request) => ipcRenderer.invoke('machine-read-budget-ledger', request),
   },
   userSnippets: {
     read: () => ipcRenderer.invoke('snippets-read'),
