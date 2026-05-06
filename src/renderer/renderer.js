@@ -3,6 +3,7 @@ import { createAdapterPicker } from './orchestration/adapter-picker.js';
 import { createBudgetMeter } from './orchestration/budget-meter.js';
 import {
   failedAdapterCallsFromRecord as sharedFailedAdapterCalls,
+  gateBlockedNodesFromRecord as sharedGateBlockedNodes,
   runArtifactAbsPath as sharedRunArtifactAbsPath,
   lifecycleSuppressesFallback as sharedLifecycleSuppressesFallback,
 } from '../shared/orchestration/failure-summary.js';
@@ -2859,9 +2860,44 @@ function renderMachineLifecycleBannerHtml(record) {
   const summary = String(record?.runState?.summaryStatus || '').toLowerCase();
   const runId = record?.runState?.runId || record?.runId || '';
   const runRoot = record?.runRoot || record?.runState?.runRoot || '';
-  if (!lifecycle && !summary) return '';
+
+  // Surface gate-style blocked nodes (exit / barrier / artifactContract /
+  // patchReview / gate / workQueue) here even while the run is still
+  // running — they are normal lifecycle blocks that need user attention but
+  // are NOT system failures. Skip-node would just re-trigger them; the user
+  // needs to address evidence / approval / merge instead.
+  const gateBlocked = sharedGateBlockedNodes(record);
+  let gateBanner = '';
+  if (gateBlocked.length) {
+    const items = gateBlocked.map(g => {
+      const skipBtn = (runId && g.nodePath)
+        ? `<button class="pipe-lifecycle-banner-link" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(g.nodePath)}" data-node-type="${escapeHtml(g.nodeType || '')}" title="Append node.skipped to dismiss this gate. Use only when you are sure the gate's evidence is not required for this run.">Skip gate</button>`
+        : '';
+      return `
+        <div class="pipe-lifecycle-banner-detail">
+          <strong>${escapeHtml(g.nodePath)}</strong>
+          <span class="pipe-failed-probe-status status-blocked">blocked</span>
+          ${g.nodeType ? `<span class="pipe-failed-probe-adapter">${escapeHtml(g.nodeType)}</span>` : ''}
+          ${g.reason ? `<div>${escapeHtml(g.reason)}</div>` : ''}
+          <div class="pipe-lifecycle-banner-actions">
+            ${runRoot ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${runRoot.replace(/[\\/]+$/, '')}/events.jsonl`)}">events.jsonl</button>` : ''}
+            ${runRoot ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${runRoot.replace(/[\\/]+$/, '')}/summary.md`)}">summary.md</button>` : ''}
+            ${skipBtn}
+          </div>
+        </div>
+      `;
+    }).join('');
+    gateBanner = `
+      <div class="pipe-lifecycle-banner pipe-lifecycle-banner--warn">
+        <div class="pipe-lifecycle-banner-title">Gate is blocked — provide evidence or approval to proceed</div>
+        ${items}
+      </div>
+    `;
+  }
+
+  if (!lifecycle && !summary) return gateBanner;
   // 진행 중 / 초기 상태는 banner 없이 기존 status chip만.
-  if (['running', 'waiting', 'created', 'cancelling'].includes(lifecycle)) return '';
+  if (['running', 'waiting', 'created', 'cancelling'].includes(lifecycle)) return gateBanner;
 
   const summaryAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/summary.md` : '';
   const eventsAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/events.jsonl` : '';
@@ -2925,9 +2961,9 @@ function renderMachineLifecycleBannerHtml(record) {
       };
     }
   }
-  if (!banner) return '';
+  if (!banner) return gateBanner;
 
-  return `
+  return `${gateBanner}
     <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(banner.kind)}">
       <div class="pipe-lifecycle-banner-title">${escapeHtml(banner.title)}</div>
       <div class="pipe-lifecycle-banner-detail">${escapeHtml(banner.detail)}</div>
@@ -2990,16 +3026,17 @@ function renderMachineFailedAdaptersHtml(record) {
       links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(eventsAbs)}" title="${escapeHtml(eventsAbs)}">events.jsonl</button>`);
     }
     const actions = renderProbeActionButtons(f, runIdAttr, f.nodePath || '');
+    const headerLabel = f.nodePath || f.label || (f.itemId ? `work-item: ${f.itemId}` : (f.adapterCallId ? `adapter call: ${f.adapterCallId}` : '(no node path)'));
     return `
       <div class="pipe-failed-probe">
         <div class="pipe-failed-probe-meta">
-          <span class="pipe-failed-probe-node">${escapeHtml(f.nodePath || '(no node path)')}</span>
+          <span class="pipe-failed-probe-node">${escapeHtml(headerLabel)}</span>
           <span class="pipe-failed-probe-status status-${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>
           ${f.adapter ? `<span class="pipe-failed-probe-adapter">${escapeHtml(f.adapter)}</span>` : ''}
         </div>
         ${f.reason ? `<div class="pipe-failed-probe-reason">${escapeHtml(f.reason)}</div>` : ''}
         ${links.length ? `<div class="pipe-failed-probe-actions">${links.join('')}</div>` : `<div class="pipe-failed-probe-reason">No transcript artifact attached. Open events.jsonl from the run root.</div>`}
-        ${actions ? `<div class="pipe-failed-probe-actions">${actions}</div>` : ''}
+        ${actions && f.nodePath ? `<div class="pipe-failed-probe-actions">${actions}</div>` : ''}
       </div>
     `;
   }).join('');

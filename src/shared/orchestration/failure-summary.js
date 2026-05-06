@@ -11,9 +11,28 @@ const SUPPRESSED_LIFECYCLE_STATES = Object.freeze([
   'cancelled', 'canceled', 'cancelling',
   'created', 'running', 'waiting',
 ]);
+// Gate-style nodes block as part of normal lifecycle (waiting for evidence,
+// approval, barrier merge, patch review). Their node.blocked events are not
+// system failures — they belong on the lifecycle banner, not the failure
+// card list.
+const LIFECYCLE_GATE_NODE_TYPES = Object.freeze([
+  'orpad.exit',
+  'orpad.gate',
+  'orpad.barrier',
+  'orpad.artifactContract',
+  'orpad.patchReview',
+  'orpad.workQueue',
+]);
+// worker.result statuses that classify a work item rather than report a
+// system failure. The Machine returns these as part of normal queue state
+// transitions (queued / blocked / rejected / approval-required) and they
+// do not require user intervention through the failure card.
+const WORKER_CLASSIFICATION_STATUSES = Object.freeze(['blocked', 'rejected', 'approval-required', 'queued']);
 
 const FAILED_STATUSES_SET = new Set(FAILED_STATUSES);
 const RESULT_EVENT_TYPES_SET = new Set(RESULT_EVENT_TYPES);
+const LIFECYCLE_GATE_NODE_TYPES_SET = new Set(LIFECYCLE_GATE_NODE_TYPES);
+const WORKER_CLASSIFICATION_STATUSES_SET = new Set(WORKER_CLASSIFICATION_STATUSES);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -23,7 +42,16 @@ function failureKeyFor(event) {
   if (!event) return '';
   return event.payload?.adapterCallId
     || event.payload?.nodeExecutionId
-    || `${event.eventType}:${event.nodePath || ''}:${event.payload?.attemptId || event.payload?.attempt || event.sequence || ''}`;
+    || `${event.eventType}:${event.nodePath || event.itemId || ''}:${event.payload?.attemptId || event.payload?.attempt || event.sequence || ''}`;
+}
+
+function failureLabelFor(event) {
+  return event.nodePath
+    || event.itemId
+    || event.payload?.itemId
+    || event.payload?.adapterCallId
+    || event.payload?.claimId
+    || '(unknown work item)';
 }
 
 function extractArtifactRefs(event) {
@@ -74,17 +102,23 @@ function failedAdapterCallsFromRecord(record) {
   }
 
   // Pass 1: explicit adapter/worker/probe result events with failure status.
+  // worker.result statuses that classify a work item (blocked / rejected /
+  // approval-required / queued) are normal queue transitions, not system
+  // failures — they should not appear as failure cards.
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (!event || !RESULT_EVENT_TYPES_SET.has(event.eventType)) continue;
     const status = String(event.payload?.status || '').toLowerCase();
     if (!FAILED_STATUSES_SET.has(status)) continue;
+    if (event.eventType === 'worker.result' && WORKER_CLASSIFICATION_STATUSES_SET.has(status)) continue;
     if (isResolvedAfter(event.nodePath, event.sequence)) continue;
     const key = failureKeyFor(event);
     if (seen.has(key)) continue;
     const refs = extractArtifactRefs(event);
     seen.set(key, {
       nodePath: event.nodePath || '',
+      label: failureLabelFor(event),
+      itemId: event.itemId || event.payload?.itemId || '',
       adapterCallId: event.payload?.adapterCallId || '',
       attemptId: event.payload?.attemptId || '',
       status,
@@ -97,11 +131,17 @@ function failedAdapterCallsFromRecord(record) {
     });
   }
 
-  // Pass 2: node lifecycle failures without adapter result coverage.
+  // Pass 2: node lifecycle failures without adapter result coverage. Skip
+  // gate-style nodes (orpad.exit / gate / barrier / artifactContract / patchReview /
+  // workQueue) — their blocked status is part of normal lifecycle (waiting on
+  // evidence, approval, barrier merge) and is reflected in the lifecycle
+  // banner, not as a system failure card.
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (!event) continue;
     if (!NODE_FAILURE_EVENT_TYPES.includes(event.eventType)) continue;
+    const nodeType = String(event.payload?.nodeType || '').trim();
+    if (LIFECYCLE_GATE_NODE_TYPES_SET.has(nodeType)) continue;
     const nodePath = event.nodePath || '';
     if (isResolvedAfter(nodePath, event.sequence)) continue;
     if ([...seen.values()].some(f => f.nodePath === nodePath)) continue;
@@ -111,12 +151,15 @@ function failedAdapterCallsFromRecord(record) {
     const refs = extractArtifactRefs(prior || event);
     seen.set(key, {
       nodePath,
+      label: failureLabelFor(event),
+      itemId: event.itemId || event.payload?.itemId || '',
       adapterCallId: prior?.payload?.adapterCallId || event.payload?.adapterCallId || '',
       attemptId: prior?.payload?.attemptId || event.payload?.attemptId || '',
       status: event.eventType === 'node.blocked' ? 'blocked' : 'failed',
       reason: event.payload?.reason || event.reason || '',
       adapter: prior?.payload?.adapter || event.eventType,
       eventType: event.eventType,
+      nodeType,
       timestamp: event.timestamp || '',
       sequence: event.sequence || 0,
       ...refs,
@@ -147,16 +190,65 @@ function shouldShowFailureFallback(record, failures) {
   return lifecycleStatus === 'failed' || summaryStatus === 'blocked';
 }
 
+// node lifecycle events that supersede a prior node.blocked — once the
+// dispatcher records any of these for a node at a higher sequence, the
+// node is no longer "currently blocked".
+const NODE_BLOCK_RESOLUTION_EVENT_TYPES = new Set([
+  'node.skipped', 'node.completed', 'node.started', 'node.running',
+  'node.failed', 'node.cancelled',
+]);
+
+function gateBlockedNodesFromRecord(record) {
+  const events = Array.isArray(record?.events) ? record.events : [];
+  // Walk forward, tracking the latest lifecycle event per nodePath. A gate
+  // is currently blocked only if its most recent lifecycle event is
+  // `node.blocked` and the nodeType is gate-style.
+  const latest = new Map();
+  for (const event of events) {
+    if (!event) continue;
+    const isBlock = event.eventType === 'node.blocked';
+    const isResolution = NODE_BLOCK_RESOLUTION_EVENT_TYPES.has(event.eventType);
+    if (!isBlock && !isResolution) continue;
+    const nodePath = event.nodePath || '';
+    if (!nodePath) continue;
+    const sequence = Number(event.sequence) || 0;
+    const prior = latest.get(nodePath);
+    if (!prior || sequence > prior.sequence) {
+      latest.set(nodePath, { event, sequence });
+    }
+  }
+  const out = [];
+  for (const { event } of latest.values()) {
+    if (event.eventType !== 'node.blocked') continue;
+    const nodeType = String(event.payload?.nodeType || '').trim();
+    if (!LIFECYCLE_GATE_NODE_TYPES_SET.has(nodeType)) continue;
+    out.push({
+      nodePath: event.nodePath,
+      nodeType,
+      reason: event.payload?.reason || event.reason || '',
+      sequence: Number(event.sequence) || 0,
+      timestamp: event.timestamp || '',
+    });
+  }
+  return out.sort((a, b) => a.nodePath.localeCompare(b.nodePath));
+}
+
 module.exports = {
   FAILED_STATUSES,
   FAILED_STATUSES_SET,
+  LIFECYCLE_GATE_NODE_TYPES,
+  LIFECYCLE_GATE_NODE_TYPES_SET,
   NODE_FAILURE_EVENT_TYPES,
   RESULT_EVENT_TYPES,
   RESULT_EVENT_TYPES_SET,
   SUPPRESSED_LIFECYCLE_STATES,
+  WORKER_CLASSIFICATION_STATUSES,
+  WORKER_CLASSIFICATION_STATUSES_SET,
   extractArtifactRefs,
   failedAdapterCallsFromRecord,
   failureKeyFor,
+  failureLabelFor,
+  gateBlockedNodesFromRecord,
   isPlainObject,
   lifecycleSuppressesFallback,
   runArtifactAbsPath,

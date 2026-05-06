@@ -100,6 +100,102 @@ test('failedAdapterCallsFromRecord drops failures that have a later node.skipped
   assert.equal(failures.length, 0, 'skipped probes should not produce failure cards');
 });
 
+test('failedAdapterCallsFromRecord excludes worker.result classification statuses', () => {
+  const record = {
+    events: [
+      {
+        sequence: 1,
+        eventType: 'worker.result',
+        itemId: 'item-1',
+        timestamp: '2026-05-07T00:00:00.000Z',
+        payload: { status: 'blocked', adapterCallId: 'a1', adapter: 'cli-agent-overlay' },
+        artifactRefs: ['artifacts/work-items/item-1/proof.md'],
+      },
+      {
+        sequence: 2,
+        eventType: 'worker.result',
+        itemId: 'item-2',
+        timestamp: '2026-05-07T00:00:01.000Z',
+        payload: { status: 'rejected', adapterCallId: 'a2' },
+        artifactRefs: [],
+      },
+      {
+        sequence: 3,
+        eventType: 'worker.result',
+        itemId: 'item-3',
+        timestamp: '2026-05-07T00:00:02.000Z',
+        payload: { status: 'failed', adapterCallId: 'a3' },
+        artifactRefs: ['artifacts/adapters/a3.transcript.json'],
+      },
+    ],
+  };
+  const failures = summary.failedAdapterCallsFromRecord(record);
+  // Only the worker.result with status='failed' should surface — others are
+  // work-item classification, not system failures.
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].adapterCallId, 'a3');
+  assert.equal(failures[0].status, 'failed');
+});
+
+test('failedAdapterCallsFromRecord excludes node.blocked for gate-style nodes', () => {
+  const record = {
+    events: [
+      {
+        sequence: 1,
+        eventType: 'node.blocked',
+        nodePath: 'main/exit',
+        timestamp: '2026-05-07T00:00:00.000Z',
+        payload: { nodeType: 'orpad.exit', status: 'blocked' },
+        reason: 'exit.evidence-incomplete',
+      },
+      {
+        sequence: 2,
+        eventType: 'node.blocked',
+        nodePath: 'main/barrier',
+        timestamp: '2026-05-07T00:00:01.000Z',
+        payload: { nodeType: 'orpad.barrier', status: 'blocked' },
+        reason: 'barrier.dependency-incomplete',
+      },
+      {
+        sequence: 3,
+        eventType: 'node.blocked',
+        nodePath: 'main/probe',
+        timestamp: '2026-05-07T00:00:02.000Z',
+        payload: { nodeType: 'orpad.probe', status: 'blocked' },
+        reason: 'probe.evidence-missing',
+      },
+    ],
+  };
+  const failures = summary.failedAdapterCallsFromRecord(record);
+  // Only the probe (non-gate type) should surface; exit / barrier are gate
+  // nodes whose blocked status is part of normal lifecycle.
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].nodePath, 'main/probe');
+});
+
+test('gateBlockedNodesFromRecord lists current gate-blocked nodes for the lifecycle banner', () => {
+  const record = {
+    events: [
+      { sequence: 1, eventType: 'node.blocked', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit' }, reason: 'evidence-incomplete' },
+      { sequence: 2, eventType: 'node.blocked', nodePath: 'main/barrier', payload: { nodeType: 'orpad.barrier' }, reason: 'barrier-waiting' },
+      { sequence: 3, eventType: 'node.blocked', nodePath: 'main/probe', payload: { nodeType: 'orpad.probe' } },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.deepEqual(gates.map(g => g.nodePath).sort(), ['main/barrier', 'main/exit']);
+});
+
+test('gateBlockedNodesFromRecord drops gates that have been skipped', () => {
+  const record = {
+    events: [
+      { sequence: 1, eventType: 'node.blocked', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit' }, reason: 'evidence-incomplete' },
+      { sequence: 2, eventType: 'node.skipped', nodePath: 'main/exit', payload: { reason: 'user-skipped' } },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates.length, 0);
+});
+
 test('failedAdapterCallsFromRecord still surfaces failures when only node.completed exists (no skip)', () => {
   const record = {
     events: [
@@ -357,4 +453,29 @@ test('end-to-end: fake-failing CLI pipeline produces failure events that pass de
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
+});
+
+test('gateBlockedNodesFromRecord drops gates that already completed after the block', () => {
+  const record = {
+    events: [
+      { sequence: 1, eventType: 'node.blocked', nodePath: 'main/barrier', payload: { nodeType: 'orpad.barrier' }, reason: 'waiting-on-deps' },
+      { sequence: 2, eventType: 'node.running', nodePath: 'main/barrier' },
+      { sequence: 3, eventType: 'node.completed', nodePath: 'main/barrier' },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates.length, 0);
+});
+
+test('gateBlockedNodesFromRecord keeps gate when latest event is still block', () => {
+  const record = {
+    events: [
+      { sequence: 1, eventType: 'node.running', nodePath: 'main/exit' },
+      { sequence: 2, eventType: 'node.blocked', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit' }, reason: 'evidence-incomplete' },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates.length, 1);
+  assert.equal(gates[0].nodePath, 'main/exit');
+  assert.equal(gates[0].nodeType, 'orpad.exit');
 });
