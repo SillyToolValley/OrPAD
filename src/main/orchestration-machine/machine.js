@@ -157,7 +157,8 @@ function isRunnableMachineAdapter(adapter) {
   const providerId = resolveProviderIdFromAdapter(adapter);
   if (!providerId) return false;
   const plugin = getProviderPlugin(providerId);
-  return Boolean(plugin) && plugin.family === 'cli';
+  if (!plugin) return false;
+  return plugin.family === 'cli' || plugin.family === 'api';
 }
 
 function nodeExecutableForHarness() {
@@ -1982,11 +1983,15 @@ async function executeMachineRunStep(options = {}) {
 
 module.exports = {
   batchApplyStateFromEvents,
+  buildLiveWorkerPrompt,
   executeMachineRunStep,
   effectiveProbeCandidateLimit,
   flattenTraversalNodes,
   harnessFromPipeline,
+  isRunnableMachineAdapter,
   liveProbePrompt,
+  liveWorkerCommandSpec,
+  machineAdapterFromPipeline,
   patchReviewStateFromEvents,
   registerCandidateInventoryArtifact,
   validateBarrierNode,

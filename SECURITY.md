@@ -436,6 +436,18 @@ harness command assembled by main process.
   `needsKey: false` (codex-cli, ollama, openai-compatible) cannot be assigned a stored key
   through the `ai-key-set` IPC, and `validateProvider` rejects any provider id that is not
   registered in the catalog.
+- API provider plugins (`src/main/orchestration-machine/providers/plugins/anthropic.js` and any
+  future `openai.js`, `openrouter.js`, `ollama.js`) must perform all HTTP calls through Node
+  `fetch`/`undici` only. SDK dependencies are forbidden. Raw provider HTTP responses and
+  streaming chunks are *never* recorded in `events.jsonl`. Only the parsed `result`, the
+  `usage` envelope, and an optional non-authoritative `apiTrace` (provider request id) are
+  attached to the adapter result; the upstream byte stream is discarded after parsing. API
+  keys are passed exclusively as a function argument (`providerKey`) to the plugin's
+  `invokeApi`; the plugin must read no global state (`process.env`, `localStorage`) for keys
+  and must put the key only in the appropriate authentication header (`x-api-key` for
+  Anthropic). The provider key MUST NOT be serialized into the request body, the adapter
+  request envelope, the adapter result envelope, or any artifact written under
+  `runs/<runId>/`.
 - The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
   and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
 - Stdout/stderr are captured with output limits and written only as Machine artifacts when a

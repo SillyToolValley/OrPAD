@@ -6,6 +6,24 @@ const {
   createNonAuthoritativeTraceRecord,
   normalizeProviderSelection,
 } = require('../providers/policy');
+const { getProviderPlugin } = require('../providers/registry');
+
+function buildPluginProviderClient(plugin, options) {
+  if (!plugin || typeof plugin.invokeApi !== 'function') return null;
+  return {
+    async invoke(invokeContext) {
+      return plugin.invokeApi({
+        ...invokeContext,
+        providerKey: options.providerKey,
+        fetchImpl: options.fetchImpl,
+        signal: options.signal,
+        onUsage: options.onUsage,
+        instructions: options.instructions,
+        maxTokens: options.maxTokens,
+      });
+    },
+  };
+}
 
 function buildApiAdapterPrompt(input = {}) {
   const { request, instructions = '', contextArtifacts = [] } = input;
@@ -61,8 +79,14 @@ function createApiAgentAdapter(options = {}) {
         contextArtifacts: options.contextArtifacts || [],
       });
 
-      const rawResponse = options.providerClient?.invoke
-        ? await options.providerClient.invoke({ request, prompt, selection, telemetry, session, keyAccess })
+      let providerClient = options.providerClient || null;
+      if (!providerClient && options.useRegistry !== false) {
+        const plugin = getProviderPlugin(selection.providerId);
+        providerClient = buildPluginProviderClient(plugin, options);
+      }
+
+      const rawResponse = providerClient?.invoke
+        ? await providerClient.invoke({ request, prompt, selection, telemetry, session, keyAccess })
         : (typeof options.fixtureResponse === 'function'
           ? await options.fixtureResponse({ request, prompt, selection, telemetry, session, keyAccess })
           : options.fixtureResponse);
@@ -78,6 +102,31 @@ function createApiAgentAdapter(options = {}) {
           traceId,
           exported: telemetry.telemetryExportEnabled,
         });
+      }
+      if (rawResponse.usage) {
+        const promptTokens = Number(rawResponse.usage.promptTokens || 0);
+        const completionTokens = Number(rawResponse.usage.completionTokens || 0);
+        const totalTokens = Number(
+          rawResponse.usage.totalTokens != null
+            ? rawResponse.usage.totalTokens
+            : promptTokens + completionTokens,
+        );
+        const usage = {
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          currency: 'USD',
+        };
+        const plugin = getProviderPlugin(selection.providerId);
+        if (plugin && typeof plugin.estimateCost === 'function') {
+          usage.costEstimateUsd = plugin.estimateCost({
+            model: selection.model,
+            promptTokens,
+            completionTokens,
+            expectedCompletionTokens: completionTokens,
+          });
+        }
+        result.usage = usage;
       }
       result.apiSession = session;
       return result;

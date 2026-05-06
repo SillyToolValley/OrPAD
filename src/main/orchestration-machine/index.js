@@ -25,7 +25,9 @@ const processContainment = require('./adapters/process-containment');
 const probeRunner = require('./probe-runner');
 const providerPolicy = require('./providers/policy');
 const providerRegistry = require('./providers/registry');
+const providerCatalog = require('../../shared/ai/provider-catalog');
 const codexCliPlugin = require('./providers/plugins/codex-cli');
+const anthropicPlugin = require('./providers/plugins/anthropic');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
 const triageRunner = require('./triage-runner');
@@ -62,12 +64,17 @@ module.exports = {
   ...probeRunner,
   ...providerPolicy,
   ...providerRegistry,
+  ...providerCatalog,
   codexCliCommand: codexCliPlugin.codexCliCommand,
   codexCliExecArgs: codexCliPlugin.codexCliExecArgs,
   codexCliInvocation: codexCliPlugin.codexCliInvocation,
   createCodexCliProposalAdapter: codexCliPlugin.createCodexCliProposalAdapter,
   nodeExecutableForCli: codexCliPlugin.nodeExecutableForCli,
   readCodexAdapterResult: codexCliPlugin.readCodexAdapterResult,
+  anthropicInvokeApi: anthropicPlugin.invokeApi,
+  anthropicParseUsage: anthropicPlugin.parseUsage,
+  anthropicEstimateCost: anthropicPlugin.estimateCost,
+  classifyAnthropicHttpStatus: anthropicPlugin.classifyAnthropicHttpStatus,
   ...queueStore,
   ...runStore,
   ...triageRunner,

@@ -1,0 +1,17 @@
+{
+  "id": "msg_01TestSuccessFixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-3-5-sonnet-latest",
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"schemaVersion\":\"orpad.workerResult.v1\",\"adapterCallId\":\"adapter_call_001\",\"attemptId\":\"attempt_001\",\"idempotencyKey\":\"run_20260506_anthropic:worker:attempt_001\",\"status\":\"done\",\"summary\":\"Implemented graph node type exposure via Anthropic plugin fixture replay.\",\"artifacts\":[\"artifacts/work-items/item/proof.md\"]}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 1200,
+    "output_tokens": 350
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "msg_01TestMalformedFixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-3-5-sonnet-latest",
+  "content": [
+    {
+      "type": "text",
+      "text": "I'd love to help but the response is not JSON. Sorry."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 800,
+    "output_tokens": 30
+  }
+}

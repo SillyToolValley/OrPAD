@@ -92,3 +92,4 @@ module.exports = {
 };
 
 registerProviderPlugin(require('./plugins/codex-cli'));
+registerProviderPlugin(require('./plugins/anthropic'));
