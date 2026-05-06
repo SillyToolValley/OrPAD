@@ -122,8 +122,8 @@ test('classifyAnthropicHttpStatus maps known statuses', () => {
   assert.equal(classifyAnthropicHttpStatus(429), 'RATE_LIMIT');
   assert.equal(classifyAnthropicHttpStatus(500), 'RETRYABLE');
   assert.equal(classifyAnthropicHttpStatus(503), 'RETRYABLE');
-  assert.equal(classifyAnthropicHttpStatus(400), 'CONTRACT_VIOLATION');
-  assert.equal(classifyAnthropicHttpStatus(422), 'CONTRACT_VIOLATION');
+  assert.equal(classifyAnthropicHttpStatus(400), 'OUTPUT_VIOLATES_CONTRACT');
+  assert.equal(classifyAnthropicHttpStatus(422), 'OUTPUT_VIOLATES_CONTRACT');
   assert.equal(classifyAnthropicHttpStatus(418), 'FATAL');
 });
 
@@ -218,7 +218,7 @@ test('invokeApi flags non-JSON assistant text as CONTRACT_VIOLATION', async () =
       providerKey: 'sk-ant-test-key',
       fetchImpl,
     }),
-    error => error?.code === 'CONTRACT_VIOLATION',
+    error => error?.code === 'OUTPUT_VIOLATES_CONTRACT',
   );
 });
 
@@ -280,8 +280,10 @@ test('Machine accepts an api-family adapter declaration as runnable', () => {
 test('Anthropic invokeApi never sends the API key in the request body', async () => {
   const plugin = getProviderPlugin('anthropic');
   let capturedBody = null;
+  let capturedHeaders = null;
   const fetchImpl = async (url, init) => {
     capturedBody = init?.body || '';
+    capturedHeaders = init?.headers || {};
     return jsonResponse(readFixture('messages-success.json'));
   };
   await plugin.invokeApi({
@@ -293,4 +295,165 @@ test('Anthropic invokeApi never sends the API key in the request body', async ()
   });
   assert.equal(typeof capturedBody, 'string');
   assert.equal(capturedBody.includes('sk-ant-LEAK-CHECK-1234567890'), false, 'API key must never appear in request body');
+  // Header surface check: the key is allowed *only* in x-api-key.
+  assert.equal(capturedHeaders['x-api-key'], 'sk-ant-LEAK-CHECK-1234567890');
+  for (const [name, value] of Object.entries(capturedHeaders)) {
+    if (name.toLowerCase() === 'x-api-key') continue;
+    assert.equal(
+      String(value).includes('sk-ant-LEAK-CHECK-1234567890'),
+      false,
+      `API key leaked in header ${name}`,
+    );
+  }
+});
+
+test('parseAdapterResultJson tolerates fenced JSON and prose-wrapped JSON', async () => {
+  const plugin = getProviderPlugin('anthropic');
+  const fencedFixture = {
+    id: 'msg_fenced',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-3-5-sonnet-latest',
+    content: [{
+      type: 'text',
+      text: '```json\n{\"schemaVersion\":\"orpad.workerResult.v1\",\"adapterCallId\":\"adapter_call_001\",\"attemptId\":\"attempt_001\",\"idempotencyKey\":\"k\",\"status\":\"done\",\"summary\":\"fenced\",\"artifacts\":[\"a/b\"]}\n```',
+    }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 5 },
+  };
+  const proseFixture = {
+    id: 'msg_prose',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-3-5-sonnet-latest',
+    content: [{
+      type: 'text',
+      text: 'Here is the result: {\"schemaVersion\":\"orpad.workerResult.v1\",\"adapterCallId\":\"adapter_call_001\",\"attemptId\":\"attempt_001\",\"idempotencyKey\":\"k\",\"status\":\"done\",\"summary\":\"prose\",\"artifacts\":[\"a/b\"]} end',
+    }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 5 },
+  };
+  for (const [label, payload] of [['fenced', fencedFixture], ['prose', proseFixture]]) {
+    const out = await plugin.invokeApi({
+      request: buildAdapterRequest(),
+      prompt: { taskKind: 'workerLoop' },
+      selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      providerKey: 'sk-ant-test-key',
+      fetchImpl: async () => jsonResponse(payload),
+    });
+    assert.equal(out.result.schemaVersion, 'orpad.workerResult.v1');
+    assert.equal(out.result.summary, label);
+  }
+});
+
+test('estimateCost is exactly zero for zero-token usage and never NaN', () => {
+  const plugin = getProviderPlugin('anthropic');
+  for (const promptTokens of [0, 100]) {
+    for (const completionTokens of [0, 50]) {
+      const cost = plugin.estimateCost({
+        model: 'claude-3-5-sonnet-latest',
+        promptTokens,
+        completionTokens,
+      });
+      assert.equal(Number.isFinite(cost), true, `${promptTokens}/${completionTokens} produced non-finite cost`);
+      assert.equal(cost >= 0, true);
+    }
+  }
+  assert.equal(plugin.estimateCost({ model: 'claude-3-5-sonnet-latest', promptTokens: 0, completionTokens: 0 }), 0);
+});
+
+test('adapter-result with usage envelope still validates against orpad.workerResult.v1 schema', async () => {
+  const validator = createContractValidator();
+  const fixture = readFixture('messages-success.json');
+  const adapter = createApiAgentAdapter({
+    enabled: true,
+    selection: {
+      providerId: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+    },
+    providerKey: 'sk-ant-test-key',
+    fetchImpl: async () => jsonResponse(fixture),
+  });
+  const result = await adapter.invoke(buildAdapterRequest());
+  const validation = validator.validate('adapterResult', result);
+  assert.equal(
+    validation.ok,
+    true,
+    `adapter result with usage/apiSession must validate: ${JSON.stringify(validation.errors)}`,
+  );
+});
+
+test('apiTrace appears only when use.tracing capability is granted', async () => {
+  const fixture = readFixture('messages-success.json');
+  const fetchImpl = async () => jsonResponse(fixture, { headers: { 'request-id': 'req_trace_test' } });
+  // Without tracing capability requested: no apiTrace on the result.
+  const baseAdapter = createApiAgentAdapter({
+    enabled: true,
+    selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+    providerKey: 'sk-ant-test-key',
+    fetchImpl,
+  });
+  const noTrace = await baseAdapter.invoke(buildAdapterRequest());
+  assert.equal(noTrace.apiTrace, undefined, 'apiTrace must be absent without explicit tracing capability');
+
+  // With requested capability but no grant: assertTelemetryPolicy throws.
+  const ungrantedAdapter = createApiAgentAdapter({
+    enabled: true,
+    selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+    providerKey: 'sk-ant-test-key',
+    fetchImpl,
+    requestedCapabilities: ['use.tracing'],
+    capabilityGrants: [],
+  });
+  await assert.rejects(
+    ungrantedAdapter.invoke(buildAdapterRequest()),
+    error => error?.code === 'API_TRACING_NOT_GRANTED',
+  );
+
+  // With explicit grant: apiTrace is recorded as non-authoritative metadata.
+  const grantedAdapter = createApiAgentAdapter({
+    enabled: true,
+    selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+    providerKey: 'sk-ant-test-key',
+    fetchImpl,
+    requestedCapabilities: ['use.tracing'],
+    capabilityGrants: ['use.tracing'],
+  });
+  const granted = await grantedAdapter.invoke(buildAdapterRequest());
+  assert.equal(granted.apiTrace?.providerId, 'anthropic');
+  assert.equal(granted.apiTrace?.traceId, 'req_trace_test');
+  assert.equal(granted.apiTrace?.authoritative, false);
+});
+
+test('createApiAgentAdapter useRegistry:false skips registry lookup and uses providerClient or fixtureResponse', async () => {
+  let providerClientCalled = 0;
+  const request = buildAdapterRequest();
+  const stubResponse = {
+    result: {
+      schemaVersion: 'orpad.workerResult.v1',
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      status: 'done',
+      summary: 'stub',
+      artifacts: ['a/b'],
+    },
+    usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+    metadata: {},
+    traceId: '',
+  };
+  const adapter = createApiAgentAdapter({
+    enabled: true,
+    useRegistry: false,
+    selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+    providerClient: {
+      async invoke() {
+        providerClientCalled += 1;
+        return stubResponse;
+      },
+    },
+  });
+  const result = await adapter.invoke(request);
+  assert.equal(providerClientCalled, 1);
+  assert.equal(result.summary, 'stub');
 });

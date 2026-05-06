@@ -19,7 +19,7 @@ function classifyAnthropicHttpStatus(status) {
   if (status === 401 || status === 403) return 'KEY_MISSING';
   if (status === 429) return 'RATE_LIMIT';
   if (status === 408 || status === 502 || status === 503 || status === 504) return 'RETRYABLE';
-  if (status === 400 || status === 422) return 'CONTRACT_VIOLATION';
+  if (status === 400 || status === 422) return 'OUTPUT_VIOLATES_CONTRACT';
   if (status >= 500) return 'RETRYABLE';
   return 'FATAL';
 }
@@ -60,7 +60,7 @@ function parseAdapterResultJson(text) {
   const trimmed = String(text || '').trim();
   if (!trimmed) {
     const err = new Error('Anthropic returned no text content.');
-    err.code = 'CONTRACT_VIOLATION';
+    err.code = 'OUTPUT_VIOLATES_CONTRACT';
     throw err;
   }
   try {
@@ -76,7 +76,7 @@ function parseAdapterResultJson(text) {
     try { return JSON.parse(trimmed.slice(start, end + 1)); } catch {}
   }
   const err = new Error('Anthropic response was not valid JSON.');
-  err.code = 'CONTRACT_VIOLATION';
+  err.code = 'OUTPUT_VIOLATES_CONTRACT';
   throw err;
 }
 
@@ -130,7 +130,7 @@ async function invokeApi(input = {}) {
   } = input;
   if (!request) {
     const err = new Error('Anthropic invokeApi requires an adapter request.');
-    err.code = 'CONTRACT_VIOLATION';
+    err.code = 'OUTPUT_VIOLATES_CONTRACT';
     throw err;
   }
   const apiKey = String(providerKey || '').trim();
@@ -141,7 +141,7 @@ async function invokeApi(input = {}) {
   }
   if (!selection.model) {
     const err = new Error('Anthropic invokeApi requires selection.model.');
-    err.code = 'CONTRACT_VIOLATION';
+    err.code = 'OUTPUT_VIOLATES_CONTRACT';
     throw err;
   }
   const fetchFn = typeof fetchImpl === 'function' ? fetchImpl : fetch;
