@@ -99,12 +99,10 @@ function describeProvider(provider) {
   const family = (provider?.family || 'api').toUpperCase();
   const needsKey = provider?.needsKey === true ? 'API key required' : 'Keyless';
   const status = provider?.implementationStatus || 'unknown';
-  const statusLabel = status === 'ready'
-    ? '✓ ready'
-    : status === 'stub'
-      ? '· stub (not yet implemented)'
-      : '';
-  return [family, needsKey, statusLabel].filter(Boolean).join(' · ');
+  const segments = [family, needsKey];
+  if (status === 'ready') segments.push('✓ ready');
+  else if (status === 'stub') segments.push('stub (not yet implemented)');
+  return segments.filter(s => typeof s === 'string' && s.trim()).join(' · ');
 }
 
 function statusBadgeColor(status) {
@@ -233,17 +231,38 @@ function createAdapterPicker({
     style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;',
   });
 
+  const SELECT_STYLE = [
+    'padding:6px 10px',
+    'background:#2a2d33',
+    'color:#e6e6e6',
+    'border:1px solid rgba(255,255,255,0.18)',
+    'border-radius:4px',
+    'font-size:13px',
+    'font-family:inherit',
+    // explicit appearance keeps Windows native chrome from resetting colors
+    '-webkit-appearance:none',
+    'appearance:none',
+    // small inline arrow so the dropdown indicator stays visible after we remove appearance
+    'background-image:url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\' viewBox=\'0 0 10 6\'><path fill=\'%23a0a0a0\' d=\'M0 0l5 6 5-6z\'/></svg>")',
+    'background-repeat:no-repeat',
+    'background-position:right 8px center',
+    'background-size:10px 6px',
+    'padding-right:24px',
+    'cursor:pointer',
+  ].join(';');
+  const OPTION_STYLE = 'background:#2a2d33;color:#e6e6e6;';
+
   const modelHeading = el('div', { style: 'font-size:12px;opacity:0.8;font-weight:600;' }, ['Model']);
   const modelSelect = el('select', {
     class: 'orpad-adapter-picker__model',
-    style: 'padding:6px 8px;background:rgba(255,255,255,0.04);color:inherit;border:1px solid rgba(255,255,255,0.12);border-radius:4px;font-size:13px;',
+    style: SELECT_STYLE,
   });
 
   const tierRow = el('div', { style: 'display:flex;gap:8px;align-items:center;font-size:12px;' });
-  const tierLabel = el('label', { style: 'opacity:0.75;' }, ['Quality tier:']);
-  const tierSelect = el('select', { style: 'padding:4px 6px;background:rgba(255,255,255,0.04);color:inherit;border:1px solid rgba(255,255,255,0.12);border-radius:4px;' });
+  const tierLabel = el('label', { style: 'opacity:0.85;color:#e6e6e6;' }, ['Quality tier:']);
+  const tierSelect = el('select', { style: SELECT_STYLE });
   for (const tier of DEFAULT_QUALITY_TIERS) {
-    tierSelect?.appendChild(el('option', { value: tier }, [tier]));
+    tierSelect?.appendChild(el('option', { value: tier, style: OPTION_STYLE }, [tier]));
   }
   tierRow.appendChild(tierLabel);
   tierRow.appendChild(tierSelect);
@@ -391,7 +410,7 @@ function createAdapterPicker({
     }
     if (!modelIds.length && provider.defaultModel) modelIds = [provider.defaultModel];
     for (const modelId of modelIds) {
-      modelSelect.appendChild(el('option', { value: modelId }, [modelId]));
+      modelSelect.appendChild(el('option', { value: modelId, style: OPTION_STYLE }, [modelId]));
     }
     if (modelIds.includes(state.selection.model)) {
       modelSelect.value = state.selection.model;
