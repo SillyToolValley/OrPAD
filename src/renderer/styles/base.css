@@ -1959,6 +1959,13 @@ body.json-diff-mode #preview-pane {
 .pipe-lifecycle-banner-link:hover {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 18%, transparent);
 }
+.pipe-budget-chip {
+  border: 1px solid color-mix(in srgb, var(--accent-color, #6cb6ff) 50%, transparent);
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 10%, transparent);
+  padding: calc(1px * var(--us)) calc(6px * var(--us));
+  border-radius: calc(10px * var(--us));
+  font-size: calc(10.5px * var(--us));
+}
 .pipeline-runbar-meta {
   min-width: 0;
   display: grid;

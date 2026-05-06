@@ -2839,6 +2839,21 @@ function machineRunArtifactAbsPath(record, ref) {
   return sharedRunArtifactAbsPath(record, ref);
 }
 
+function renderMachineBudgetIndicatorHtml(pipelineDoc) {
+  const adapter = pipelineDoc?.run?.machineAdapter;
+  const budget = adapter?.budget || adapter?.default?.budget;
+  if (!budget || typeof budget !== 'object') return '';
+  const perCall = Number(budget.perCallUsd) || 0;
+  const perRun = Number(budget.perRunUsd) || 0;
+  const hardStop = budget.hardStop === true ? 'hardStop' : 'soft';
+  if (!perCall && !perRun) return '';
+  const parts = [];
+  if (perRun > 0) parts.push(`$${perRun.toFixed(2)}/run`);
+  if (perCall > 0) parts.push(`$${perCall.toFixed(2)}/call`);
+  parts.push(hardStop);
+  return `<span class="pipeline-runbar-status pipe-budget-chip" title="Pipeline budget config (estimate, not provider invoice). hardStop=true는 router가 perCall/perRun 초과 attempt를 즉시 거부.">Budget · ${escapeHtml(parts.join(' · '))}</span>`;
+}
+
 function renderMachineLifecycleBannerHtml(record) {
   const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
   const summary = String(record?.runState?.summaryStatus || '').toLowerCase();
@@ -3044,6 +3059,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
         ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
+        ${renderMachineBudgetIndicatorHtml(pipelineDoc)}
       </div>
       <div class="pipeline-runbar-actions">
         <button class="pipeline-run-primary${defaultDangerClass}" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
