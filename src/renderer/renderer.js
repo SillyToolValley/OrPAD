@@ -9636,10 +9636,40 @@ function machineUpdateRunRecord(runbookPath, record) {
   return next;
 }
 
+const machineFailureToastSeen = new Map(); // runId -> Set<failureKey>
+
+function machineFailureToastKey(failure) {
+  return `${failure.adapterCallId || ''}|${failure.attemptId || ''}|${failure.eventType || ''}|${failure.nodePath || ''}`;
+}
+
+function machineNotifyNewFailures(record) {
+  if (!record) return;
+  const runId = record.runState?.runId || record.runId || '';
+  if (!runId) return;
+  const failures = sharedFailedAdapterCalls(record);
+  if (!failures.length) return;
+  let seen = machineFailureToastSeen.get(runId);
+  if (!seen) {
+    // First time seeing this run — seed the set so we don't toast for the
+    // initial backfill; only future-arriving failures will fire toasts.
+    seen = new Set(failures.map(machineFailureToastKey));
+    machineFailureToastSeen.set(runId, seen);
+    return;
+  }
+  for (const failure of failures) {
+    const key = machineFailureToastKey(failure);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const summary = `${failure.nodePath || '?'} → ${failure.status}${failure.adapter ? ` (${failure.adapter})` : ''}`;
+    notifyFormatError('Probe failure', new Error(summary));
+  }
+}
+
 async function refreshMachineRunPanelSnapshot(runbookPath, runId) {
   const snapshot = await loadMachineRunRecord(runbookPath, runId);
   if (!snapshot) return null;
   const record = machineUpdateRunRecord(runbookPath, snapshot);
+  machineNotifyNewFailures(record);
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
   return record;
@@ -9687,6 +9717,7 @@ function markMachineRunExecuting(runbookPath, runId) {
   const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
   const cachedRunId = cached.runId || cached.runState?.runId || '';
   const sameRun = cachedRunId && cachedRunId === runId;
+  if (!sameRun) machineFailureToastSeen.delete(cachedRunId);
   // When starting a new runId, drop stale events / runRoot / failure state so
   // the in-progress preview never shows the previous run's failed adapter
   // cards before polling catches up.
