@@ -2922,7 +2922,11 @@ function renderMachineFailedAdaptersHtml(record) {
   const runRoot = record?.runRoot || record?.runState?.runRoot || '';
   const lifecycleStatus = String(record?.runState?.lifecycleStatus || '').toLowerCase();
   const summaryStatus = String(record?.runState?.summaryStatus || '').toLowerCase();
-  const runIsFailing = lifecycleStatus === 'failed' || summaryStatus === 'blocked' || summaryStatus === 'partial';
+  // Cancelled / created / running 상태에서는 사용자 의도된 상태이므로 fallback
+  // 표시 안 함. 실제 실패한 adapter 카드(failures.length>0)는 그대로 표시.
+  const lifecycleSuppressesFallback = ['cancelled', 'canceled', 'cancelling', 'created', 'running', 'waiting'].includes(lifecycleStatus);
+  const runIsFailing = !lifecycleSuppressesFallback
+    && (lifecycleStatus === 'failed' || summaryStatus === 'blocked');
   if (!failures.length && !runIsFailing) return '';
 
   const fallbackBlock = (!failures.length && runIsFailing && runRoot)
@@ -9663,15 +9667,34 @@ function startMachineRunProgressPolling(runbookPath, runId) {
 
 function markMachineRunExecuting(runbookPath, runId) {
   const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
-  const runState = cached.runState || {};
+  const cachedRunId = cached.runId || cached.runState?.runId || '';
+  const sameRun = cachedRunId && cachedRunId === runId;
+  // When starting a new runId, drop stale events / runRoot / failure state so
+  // the in-progress preview never shows the previous run's failed adapter
+  // cards before polling catches up.
+  const baseRecord = sameRun
+    ? cached
+    : {
+      runId,
+      runState: {},
+      events: [],
+      runRoot: '',
+      candidateInventory: undefined,
+      worker: undefined,
+      approvals: undefined,
+      activeClaims: [],
+      activeWriteSets: [],
+      exported: null,
+    };
+  const baseRunState = sameRun ? (cached.runState || {}) : {};
   const record = machineUpdateRunRecord(runbookPath, {
-    ...cached,
+    ...baseRecord,
     runId,
     runState: {
-      ...runState,
+      ...baseRunState,
       runId,
       lifecycleStatus: 'running',
-      summaryStatus: runState.summaryStatus || 'pending',
+      summaryStatus: baseRunState.summaryStatus || 'pending',
       updatedAt: new Date().toISOString(),
     },
   });
