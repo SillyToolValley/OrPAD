@@ -1,0 +1,188 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import test from 'node:test';
+
+const require = createRequire(import.meta.url);
+const orchestration = require('../../src/main/orchestration-machine');
+const {
+  MACHINE_IPC_CHANNELS,
+  adapterOverridesPathFor,
+  createMachineRun,
+  executeMachineRunStep,
+  registerMachineHandlers,
+} = orchestration;
+
+function makeFakeIpcMain() {
+  const handlers = new Map();
+  return {
+    handle(channel, fn) { handlers.set(channel, fn); },
+    invoke(channel, request = {}, event = makeFakeEvent()) {
+      const fn = handlers.get(channel);
+      if (!fn) throw new Error(`no handler for ${channel}`);
+      return fn(event, request);
+    },
+  };
+}
+
+function makeFakeEvent() {
+  return {
+    senderFrame: { url: 'file:///orpad/index.html', parent: null },
+    sender: { id: 1 },
+  };
+}
+
+const fakeAuthority = {
+  assertWorkspaceContains() {},
+};
+
+async function makePipelineFixture(runId) {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-overrides-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  await fs.writeFile(pipelinePath, JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'sample',
+    entryGraph: 'graphs/main.or-graph',
+    nodePacks: [
+      { id: 'orpad.core' },
+      { id: 'orpad.workstream' },
+    ],
+    run: {
+      machineAdapter: {
+        type: 'codex-cli',
+        enabled: true,
+        sandbox: 'read-only',
+        workerSandbox: 'workspace-write',
+        approvalPolicy: 'never',
+        proposalTimeoutMs: 600000,
+        workerTimeoutMs: 900000,
+        probeNodePaths: ['main/probe'],
+      },
+    },
+  }, null, 2), 'utf8');
+  await fs.writeFile(path.join(pipelineDir, 'graphs/main.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    id: 'main',
+    nodes: [
+      { id: 'main/probe', type: 'orpad.probe', config: {} },
+      { id: 'main/triage', type: 'orpad.triage', config: {} },
+      { id: 'main/dispatcher', type: 'orpad.dispatcher', config: {} },
+      { id: 'main/worker', type: 'orpad.workerLoop', config: {} },
+    ],
+    transitions: [
+      { from: 'main/probe', to: 'main/triage' },
+      { from: 'main/triage', to: 'main/dispatcher' },
+      { from: 'main/dispatcher', to: 'main/worker' },
+    ],
+  }, null, 2), 'utf8');
+  const run = await createMachineRun({
+    workspaceRoot,
+    pipelinePath,
+    runId,
+    now: new Date('2026-05-06T00:00:00.000Z'),
+  });
+  return { workspaceRoot, pipelineDir, pipelinePath, run };
+}
+
+test('setProviderSelection IPC writes a sibling adapter-overrides.json next to the pipeline', async () => {
+  const { workspaceRoot, pipelinePath } = await makePipelineFixture('run_overrides_persist_001');
+  try {
+    const ipcMain = makeFakeIpcMain();
+    registerMachineHandlers({
+      ipcMain,
+      authority: fakeAuthority,
+      featureGate: { enabled: true, mutatingCapabilityToken: 'token' },
+    });
+    const expectedPath = adapterOverridesPathFor(pipelinePath);
+    // Sanity: file must not exist before the handler runs.
+    await assert.rejects(fs.stat(expectedPath), { code: 'ENOENT' });
+    const response = await ipcMain.invoke(MACHINE_IPC_CHANNELS.setProviderSelection, {
+      capabilityToken: 'token',
+      scope: 'pipeline',
+      pipelinePath,
+      selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+    });
+    assert.equal(response.ok, true);
+    assert.equal(typeof response.persistedTo, 'string');
+    assert.equal(response.persistedTo, expectedPath);
+    const written = JSON.parse(await fs.readFile(expectedPath, 'utf8'));
+    assert.equal(written.schemaVersion, 'orpad.adapterOverrides.v1');
+    assert.equal(written.pipelineDefault.providerId, 'anthropic');
+    assert.equal(written.pipelineDefault.model, 'claude-3-5-sonnet-latest');
+    assert.equal(written.pipelineDefault.family, 'api');
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('setProviderSelection IPC merges sequential pipeline-default + node-override edits', async () => {
+  const { workspaceRoot, pipelinePath } = await makePipelineFixture('run_overrides_persist_002');
+  try {
+    const ipcMain = makeFakeIpcMain();
+    registerMachineHandlers({
+      ipcMain,
+      authority: fakeAuthority,
+      featureGate: { enabled: true, mutatingCapabilityToken: 'token' },
+    });
+    await ipcMain.invoke(MACHINE_IPC_CHANNELS.setProviderSelection, {
+      capabilityToken: 'token',
+      scope: 'pipeline',
+      pipelinePath,
+      selection: { providerId: 'codex-cli', model: 'codex' },
+    });
+    await ipcMain.invoke(MACHINE_IPC_CHANNELS.setProviderSelection, {
+      capabilityToken: 'token',
+      scope: 'node',
+      target: 'main/probe',
+      pipelinePath,
+      selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+    });
+    const written = JSON.parse(await fs.readFile(adapterOverridesPathFor(pipelinePath), 'utf8'));
+    assert.equal(written.pipelineDefault.providerId, 'codex-cli');
+    assert.equal(written.nodeOverrides['main/probe'].providerId, 'anthropic');
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('executeMachineRunStep refuses to dispatch when the override picks an API provider', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir, run } = await makePipelineFixture('run_overrides_api_gate_001');
+  try {
+    // Write a v2 override that picks anthropic as the pipeline default.
+    await fs.writeFile(
+      adapterOverridesPathFor(pipelinePath),
+      JSON.stringify({
+        schemaVersion: 'orpad.adapterOverrides.v1',
+        updatedAt: '2026-05-06T00:00:00.000Z',
+        pipelineDefault: {
+          providerId: 'anthropic',
+          model: 'claude-3-5-sonnet-latest',
+          family: 'api',
+          qualityTier: 'standard',
+          sessionStrategy: 'none',
+          toolPolicy: 'none',
+        },
+        nodeOverrides: {},
+      }, null, 2),
+      'utf8',
+    );
+    await assert.rejects(
+      executeMachineRunStep({
+        workspaceRoot,
+        pipelinePath,
+        pipelineDir,
+        runRoot: run.runRoot,
+        runId: run.runId,
+      }),
+      error => error?.code === 'MACHINE_API_DISPATCH_NOT_WIRED' && /Choose AI Provider/.test(error.message || ''),
+    );
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});

@@ -1510,6 +1510,23 @@ async function executeMachineRunStep(options = {}) {
       'This execute step requires a deterministic run.machineHarness fixture or a runnable run.machineAdapter.',
     );
   }
+  if (hasLiveAdapter && !hasHarness) {
+    const liveProviderId = resolveProviderIdFromAdapter(adapterSource);
+    const livePlugin = liveProviderId ? getProviderPlugin(liveProviderId) : null;
+    if (livePlugin && livePlugin.family === 'api') {
+      const overlaySource = adapterOverrides?.pipelineDefault?.providerId === liveProviderId
+        ? `<pipeline-stem>.adapter-overrides.json`
+        : 'pipeline.run.machineAdapter';
+      throw machineExecutionError(
+        'MACHINE_API_DISPATCH_NOT_WIRED',
+        `The selected provider "${liveProviderId}" is an API plugin (family: api), wired in via ${overlaySource}. `
+          + `Live invocation through the router is the next PR — picking an API provider does override the lifted v2 envelope, `
+          + `but executeMachineRunStep currently only dispatches CLI plugins through createProposalAdapter / buildWorkerCommandSpec. `
+          + `For now, re-open "Choose AI Provider…" and pick a CLI provider (codex-cli or claude-code) to actually run the pipeline. `
+          + `Removing the .adapter-overrides.json file restores the pipeline.or-pipeline default.`,
+      );
+    }
+  }
   const harness = hasHarness ? assertPlainObject(harnessSource, 'run.machineHarness') : null;
   const adapter = hasLiveAdapter ? assertPlainObject(adapterSource, 'run.machineAdapter') : null;
   const candidates = hasHarness ? candidateProposalsFromHarness(harness) : [];
