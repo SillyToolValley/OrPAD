@@ -40,6 +40,23 @@ function failedAdapterCallsFromRecord(record) {
   const events = Array.isArray(record?.events) ? record.events : [];
   const seen = new Map();
 
+  // Collect the highest sequence at which each nodePath was explicitly
+  // dismissed by the user (node.skipped). node.completed alone is NOT a
+  // resolution — probe nodes emit node.completed even when their adapter
+  // call failed (the wrapper finished, not the work). Failures recorded
+  // BEFORE a later node.skipped are considered handled and should not
+  // surface as still-open failure cards.
+  const resolvedAtSequence = new Map();
+  for (const event of events) {
+    if (!event) continue;
+    if (event.eventType !== 'node.skipped') continue;
+    const nodePath = event.nodePath || '';
+    if (!nodePath) continue;
+    const sequence = Number(event.sequence) || 0;
+    const prior = resolvedAtSequence.get(nodePath) || 0;
+    if (sequence > prior) resolvedAtSequence.set(nodePath, sequence);
+  }
+
   function priorResultForNode(nodePath, beforeIndex) {
     if (!nodePath) return null;
     for (let j = beforeIndex; j >= 0; j -= 1) {
@@ -51,12 +68,18 @@ function failedAdapterCallsFromRecord(record) {
     return null;
   }
 
+  function isResolvedAfter(nodePath, sequence) {
+    const resolvedAt = resolvedAtSequence.get(nodePath || '') || 0;
+    return resolvedAt > (Number(sequence) || 0);
+  }
+
   // Pass 1: explicit adapter/worker/probe result events with failure status.
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (!event || !RESULT_EVENT_TYPES_SET.has(event.eventType)) continue;
     const status = String(event.payload?.status || '').toLowerCase();
     if (!FAILED_STATUSES_SET.has(status)) continue;
+    if (isResolvedAfter(event.nodePath, event.sequence)) continue;
     const key = failureKeyFor(event);
     if (seen.has(key)) continue;
     const refs = extractArtifactRefs(event);
@@ -80,6 +103,7 @@ function failedAdapterCallsFromRecord(record) {
     if (!event) continue;
     if (!NODE_FAILURE_EVENT_TYPES.includes(event.eventType)) continue;
     const nodePath = event.nodePath || '';
+    if (isResolvedAfter(nodePath, event.sequence)) continue;
     if ([...seen.values()].some(f => f.nodePath === nodePath)) continue;
     const key = failureKeyFor(event);
     if (seen.has(key)) continue;

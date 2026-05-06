@@ -85,6 +85,32 @@ test('failedAdapterCallsFromRecord falls through to node.failed when no adapter.
   assert.equal(byNode['main/probe-b'], 'blocked');
 });
 
+test('failedAdapterCallsFromRecord drops failures that have a later node.skipped event', () => {
+  const record = {
+    events: [
+      syntheticAdapterResult({ sequence: 1, status: 'failed', nodePath: 'main/probe', adapterCallId: 'a1' }),
+      // node.completed for the same path is NOT a resolution (probe wrapper
+      // emits this even on adapter failure).
+      { sequence: 2, eventType: 'node.completed', nodePath: 'main/probe', payload: { attempt: 1, status: 'completed' } },
+      // Later node.skipped event resolves the failure card.
+      { sequence: 3, eventType: 'node.skipped', nodePath: 'main/probe', payload: { attempt: 2, reason: 'user-skipped' } },
+    ],
+  };
+  const failures = summary.failedAdapterCallsFromRecord(record);
+  assert.equal(failures.length, 0, 'skipped probes should not produce failure cards');
+});
+
+test('failedAdapterCallsFromRecord still surfaces failures when only node.completed exists (no skip)', () => {
+  const record = {
+    events: [
+      syntheticAdapterResult({ sequence: 1, status: 'failed', nodePath: 'main/probe', adapterCallId: 'a1' }),
+      { sequence: 2, eventType: 'node.completed', nodePath: 'main/probe', payload: { attempt: 1, status: 'completed' } },
+    ],
+  };
+  const failures = summary.failedAdapterCallsFromRecord(record);
+  assert.equal(failures.length, 1, 'node.completed alone must not hide an unresolved failure');
+});
+
 test('failedAdapterCallsFromRecord cross-references node.failed with prior adapter.result for transcripts', () => {
   const record = {
     events: [

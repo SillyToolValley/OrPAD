@@ -11934,9 +11934,17 @@ contentEl?.addEventListener('click', async (event) => {
           probeButton.textContent = 'Skip node';
           return;
         }
-        notifyFormatError('Skip node', new Error(`${nodePath} marked skipped (event seq ${response.eventSequence ?? '?'})`));
+        notifyFormatError('Skip node', new Error(`${nodePath} marked skipped — resuming run`));
         // Force a polling refresh so the skip event reflects in the UI immediately.
         await refreshVisibleMachineRunSnapshot().catch(() => {});
+        // Re-enter executeRunStep so the dispatcher walks past the skipped
+        // probe and continues the run lifecycle. Without this the run sits
+        // idle even though the skip event is committed.
+        try {
+          await executeSelectedMachineRunStep(runbookPath, runId);
+        } catch (err) {
+          notifyFormatError('Resume after skip', err);
+        }
       } catch (err) {
         notifyFormatError('Skip node', err);
         probeButton.disabled = false;
