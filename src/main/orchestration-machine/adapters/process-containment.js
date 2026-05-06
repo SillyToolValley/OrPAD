@@ -22,8 +22,15 @@ function isInsideResolvedPath(parent, child) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function commandUsesDangerousArg(commandSpec = {}, dangerousArgs = []) {
+  const list = Array.isArray(dangerousArgs) && dangerousArgs.length
+    ? dangerousArgs
+    : [DANGEROUS_CODEX_BYPASS_ARG];
+  return (commandSpec.args || []).some(arg => list.includes(String(arg)));
+}
+
 function commandUsesDangerousCodexBypass(commandSpec = {}) {
-  return (commandSpec.args || []).some(arg => String(arg) === DANGEROUS_CODEX_BYPASS_ARG);
+  return commandUsesDangerousArg(commandSpec, [DANGEROUS_CODEX_BYPASS_ARG]);
 }
 
 function hasAbsolutePathReference(value, targetRoot) {
@@ -52,6 +59,7 @@ function assertCliProcessContainment(input = {}) {
     workspaceRoot = '',
     request = {},
     allowDangerousSandboxBypass = false,
+    dangerousArgs,
   } = input;
   if (!overlayRoot) throw new Error('CLI process containment requires an overlay root.');
   if (!sameResolvedPath(commandSpec.cwd, overlayRoot)) {
@@ -65,15 +73,15 @@ function assertCliProcessContainment(input = {}) {
     throw err;
   }
 
-  const dangerousBypass = commandUsesDangerousCodexBypass(commandSpec);
+  const dangerousBypass = commandUsesDangerousArg(commandSpec, dangerousArgs);
   if (dangerousBypass) {
     if (!allowDangerousSandboxBypass || grant.allowDangerousSandboxBypass !== true || !dangerousBypassApproval(request)) {
-      const err = new Error('Codex dangerous sandbox bypass requires explicit Machine approval and a matching exact command grant.');
+      const err = new Error('CLI dangerous sandbox bypass requires explicit Machine approval and a matching exact command grant.');
       err.code = 'MACHINE_DANGEROUS_SANDBOX_BYPASS_NOT_APPROVED';
       throw err;
     }
     if (workspaceRoot && isInsideResolvedPath(workspaceRoot, overlayRoot)) {
-      const err = new Error('Codex dangerous sandbox bypass must run from a system temp overlay outside the canonical workspace.');
+      const err = new Error('CLI dangerous sandbox bypass must run from a system temp overlay outside the canonical workspace.');
       err.code = 'MACHINE_DANGEROUS_SANDBOX_BYPASS_OVERLAY_NOT_ISOLATED';
       throw err;
     }
@@ -95,6 +103,7 @@ module.exports = {
   DANGEROUS_CODEX_BYPASS_ARG,
   assertCliProcessContainment,
   commandArgsReferenceRoot,
+  commandUsesDangerousArg,
   commandUsesDangerousCodexBypass,
   sameResolvedPath,
 };

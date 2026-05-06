@@ -24,6 +24,8 @@ const processRunner = require('./adapters/process-runner');
 const processContainment = require('./adapters/process-containment');
 const probeRunner = require('./probe-runner');
 const providerPolicy = require('./providers/policy');
+const providerRegistry = require('./providers/registry');
+const codexCliPlugin = require('./providers/plugins/codex-cli');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
 const triageRunner = require('./triage-runner');
@@ -59,6 +61,13 @@ module.exports = {
   ...processContainment,
   ...probeRunner,
   ...providerPolicy,
+  ...providerRegistry,
+  codexCliCommand: codexCliPlugin.codexCliCommand,
+  codexCliExecArgs: codexCliPlugin.codexCliExecArgs,
+  codexCliInvocation: codexCliPlugin.codexCliInvocation,
+  createCodexCliProposalAdapter: codexCliPlugin.createCodexCliProposalAdapter,
+  nodeExecutableForCli: codexCliPlugin.nodeExecutableForCli,
+  readCodexAdapterResult: codexCliPlugin.readCodexAdapterResult,
   ...queueStore,
   ...runStore,
   ...triageRunner,

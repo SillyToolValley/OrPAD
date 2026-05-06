@@ -422,6 +422,12 @@ harness command assembled by main process.
   blocked unless the adapter caller enables dangerous bypass, the exact command grant has
   `allowDangerousSandboxBypass: true`, the adapter request carries an explicit approval reason,
   and the overlay root is outside the canonical workspace in a system temp directory.
+- The dangerous-bypass check is plugin-driven, not codex-specific. Each CLI provider plugin
+  registered in `src/main/orchestration-machine/providers/registry.js` declares its own
+  `dangerousArgs: string[]` metadata, and the adapter caller threads that list into
+  `assertCliProcessContainment`. The codex bypass flag remains the default fallback when no
+  plugin supplies a list, but any new CLI provider plugin (claude-code, generic) must declare
+  its own dangerous args to receive the same enforcement.
 - The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
   and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
 - Stdout/stderr are captured with output limits and written only as Machine artifacts when a

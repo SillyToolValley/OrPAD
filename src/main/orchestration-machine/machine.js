@@ -4,12 +4,14 @@ const path = require('path');
 
 const {
   cliOverlayRoot,
-  codexCliCommand,
-  codexCliExecArgs,
-  codexCliInvocation,
   createCliAgentAdapter,
-  createCodexCliProposalAdapter,
 } = require('./adapters/cli-agent');
+const {
+  getProviderPlugin,
+  getProviderPluginForAdapter,
+  hasProviderPlugin,
+  resolveProviderIdFromAdapter,
+} = require('./providers/registry');
 const { createAdapterRequest } = require('./adapters/proposal-adapter');
 const { summarizeApprovalsFromEvents } = require('./approvals');
 const { assertNoSymlinkInRunPath, registerArtifact, writeArtifactManifest } = require('./artifacts');
@@ -150,11 +152,12 @@ function machineAdapterFromPipeline(pipeline) {
 }
 
 function isRunnableMachineAdapter(adapter) {
-  return adapter
-    && typeof adapter === 'object'
-    && !Array.isArray(adapter)
-    && adapter.enabled !== false
-    && adapter.type === 'codex-cli';
+  if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter)) return false;
+  if (adapter.enabled === false) return false;
+  const providerId = resolveProviderIdFromAdapter(adapter);
+  if (!providerId) return false;
+  const plugin = getProviderPlugin(providerId);
+  return Boolean(plugin) && plugin.family === 'cli';
 }
 
 function nodeExecutableForHarness() {
@@ -441,19 +444,11 @@ function liveProbePrompt(input = {}) {
   ].join('\n');
 }
 
-async function codexCliWorkerCommandSpec(input = {}) {
-  const {
-    adapter,
-    request,
-    overlayRoot,
-    claim,
-    candidate,
-    workerNode,
-    runRoot,
-  } = input;
+function buildLiveWorkerPrompt(input = {}) {
+  const { request, claim, candidate, workerNode } = input;
   const taskText = normalizeRuntimeTaskText(input.taskText);
   const externalResearch = normalizeExternalResearchState(input.externalResearch);
-  const prompt = [
+  return [
     'You are the OrPAD managed-run worker adapter.',
     'The current working directory is a temporary Machine overlay containing only the active write set.',
     'Modify only files that already exist in this overlay or are explicitly part of the active write set.',
@@ -496,18 +491,20 @@ async function codexCliWorkerCommandSpec(input = {}) {
     'Use status "done" only if you changed the overlay toward the acceptance criteria.',
     'Use status "blocked" if the allowed files are insufficient or the change is unsafe.',
   ].join('\n');
-  const invocation = codexCliInvocation(adapter.command || codexCliCommand(), adapter.commandPrefixArgs);
-  return {
-    command: invocation.command,
-    args: codexCliExecArgs({
-      prefixArgs: invocation.prefixArgs,
-      sandbox: adapter.workerSandbox || adapter.sandbox || 'workspace-write',
-      approvalPolicy: adapter.approvalPolicy || 'never',
-      prompt,
-      ephemeral: adapter.ephemeral,
-    }),
-    cwd: overlayRoot,
-  };
+}
+
+async function liveWorkerCommandSpec(input = {}) {
+  const { adapter, request, overlayRoot } = input;
+  const plugin = getProviderPluginForAdapter(adapter);
+  if (!plugin || typeof plugin.buildWorkerCommandSpec !== 'function') {
+    const providerId = resolveProviderIdFromAdapter(adapter) || 'unknown';
+    throw machineExecutionError(
+      'MACHINE_PROVIDER_PLUGIN_MISSING',
+      `Provider plugin "${providerId}" does not implement buildWorkerCommandSpec.`,
+    );
+  }
+  const prompt = buildLiveWorkerPrompt(input);
+  return plugin.buildWorkerCommandSpec({ adapter, request, prompt, overlayRoot });
 }
 
 function flattenTraversalNodes(plan) {
@@ -1567,7 +1564,7 @@ async function executeMachineRunStep(options = {}) {
         runId,
         nodePath: currentProbeNode.nodePath,
         workspaceRoot,
-        adapter: createCodexCliProposalAdapter({
+        adapter: getProviderPluginForAdapter(adapter).createProposalAdapter({
           runRoot,
           runId,
           workspaceRoot,
@@ -1647,7 +1644,7 @@ async function executeMachineRunStep(options = {}) {
       })
       : (hasHarness
         ? nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable })
-        : await codexCliWorkerCommandSpec({
+        : await liveWorkerCommandSpec({
           adapter,
           request: adapterRequest,
           overlayRoot: adapterRequest.overlayRoot,
@@ -1684,6 +1681,9 @@ async function executeMachineRunStep(options = {}) {
         allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
         timeoutMs: hasHarness ? timeoutMs : (adapter.workerTimeoutMs || timeoutMs),
         maxOutputBytes: 64 * 1024,
+        dangerousArgs: hasHarness
+          ? undefined
+          : (getProviderPluginForAdapter(adapter)?.dangerousArgs || undefined),
       }),
     });
   };
