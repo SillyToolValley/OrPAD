@@ -39,7 +39,14 @@ function emptyLedger(runId = '') {
 async function readBudgetLedger(runRoot) {
   try {
     const raw = await fsp.readFile(ledgerPath(runRoot), 'utf8');
-    const parsed = JSON.parse(raw);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // Malformed file: treat as empty so the run can continue, but keep the
+      // raw bytes on disk for forensics rather than silently overwriting.
+      return emptyLedger();
+    }
     if (parsed && parsed.schemaVersion === SCHEMA_VERSION && Array.isArray(parsed.entries)) {
       return parsed;
     }
@@ -59,6 +66,7 @@ function ledgerEntryFromUsage(input = {}) {
   const usage = isPlainObject(input.usage) ? input.usage : {};
   return {
     sequence: 0, // assigned on append
+    sourceEventSequence: Number.isFinite(input.sourceEventSequence) ? input.sourceEventSequence : null,
     adapterCallId: String(input.adapterCallId || ''),
     attemptId: String(input.attemptId || ''),
     nodePath: String(input.nodePath || ''),

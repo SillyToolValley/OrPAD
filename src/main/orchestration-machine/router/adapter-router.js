@@ -312,6 +312,7 @@ async function dispatchAdapter(input = {}) {
       family: candidate.selection.family,
       cacheHit: result.cacheHit === true,
       usage: result.usage,
+      sourceEventSequence: Number.isFinite(input.sourceEventSequence) ? input.sourceEventSequence : null,
     });
   }
   if (runRoot && budgetConfig && result?.usage) {

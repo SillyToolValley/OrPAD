@@ -298,6 +298,93 @@ test('readBudgetLedger returns empty schema when no file exists', async () => {
   }
 });
 
+test('readBudgetLedger returns empty schema when the on-disk file is malformed JSON', async () => {
+  const runRoot = await makeRunRoot();
+  try {
+    await fs.writeFile(path.join(runRoot, 'budget-ledger.json'), '{ this is not json', 'utf8');
+    const ledger = await readBudgetLedger(runRoot);
+    assert.equal(ledger.schemaVersion, BUDGET_LEDGER_SCHEMA_VERSION);
+    assert.deepEqual(ledger.entries, []);
+    // Malformed bytes are preserved on disk for forensics.
+    const raw = await fs.readFile(path.join(runRoot, 'budget-ledger.json'), 'utf8');
+    assert.equal(raw.includes('this is not json'), true);
+  } finally {
+    await fs.rm(runRoot, { recursive: true, force: true });
+  }
+});
+
+test('summarizeLedger is deterministic across multiple reads of the same file', async () => {
+  const runRoot = await makeRunRoot();
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      await appendBudgetEntry(runRoot, {
+        runId: 'run_x',
+        adapterCallId: `a${i}`,
+        attemptId: `att${i}`,
+        providerId: 'anthropic',
+        model: 'claude-3-5-sonnet-latest',
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, costEstimateUsd: 0.123456789 },
+      });
+    }
+    const first = summarizeLedger(await readBudgetLedger(runRoot));
+    const second = summarizeLedger(await readBudgetLedger(runRoot));
+    assert.deepEqual(first, second);
+    // Floating-point summing must round to the same fixed precision both times.
+    assert.equal(first.totalCostUsd, second.totalCostUsd);
+  } finally {
+    await fs.rm(runRoot, { recursive: true, force: true });
+  }
+});
+
+test('appendBudgetEntry persists sourceEventSequence so replay can bind cost to events', async () => {
+  const runRoot = await makeRunRoot();
+  try {
+    await appendBudgetEntry(runRoot, {
+      runId: 'run_x',
+      adapterCallId: 'a1',
+      attemptId: 'att1',
+      providerId: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      sourceEventSequence: 42,
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, costEstimateUsd: 0.5 },
+    });
+    const ledger = await readBudgetLedger(runRoot);
+    assert.equal(ledger.entries[0].sourceEventSequence, 42);
+  } finally {
+    await fs.rm(runRoot, { recursive: true, force: true });
+  }
+});
+
+test('cacheHit entries record the input cost rather than zero-out plugin-reported cost', async () => {
+  const runRoot = await makeRunRoot();
+  try {
+    await appendBudgetEntry(runRoot, {
+      runId: 'run_x',
+      adapterCallId: 'a1',
+      attemptId: 'att1',
+      providerId: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      cacheHit: true,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, costEstimateUsd: 0.5 },
+    });
+    const ledger = await readBudgetLedger(runRoot);
+    assert.equal(ledger.entries[0].cacheHit, true);
+    assert.equal(ledger.entries[0].costEstimateUsd, 0.5);
+  } finally {
+    await fs.rm(runRoot, { recursive: true, force: true });
+  }
+});
+
+test('dispatchAdapter without runRoot or budget config gracefully no-ops the ledger path', async () => {
+  const result = await dispatchAdapter({
+    pipelineAdapter: v2Pipeline({ budget: undefined }),
+    request: buildAdapterRequest(),
+    invoker: async () => workerResult({ promptTokens: 10, completionTokens: 5, totalTokens: 15, costEstimateUsd: 0.001 }),
+  });
+  assert.equal(result.routingDecision.providerId, 'anthropic');
+  // No runRoot supplied -> no ledger persistence; no error thrown.
+});
+
 test('budget ledger never embeds raw API key material', async () => {
   const runRoot = await makeRunRoot();
   try {
