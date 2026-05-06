@@ -1,6 +1,11 @@
 import { initAnalytics, track, sizeBucket, stackSig } from './analytics.js';
 import { createAdapterPicker } from './orchestration/adapter-picker.js';
 import { createBudgetMeter } from './orchestration/budget-meter.js';
+import {
+  failedAdapterCallsFromRecord as sharedFailedAdapterCalls,
+  runArtifactAbsPath as sharedRunArtifactAbsPath,
+  lifecycleSuppressesFallback as sharedLifecycleSuppressesFallback,
+} from '../shared/orchestration/failure-summary.js';
 import { EditorView, basicSetup } from 'codemirror';
 import { Compartment, EditorSelection, EditorState, Prec, Transaction } from '@codemirror/state';
 import { keymap, ViewPlugin } from '@codemirror/view';
@@ -2824,97 +2829,14 @@ function pipelinePreviewLocationLabel(context) {
   return 'Pipeline package';
 }
 
-const MACHINE_FAILED_STATUSES = new Set(['failed', 'blocked', 'rejected', 'approval-required']);
-const MACHINE_RESULT_EVENT_TYPES = new Set(['adapter.result', 'worker.result', 'probe.result']);
-
-function machineFailureKeyFor(event) {
-  return event.payload?.adapterCallId
-    || event.payload?.nodeExecutionId
-    || `${event.eventType}:${event.nodePath || ''}:${event.payload?.attemptId || event.payload?.attempt || event.sequence || ''}`;
-}
-
-function machineExtractArtifactRefs(event) {
-  const refs = Array.isArray(event?.artifactRefs) ? event.artifactRefs : [];
-  return {
-    transcriptRef: refs.find(ref => /transcript\.json$/i.test(ref)) || '',
-    lastMessageRef: refs.find(ref => /last-message\.json$/i.test(ref)) || '',
-    patchRef: refs.find(ref => /\.patch\.json$/i.test(ref)) || '',
-    allRefs: refs,
-  };
-}
-
+// Failure detection / artifact path helpers live in
+// src/shared/orchestration/failure-summary.js so node tests can verify the
+// same logic that renders here. Local thin wrappers stay for diff stability.
 function machineFailedAdapterCalls(record) {
-  const events = record?.events || [];
-  const seen = new Map();
-  // Helper to pull the most-recent adapter/worker result for a given nodePath
-  // so node.failed events without inline artifact refs can still link to the
-  // adapter transcript that was written just before the failure.
-  function priorResultForNode(nodePath, beforeIndex) {
-    if (!nodePath) return null;
-    for (let j = beforeIndex; j >= 0; j -= 1) {
-      const candidate = events[j];
-      if (!candidate || !MACHINE_RESULT_EVENT_TYPES.has(candidate.eventType)) continue;
-      if ((candidate.nodePath || '') !== nodePath) continue;
-      return candidate;
-    }
-    return null;
-  }
-  // Pass 1: adapter.result / worker.result / probe.result with failure status
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
-    if (!event || !MACHINE_RESULT_EVENT_TYPES.has(event.eventType)) continue;
-    const status = String(event.payload?.status || '').toLowerCase();
-    if (!MACHINE_FAILED_STATUSES.has(status)) continue;
-    const key = machineFailureKeyFor(event);
-    if (seen.has(key)) continue;
-    const refs = machineExtractArtifactRefs(event);
-    seen.set(key, {
-      nodePath: event.nodePath || '',
-      adapterCallId: event.payload?.adapterCallId || '',
-      attemptId: event.payload?.attemptId || '',
-      status,
-      reason: event.reason || '',
-      adapter: event.payload?.adapter || event.eventType,
-      eventType: event.eventType,
-      timestamp: event.timestamp || '',
-      ...refs,
-    });
-  }
-  // Pass 2: node.failed / node.blocked events (in case the adapter result was
-  // not captured under the standard event types or carried no payload.status).
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i];
-    if (!event) continue;
-    if (event.eventType !== 'node.failed' && event.eventType !== 'node.blocked') continue;
-    const nodePath = event.nodePath || '';
-    // Skip if we already have a richer entry for the same node.
-    if ([...seen.values()].some(f => f.nodePath === nodePath)) continue;
-    const key = machineFailureKeyFor(event);
-    if (seen.has(key)) continue;
-    const prior = priorResultForNode(nodePath, i - 1);
-    const refs = machineExtractArtifactRefs(prior || event);
-    seen.set(key, {
-      nodePath,
-      adapterCallId: prior?.payload?.adapterCallId || event.payload?.adapterCallId || '',
-      attemptId: prior?.payload?.attemptId || event.payload?.attemptId || '',
-      status: event.eventType === 'node.blocked' ? 'blocked' : 'failed',
-      reason: event.payload?.reason || event.reason || '',
-      adapter: prior?.payload?.adapter || event.eventType,
-      eventType: event.eventType,
-      timestamp: event.timestamp || '',
-      ...refs,
-    });
-  }
-  return [...seen.values()].sort((a, b) => (a.nodePath || '').localeCompare(b.nodePath || ''));
+  return sharedFailedAdapterCalls(record);
 }
-
 function machineRunArtifactAbsPath(record, ref) {
-  if (!ref || !record) return '';
-  const runRoot = record.runRoot || record.runState?.runRoot || '';
-  if (!runRoot) return '';
-  const cleanRoot = String(runRoot).replace(/[\\/]+$/, '');
-  const cleanRef = String(ref).replace(/^[\\/]+/, '');
-  return `${cleanRoot}/${cleanRef}`;
+  return sharedRunArtifactAbsPath(record, ref);
 }
 
 function renderMachineFailedAdaptersHtml(record) {
@@ -2924,8 +2846,8 @@ function renderMachineFailedAdaptersHtml(record) {
   const summaryStatus = String(record?.runState?.summaryStatus || '').toLowerCase();
   // Cancelled / created / running 상태에서는 사용자 의도된 상태이므로 fallback
   // 표시 안 함. 실제 실패한 adapter 카드(failures.length>0)는 그대로 표시.
-  const lifecycleSuppressesFallback = ['cancelled', 'canceled', 'cancelling', 'created', 'running', 'waiting'].includes(lifecycleStatus);
-  const runIsFailing = !lifecycleSuppressesFallback
+  const lifecycleHidesFallback = sharedLifecycleSuppressesFallback(lifecycleStatus);
+  const runIsFailing = !lifecycleHidesFallback
     && (lifecycleStatus === 'failed' || summaryStatus === 'blocked');
   if (!failures.length && !runIsFailing) return '';
 
