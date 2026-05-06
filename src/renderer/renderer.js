@@ -9889,20 +9889,53 @@ async function ensurePipelinePreviewValidation(runbookPath) {
   return selectedPipelineValidation(runbookPath);
 }
 
+const ADAPTER_PICKER_MUTATING_CHANNELS = new Set([
+  'machine-set-provider-selection',
+]);
+
 function buildAdapterPickerBridge() {
   const machine = window?.orpad?.machine;
   if (!machine) {
     throw new Error('Machine IPC bridge is not available. Enable managed runs first.');
   }
   return {
-    invoke(channel, payload) {
-      if (channel === 'machine-list-providers') return machine.listProviders(payload || {});
-      if (channel === 'machine-list-models') return machine.listModels(payload || {});
-      if (channel === 'machine-set-provider-selection') return machine.setProviderSelection(payload || {});
-      if (channel === 'machine-read-budget-ledger') return machine.readBudgetLedger(payload || {});
-      if (channel === 'machine-enable-session') return machine.enableSession();
-      if (channel === 'machine-status') return machine.status();
-      throw new Error(`AdapterPicker bridge: unsupported channel ${channel}`);
+    async invoke(channel, payload) {
+      const enriched = { ...(payload || {}) };
+      if (ADAPTER_PICKER_MUTATING_CHANNELS.has(channel)
+        && !enriched.capabilityToken
+        && machineCapabilityToken) {
+        enriched.capabilityToken = machineCapabilityToken;
+      }
+      let response;
+      if (channel === 'machine-list-providers') response = await machine.listProviders(enriched);
+      else if (channel === 'machine-list-models') response = await machine.listModels(enriched);
+      else if (channel === 'machine-set-provider-selection') response = await machine.setProviderSelection(enriched);
+      else if (channel === 'machine-read-budget-ledger') response = await machine.readBudgetLedger(enriched);
+      else if (channel === 'machine-enable-session') response = await machine.enableSession();
+      else if (channel === 'machine-status') response = await machine.status();
+      else throw new Error(`AdapterPicker bridge: unsupported channel ${channel}`);
+      // Capture session-enable token so subsequent mutating calls work without a
+      // separate refresh through the existing managed-runs UI.
+      if (channel === 'machine-enable-session' && response?.success === true) {
+        if (response.capabilityToken) machineCapabilityToken = response.capabilityToken;
+        machineRuntimeStatus = {
+          success: true,
+          ok: true,
+          enabled: response.enabled === true,
+          mutatingCapabilityConfigured: response.mutatingCapabilityConfigured === true,
+          sessionEnableAvailable: response.sessionEnableAvailable === true,
+          enabledBy: response.enabledBy || 'session',
+        };
+      }
+      // If a mutating call rejects with capability denied, drop the cached
+      // token so the next session-enable click can replace it.
+      if (channel === 'machine-set-provider-selection'
+        && response
+        && (response.success === false || response.ok === false)
+        && response.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
+        machineCapabilityToken = '';
+      }
+      return response;
     },
   };
 }
