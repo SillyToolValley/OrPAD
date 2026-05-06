@@ -28,6 +28,7 @@ const providerRegistry = require('./providers/registry');
 const providerCatalog = require('../../shared/ai/provider-catalog');
 const codexCliPlugin = require('./providers/plugins/codex-cli');
 const anthropicPlugin = require('./providers/plugins/anthropic');
+const adapterRouter = require('./router/adapter-router');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
 const triageRunner = require('./triage-runner');
@@ -65,6 +66,7 @@ module.exports = {
   ...providerPolicy,
   ...providerRegistry,
   ...providerCatalog,
+  ...adapterRouter,
   codexCliCommand: codexCliPlugin.codexCliCommand,
   codexCliExecArgs: codexCliPlugin.codexCliExecArgs,
   codexCliInvocation: codexCliPlugin.codexCliInvocation,
