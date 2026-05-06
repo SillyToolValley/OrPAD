@@ -114,6 +114,56 @@
     },
     "deferredReason": {
       "type": "string"
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "promptTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completionTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "costEstimateUsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "currency": {
+          "enum": ["USD"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "cacheHit": {
+      "type": "boolean"
+    },
+    "routingDecision": {
+      "type": "object",
+      "required": ["providerId", "model"],
+      "properties": {
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "family": {
+          "enum": ["api", "cli"]
+        },
+        "fallbackChainConsumed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
     }
   },
   "additionalProperties": true

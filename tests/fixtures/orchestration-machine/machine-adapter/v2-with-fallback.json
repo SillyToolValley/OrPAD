@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "orpad.machineAdapter.v2",
+  "enabled": true,
+  "default": {
+    "family": "api",
+    "providerId": "anthropic",
+    "model": "claude-3-5-sonnet-latest",
+    "qualityTier": "standard",
+    "sessionStrategy": "none",
+    "toolPolicy": "none",
+    "sandbox": null,
+    "approvalPolicy": "never",
+    "timeoutMs": 600000,
+    "ephemeral": true
+  },
+  "fallback": [
+    {
+      "family": "api",
+      "providerId": "openai",
+      "model": "gpt-4o-mini",
+      "qualityTier": "draft",
+      "reason": "cost"
+    },
+    {
+      "family": "cli",
+      "providerId": "codex-cli",
+      "model": "codex",
+      "reason": "keyless-local"
+    }
+  ],
+  "budget": {
+    "perCallUsd": 0.5,
+    "perRunUsd": 5.0,
+    "hardStop": true
+  },
+  "cache": {
+    "mode": "deterministic",
+    "ttlSeconds": 86400
+  }
+}

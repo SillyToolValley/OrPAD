@@ -42,14 +42,17 @@
   },
   "graphSummary": {
     "graphCount": 4,
-    "totalNodeCount": 25,
+    "totalNodeCount": 28,
     "nodeTypeCounts": {
       "orpad.artifactContract": 1,
       "orpad.barrier": 1,
       "orpad.context": 1,
       "orpad.dispatcher": 1,
+      "orpad.entry": 1,
+      "orpad.exit": 1,
       "orpad.gate": 5,
       "orpad.graph": 3,
+      "orpad.patchReview": 1,
       "orpad.probe": 7,
       "orpad.selector": 1,
       "orpad.skill": 2,

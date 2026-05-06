@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "orpad.machineAdapter.v2",
+  "enabled": true,
+  "default": {
+    "family": "cli",
+    "providerId": "codex-cli",
+    "model": "codex",
+    "qualityTier": "standard",
+    "sessionStrategy": "none",
+    "toolPolicy": "none",
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "timeoutMs": 900000,
+    "ephemeral": true,
+    "legacy": {
+      "type": "codex-cli",
+      "mode": "live-mvp",
+      "command": "codex",
+      "sandbox": "read-only",
+      "proposalSandbox": "read-only",
+      "workerSandbox": "workspace-write",
+      "approvalPolicy": "never",
+      "ephemeral": true,
+      "candidateLimit": 5,
+      "proposalTimeoutMs": 600000,
+      "workerTimeoutMs": 900000,
+      "claimLeaseMs": 1800000,
+      "parallelProbes": true,
+      "probeConcurrency": "all",
+      "continueAfterReviewableBlockedPatch": true,
+      "probeNodePaths": [
+        "discovery-lenses/graph-editor-journey-probe",
+        "discovery-lenses/product-intent-probe",
+        "discovery-lenses/ux-ui-probe"
+      ],
+      "supportNodePolicy": "record-gate-warnings-and-mark-artifact-partial",
+      "description": "Managed-run adapter. v1 fixture mirrors live maintenance pipeline."
+    }
+  }
+}

@@ -97,6 +97,17 @@ function samples() {
           title: 'Show graph-specific node types in the graph editor picker',
           confidence: 0.84,
           evidence: [{ id: 'ux-graph-editor-source', file: 'src/renderer/renderer.js' }],
+          evidenceIds: ['ux-graph-editor-source'],
+          targetIds: ['src/renderer/renderer.js'],
+          riskCheckIds: ['ux:graph-editor:graph-specific-node-types'],
+          checkResult: 'candidate',
+          inspectedTargets: [
+            {
+              targetId: 'src/renderer/renderer.js',
+              status: 'observed',
+              evidenceIds: ['ux-graph-editor-source'],
+            },
+          ],
           sourceOfTruthTargets: ['src/renderer/renderer.js'],
         },
         {
@@ -105,6 +116,23 @@ function samples() {
           nodePath: 'main/probe',
           reason: 'No deterministic harness candidate was assigned to this probe node.',
           evidence: ['node:main/probe'],
+          evidenceIds: ['node:main/probe'],
+          targetIds: ['main/probe'],
+          riskCheckIds: ['probe.no-candidate'],
+          checkResult: 'empty-pass',
+          inspectedTargets: [
+            {
+              targetId: 'main/probe',
+              status: 'no-candidate',
+              evidenceIds: ['node:main/probe'],
+            },
+          ],
+          negativeCheck: {
+            method: 'probe.harness.lookup',
+            expected: 'A candidate proposal assigned to main/probe.',
+            observed: 'No deterministic harness candidate was assigned to main/probe.',
+            evidenceIds: ['node:main/probe'],
+          },
         },
       ],
     },

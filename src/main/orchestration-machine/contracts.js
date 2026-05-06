@@ -11,6 +11,7 @@ const SCHEMA_VERSIONS = Object.freeze({
   artifactManifest: 'orpad.artifactManifest.v1',
   adapterRequest: 'orpad.adapterRequest.v1',
   adapterResult: 'orpad.workerResult.v1',
+  machineAdapter: 'orpad.machineAdapter.v2',
 });
 
 const CONTRACT_SCHEMA_FILES = Object.freeze({
@@ -22,6 +23,7 @@ const CONTRACT_SCHEMA_FILES = Object.freeze({
   artifactManifest: 'artifact-manifest.schema.json',
   adapterRequest: 'adapter-request.schema.json',
   adapterResult: 'adapter-result.schema.json',
+  machineAdapter: 'machine-adapter.schema.json',
 });
 
 const CONTRACT_SCHEMA_NAMES = Object.freeze(Object.keys(CONTRACT_SCHEMA_FILES));
@@ -72,11 +74,67 @@ function createContractValidator() {
   };
 }
 
+const MACHINE_ADAPTER_V2_RESERVED_KEYS = new Set([
+  'schemaVersion',
+  'enabled',
+  'default',
+  'fallback',
+  'budget',
+  'cache',
+]);
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function liftMachineAdapterV1ToV2(adapter) {
+  if (!isPlainObject(adapter)) return adapter;
+  if (adapter.schemaVersion === SCHEMA_VERSIONS.machineAdapter) return adapter;
+
+  const type = typeof adapter.type === 'string' ? adapter.type.trim() : '';
+  const isCodexCli = type === 'codex-cli';
+  const family = isPlainObject(adapter.default) && adapter.default.family
+    ? adapter.default.family
+    : (isCodexCli ? 'cli' : (adapter.family || 'cli'));
+  const providerId = adapter.providerId || (type || 'codex-cli');
+  const model = adapter.model || (isCodexCli ? 'codex' : 'default');
+  const sandbox = (adapter.workerSandbox || adapter.sandbox || null);
+  const approvalPolicy = adapter.approvalPolicy || 'never';
+  const timeoutMs = Number.isFinite(adapter.workerTimeoutMs)
+    ? adapter.workerTimeoutMs
+    : (Number.isFinite(adapter.proposalTimeoutMs) ? adapter.proposalTimeoutMs : 600000);
+  const ephemeral = adapter.ephemeral !== false;
+
+  const legacy = {};
+  for (const [key, value] of Object.entries(adapter)) {
+    if (!MACHINE_ADAPTER_V2_RESERVED_KEYS.has(key)) legacy[key] = value;
+  }
+
+  return {
+    schemaVersion: SCHEMA_VERSIONS.machineAdapter,
+    enabled: adapter.enabled !== false,
+    default: {
+      family,
+      providerId,
+      model,
+      qualityTier: 'standard',
+      sessionStrategy: 'none',
+      toolPolicy: 'none',
+      sandbox,
+      approvalPolicy,
+      timeoutMs,
+      ephemeral,
+      legacy,
+    },
+  };
+}
+
 module.exports = {
   CONTRACT_SCHEMA_FILES,
   CONTRACT_SCHEMA_NAMES,
   SCHEMA_VERSIONS,
   createContractValidator,
+  liftMachineAdapterV1ToV2,
   loadAllContractSchemas,
   loadContractSchema,
 };

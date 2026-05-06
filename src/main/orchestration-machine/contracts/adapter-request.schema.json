@@ -91,6 +91,74 @@
     "outputContract": {
       "type": "string",
       "minLength": 1
+    },
+    "providerSelection": {
+      "type": "object",
+      "required": ["providerId", "model"],
+      "properties": {
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "family": {
+          "enum": ["api", "cli"]
+        },
+        "qualityTier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionStrategy": {
+          "enum": [
+            "none",
+            "sdk-session",
+            "conversation-id",
+            "previous-response-id"
+          ]
+        },
+        "toolPolicy": {
+          "enum": ["none"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "routing": {
+      "type": "object",
+      "required": ["chosenBy", "attemptIndex"],
+      "properties": {
+        "chosenBy": {
+          "enum": ["pipeline", "node-override", "fallback"]
+        },
+        "attemptIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fallbackOf": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "costBudget": {
+      "type": "object",
+      "properties": {
+        "perCallUsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "perRunRemainingUsd": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "cacheKey": {
+      "type": "string",
+      "minLength": 1
     }
   },
   "additionalProperties": true

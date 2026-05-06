@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.machineAdapter.v2",
+  "title": "OrPAD Machine Adapter (Pipeline Run Envelope)",
+  "type": "object",
+  "required": ["schemaVersion", "default"],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["orpad.machineAdapter.v2"]
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "default": {
+      "$ref": "#/definitions/providerSelection"
+    },
+    "fallback": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/fallbackEntry"
+      }
+    },
+    "budget": {
+      "$ref": "#/definitions/budget"
+    },
+    "cache": {
+      "$ref": "#/definitions/cache"
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "providerSelection": {
+      "type": "object",
+      "required": ["family", "providerId", "model"],
+      "properties": {
+        "family": {
+          "enum": ["api", "cli"]
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qualityTier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionStrategy": {
+          "enum": [
+            "none",
+            "sdk-session",
+            "conversation-id",
+            "previous-response-id"
+          ]
+        },
+        "toolPolicy": {
+          "enum": ["none"]
+        },
+        "sandbox": {
+          "type": ["string", "null"]
+        },
+        "approvalPolicy": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ephemeral": {
+          "type": "boolean"
+        },
+        "legacy": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "nodeOverride": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "enum": ["api", "cli"]
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qualityTier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionStrategy": {
+          "enum": [
+            "none",
+            "sdk-session",
+            "conversation-id",
+            "previous-response-id"
+          ]
+        },
+        "toolPolicy": {
+          "enum": ["none"]
+        },
+        "sandbox": {
+          "type": ["string", "null"]
+        },
+        "approvalPolicy": {
+          "type": "string"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ephemeral": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "fallbackEntry": {
+      "type": "object",
+      "required": ["providerId", "model"],
+      "properties": {
+        "family": {
+          "enum": ["api", "cli"]
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qualityTier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "perCallUsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "perRunUsd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "hardStop": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true
+    },
+    "cache": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "enum": ["off", "deterministic", "idempotent-only"]
+        },
+        "ttlSeconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
