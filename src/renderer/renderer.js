@@ -2824,29 +2824,85 @@ function pipelinePreviewLocationLabel(context) {
   return 'Pipeline package';
 }
 
+const MACHINE_FAILED_STATUSES = new Set(['failed', 'blocked', 'rejected', 'approval-required']);
+const MACHINE_RESULT_EVENT_TYPES = new Set(['adapter.result', 'worker.result', 'probe.result']);
+
+function machineFailureKeyFor(event) {
+  return event.payload?.adapterCallId
+    || event.payload?.nodeExecutionId
+    || `${event.eventType}:${event.nodePath || ''}:${event.payload?.attemptId || event.payload?.attempt || event.sequence || ''}`;
+}
+
+function machineExtractArtifactRefs(event) {
+  const refs = Array.isArray(event?.artifactRefs) ? event.artifactRefs : [];
+  return {
+    transcriptRef: refs.find(ref => /transcript\.json$/i.test(ref)) || '',
+    lastMessageRef: refs.find(ref => /last-message\.json$/i.test(ref)) || '',
+    patchRef: refs.find(ref => /\.patch\.json$/i.test(ref)) || '',
+    allRefs: refs,
+  };
+}
+
 function machineFailedAdapterCalls(record) {
   const events = record?.events || [];
-  // Index events newest-first so we keep the latest attempt per adapterCallId.
   const seen = new Map();
+  // Helper to pull the most-recent adapter/worker result for a given nodePath
+  // so node.failed events without inline artifact refs can still link to the
+  // adapter transcript that was written just before the failure.
+  function priorResultForNode(nodePath, beforeIndex) {
+    if (!nodePath) return null;
+    for (let j = beforeIndex; j >= 0; j -= 1) {
+      const candidate = events[j];
+      if (!candidate || !MACHINE_RESULT_EVENT_TYPES.has(candidate.eventType)) continue;
+      if ((candidate.nodePath || '') !== nodePath) continue;
+      return candidate;
+    }
+    return null;
+  }
+  // Pass 1: adapter.result / worker.result / probe.result with failure status
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
-    if (!event || event.eventType !== 'adapter.result') continue;
-    const status = event.payload?.status;
-    if (status !== 'failed' && status !== 'blocked') continue;
-    const adapterCallId = event.payload?.adapterCallId || '';
-    if (!adapterCallId || seen.has(adapterCallId)) continue;
-    const refs = Array.isArray(event.artifactRefs) ? event.artifactRefs : [];
-    seen.set(adapterCallId, {
+    if (!event || !MACHINE_RESULT_EVENT_TYPES.has(event.eventType)) continue;
+    const status = String(event.payload?.status || '').toLowerCase();
+    if (!MACHINE_FAILED_STATUSES.has(status)) continue;
+    const key = machineFailureKeyFor(event);
+    if (seen.has(key)) continue;
+    const refs = machineExtractArtifactRefs(event);
+    seen.set(key, {
       nodePath: event.nodePath || '',
-      adapterCallId,
+      adapterCallId: event.payload?.adapterCallId || '',
       attemptId: event.payload?.attemptId || '',
       status,
       reason: event.reason || '',
-      adapter: event.payload?.adapter || '',
+      adapter: event.payload?.adapter || event.eventType,
+      eventType: event.eventType,
       timestamp: event.timestamp || '',
-      transcriptRef: refs.find(ref => /\.transcript\.json$/i.test(ref)) || '',
-      lastMessageRef: refs.find(ref => /\.last-message\.json$/i.test(ref)) || '',
-      patchRef: refs.find(ref => /\.patch\.json$/i.test(ref)) || '',
+      ...refs,
+    });
+  }
+  // Pass 2: node.failed / node.blocked events (in case the adapter result was
+  // not captured under the standard event types or carried no payload.status).
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (!event) continue;
+    if (event.eventType !== 'node.failed' && event.eventType !== 'node.blocked') continue;
+    const nodePath = event.nodePath || '';
+    // Skip if we already have a richer entry for the same node.
+    if ([...seen.values()].some(f => f.nodePath === nodePath)) continue;
+    const key = machineFailureKeyFor(event);
+    if (seen.has(key)) continue;
+    const prior = priorResultForNode(nodePath, i - 1);
+    const refs = machineExtractArtifactRefs(prior || event);
+    seen.set(key, {
+      nodePath,
+      adapterCallId: prior?.payload?.adapterCallId || event.payload?.adapterCallId || '',
+      attemptId: prior?.payload?.attemptId || event.payload?.attemptId || '',
+      status: event.eventType === 'node.blocked' ? 'blocked' : 'failed',
+      reason: event.payload?.reason || event.reason || '',
+      adapter: prior?.payload?.adapter || event.eventType,
+      eventType: event.eventType,
+      timestamp: event.timestamp || '',
+      ...refs,
     });
   }
   return [...seen.values()].sort((a, b) => (a.nodePath || '').localeCompare(b.nodePath || ''));
@@ -2863,16 +2919,41 @@ function machineRunArtifactAbsPath(record, ref) {
 
 function renderMachineFailedAdaptersHtml(record) {
   const failures = machineFailedAdapterCalls(record);
-  if (!failures.length) return '';
+  const runRoot = record?.runRoot || record?.runState?.runRoot || '';
+  const lifecycleStatus = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+  const summaryStatus = String(record?.runState?.summaryStatus || '').toLowerCase();
+  const runIsFailing = lifecycleStatus === 'failed' || summaryStatus === 'blocked' || summaryStatus === 'partial';
+  if (!failures.length && !runIsFailing) return '';
+
+  const fallbackBlock = (!failures.length && runIsFailing && runRoot)
+    ? `<div class="pipe-failed-probe">
+        <div class="pipe-failed-probe-meta">
+          <span class="pipe-failed-probe-node">Run state is ${escapeHtml(lifecycleStatus || summaryStatus)}, but no adapter.result/worker.result event with a failure status was found in the polled record.</span>
+        </div>
+        <div class="pipe-failed-probe-reason">Open the run root in OrPAD to inspect events.jsonl and adapter transcripts manually.</div>
+        <div class="pipe-failed-probe-actions">
+          <button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${runRoot.replace(/[\\/]+$/, '')}/events.jsonl`)}" title="${escapeHtml(`${runRoot}/events.jsonl`)}">events.jsonl</button>
+        </div>
+      </div>`
+    : '';
+
   const items = failures.map(f => {
     const transcriptAbs = machineRunArtifactAbsPath(record, f.transcriptRef);
     const lastMessageAbs = machineRunArtifactAbsPath(record, f.lastMessageRef);
+    const patchAbs = machineRunArtifactAbsPath(record, f.patchRef);
+    const eventsAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/events.jsonl` : '';
     const links = [];
     if (transcriptAbs) {
       links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(transcriptAbs)}" title="${escapeHtml(transcriptAbs)}">View transcript</button>`);
     }
     if (lastMessageAbs) {
       links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(lastMessageAbs)}" title="${escapeHtml(lastMessageAbs)}">Last message</button>`);
+    }
+    if (patchAbs) {
+      links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(patchAbs)}" title="${escapeHtml(patchAbs)}">Patch</button>`);
+    }
+    if (eventsAbs) {
+      links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(eventsAbs)}" title="${escapeHtml(eventsAbs)}">events.jsonl</button>`);
     }
     return `
       <div class="pipe-failed-probe">
@@ -2882,14 +2963,15 @@ function renderMachineFailedAdaptersHtml(record) {
           ${f.adapter ? `<span class="pipe-failed-probe-adapter">${escapeHtml(f.adapter)}</span>` : ''}
         </div>
         ${f.reason ? `<div class="pipe-failed-probe-reason">${escapeHtml(f.reason)}</div>` : ''}
-        ${links.length ? `<div class="pipe-failed-probe-actions">${links.join('')}</div>` : `<div class="pipe-failed-probe-reason">No transcript artifact attached. Try the run root file tree.</div>`}
+        ${links.length ? `<div class="pipe-failed-probe-actions">${links.join('')}</div>` : `<div class="pipe-failed-probe-reason">No transcript artifact attached. Open events.jsonl from the run root.</div>`}
       </div>
     `;
   }).join('');
+
   return `
     <div class="pipe-failed-probes">
-      <div class="pipe-failed-probes-title">Failed adapter calls (${failures.length}) — click to inspect</div>
-      ${items}
+      <div class="pipe-failed-probes-title">${failures.length ? `Failed adapter calls (${failures.length})` : 'Run is in a failed/blocked state'} — click to inspect</div>
+      ${items || fallbackBlock}
     </div>
   `;
 }
