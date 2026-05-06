@@ -2839,6 +2839,90 @@ function machineRunArtifactAbsPath(record, ref) {
   return sharedRunArtifactAbsPath(record, ref);
 }
 
+function renderMachineLifecycleBannerHtml(record) {
+  const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+  const summary = String(record?.runState?.summaryStatus || '').toLowerCase();
+  const runId = record?.runState?.runId || record?.runId || '';
+  const runRoot = record?.runRoot || record?.runState?.runRoot || '';
+  if (!lifecycle && !summary) return '';
+  // 진행 중 / 초기 상태는 banner 없이 기존 status chip만.
+  if (['running', 'waiting', 'created', 'cancelling'].includes(lifecycle)) return '';
+
+  const summaryAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/summary.md` : '';
+  const eventsAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/events.jsonl` : '';
+  const linkBtn = (label, abs) => abs
+    ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(abs)}" title="${escapeHtml(abs)}">${escapeHtml(label)}</button>`
+    : '';
+  const cancelBtn = runId
+    ? `<button class="pipe-lifecycle-banner-link" data-pipeline-run-action="machine-cancel-run" data-run-id="${escapeHtml(runId)}">Cancel run</button>`
+    : '';
+
+  let banner = null;
+  if (lifecycle === 'approval-required' || summary === 'pending') {
+    banner = {
+      kind: 'warn',
+      title: 'Awaiting approval',
+      detail: 'Machine needs an explicit approval before this run can continue. Approval requests live in events.jsonl; the existing approval modal will surface them next time you focus the run.',
+      actions: [linkBtn('events.jsonl', eventsAbs), linkBtn('summary.md', summaryAbs), cancelBtn],
+    };
+  } else if (lifecycle === 'failed') {
+    banner = {
+      kind: 'error',
+      title: 'Run failed',
+      detail: 'Machine could not complete this run. Inspect the failure cards above and the raw event log to find the trigger.',
+      actions: [linkBtn('events.jsonl', eventsAbs), linkBtn('summary.md', summaryAbs)],
+    };
+  } else if (lifecycle === 'cancelled' || lifecycle === 'canceled') {
+    banner = {
+      kind: 'neutral',
+      title: 'Run cancelled',
+      detail: 'You cancelled this run. The events.jsonl still records every step taken before the cancel decision.',
+      actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+    };
+  } else if (lifecycle === 'completed') {
+    if (summary === 'done') {
+      banner = {
+        kind: 'success',
+        title: 'Run complete · all required evidence collected',
+        detail: 'No active or deferred work items remain. Summary file holds the final state.',
+        actions: [linkBtn('summary.md', summaryAbs)],
+      };
+    } else if (summary === 'partial') {
+      banner = {
+        kind: 'warn',
+        title: 'Partial close',
+        detail: 'Useful evidence captured but residual actionable / deferred items still remain. Open summary.md for the next steps OrPAD recorded.',
+        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+      };
+    } else if (summary === 'blocked') {
+      banner = {
+        kind: 'error',
+        title: 'Run closed as blocked',
+        detail: 'Run reached a terminal close but cannot be marked done — requires decision, fix, or capability grant.',
+        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+      };
+    } else {
+      banner = {
+        kind: 'neutral',
+        title: 'Run completed',
+        detail: 'Lifecycle reached a terminal close. Summary file holds the final disposition.',
+        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+      };
+    }
+  }
+  if (!banner) return '';
+
+  return `
+    <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(banner.kind)}">
+      <div class="pipe-lifecycle-banner-title">${escapeHtml(banner.title)}</div>
+      <div class="pipe-lifecycle-banner-detail">${escapeHtml(banner.detail)}</div>
+      <div class="pipe-lifecycle-banner-actions">
+        ${banner.actions.filter(Boolean).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function renderProbeActionButtons(f, runIdAttr, nodePathAttr) {
   const buttons = [];
   if (runIdAttr && nodePathAttr) {
@@ -2979,6 +3063,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         </details>
       </div>
     </div>
+    ${renderMachineLifecycleBannerHtml(previewRunRecord)}
     ${renderMachineFailedAdaptersHtml(previewRunRecord)}
   `;
 }

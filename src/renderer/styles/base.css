@@ -1907,6 +1907,58 @@ body.json-diff-mode #preview-pane {
   opacity: 0.5;
   cursor: progress;
 }
+.pipe-lifecycle-banner {
+  margin: calc(-6px * var(--us)) 0 calc(12px * var(--us));
+  padding: calc(10px * var(--us)) calc(12px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+  border-radius: calc(8px * var(--us));
+  display: grid;
+  gap: calc(6px * var(--us));
+  font-size: calc(12px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 60%, transparent);
+  color: var(--text-primary);
+}
+.pipe-lifecycle-banner--success {
+  border-color: color-mix(in srgb, #22c55e 50%, transparent);
+  background: color-mix(in srgb, #22c55e 12%, transparent);
+}
+.pipe-lifecycle-banner--warn {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 60%, transparent);
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 14%, transparent);
+}
+.pipe-lifecycle-banner--error {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 60%, transparent);
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 12%, transparent);
+}
+.pipe-lifecycle-banner--neutral {
+  border-color: color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-secondary) 80%, transparent);
+}
+.pipe-lifecycle-banner-title {
+  font-weight: 600;
+  font-size: calc(13px * var(--us));
+}
+.pipe-lifecycle-banner-detail {
+  opacity: 0.85;
+  line-height: 1.5;
+}
+.pipe-lifecycle-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6px * var(--us));
+}
+.pipe-lifecycle-banner-link {
+  font-size: calc(11.5px * var(--us));
+  padding: calc(3px * var(--us)) calc(8px * var(--us));
+  border-radius: calc(4px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-color) 70%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.pipe-lifecycle-banner-link:hover {
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 18%, transparent);
+}
 .pipeline-runbar-meta {
   min-width: 0;
   display: grid;
