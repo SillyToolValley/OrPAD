@@ -28,6 +28,13 @@ const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { cancelClaimedItem } = require('./worker-loop');
 const { readActiveWriteSetLocks } = require('./write-sets');
 const { cancelMachineProcessRun } = require('./adapters/process-runner');
+const {
+  getProviderPlugin,
+  hasProviderPlugin,
+  listProviderPlugins,
+} = require('./providers/registry');
+const { getProviderEntry, listProviderEntries } = require('../../shared/ai/provider-catalog');
+const { readBudgetLedger, summarizeLedger } = require('./router/budget-ledger');
 
 const fsp = fs.promises;
 
@@ -48,6 +55,10 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   approvePatch: 'machine-approve-patch',
   applyApprovedPatches: 'machine-apply-approved-patches',
   reviewPatch: 'machine-review-patch',
+  listProviders: 'machine-list-providers',
+  listModels: 'machine-list-models',
+  setProviderSelection: 'machine-set-provider-selection',
+  readBudgetLedger: 'machine-read-budget-ledger',
 });
 
 const APPLY_BATCH_MUTEXES = new Map();
@@ -1311,8 +1322,134 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.approvePatch, approvePatchHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.applyApprovedPatches, applyApprovedPatchesHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.reviewPatch, reviewPatchHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.listProviders, listProvidersHandler);
+  handle(MACHINE_IPC_CHANNELS.listModels, listModelsHandler);
+  handle(MACHINE_IPC_CHANNELS.setProviderSelection, setProviderSelectionHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.readBudgetLedger, readBudgetLedgerHandler);
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };
+}
+
+async function listProvidersHandler(event, authority, request = {}) {
+  const plugins = listProviderPlugins().map(plugin => ({
+    id: plugin.id,
+    displayName: plugin.displayName,
+    family: plugin.family,
+    needsKey: plugin.needsKey === true,
+    defaultModel: plugin.defaultModel || '',
+    capabilities: {
+      sessionStrategies: [...(plugin.capabilities?.sessionStrategies || ['none'])],
+      toolPolicies: [...(plugin.capabilities?.toolPolicies || ['none'])],
+      streaming: plugin.capabilities?.streaming === true,
+      structuredOutput: plugin.capabilities?.structuredOutput || 'free-text',
+      sandbox: plugin.capabilities?.sandbox || null,
+    },
+    dangerousArgs: [...(plugin.dangerousArgs || [])],
+  }));
+  const catalog = listProviderEntries().map(entry => ({
+    id: entry.id,
+    displayName: entry.displayName,
+    family: entry.family,
+    needsKey: Boolean(entry.needsKey),
+    defaultModel: entry.defaultModel,
+    models: entry.models.map(model => model.id),
+  }));
+  return { success: true, ok: true, plugins, catalog };
+}
+
+async function listModelsHandler(event, authority, request = {}) {
+  const providerId = String(request.providerId || '').trim();
+  if (!providerId) {
+    throw machineError('MACHINE_IPC_PROVIDER_ID_REQUIRED', 'providerId is required.');
+  }
+  const entry = getProviderEntry(providerId);
+  if (!entry) {
+    throw machineError('MACHINE_IPC_PROVIDER_UNKNOWN', `Unknown provider id: ${providerId}`);
+  }
+  const plugin = getProviderPlugin(providerId);
+  return {
+    success: true,
+    ok: true,
+    providerId,
+    defaultModel: entry.defaultModel,
+    models: entry.models.map(model => ({
+      id: model.id,
+      qualityTier: model.qualityTier || 'standard',
+      contextWindow: Number.isFinite(model.contextWindow) ? model.contextWindow : 0,
+      costPerMTokensIn: Number.isFinite(model.costPerMTokensIn) ? model.costPerMTokensIn : 0,
+      costPerMTokensOut: Number.isFinite(model.costPerMTokensOut) ? model.costPerMTokensOut : 0,
+    })),
+    pluginRegistered: Boolean(plugin),
+  };
+}
+
+async function setProviderSelectionHandler(event, authority, request = {}) {
+  const scope = String(request.scope || '').trim();
+  if (scope !== 'pipeline' && scope !== 'node') {
+    throw machineError('MACHINE_IPC_SCOPE_INVALID', "scope must be 'pipeline' or 'node'.");
+  }
+  const selection = request.selection;
+  if (!selection || typeof selection !== 'object' || Array.isArray(selection)) {
+    throw machineError('MACHINE_IPC_SELECTION_INVALID', 'selection must be an object.');
+  }
+  const providerId = String(selection.providerId || '').trim();
+  if (!providerId) {
+    throw machineError('MACHINE_IPC_PROVIDER_ID_REQUIRED', 'selection.providerId is required.');
+  }
+  if (!hasProviderPlugin(providerId)) {
+    throw machineError(
+      'MACHINE_IPC_PROVIDER_NOT_REGISTERED',
+      `Provider plugin "${providerId}" is not registered. Renderer-supplied provider ids are validated against the plugin registry.`,
+    );
+  }
+  const entry = getProviderEntry(providerId);
+  if (!entry) {
+    throw machineError(
+      'MACHINE_IPC_PROVIDER_NOT_IN_CATALOG',
+      `Provider "${providerId}" is not in the shared catalog.`,
+    );
+  }
+  const model = String(selection.model || entry.defaultModel || '').trim();
+  if (!model) {
+    throw machineError('MACHINE_IPC_MODEL_REQUIRED', 'selection.model is required.');
+  }
+  const target = scope === 'node' ? String(request.target || '').trim() : null;
+  if (scope === 'node' && !target) {
+    throw machineError('MACHINE_IPC_TARGET_REQUIRED', 'target nodePath is required for node-scope selection.');
+  }
+  // M9: this handler validates and returns the canonicalized selection patch
+  // for the renderer / graph editor to apply through the existing pipeline
+  // graph patch flow. Direct file mutation lives in the graph editor IPC,
+  // not here, so a renderer compromise cannot exfiltrate selection state.
+  return {
+    success: true,
+    ok: true,
+    scope,
+    target,
+    selection: {
+      providerId,
+      model,
+      family: entry.family,
+      qualityTier: selection.qualityTier || 'standard',
+      sessionStrategy: selection.sessionStrategy || 'none',
+      toolPolicy: selection.toolPolicy || 'none',
+    },
+  };
+}
+
+async function readBudgetLedgerHandler(event, authority, request = {}) {
+  const runRoot = String(request.runRoot || '').trim();
+  if (!runRoot) {
+    throw machineError('MACHINE_IPC_RUN_ROOT_REQUIRED', 'runRoot is required.');
+  }
+  authority?.assertWorkspaceContains?.(runRoot);
+  const ledger = await readBudgetLedger(runRoot);
+  return {
+    success: true,
+    ok: true,
+    ledger,
+    summary: summarizeLedger(ledger),
+  };
 }
 
 module.exports = {

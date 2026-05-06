@@ -448,6 +448,19 @@ harness command assembled by main process.
   Anthropic). The provider key MUST NOT be serialized into the request body, the adapter
   request envelope, the adapter result envelope, or any artifact written under
   `runs/<runId>/`.
+- The renderer-facing IPC channels added in PR M9 (`machine-list-providers`,
+  `machine-list-models`, `machine-set-provider-selection`, `machine-read-budget-ledger`)
+  enforce the same invariants as the rest of the Machine IPC surface: feature gate, sender
+  frame validation, and a mutating capability token for the only mutating channel
+  (`machine-set-provider-selection`). The mutating handler re-validates every renderer-
+  supplied provider id against the in-process plugin registry — a renderer compromise
+  cannot inject an unregistered provider id into a pipeline graph because
+  `MACHINE_IPC_PROVIDER_NOT_REGISTERED` rejects the request before any state mutation.
+  `machine-read-budget-ledger` runs through the authority's `assertWorkspaceContains` so
+  the renderer cannot ask the main process to read ledger files outside the active
+  workspace. The budget-meter and adapter-picker renderer modules go through these
+  channels exclusively; neither module reads disk or computes selections on the renderer
+  side.
 - CLI provider plugins added in PR M8 (`claude-code.js`, generic CLI factory) follow the same
   M1 process-containment, M1 dangerous-arg metadata, and M0 lift-to-v2 contracts that
   `codex-cli.js` does. `claude-code` declares `--dangerously-skip-permissions` as its
