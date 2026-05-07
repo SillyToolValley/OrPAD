@@ -9426,6 +9426,28 @@ function machineRuntimeNodeProjection(record) {
       title: `${status.label}: ${nodePath}`,
     });
   }
+  // Adapter-status override: a probe wrapper emits node.completed even when
+  // its claude/codex adapter returned status='failed' (the wrapper itself
+  // finished, not the work). Without this override the graph badge would
+  // show "Done" while the failure card still flags the same nodePath as
+  // FAILED — visually contradictory. We re-use the same failure detection
+  // that drives the failure card so both surfaces agree.
+  const failures = sharedFailedAdapterCalls(record);
+  for (const failure of failures) {
+    const nodePath = failure?.nodePath;
+    if (!nodePath) continue;
+    const current = statuses.get(nodePath);
+    if (!current) continue;
+    if (current.state !== 'completed') continue;
+    const failureLabel = failure.status === 'blocked' ? 'Blocked' : 'Failed';
+    statuses.set(nodePath, {
+      ...current,
+      state: failure.status === 'blocked' ? 'blocked' : 'failed',
+      label: failureLabel,
+      title: `${failureLabel}: ${nodePath} (adapter ${failure.status})`,
+      adapterStatus: failure.status,
+    });
+  }
   const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
   if (['cancelled', 'canceled'].includes(lifecycle)) {
     for (const [nodePath, status] of statuses.entries()) {
