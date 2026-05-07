@@ -2797,7 +2797,7 @@ function renderOrchInspectorField(label, field, path, value, issue = null) {
   `;
 }
 
-function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress = false) {
+function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress = false, activeRecord = null) {
   if (runInProgress) return { state: 'warn', text: 'Run in progress.' };
   if (!validation) return { state: '', text: 'Not checked yet.' };
   if (!validation.ok) {
@@ -2816,6 +2816,39 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
     }
     if (isMachineCompatiblePipeline(validation) && !isMachineStartablePipeline(validation)) {
       return { state: 'warn', text: 'This pipeline needs a runnable adapter before it can start.' };
+    }
+    // The pipeline itself is valid, but an existing active run may be
+    // mid-flight (waiting / blocked / approval-required) — in that case
+    // "Ready to start" is misleading because the user's attention should
+    // be on resolving the existing run, not starting a fresh one. Reflect
+    // the active run's state in the chip so it lines up with the gate
+    // banner / failure cards rendered just below.
+    const lifecycle = String(activeRecord?.runState?.lifecycleStatus || '').toLowerCase();
+    const summary = String(activeRecord?.runState?.summaryStatus || '').toLowerCase();
+    if (lifecycle === 'approval-required') {
+      return { state: 'warn', text: 'Run paused for approval.' };
+    }
+    if (lifecycle === 'waiting') {
+      const gateBlocked = (sharedGateBlockedNodes(activeRecord) || []).length > 0;
+      const failed = (sharedFailedAdapterCalls(activeRecord) || []).length > 0;
+      if (gateBlocked) return { state: 'warn', text: 'Run paused at gate — provide evidence or skip.' };
+      if (failed) return { state: 'warn', text: 'Run paused — failed adapter call needs review.' };
+      return { state: 'warn', text: 'Run paused — click Continue to proceed.' };
+    }
+    if (lifecycle === 'cancelling') {
+      return { state: 'warn', text: 'Cancelling run...' };
+    }
+    if (['failed', 'cancelled', 'canceled'].includes(lifecycle)) {
+      return { state: 'warn', text: `Last run ${lifecycle === 'failed' ? 'failed' : 'cancelled'} — Start to begin a new one.` };
+    }
+    if (lifecycle === 'completed' && summary === 'blocked') {
+      return { state: 'warn', text: 'Last run closed as blocked — Start to begin a new one.' };
+    }
+    if (lifecycle === 'completed' && summary === 'partial') {
+      return { state: 'good', text: 'Last run partial — Start to address residual work.' };
+    }
+    if (lifecycle === 'completed' && summary === 'done') {
+      return { state: 'good', text: 'Last run complete — ready for a new run.' };
     }
     return { state: 'good', text: 'Ready to start.' };
   }
@@ -3111,7 +3144,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const defaultIcon = machineCompatible && previewRunInProgress
     ? orchToolIcon('M5 5h8v8H5z')
     : orchToolIcon('M5 3l7 5-7 5V3z');
-  const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason, previewRunInProgress);
+  const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason, previewRunInProgress, previewRunRecord);
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
   const activePathTitle = runbookRelativePath(context.activePath || runbookPath);
