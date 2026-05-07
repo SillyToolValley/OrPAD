@@ -400,6 +400,16 @@ const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
+// History-inspection cache is separate from the active run cache so that
+// "user clicked an old run in History" does NOT pollute the Pipeline
+// setup panel's banner / failure cards. To bring an inspected run into
+// the active panel the user must explicitly press Recover, which calls
+// resumeRun and transfers the snapshot via adoptInspectedRunAsActive.
+const machineHistoryInspectionCache = new Map();
+// Tracks the (runbookKey:runId) pairs currently mid-Recover so the
+// History detail can show a spinner instead of the default Recover
+// button. Cleared synchronously in finally.
+const machineHistoryRecoverPending = new Set();
 const machineRunStartPendingPaths = new Set();
 const machineRunPendingActions = new Map();
 const machineRunProgressTimers = new Map();
@@ -3075,8 +3085,11 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const agentReady = isAgentOrchestratedPipeline(validation);
   const localDisabled = checked && validation?.canExecute !== true;
   const handoffDisabled = checked && !agentReady;
-  const selectedRunbookMatchesPreview = runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookKey;
-  const previewRunRecord = getRunbookCache(machineRunRecordCache, runbookPath) || (selectedRunbookMatchesPreview ? lastMachineRunRecord : null);
+  // Pipeline setup panel reflects the ACTIVE run only — clicking around
+  // in History never re-targets the run-bar / lifecycle banner / failure
+  // cards. To bring an inspected run into this panel the user must
+  // press Recover from the sidebar History detail.
+  const previewRunRecord = getActiveMachineRunRecord(runbookPath);
   const previewRunInProgress = isMachineRunInProgress(previewRunRecord, runbookPath);
   const previewRunId = previewRunRecord?.runState?.runId || previewRunRecord?.runId || '';
   const startPending = machineRunStartPendingPaths.has(runbookKey);
@@ -9981,6 +9994,8 @@ function machineRunListForRunbook(runbookPath) {
 function renderMachineRunHistory(runbookPath, currentRunId) {
   const runs = machineRunListForRunbook(runbookPath);
   if (!runs.length) return '';
+  const inspected = getHistoryInspectionRecord(runbookPath);
+  const inspectedRunId = inspected?.runState?.runId || inspected?.runId || '';
   return `
     <div class="runbook-machine-history">
       <div class="runbook-item-title">
@@ -9989,14 +10004,24 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
       </div>
       <div class="runbook-action-row">
         ${runs.slice(0, 6).map(run => {
-          const selected = run.runId === currentRunId;
+          // 'active' chip = the run currently driving the active panel.
+          // 'inspected' chip = the run the user clicked to inspect from
+          // history (read-only). They can be the same run (click your
+          // own active run) or different. Visual distinction matters so
+          // the user knows which one is acting on Pipeline setup.
+          const isActive = run.runId === currentRunId;
+          const isInspected = run.runId && run.runId === inspectedRunId;
+          const classes = [];
+          if (isActive) classes.push('primary');
+          if (isInspected && !isActive) classes.push('history-inspected');
           const label = machineRunDisplayLabel(run);
           const title = [
             machineLifecycleStatusLabel(run.lifecycleStatus),
             machineSummaryStatusLabel(run.summaryStatus),
             machineRunDateLabel(run.updatedAt || run.createdAt),
+            isActive ? 'Active run' : (isInspected ? 'Inspecting (read-only) — press Recover to make active' : 'Click to inspect read-only'),
           ].filter(Boolean).join(' - ');
-          return `<button data-runbook-action="machine-select-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(run.runId || '')}" class="${selected ? 'primary' : ''}" title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
+          return `<button data-runbook-action="machine-select-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(run.runId || '')}"${classes.length ? ` class="${classes.join(' ')}"` : ''} title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
         }).join('')}
       </div>
     </div>
@@ -10094,7 +10119,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       ${machineFailureDetails(record)}
       ${attentionDetails}
       <div class="runbook-action-row">
-        ${runInProgress ? '' : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} title="${escapeHtml(executeDetails)}">Continue</button>`}
+        ${runInProgress ? '' : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} class="${executeDisabled ? '' : 'cta-ready'}" title="${escapeHtml(executeDetails)}">Continue</button>`}
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
         ${!runInProgress && firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Stop Work</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
@@ -10153,6 +10178,55 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   `;
 }
 
+// Read-only History inspection panel. Shown ONLY when the user has clicked
+// a past run in the History strip. Does not let the user mutate the run
+// directly — the only action is Recover, which transfers the snapshot to
+// the active run cache and unlocks the existing Latest Run controls.
+function renderMachineHistoryInspectionPanel(record, runbookPath) {
+  if (!record) return '';
+  const runState = record.runState || {};
+  const runId = runState.runId || record.runId || '';
+  if (!runId) return '';
+  const lifecycle = String(runState.lifecycleStatus || '').toLowerCase();
+  const summary = String(runState.summaryStatus || '').toLowerCase();
+  const runLabel = machineRunDisplayLabel({
+    runId,
+    createdAt: runState.createdAt || record.createdAt,
+    updatedAt: runState.updatedAt || record.updatedAt,
+  });
+  const recoverPending = isHistoryRecoverPending(runbookPath, runId);
+  const failureCount = (sharedFailedAdapterCalls(record) || []).length;
+  const eventCount = (record.events || []).length;
+  const objectives = normalizeRunbookTask(runState.metadata?.taskText || record.metadata?.taskText || '');
+  const recoverButton = recoverPending
+    ? `<button class="runbook-history-recover-pending" disabled title="Recovering this run — please wait">
+         <span class="runbook-spinner" aria-hidden="true"></span>
+         Recovering...
+       </button>`
+    : `<button class="primary" data-runbook-action="machine-recover-inspected" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}" title="Replay this run as the active run. Recovers stale claims if needed and unlocks Continue / Cancel below.">Recover</button>`;
+  return `
+    <section class="runbook-panel-section runbook-history-inspection">
+      <h3>Inspecting from History</h3>
+      <div class="runbook-muted">
+        Read-only snapshot. The Pipeline setup panel is unaffected. Press Recover to make this the active run.
+      </div>
+      <div class="runbook-chip-row">
+        <span class="runbook-chip ${lifecycle ? `state-${escapeHtml(lifecycle)}` : ''}">${escapeHtml(machineLifecycleStatusLabel(lifecycle))}</span>
+        <span class="runbook-chip ${summary ? `state-${escapeHtml(summary)}` : ''}">${escapeHtml(machineSummaryStatusLabel(summary))}</span>
+        <span class="runbook-chip">${escapeHtml(runLabel)}</span>
+      </div>
+      ${objectives ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(objectives)}</p>` : ''}
+      <div class="runbook-muted runbook-history-inspection-meta">
+        ${escapeHtml(machineCountLabel(eventCount, 'event'))} ${failureCount ? `· ${escapeHtml(machineCountLabel(failureCount, 'failed adapter call'))}` : ''}
+      </div>
+      <div class="runbook-action-row">
+        ${recoverButton}
+        ${recoverPending ? '' : `<button data-runbook-action="machine-history-close" data-path="${escapeHtml(runbookPath)}" title="Close this read-only view.">Close inspection</button>`}
+      </div>
+    </section>
+  `;
+}
+
 function renderRunbooksPanel() {
   if (!runbooksContentEl) return;
   if (!workspacePath) {
@@ -10176,7 +10250,8 @@ function renderRunbooksPanel() {
   const legacyCount = legacyItems.length;
   const selected = selectedRunbookPath || '';
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
-  const selectedMachineRunRecord = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, selected);
+  const selectedMachineRunRecord = selected ? getActiveMachineRunRecord(selected) : null;
+  const inspectedHistoryRecord = selected ? getHistoryInspectionRecord(selected) : null;
   const selectedKey = runbookNormalizePath(selected).toLowerCase();
   const workspaceMeta = [
     machineCountLabel(pipelineCount, 'pipeline'),
@@ -10234,6 +10309,7 @@ function renderRunbooksPanel() {
     ` : ''}
     ${renderRunRecordPanel(selected ? selectedRunRecord : null)}
     ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null, selected)}
+    ${selected && inspectedHistoryRecord ? renderMachineHistoryInspectionPanel(inspectedHistoryRecord, selected) : ''}
   `;
 }
 
@@ -10600,12 +10676,68 @@ async function loadMachineRunRecord(runbookPath, runId) {
   };
 }
 
+function getHistoryInspectionRecord(runbookPath) {
+  if (!runbookPath) return null;
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  return machineHistoryInspectionCache.get(key) || null;
+}
+
+function setHistoryInspectionRecord(runbookPath, snapshot) {
+  if (!runbookPath) return;
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  if (snapshot) machineHistoryInspectionCache.set(key, snapshot);
+  else machineHistoryInspectionCache.delete(key);
+}
+
+function clearHistoryInspection(runbookPath) {
+  setHistoryInspectionRecord(runbookPath, null);
+}
+
+function machineHistoryRecoverKey(runbookPath, runId) {
+  return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId || ''}`;
+}
+
+function isHistoryRecoverPending(runbookPath, runId) {
+  return machineHistoryRecoverPending.has(machineHistoryRecoverKey(runbookPath, runId));
+}
+
+function setHistoryRecoverPending(runbookPath, runId, pending) {
+  const key = machineHistoryRecoverKey(runbookPath, runId);
+  if (pending) machineHistoryRecoverPending.add(key);
+  else machineHistoryRecoverPending.delete(key);
+}
+
+// Read the actual active run for this runbook (NOT the history inspection).
+// Pipeline setup panel and Latest Run "Active" subsection MUST use this so
+// they are not polluted by the user clicking around in History.
+function getActiveMachineRunRecord(runbookPath) {
+  if (!runbookPath) return null;
+  const cached = getRunbookCache(machineRunRecordCache, runbookPath);
+  if (cached) return cached;
+  const selectedMatches = selectedRunbookPath
+    && runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+  return selectedMatches ? lastMachineRunRecord : null;
+}
+
 async function selectMachineRunRecord(runbookPath, runId) {
+  // History inspection: the user wants to look at a past run without
+  // turning it into the current active run. The active run cache is
+  // intentionally NOT touched here — Recover is the explicit action
+  // that adopts an inspected snapshot as the active run.
+  const active = getActiveMachineRunRecord(runbookPath);
+  const activeRunId = active?.runState?.runId || active?.runId || '';
+  if (activeRunId && activeRunId === runId) {
+    // Clicking the run that is already active = clear the inspection
+    // overlay so the panel collapses back to the single active view.
+    clearHistoryInspection(runbookPath);
+    selectedRunbookPath = runbookPath;
+    renderRunbooksPanel();
+    return;
+  }
   const snapshot = await loadMachineRunRecord(runbookPath, runId);
   if (!snapshot) return;
   selectedRunbookPath = runbookPath;
-  lastMachineRunRecord = snapshot;
-  setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  setHistoryInspectionRecord(runbookPath, snapshot);
   renderRunbooksPanel();
 }
 
@@ -10733,6 +10865,11 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord) {
     events: created.event ? [created.event] : [],
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+  // Starting a fresh run always clears any History inspection overlay —
+  // the user explicitly asked for a new run, not to keep inspecting an
+  // old one. Without this, the History detail panel would linger and
+  // mask the fresh run's controls.
+  clearHistoryInspection(runbookPath);
   if (externalResearch) {
     machineRunExternalResearchDecisions.set(externalResearchDecisionKey(runbookPath, created.runId), externalResearch);
   }
@@ -10884,6 +11021,79 @@ async function resumeSelectedMachineRunInner(runbookPath, runId) {
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
+}
+
+// Adopt the inspected History snapshot as the active run. The user's
+// mental model: clicking a History entry is read-only; pressing Recover
+// brings that run "back" — recovers stale claims if non-terminal, then
+// promotes the snapshot to the active cache so Continue / Cancel work
+// against it.
+async function recoverInspectedMachineRun(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId) return;
+  const inspected = getHistoryInspectionRecord(runbookPath);
+  if (!inspected) {
+    alert('Recover ignored: nothing is currently inspected.');
+    return;
+  }
+  const inspectedRunId = inspected.runState?.runId || inspected.runId || '';
+  if (inspectedRunId !== runId) {
+    alert('Recover ignored: inspection target changed. Re-select from History.');
+    return;
+  }
+  const lifecycle = String(inspected.runState?.lifecycleStatus || '').toLowerCase();
+  const isTerminal = ['completed', 'cancelled', 'canceled', 'failed'].includes(lifecycle);
+  // Lock the per-run mutation key so Continue / Cancel can not race the
+  // recovery in flight, and toast on duplicate Recover clicks.
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, runId);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Recover');
+    return;
+  }
+  setHistoryRecoverPending(runbookPath, runId, true);
+  renderRunbooksPanel();
+  try {
+    let adopted = inspected;
+    if (!isTerminal && window.orpad?.machine?.resumeRun) {
+      // Non-terminal runs go through resumeRun so stale claims / write
+      // set locks are repaired. resumeRun returns a refreshed snapshot
+      // that supersedes the inspected one.
+      if (!await ensureMachineRuntimeReady()) return;
+      const token = await requestMachineCapabilityToken();
+      if (!token) return;
+      const resumed = await window.orpad.machine.resumeRun({
+        workspacePath,
+        pipelinePath: runbookPath,
+        runId,
+        capabilityToken: token,
+        exportLatestRun: true,
+      });
+      if (!resumed?.success) {
+        if (resumed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+        alert(resumed?.error || 'Recovery failed.');
+        return;
+      }
+      adopted = {
+        ...inspected,
+        ...resumed,
+        exported: resumed.exported || resumed.export || inspected.exported || null,
+      };
+    }
+    // Adopt as active and clear the inspection overlay.
+    selectedRunbookPath = runbookPath;
+    lastMachineRunRecord = adopted;
+    setRunbookCache(machineRunRecordCache, runbookPath, adopted);
+    clearHistoryInspection(runbookPath);
+    await refreshMachineRunList(runbookPath);
+    renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
+    void refreshWorkspaceRunbookSummary();
+  } catch (err) {
+    alert(err?.message || 'Recovery failed.');
+  } finally {
+    setHistoryRecoverPending(runbookPath, runId, false);
+    releaseMachineRunMutationLock(mutationLock);
+    renderRunbooksPanel();
+  }
 }
 
 async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
@@ -12269,6 +12479,11 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-view-artifacts') await openMachineArtifactViewer(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-select-run') await selectMachineRunRecord(targetPath, button.dataset.runId || '');
+    else if (action === 'machine-recover-inspected') await recoverInspectedMachineRun(targetPath, button.dataset.runId || '');
+    else if (action === 'machine-history-close') {
+      clearHistoryInspection(targetPath);
+      renderRunbooksPanel();
+    }
     else if (action === 'enable-machine') {
       const ok = await enableManagedRunsForSession();
       if (ok && targetPath) {
