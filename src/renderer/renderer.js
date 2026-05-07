@@ -9924,19 +9924,26 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
 function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = selectedRunbookPath) {
   if (!record) {
     // Latest-run hydration may fail or race (IPC error, stale cache,
-    // pipeline validation error, etc.). Without a fallback the entire
-    // Latest Run section disappears and the user has no UI surface
-    // for the run at all. Always show a panel with a refresh action
-    // and, if we have any history, the run-picker buttons too.
+    // pipeline validation error, machine IPC feature still disabled,
+    // etc.). Without a fallback the entire Latest Run section
+    // disappears and the user has no UI surface for the run at all.
     if (runbookPath) {
       const runs = machineRunListForRunbook(runbookPath);
+      const machineDisabled = machineRuntimeStatus?.enabled !== true;
+      const enableButton = machineDisabled && canEnableManagedRunsForSession()
+        ? `<button class="primary" data-runbook-action="enable-machine">Enable Machine IPC</button>`
+        : '';
+      const message = machineDisabled
+        ? 'Machine IPC is disabled. Enable it to load runs (read-only listing also requires the feature gate).'
+        : (runs.length
+          ? 'Latest run could not be loaded automatically. Pick a run below to inspect or continue it.'
+          : 'No run record loaded yet. Click Refresh to fetch the run history.');
       return `
         <section class="runbook-panel-section">
           <h3>Latest Run</h3>
-          <div class="runbook-empty">${escapeHtml(runs.length
-            ? 'Latest run could not be loaded automatically. Pick a run below to inspect or continue it.'
-            : 'No run record loaded yet. Click Refresh to fetch the run history, or start a new run.')}</div>
+          <div class="runbook-empty">${escapeHtml(message)}</div>
           <div class="runbook-action-row">
+            ${enableButton}
             <button data-runbook-action="refresh-run-list" data-path="${escapeHtml(runbookPath)}">Refresh runs</button>
           </div>
           ${runs.length ? renderMachineRunHistory(runbookPath, '') : ''}
@@ -12092,15 +12099,69 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-view-artifacts') await openMachineArtifactViewer(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-select-run') await selectMachineRunRecord(targetPath, button.dataset.runId || '');
+    else if (action === 'enable-machine') {
+      const ok = await enableManagedRunsForSession();
+      if (ok && targetPath) {
+        await refreshMachineRunList(targetPath);
+        const latest = await loadLatestMachineRunRecord(targetPath);
+        if (latest) {
+          lastMachineRunRecord = latest;
+          setRunbookCache(machineRunRecordCache, targetPath, lastMachineRunRecord);
+        }
+        renderRunbooksPanel();
+      }
+    }
     else if (action === 'refresh-run-list') {
-      // Force-refetch the machine run list and try to hydrate the
-      // latest record. Used when latest-run auto-hydration silently
-      // failed and the panel rendered the empty fallback.
-      await refreshMachineRunList(targetPath);
-      const latest = await loadLatestMachineRunRecord(targetPath);
-      if (latest) {
-        lastMachineRunRecord = latest;
-        setRunbookCache(machineRunRecordCache, targetPath, lastMachineRunRecord);
+      console.log('[refresh-run-list] start', { targetPath, workspacePath, hasListRuns: Boolean(window.orpad?.machine?.listRuns), enabled: machineRuntimeStatus?.enabled });
+      if (!workspacePath) {
+        notifyFormatError('Runbooks', new Error('Workspace path is not set. Open a workspace first.'));
+        return;
+      }
+      if (!window.orpad?.machine?.listRuns) {
+        notifyFormatError('Runbooks', new Error('Machine IPC bridge is unavailable. Restart OrPad.'));
+        return;
+      }
+      // If the machine IPC feature is disabled, every IPC (including
+      // read-only listRuns) is gated. Offer to enable it for this
+      // session before retrying.
+      if (machineRuntimeStatus?.enabled !== true && canEnableManagedRunsForSession()) {
+        const enabled = await enableManagedRunsForSession();
+        if (!enabled) {
+          notifyFormatError('Runbooks', new Error('Machine IPC is disabled. Enable managed runs and try again.'));
+          return;
+        }
+      }
+      let listed;
+      try {
+        listed = await window.orpad.machine.listRuns({ workspacePath, pipelinePath: targetPath });
+      } catch (e) {
+        console.error('[refresh-run-list] listRuns threw', e);
+        notifyFormatError('Runbooks', e);
+        return;
+      }
+      console.log('[refresh-run-list] listRuns result', listed);
+      if (!listed?.success) {
+        notifyFormatError('Runbooks', new Error(`listRuns failed: ${listed?.code || 'unknown'} ${listed?.error || listed?.message || ''}`));
+        return;
+      }
+      const runs = Array.isArray(listed.runs) ? listed.runs : [];
+      setRunbookCache(machineRunListCache, targetPath, { runs, loadedAt: new Date().toISOString() });
+      if (!runs.length) {
+        notifyFormatError('Runbooks', new Error('listRuns returned 0 runs for this pipeline.'));
+        renderRunbooksPanel();
+        return;
+      }
+      const latestId = runs[0]?.runId;
+      try {
+        const record = await loadMachineRunRecord(targetPath, latestId);
+        console.log('[refresh-run-list] loaded record', { runId: latestId, ok: Boolean(record), lifecycle: record?.runState?.lifecycleStatus });
+        if (record) {
+          lastMachineRunRecord = record;
+          setRunbookCache(machineRunRecordCache, targetPath, lastMachineRunRecord);
+        }
+      } catch (e) {
+        console.error('[refresh-run-list] loadMachineRunRecord threw', e);
+        notifyFormatError('Runbooks', e);
       }
       renderRunbooksPanel();
     }
