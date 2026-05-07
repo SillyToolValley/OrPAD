@@ -2044,9 +2044,29 @@ async function executeMachineRunStep(options = {}) {
         probeFanoutExecuted = true;
       }
     } else if (node.nodePath === triageNode.nodePath) {
+      // The probe fanout filter excludes probes that were already
+      // resolved (completed / skipped) in a prior run-step. When every
+      // probe is resolved, this step's fanout is a no-op and `probes`
+      // is empty — but the candidate-inventory schema requires
+      // selectedProbeNodes and items to each have at least one entry.
+      // Synthesize empty-pass rows from the resolved probe nodes so
+      // triage can proceed without a schema violation.
+      const inventoryProbes = probes.length
+        ? probes
+        : probeNodes.map(probeEntry => ({
+          nodePath: probeEntry.nodePath,
+          candidateProposals: [],
+          result: {
+            summaryStatus: 'partial',
+            emptyPass: {
+              reason: 'Probe was already resolved (completed or skipped) before this run-step.',
+              evidence: [`node:${probeEntry.nodePath}`],
+            },
+          },
+        }));
       candidateInventory = await registerCandidateInventoryArtifact(runRoot, {
         runId,
-        probes,
+        probes: inventoryProbes,
       });
       const triageCandidates = hasHarness
         ? candidates
