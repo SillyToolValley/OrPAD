@@ -2456,6 +2456,23 @@ body.json-diff-mode #preview-pane {
   stroke: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
   opacity: 0.55;
 }
+/* Phase 2.6: traversed-but-not-finalized — source completed and
+ * target is still running/queued. Distinct from `active` (which
+ * applies while the run itself is in flight) so the user can see
+ * the in-progress branch even when the run is paused. */
+.orch-graph-edges .orch-transition.runtime-traversed {
+  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 50%, var(--accent-color, #6cb6ff));
+  stroke-width: 3.5;
+  stroke-dasharray: 6 3;
+}
+/* Phase 2.6: untraversed — a downstream branch the dispatcher did
+ * NOT pick (selector / conditional). Dimmed and dashed so the
+ * "path taken" stands out. */
+.orch-graph-edges .orch-transition.runtime-untraversed {
+  stroke: color-mix(in srgb, var(--text-tertiary) 30%, transparent);
+  stroke-dasharray: 3 4;
+  opacity: 0.4;
+}
 .orch-transition-handle {
   fill: var(--accent-color);
   stroke: var(--bg-primary);

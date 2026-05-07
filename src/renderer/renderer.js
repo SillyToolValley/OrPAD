@@ -9993,6 +9993,24 @@ function machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus, runProjec
   if (targetState === 'cancelled' || sourceState === 'cancelled') return { state: 'muted' };
   if (['failed', 'blocked'].includes(targetState)) return { state: 'blocked' };
   if (sourceState === 'completed' && targetState === 'completed') return { state: 'completed' };
+  // Phase 2.6: traversed-but-not-finalized (source done, target started
+  // but not yet completed) gets a distinct chip so it is visually
+  // separable from 'completed' (both endpoints done) and 'active'
+  // (target queued/running and the run is still live).
+  if (sourceState === 'completed' && ['running', 'queued', 'skipped'].includes(targetState)) {
+    return { state: 'traversed' };
+  }
+  // Untraversed: a path the dispatcher did NOT take. Detect this when
+  // the source has a terminal lifecycle event but the target has no
+  // event at all in this run. Only meaningful once at least one node
+  // has progressed (otherwise everything looks untraversed).
+  if (
+    runProjection?.statuses?.size > 0
+    && ['completed', 'skipped', 'failed', 'blocked', 'cancelled'].includes(sourceState)
+    && !targetState
+  ) {
+    return { state: 'untraversed' };
+  }
   return null;
 }
 
