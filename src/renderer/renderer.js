@@ -10645,10 +10645,23 @@ async function startSelectedMachineRun(runbookPath) {
 }
 
 async function executeSelectedMachineRunStep(runbookPath, runId, providedExternalResearch = null) {
-  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) return;
-  if (!await ensureMachineRuntimeReady()) return;
+  console.log('[execute-run-step] click', { runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep), workspacePath });
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) {
+    console.warn('[execute-run-step] preconditions missing — silent return', { workspacePath, runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep) });
+    if (!runId) alert('Continue ignored: no run is selected. Pick a run from history first.');
+    return;
+  }
+  if (!await ensureMachineRuntimeReady()) {
+    console.warn('[execute-run-step] ensureMachineRuntimeReady returned false');
+    return;
+  }
   const token = await requestMachineCapabilityToken();
-  if (!token) return;
+  if (!token) {
+    console.warn('[execute-run-step] capability token unavailable');
+    alert('Continue ignored: capability token was not provided.');
+    return;
+  }
+  console.log('[execute-run-step] passed gates, will invoke executeRunStep');
   const taskText = currentRunbookTaskText();
   const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText, runId, providedExternalResearch);
   if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
@@ -10668,7 +10681,9 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
         ...(externalResearch ? { externalResearch } : {}),
       },
     });
+    console.log('[execute-run-step] IPC result', { success: executed?.success, code: executed?.code, error: executed?.error || executed?.message, lifecycle: executed?.runState?.lifecycleStatus, summary: executed?.runState?.summaryStatus });
   } catch (err) {
+    console.error('[execute-run-step] IPC threw', err);
     setMachineRunActionPending(runbookPath, runId, false);
     try {
       await refreshMachineRunPanelSnapshot(runbookPath, runId);
@@ -10680,11 +10695,14 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
   }
   setMachineRunActionPending(runbookPath, runId, false);
   if (!executed?.success) {
+    console.warn('[execute-run-step] executeRunStep returned non-success', executed);
     if (executed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
       alert(executed?.error || 'Managed run step failed.');
       return;
     }
+    // Surface server-side errors so the user is not stuck without a clue.
+    alert(executed?.error || executed?.message || `Run step failed: ${executed?.code || 'unknown'}`);
     lastMachineRunRecord = machineUpdateRunRecord(runbookPath, executed);
     await refreshMachineRunList(runbookPath);
     renderRunbooksPanel();
