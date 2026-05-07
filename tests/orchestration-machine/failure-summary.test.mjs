@@ -489,6 +489,40 @@ test('end-to-end: skip-node IPC writes a node.skipped event for the failing prob
   }
 });
 
+test('activeNodeExecutionsFromEvents drops a still-started attempt when a later attempt produced a terminal event for the same nodePath', () => {
+  // Reproduces the stalled-run case: probe attempt 2 was started but
+  // never produced a terminal event because the user clicked Skip,
+  // which appended node.skipped at attempt 3 (a different
+  // nodeExecutionId). The attempt-2 entry must NOT keep the path
+  // marked as active or assertNoActiveNodeExecutions will refuse every
+  // subsequent run-step.
+  const machineModule = require('../../src/main/orchestration-machine/machine.js');
+  if (typeof machineModule.__test_activeNodeExecutionsFromEvents !== 'function') return;
+  const events = [
+    { sequence: 1, eventType: 'node.scheduled', nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-1', attempt: 1 } },
+    { sequence: 2, eventType: 'node.started',   nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-1', attempt: 1 } },
+    { sequence: 3, eventType: 'node.failed',    nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-1', attempt: 1 } },
+    { sequence: 4, eventType: 'node.scheduled', nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-2', attempt: 2 } },
+    { sequence: 5, eventType: 'node.started',   nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-2', attempt: 2 } },
+    // attempt 2 never reached a terminal event. Then the user skipped:
+    { sequence: 6, eventType: 'node.skipped',   nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-3', attempt: 3 } },
+  ];
+  const active = machineModule.__test_activeNodeExecutionsFromEvents(events);
+  assert.equal(active.length, 0, `expected zero active executions after a later skip, got ${active.length}`);
+});
+
+test('activeNodeExecutionsFromEvents still reports an in-flight attempt with no later terminal event', () => {
+  const machineModule = require('../../src/main/orchestration-machine/machine.js');
+  if (typeof machineModule.__test_activeNodeExecutionsFromEvents !== 'function') return;
+  const events = [
+    { sequence: 1, eventType: 'node.scheduled', nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-1', attempt: 1 } },
+    { sequence: 2, eventType: 'node.started',   nodePath: 'main/probe', payload: { nodeExecutionId: 'run:main/probe:attempt-1', attempt: 1 } },
+  ];
+  const active = machineModule.__test_activeNodeExecutionsFromEvents(events);
+  assert.equal(active.length, 1, 'a started attempt with no terminal event must remain active');
+  assert.equal(active[0].nodePath, 'main/probe');
+});
+
 test('latestNodeResolvedEvent returns null when latest event is not a resolution (retry in progress)', () => {
   // The probe completed at attempt 1, then re-started at attempt 2. The
   // dispatcher must NOT treat the stale completion as resolution and

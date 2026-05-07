@@ -114,6 +114,22 @@ function nodeExecutionKey(event) {
 
 function activeNodeExecutionsFromEvents(events = []) {
   const active = new Map();
+  // Track the highest sequence at which any terminal lifecycle event
+  // was recorded for each nodePath. A skip / completion / failure
+  // recorded at attempt N+1 implicitly retires the still-active
+  // attempt N for that path — otherwise a user who clicks Skip while
+  // attempt 2 is mid-flight gets a stalled run because attempt 2's
+  // node.started sits in the active set forever and assertNoActive...
+  // refuses every subsequent run-step.
+  const latestTerminalSeqByPath = new Map();
+  for (const event of events) {
+    if (!event || !String(event.eventType || '').startsWith('node.')) continue;
+    if (!['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(event.eventType)) continue;
+    const path = event.nodePath || '';
+    if (!path) continue;
+    const seq = Number(event.sequence) || 0;
+    if (seq > (latestTerminalSeqByPath.get(path) || 0)) latestTerminalSeqByPath.set(path, seq);
+  }
   for (const event of events) {
     if (!String(event?.eventType || '').startsWith('node.')) continue;
     const key = nodeExecutionKey(event);
@@ -122,11 +138,19 @@ function activeNodeExecutionsFromEvents(events = []) {
       active.set(key, {
         nodeExecutionId: key,
         nodePath: event.nodePath || '',
-        startedSequence: event.sequence,
+        startedSequence: Number(event.sequence) || 0,
       });
     } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(event.eventType)) {
       active.delete(key);
     }
+  }
+  // Final pass: drop active entries that have a later terminal event
+  // for the same nodePath (e.g. attempt 2 still marked active because
+  // its terminal event never fired, but attempt 3 was skipped at a
+  // higher sequence — the path is effectively resolved).
+  for (const [key, value] of [...active.entries()]) {
+    const terminalSeq = latestTerminalSeqByPath.get(value.nodePath) || 0;
+    if (terminalSeq > value.startedSequence) active.delete(key);
   }
   return [...active.values()];
 }
@@ -2251,4 +2275,5 @@ module.exports = {
   selectNodes,
   supportNodesForExecution,
   __test_latestNodeResolvedEvent: latestNodeResolvedEvent,
+  __test_activeNodeExecutionsFromEvents: activeNodeExecutionsFromEvents,
 };

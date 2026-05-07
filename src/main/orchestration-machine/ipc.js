@@ -1350,16 +1350,31 @@ async function skipNodeHandler(event, authority, request = {}) {
   const runRoot = await resolveMachineRunRoot(context, runId);
   const reason = String(request.reason || 'user-skipped').trim() || 'user-skipped';
   const events = await readMachineEvents(runRoot);
-  // Use the next attempt index for this node to avoid duplicating an existing
-  // attempt id. node.skipped events are append-only so an already-skipped node
-  // stays skipped — re-skip just records another decision marker.
-  let priorAttempts = 0;
+  // Prefer the attempt that is currently in flight: if there is a
+  // node.started for this nodePath at attempt N with no terminal event
+  // (completed/failed/blocked/skipped) for that attempt yet, the user
+  // is skipping THAT attempt. Recording a skipped event under the
+  // same attempt cleans up the active execution. If nothing is in
+  // flight, fall back to max(attempt) + 1 so the skip still records
+  // as a fresh decision marker.
+  let activeAttempt = 0;
+  let maxAttempt = 0;
+  const attemptStatus = new Map();
   for (const e of events) {
     if (!e || (e.nodePath || '') !== nodePath) continue;
-    const attempt = Number(e.payload?.attempt || 0);
-    if (Number.isFinite(attempt) && attempt > priorAttempts) priorAttempts = attempt;
+    const a = Number(e.payload?.attempt || 0);
+    if (!Number.isFinite(a) || a <= 0) continue;
+    if (a > maxAttempt) maxAttempt = a;
+    if (e.eventType === 'node.started') {
+      attemptStatus.set(a, 'started');
+    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(e.eventType)) {
+      attemptStatus.set(a, 'terminal');
+    }
   }
-  const attempt = priorAttempts + 1;
+  for (const [a, status] of attemptStatus.entries()) {
+    if (status === 'started' && a > activeAttempt) activeAttempt = a;
+  }
+  const attempt = activeAttempt > 0 ? activeAttempt : maxAttempt + 1;
   const skippedEvent = await recordNodeLifecycleEvent(runRoot, {
     runId,
     nodePath,
@@ -1372,6 +1387,32 @@ async function skipNodeHandler(event, authority, request = {}) {
       decidedAt: new Date().toISOString(),
     },
   });
+  // After the skip, fix up a stale 'running' lifecycle if there are no
+  // active node executions left. Without this the run can stay stuck
+  // in lifecycleStatus='running' even though every probe / gate has
+  // resolved, and assertRunCanExecuteStep will refuse the next Continue
+  // click. We do this only on a clean transition (running → waiting)
+  // and only when activeNodeExecutionsFromEvents agrees the run is
+  // idle.
+  try {
+    const updatedEvents = await readMachineEvents(runRoot);
+    const runStateNow = await readRunState(runRoot);
+    const lifecycle = runStateNow?.lifecycleStatus;
+    if (lifecycle === 'running') {
+      const machineModule = require('./machine');
+      const active = typeof machineModule.__test_activeNodeExecutionsFromEvents === 'function'
+        ? machineModule.__test_activeNodeExecutionsFromEvents(updatedEvents)
+        : [];
+      if (active.length === 0) {
+        await appendRunLifecycleStatus(runRoot, {
+          runId,
+          toState: 'waiting',
+          reason: 'machine.skip-node.idle',
+          payload: { nodePath, attempt },
+        }).catch(() => null);
+      }
+    }
+  } catch { /* best-effort cleanup; do not fail the skip if this fails */ }
   return {
     success: true,
     ok: true,
