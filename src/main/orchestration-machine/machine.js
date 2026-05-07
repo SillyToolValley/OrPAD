@@ -1088,16 +1088,25 @@ function latestNodeCompletedEvent(events, nodePath) {
   )) || null;
 }
 
-// A node is "resolved" for this run when its latest lifecycle event is
-// either node.completed (success) or node.skipped (user dismissed). The
-// dispatcher must NOT re-attempt a resolved node — otherwise clicking
-// Skip on a failing probe would just re-fire the same probe on the next
-// run-step and surface the same failure card again.
+// A node is "resolved" for this run when its LATEST lifecycle event is
+// node.completed or node.skipped. We must look at the actual latest
+// node.* event, not just "the most recent completed event" — otherwise
+// a node that completed at attempt 1 then re-started/failed at attempt
+// 2 would be wrongly treated as still resolved and the dispatcher would
+// suppress its retry. (Caught by codex review of the prior version.)
 function latestNodeResolvedEvent(events, nodePath) {
-  return [...events].reverse().find(event => (
-    (event.eventType === 'node.completed' || event.eventType === 'node.skipped')
-    && event.nodePath === nodePath
-  )) || null;
+  let latestNodeEvent = null;
+  for (const event of events) {
+    if (!event || !String(event.eventType || '').startsWith('node.')) continue;
+    if (event.nodePath !== nodePath) continue;
+    if (!latestNodeEvent || (Number(event.sequence) || 0) > (Number(latestNodeEvent.sequence) || 0)) {
+      latestNodeEvent = event;
+    }
+  }
+  if (!latestNodeEvent) return null;
+  if (latestNodeEvent.eventType === 'node.completed') return latestNodeEvent;
+  if (latestNodeEvent.eventType === 'node.skipped') return latestNodeEvent;
+  return null;
 }
 
 function hasUnresolvedSupportBlock(events, orderedNodes) {
@@ -1974,9 +1983,10 @@ async function executeMachineRunStep(options = {}) {
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
     // User-skipped nodes are terminal for this run, regardless of node
-    // type. This is what makes the Skip / Skip gate UI actions stick:
-    // without it, the for-loop would re-enter the support node,
-    // re-evaluate evidence, and re-emit node.blocked.
+    // type. Without this guard the for-loop would re-enter a skipped
+    // support gate, re-evaluate evidence, and re-emit node.blocked.
+    // (node.cancelled is not yet a terminal lifecycle status — adding
+    // its full wiring is tracked separately.)
     if (latestLifecycleByPath.get(node.nodePath)?.eventType === 'node.skipped') continue;
     if (
       resumeAfterSupportBlock
@@ -2240,4 +2250,5 @@ module.exports = {
   selectNode,
   selectNodes,
   supportNodesForExecution,
+  __test_latestNodeResolvedEvent: latestNodeResolvedEvent,
 };

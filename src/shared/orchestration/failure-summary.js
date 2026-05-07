@@ -15,6 +15,17 @@ const SUPPRESSED_LIFECYCLE_STATES = Object.freeze([
 // approval, barrier merge, patch review). Their node.blocked events are not
 // system failures — they belong on the lifecycle banner, not the failure
 // card list.
+// Node types whose `node.blocked` events represent normal lifecycle
+// gating (waiting for evidence, approval, barrier merge, selector
+// decision) rather than a system failure. Their `node.blocked` events
+// are filtered out of the failure-card list and surfaced via
+// gateBlockedNodesFromRecord instead.
+//
+// IMPORTANT: this list ONLY suppresses node.blocked. node.failed for
+// these types still surfaces as a system failure card — a gate that
+// crashes (selector validator threw, exit gate evaluator threw) is a
+// real bug, not a normal block. The Pass 2 filter checks event type
+// before checking nodeType.
 const LIFECYCLE_GATE_NODE_TYPES = Object.freeze([
   'orpad.exit',
   'orpad.gate',
@@ -22,6 +33,7 @@ const LIFECYCLE_GATE_NODE_TYPES = Object.freeze([
   'orpad.artifactContract',
   'orpad.patchReview',
   'orpad.workQueue',
+  'orpad.selector',
 ]);
 // worker.result statuses that classify a work item rather than report a
 // system failure. The Machine returns these as part of normal queue state
@@ -40,9 +52,14 @@ function isPlainObject(value) {
 
 function failureKeyFor(event) {
   if (!event) return '';
+  // Build the key from EVERY identifier we have, not OR-fallback through
+  // them. Two events that share a nodePath but have different
+  // payload.itemId values must produce different keys; otherwise they
+  // collapse into a single row. (Caught by codex review v3.)
+  const item = event.itemId || event.payload?.itemId || '';
   return event.payload?.adapterCallId
     || event.payload?.nodeExecutionId
-    || `${event.eventType}:${event.nodePath || event.itemId || ''}:${event.payload?.attemptId || event.payload?.attempt || event.sequence || ''}`;
+    || `${event.eventType}:${event.nodePath || ''}:${item}:${event.payload?.attemptId || event.payload?.attempt || event.sequence || ''}`;
 }
 
 function failureLabelFor(event) {
@@ -131,17 +148,18 @@ function failedAdapterCallsFromRecord(record) {
     });
   }
 
-  // Pass 2: node lifecycle failures without adapter result coverage. Skip
-  // gate-style nodes (orpad.exit / gate / barrier / artifactContract / patchReview /
-  // workQueue) — their blocked status is part of normal lifecycle (waiting on
-  // evidence, approval, barrier merge) and is reflected in the lifecycle
-  // banner, not as a system failure card.
+  // Pass 2: node lifecycle failures without adapter result coverage.
+  // Suppress ONLY node.blocked for gate-style node types — their
+  // blocked status is normal lifecycle (waiting on evidence, approval,
+  // barrier merge, selector decision) and is reflected in the lifecycle
+  // banner. node.failed for the same node types is still a real
+  // failure (the gate's evaluator threw) and must surface as a card.
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (!event) continue;
     if (!NODE_FAILURE_EVENT_TYPES.includes(event.eventType)) continue;
     const nodeType = String(event.payload?.nodeType || '').trim();
-    if (LIFECYCLE_GATE_NODE_TYPES_SET.has(nodeType)) continue;
+    if (event.eventType === 'node.blocked' && LIFECYCLE_GATE_NODE_TYPES_SET.has(nodeType)) continue;
     const nodePath = event.nodePath || '';
     if (isResolvedAfter(nodePath, event.sequence)) continue;
     if ([...seen.values()].some(f => f.nodePath === nodePath)) continue;
@@ -190,47 +208,51 @@ function shouldShowFailureFallback(record, failures) {
   return lifecycleStatus === 'failed' || summaryStatus === 'blocked';
 }
 
-// node lifecycle events that supersede a prior node.blocked — once the
-// dispatcher records any of these for a node at a higher sequence, the
-// node is no longer "currently blocked".
+// Lifecycle events that supersede a prior node.blocked. A `node.started`
+// or `node.running` event is NOT a resolution — a retry that has not
+// produced a terminal result yet should leave the gate marked as
+// blocked. (Caught by codex review.) Only terminal lifecycle events
+// resolve a block.
 const NODE_BLOCK_RESOLUTION_EVENT_TYPES = new Set([
-  'node.skipped', 'node.completed', 'node.started', 'node.running',
-  'node.failed', 'node.cancelled',
+  'node.skipped', 'node.completed', 'node.failed', 'node.cancelled',
 ]);
 
 function gateBlockedNodesFromRecord(record) {
   const events = Array.isArray(record?.events) ? record.events : [];
-  // Walk forward, tracking the latest lifecycle event per nodePath. A gate
-  // is currently blocked only if its most recent lifecycle event is
-  // `node.blocked` and the nodeType is gate-style.
-  const latest = new Map();
+  // Track the latest blocked AND the latest resolution per nodePath. A
+  // gate is currently blocked when its latest blocked sequence is
+  // greater than its latest resolution sequence.
+  const latestBlock = new Map();
+  const latestResolution = new Map();
   for (const event of events) {
-    if (!event) continue;
-    const isBlock = event.eventType === 'node.blocked';
-    const isResolution = NODE_BLOCK_RESOLUTION_EVENT_TYPES.has(event.eventType);
-    if (!isBlock && !isResolution) continue;
-    const nodePath = event.nodePath || '';
-    if (!nodePath) continue;
+    if (!event || !event.nodePath) continue;
     const sequence = Number(event.sequence) || 0;
-    const prior = latest.get(nodePath);
-    if (!prior || sequence > prior.sequence) {
-      latest.set(nodePath, { event, sequence });
+    if (event.eventType === 'node.blocked') {
+      const prior = latestBlock.get(event.nodePath);
+      if (!prior || sequence > prior.sequence) {
+        latestBlock.set(event.nodePath, { event, sequence });
+      }
+    } else if (NODE_BLOCK_RESOLUTION_EVENT_TYPES.has(event.eventType)) {
+      const prior = latestResolution.get(event.nodePath) || 0;
+      if (sequence > prior) latestResolution.set(event.nodePath, sequence);
     }
   }
   const out = [];
-  for (const { event } of latest.values()) {
-    if (event.eventType !== 'node.blocked') continue;
+  for (const [nodePath, { event, sequence }] of latestBlock.entries()) {
+    if ((latestResolution.get(nodePath) || 0) >= sequence) continue;
     const nodeType = String(event.payload?.nodeType || '').trim();
     if (!LIFECYCLE_GATE_NODE_TYPES_SET.has(nodeType)) continue;
     out.push({
-      nodePath: event.nodePath,
+      nodePath,
       nodeType,
       reason: event.payload?.reason || event.reason || '',
-      sequence: Number(event.sequence) || 0,
+      sequence,
       timestamp: event.timestamp || '',
     });
   }
-  return out.sort((a, b) => a.nodePath.localeCompare(b.nodePath));
+  // Sort by recency (newest blocker first) so the lifecycle banner
+  // surfaces the freshest issue at the top.
+  return out.sort((a, b) => b.sequence - a.sequence);
 }
 
 module.exports = {

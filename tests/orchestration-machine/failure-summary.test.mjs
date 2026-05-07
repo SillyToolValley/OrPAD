@@ -100,6 +100,55 @@ test('failedAdapterCallsFromRecord drops failures that have a later node.skipped
   assert.equal(failures.length, 0, 'skipped probes should not produce failure cards');
 });
 
+test('failureKeyFor distinguishes events that share nodePath but have different itemIds', () => {
+  // Two failed events on the same nodePath but for different work
+  // items must NOT dedupe into one row. (Caught by codex review v3.)
+  const a = {
+    sequence: 1, eventType: 'worker.result', nodePath: 'main/worker',
+    payload: { status: 'failed', itemId: 'item-A', attempt: 1 },
+  };
+  const b = {
+    sequence: 2, eventType: 'worker.result', nodePath: 'main/worker',
+    payload: { status: 'failed', itemId: 'item-B', attempt: 1 },
+  };
+  assert.notEqual(summary.failureKeyFor(a), summary.failureKeyFor(b));
+});
+
+test('node.blocked followed by node.failed: banner clears, failure card remains', () => {
+  // A gate that blocks then truly fails (evaluator threw) should leave
+  // the failure card visible AND clear the lifecycle banner.
+  const record = {
+    events: [
+      { sequence: 1, eventType: 'node.blocked', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit' }, reason: 'evidence-incomplete' },
+      { sequence: 2, eventType: 'node.failed', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit', code: 'EVALUATOR_THREW' } },
+    ],
+  };
+  const failures = summary.failedAdapterCallsFromRecord(record);
+  assert.equal(failures.length, 1, 'failed gate must surface as a card');
+  assert.equal(failures[0].nodePath, 'main/exit');
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates.length, 0, 'banner must clear once the gate transitions to node.failed');
+});
+
+test('latestNodeResolvedEvent: earlier completion does not survive a later node.failed/blocked', () => {
+  const machineModule = require('../../src/main/orchestration-machine/machine.js');
+  if (typeof machineModule.__test_latestNodeResolvedEvent !== 'function') return;
+  const eventsFailed = [
+    { sequence: 1, eventType: 'node.completed', nodePath: 'main/probe', payload: { attempt: 1 } },
+    { sequence: 2, eventType: 'node.scheduled', nodePath: 'main/probe', payload: { attempt: 2 } },
+    { sequence: 3, eventType: 'node.started', nodePath: 'main/probe', payload: { attempt: 2 } },
+    { sequence: 4, eventType: 'node.failed', nodePath: 'main/probe', payload: { attempt: 2 } },
+  ];
+  assert.equal(machineModule.__test_latestNodeResolvedEvent(eventsFailed, 'main/probe'), null,
+    'a later node.failed must override an earlier node.completed');
+  const eventsBlocked = [
+    { sequence: 1, eventType: 'node.skipped', nodePath: 'main/exit', payload: { attempt: 1 } },
+    { sequence: 2, eventType: 'node.blocked', nodePath: 'main/exit', payload: { attempt: 2 } },
+  ];
+  assert.equal(machineModule.__test_latestNodeResolvedEvent(eventsBlocked, 'main/exit'), null,
+    'a later node.blocked must override an earlier node.skipped');
+});
+
 test('failedAdapterCallsFromRecord excludes worker.result classification statuses', () => {
   const record = {
     events: [
@@ -135,6 +184,31 @@ test('failedAdapterCallsFromRecord excludes worker.result classification statuse
   assert.equal(failures.length, 1);
   assert.equal(failures[0].adapterCallId, 'a3');
   assert.equal(failures[0].status, 'failed');
+});
+
+test('failedAdapterCallsFromRecord surfaces node.failed even for gate-style nodes (real evaluator crash)', () => {
+  // A gate evaluator that THREW is a system bug, not a normal lifecycle
+  // block. node.failed for orpad.exit / orpad.gate / orpad.selector etc.
+  // must still appear as a failure card. (Caught by codex review.)
+  const record = {
+    events: [
+      {
+        sequence: 1,
+        eventType: 'node.failed',
+        nodePath: 'main/exit',
+        payload: { nodeType: 'orpad.exit', code: 'EXIT_EVALUATOR_THREW', message: 'TypeError in exit evaluator' },
+      },
+      {
+        sequence: 2,
+        eventType: 'node.failed',
+        nodePath: 'main/selector',
+        payload: { nodeType: 'orpad.selector', code: 'SELECTOR_VALIDATOR_THREW' },
+      },
+    ],
+  };
+  const failures = summary.failedAdapterCallsFromRecord(record);
+  const paths = failures.map(f => f.nodePath).sort();
+  assert.deepEqual(paths, ['main/exit', 'main/selector']);
 });
 
 test('failedAdapterCallsFromRecord excludes node.blocked for gate-style nodes', () => {
@@ -194,6 +268,33 @@ test('gateBlockedNodesFromRecord drops gates that have been skipped', () => {
   };
   const gates = summary.gateBlockedNodesFromRecord(record);
   assert.equal(gates.length, 0);
+});
+
+test('gateBlockedNodesFromRecord keeps a block when only a retry has started after it', () => {
+  // node.started after node.blocked is NOT a resolution — only terminal
+  // events (completed / skipped / failed / cancelled) resolve a block.
+  const record = {
+    events: [
+      { sequence: 1, eventType: 'node.blocked', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit' }, reason: 'evidence-incomplete' },
+      { sequence: 2, eventType: 'node.scheduled', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit', attempt: 2 } },
+      { sequence: 3, eventType: 'node.started', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit', attempt: 2 } },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates.length, 1, 'a retry that has not produced a terminal event must keep the gate marked blocked');
+  assert.equal(gates[0].nodePath, 'main/exit');
+});
+
+test('gateBlockedNodesFromRecord sorts newest blocker first', () => {
+  const record = {
+    events: [
+      { sequence: 1, eventType: 'node.blocked', nodePath: 'main/zeta-exit', payload: { nodeType: 'orpad.exit' }, reason: 'old' },
+      { sequence: 9, eventType: 'node.blocked', nodePath: 'main/alpha-barrier', payload: { nodeType: 'orpad.barrier' }, reason: 'fresh' },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates[0].nodePath, 'main/alpha-barrier', 'newest blocker should come first');
+  assert.equal(gates[1].nodePath, 'main/zeta-exit');
 });
 
 test('failedAdapterCallsFromRecord still surfaces failures when only node.completed exists (no skip)', () => {
@@ -386,6 +487,28 @@ test('end-to-end: skip-node IPC writes a node.skipped event for the failing prob
   } finally {
     await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
+});
+
+test('latestNodeResolvedEvent returns null when latest event is not a resolution (retry in progress)', () => {
+  // The probe completed at attempt 1, then re-started at attempt 2. The
+  // dispatcher must NOT treat the stale completion as resolution and
+  // suppress the retry. (Caught by codex review of the prior version.)
+  const machineModule = require('../../src/main/orchestration-machine/machine.js');
+  if (typeof machineModule.__test_latestNodeResolvedEvent !== 'function') {
+    // Helper is not exported; assert behavior via the dispatcher itself
+    // in the e2e test below. This placeholder keeps the documentation
+    // explicit about the intent.
+    return;
+  }
+  const events = [
+    { sequence: 1, eventType: 'node.scheduled', nodePath: 'main/probe', payload: { attempt: 1 } },
+    { sequence: 2, eventType: 'node.started', nodePath: 'main/probe', payload: { attempt: 1 } },
+    { sequence: 3, eventType: 'node.completed', nodePath: 'main/probe', payload: { attempt: 1 } },
+    { sequence: 4, eventType: 'node.scheduled', nodePath: 'main/probe', payload: { attempt: 2 } },
+    { sequence: 5, eventType: 'node.started', nodePath: 'main/probe', payload: { attempt: 2 } },
+  ];
+  const resolved = machineModule.__test_latestNodeResolvedEvent(events, 'main/probe');
+  assert.equal(resolved, null, 'a node mid-retry must not be reported as resolved');
 });
 
 test('end-to-end: skipping a failing probe prevents the next run-step from re-attempting it', async () => {
