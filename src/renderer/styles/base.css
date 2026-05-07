@@ -1948,6 +1948,29 @@ body.json-diff-mode #preview-pane {
   opacity: 0.5;
   cursor: progress;
 }
+/* Retry probe — the AI-driven remedy for a failed adapter call. Green
+ * styling emphasizes that this is the recommended fix path before
+ * resorting to Skip. */
+.pipe-failed-probe-retry {
+  border-color: color-mix(in srgb, #4ec97d 70%, transparent);
+  color: #4ec97d;
+  background: color-mix(in srgb, #4ec97d 12%, transparent);
+  font-weight: 600;
+}
+.pipe-failed-probe-retry:hover {
+  background: color-mix(in srgb, #4ec97d 26%, transparent);
+}
+.pipe-failed-probe-retry:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+.pipe-lifecycle-banner-remedy {
+  font-size: calc(11.5px * var(--us));
+  font-style: italic;
+  opacity: 0.85;
+  border-left: 2px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 50%, transparent);
+  padding-left: calc(7px * var(--us));
+}
 .pipe-lifecycle-banner {
   margin: calc(-6px * var(--us)) 0 calc(12px * var(--us));
   padding: calc(10px * var(--us)) calc(12px * var(--us));

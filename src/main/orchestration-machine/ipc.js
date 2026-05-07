@@ -61,6 +61,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   setProviderSelection: 'machine-set-provider-selection',
   readBudgetLedger: 'machine-read-budget-ledger',
   skipNode: 'machine-skip-node',
+  retryNode: 'machine-retry-node',
 });
 
 const APPLY_BATCH_MUTEXES = new Map();
@@ -1425,6 +1426,7 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.setProviderSelection, setProviderSelectionHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.readBudgetLedger, readBudgetLedgerHandler);
   handle(MACHINE_IPC_CHANNELS.skipNode, skipNodeHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.retryNode, retryNodeHandler, { mutating: true });
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };
 }
@@ -1522,6 +1524,59 @@ async function skipNodeBody({ runRoot, runId, nodePath, reason, request }) {
     attempt,
     eventSequence: skippedEvent?.sequence,
   };
+}
+
+// Retry a previously-completed-but-failed node (typically a probe whose
+// adapter returned status='failed'). The renderer wraps each Failed
+// adapter card with a "Retry probe" button that hits this handler.
+//
+// Mechanism: append a fresh `node.scheduled` event for the same nodePath
+// at attempt N+1. Because `latestNodeResolvedEvent` only treats
+// `node.completed` / `node.skipped` as resolutions, a later
+// `node.scheduled` invalidates the prior `node.completed` and the
+// dispatcher will re-evaluate the node on the next executeRunStep call.
+async function retryNodeHandler(event, authority, request = {}) {
+  const nodePath = String(request.nodePath || '').trim();
+  if (!nodePath) {
+    throw machineError('MACHINE_IPC_NODE_PATH_REQUIRED', 'nodePath is required.');
+  }
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  return withRunLifecycleExclusive(runRoot, async () => {
+    const events = await readMachineEvents(runRoot);
+    let maxAttempt = 0;
+    let lastNodeType = '';
+    for (const e of events) {
+      if (!e || (e.nodePath || '') !== nodePath) continue;
+      if (!String(e.eventType || '').startsWith('node.')) continue;
+      const a = Number(e.payload?.attempt || 0);
+      if (Number.isFinite(a) && a > maxAttempt) maxAttempt = a;
+      if (e.payload?.nodeType) lastNodeType = String(e.payload.nodeType);
+    }
+    const nodeType = String(request.nodeType || '').trim() || lastNodeType || 'orpad.unknown';
+    const nextAttempt = maxAttempt + 1;
+    const scheduledEvent = await recordNodeLifecycleEvent(runRoot, {
+      runId,
+      nodePath,
+      nodeType,
+      status: 'scheduled',
+      attempt: nextAttempt,
+      payload: {
+        reason: 'user-retry-requested',
+        decidedBy: 'renderer',
+        decidedAt: new Date().toISOString(),
+      },
+    });
+    return {
+      success: true,
+      ok: true,
+      runId,
+      nodePath,
+      attempt: nextAttempt,
+      eventSequence: scheduledEvent?.sequence,
+    };
+  });
 }
 
 async function listProvidersHandler(event, authority, request = {}) {

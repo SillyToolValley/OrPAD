@@ -2910,30 +2910,52 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
   // are NOT system failures. Skip-node would just re-trigger them; the user
   // needs to address evidence / approval / merge instead.
   const gateBlocked = sharedGateBlockedNodes(record);
+  // Has any failed adapter call? If so, the honest fix path is "Retry
+  // the failed probe" — surfaced inline at the bottom of the gate
+  // banner along with Skip. Without this the gate banner reads "provide
+  // evidence" but the AI is the one expected to gather evidence and the
+  // user has no way to do so manually.
+  const failedForGate = sharedFailedAdapterCalls(record) || [];
   let gateBanner = '';
   if (gateBlocked.length) {
     const items = gateBlocked.map(g => {
       const skipBtn = (runId && g.nodePath)
         ? `<button class="pipe-lifecycle-banner-link" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(g.nodePath)}" data-node-type="${escapeHtml(g.nodeType || '')}" title="Append node.skipped to dismiss this gate. Use only when you are sure the gate's evidence is not required for this run.">Skip gate</button>`
         : '';
+      // Map the gate reason to plain-language guidance. The default
+      // banner used to say "provide evidence or approval" which is
+      // misleading for an AI-driven harness — the user can't manually
+      // produce candidate-inventory.json. Be explicit about the actual
+      // remedy.
+      const reason = String(g.reason || '');
+      let remedy = 'Retry the AI probe(s) below or skip the gate.';
+      if (reason === 'exit.evidence-incomplete') {
+        remedy = 'Required artifact missing. The AI probe that should produce it failed or returned nothing. Click Retry probe on the failed adapter card below, or Skip gate if the artifact is not required for this run.';
+      } else if (reason === 'exit.patch-review-required') {
+        remedy = 'Patch review is pending. Approve patches in the patch review modal, or skip if the diff is not required.';
+      }
       return `
         <div class="pipe-lifecycle-banner-detail">
           <strong>${escapeHtml(g.nodePath)}</strong>
           <span class="pipe-failed-probe-status status-blocked">blocked</span>
           ${g.nodeType ? `<span class="pipe-failed-probe-adapter">${escapeHtml(g.nodeType)}</span>` : ''}
-          ${g.reason ? `<div>${escapeHtml(g.reason)}</div>` : ''}
+          ${g.reason ? `<div><code>${escapeHtml(g.reason)}</code></div>` : ''}
+          <div class="pipe-lifecycle-banner-remedy">${escapeHtml(remedy)}</div>
           <div class="pipe-lifecycle-banner-actions">
             ${runRoot ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${runRoot.replace(/[\\/]+$/, '')}/events.jsonl`)}">events.jsonl</button>` : ''}
-            ${runRoot ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${runRoot.replace(/[\\/]+$/, '')}/summary.md`)}">summary.md</button>` : ''}
             ${skipBtn}
           </div>
         </div>
       `;
     }).join('');
+    const retryAllHint = failedForGate.length
+      ? `<div class="pipe-lifecycle-banner-remedy">${escapeHtml(`${failedForGate.length} failed probe${failedForGate.length === 1 ? '' : 's'} below — Retry probe on each card to re-run, or skip the gate to accept the missing evidence.`)}</div>`
+      : '';
     gateBanner = `
       <div class="pipe-lifecycle-banner pipe-lifecycle-banner--warn">
-        <div class="pipe-lifecycle-banner-title">Gate is blocked — provide evidence or approval to proceed</div>
+        <div class="pipe-lifecycle-banner-title">Gate is blocked — needs decision</div>
         ${items}
+        ${retryAllHint}
       </div>
     `;
   }
@@ -3037,7 +3059,13 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
 function renderProbeActionButtons(f, runIdAttr, nodePathAttr) {
   const buttons = [];
   if (runIdAttr && nodePathAttr) {
-    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this probe.">Skip node</button>`);
+    // Retry probe — the AI-driven fix path. Appends a fresh
+    // node.scheduled event for attempt N+1 so the dispatcher re-runs
+    // the probe (e.g. after the LLM returned malformed output or hit
+    // a transient error). The user does NOT have to click Continue
+    // afterwards — retrySelectedMachineNode chains executeRunStep.
+    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Re-run this probe at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output) — the next Continue picks it up automatically.">Retry probe</button>`);
+    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this probe. Use only when the probe's evidence is genuinely not required.">Skip node</button>`);
   }
   return buttons.join('');
 }
@@ -11230,6 +11258,39 @@ async function cancelSelectedMachineRunInner(runbookPath, runId) {
   void refreshWorkspaceRunbookSummary();
 }
 
+// Retry a probe whose adapter returned status='failed'. The IPC layer
+// appends a fresh node.scheduled event so the dispatcher re-evaluates
+// the node on the next executeRunStep call. Then we kick off
+// executeSelectedMachineRunStep so the user does not also have to click
+// Continue afterwards.
+async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType = '') {
+  if (!workspacePath || !runbookPath || !runId || !nodePath || !window.orpad?.machine?.retryNode) return;
+  if (!await ensureMachineRuntimeReady()) return;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  const response = await window.orpad.machine.retryNode({
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    nodePath,
+    nodeType,
+    capabilityToken: token,
+  });
+  if (!response?.success) {
+    if (response?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+    notifyFormatError('Retry probe', new Error(response?.error || `retry-node IPC rejected (${response?.code || 'unknown'}).`));
+    return;
+  }
+  // Refresh the snapshot so the renderer's projection picks up the new
+  // node.scheduled event before we dispatch executeRunStep.
+  await refreshVisibleMachineRunSnapshot().catch(() => {});
+  try {
+    await executeSelectedMachineRunStep(runbookPath, runId);
+  } catch (err) {
+    notifyFormatError('Resume after retry', err);
+  }
+}
+
 async function exportSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine) return;
   if (!await ensureMachineRuntimeReady()) return;
@@ -12377,10 +12438,41 @@ contentEl?.addEventListener('click', async (event) => {
       const artifactPath = probeButton.dataset.artifactPath || '';
       if (artifactPath) {
         try {
-          await openFileInTab(artifactPath);
+          const opened = await openFileInTab(artifactPath);
+          if (!opened) {
+            // openFileInTab returns false (without throwing) when the
+            // backend read fails — typically because the file doesn't
+            // exist yet. summary.md in particular is only written when
+            // the run finalizes; clicking it on a waiting/blocked run
+            // would otherwise produce zero feedback.
+            const hint = /summary\.md$/i.test(artifactPath)
+              ? 'Summary is only written when the run finalizes (completed / cancelled / failed). Try again after the run terminates, or open events.jsonl.'
+              : 'File could not be opened — it may not exist yet for this run state.';
+            notifyFormatError('Open file', new Error(`${hint}\nPath: ${artifactPath}`));
+          }
         } catch (err) {
           notifyFormatError('Probe artifact', err);
         }
+      }
+    } else if (probeAction === 'retry-probe') {
+      const runId = probeButton.dataset.runId || '';
+      const nodePath = probeButton.dataset.nodePath || '';
+      const nodeType = probeButton.dataset.nodeType || '';
+      const runbookPath = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      if (!runId || !nodePath || !runbookPath) {
+        notifyFormatError('Retry probe', new Error('Missing runId / nodePath / pipelinePath.'));
+        return;
+      }
+      probeButton.disabled = true;
+      const previousLabel = probeButton.textContent;
+      probeButton.textContent = 'Scheduling retry…';
+      try {
+        await retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType);
+      } catch (err) {
+        notifyFormatError('Retry probe', err);
+      } finally {
+        probeButton.disabled = false;
+        probeButton.textContent = previousLabel;
       }
     } else if (probeAction === 'skip-node') {
       const runId = probeButton.dataset.runId || '';

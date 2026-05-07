@@ -1053,3 +1053,82 @@ test('Machine IPC rejects concurrent executeRunStep calls with MACHINE_RUN_BUSY'
   assert.equal(busy.success, false);
   assert.equal(busy.ok, false);
 });
+
+test('Machine IPC retryNode appends node.scheduled at attempt N+1 to invalidate prior node.completed', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260507_retry_node',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  // Seed history: a probe completed at attempt 1 (the wrapper finished
+  // successfully, even though the wrapped adapter result might have
+  // returned status='failed'). retryNode must invalidate it.
+  const { recordNodeLifecycleEvent } = require('../../src/main/orchestration-machine');
+  await recordNodeLifecycleEvent(created.runRoot, {
+    runId: created.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    status: 'started',
+    attempt: 1,
+  });
+  await recordNodeLifecycleEvent(created.runRoot, {
+    runId: created.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    status: 'completed',
+    attempt: 1,
+  });
+
+  const retried = await handlers.get(MACHINE_IPC_CHANNELS.retryNode)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    nodePath: 'main/probe',
+    nodeType: 'orpad.probe',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(retried.success, true);
+  assert.equal(retried.attempt, 2);
+  // The latest node.* event for the path is now node.scheduled — the
+  // dispatcher's latestNodeResolvedEvent will return null and re-run.
+  const snapshot = await handlers.get(MACHINE_IPC_CHANNELS.getRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+  });
+  const nodeEvents = snapshot.events.filter(e => (e.nodePath || '') === 'main/probe' && String(e.eventType).startsWith('node.'));
+  const latest = nodeEvents[nodeEvents.length - 1];
+  assert.equal(latest.eventType, 'node.scheduled');
+  assert.equal(latest.payload.attempt, 2);
+  assert.equal(latest.payload.reason, 'user-retry-requested');
+});
+
+test('Machine IPC retryNode rejects when nodePath is missing', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260507_retry_node_missing',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const rejected = await handlers.get(MACHINE_IPC_CHANNELS.retryNode)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    // nodePath intentionally omitted
+  });
+  assert.equal(rejected.success, false);
+  assert.equal(rejected.code, 'MACHINE_IPC_NODE_PATH_REQUIRED');
+});
