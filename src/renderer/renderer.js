@@ -400,6 +400,15 @@ const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
+// Live event log state — Phase 1.2:
+//   stickRunIds: runIds whose event log auto-scrolls to bottom on render.
+//     Default ON; user toggles off when they want to inspect older events.
+//   lastRendered: tracks the highest event sequence rendered per runId so
+//     freshly arrived events can be flashed (the .runbook-event-fresh
+//     class) without flagging the entire backlog as new on first render.
+const machineRunReplayStickRunIds = new Set();
+const lastReplayRenderedSequence = new Map();
+const machineRunReplayStickDefault = true;
 // History-inspection cache is separate from the active run cache so that
 // "user clicked an old run in History" does NOT pollute the Pipeline
 // setup panel's banner / failure cards. To bring an inspected run into
@@ -10377,10 +10386,17 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
-      <div class="runbook-replay-events">
-        ${events.slice(-24).map(event => {
+      <div class="runbook-replay-events-bar">
+        <span>Recent events (${events.length})</span>
+        <button class="runbook-replay-stick-toggle ${isReplayStickEnabled(runId) ? 'active' : ''}" data-runbook-action="toggle-replay-stick" data-run-id="${escapeHtml(runId)}" title="${isReplayStickEnabled(runId) ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.'}">${isReplayStickEnabled(runId) ? 'Auto-scroll' : 'Manual scroll'}</button>
+      </div>
+      <div class="runbook-replay-events" data-runbook-replay-events data-run-id="${escapeHtml(runId)}">
+        ${(events.length ? events : []).slice(-100).map(event => {
           const timeLabel = machineEventTimeLabel(event);
-          return `<div class="runbook-event">${timeLabel ? `${escapeHtml(timeLabel)} ` : ''}${escapeHtml(machineEventLabel(event))}</div>`;
+          const seq = event?.sequence != null ? Number(event.sequence) : -1;
+          const lastSeq = lastReplayRenderedSequence.get(runId) || 0;
+          const fresh = seq > lastSeq && lastSeq > 0;
+          return `<div class="runbook-event${fresh ? ' runbook-event-fresh' : ''}" data-event-seq="${escapeHtml(String(seq))}">${timeLabel ? `${escapeHtml(timeLabel)} ` : ''}${escapeHtml(machineEventLabel(event))}</div>`;
         }).join('') || '<div class="runbook-event">No run events recorded.</div>'}
       </div>
       <div class="runbook-machine-grid">
@@ -10563,6 +10579,10 @@ function renderRunbooksPanel() {
     ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null, selected)}
     ${selected && inspectedHistoryRecord ? renderMachineHistoryInspectionPanel(inspectedHistoryRecord, selected) : ''}
   `;
+  // Phase 1.2: stick the live event log to the bottom (auto-scroll on)
+  // and snapshot the highest rendered sequence so the next render flags
+  // only genuinely new events as fresh.
+  applyReplayStickAfterRender();
 }
 
 async function validateSelectedRunbook(runbookPath) {
@@ -10926,6 +10946,69 @@ async function loadMachineRunRecord(runbookPath, runId) {
     runState: { runId },
     events: [],
   };
+}
+
+function isReplayStickEnabled(runId) {
+  if (!runId) return machineRunReplayStickDefault;
+  // Default ON: a runId is "stick-enabled" unless the user explicitly
+  // disabled stick-to-bottom. Set membership inverted so we don't have
+  // to seed the set on every new run.
+  return !machineRunReplayStickRunIds.has(`off:${runId}`);
+}
+
+function setReplayStickEnabled(runId, enabled) {
+  if (!runId) return;
+  if (enabled) machineRunReplayStickRunIds.delete(`off:${runId}`);
+  else machineRunReplayStickRunIds.add(`off:${runId}`);
+}
+
+function applyReplayStickAfterRender() {
+  // Called after every renderRunbooksPanel pass. For each event log
+  // element in the DOM, if the user's stick-toggle is on AND there
+  // are new events since the last snapshot, auto-scroll to bottom.
+  // Also updates the lastRendered map so the NEXT render's freshness
+  // calculation is anchored at the highest sequence we just painted.
+  const elements = document.querySelectorAll('[data-runbook-replay-events]');
+  for (const el of elements) {
+    const runId = el.getAttribute('data-run-id') || '';
+    if (!runId) continue;
+    const eventNodes = el.querySelectorAll('[data-event-seq]');
+    let maxSeq = 0;
+    for (const ev of eventNodes) {
+      const seq = Number(ev.getAttribute('data-event-seq')) || 0;
+      if (seq > maxSeq) maxSeq = seq;
+    }
+    if (isReplayStickEnabled(runId)) {
+      // scrollIntoView would jump the parent; setting scrollTop
+      // directly is contained to the events list.
+      el.scrollTop = el.scrollHeight;
+    }
+    if (maxSeq > 0) lastReplayRenderedSequence.set(runId, maxSeq);
+    // Auto-disable stick when the user manually scrolls up — matches
+    // the LangGraph Studio / terminal UX where any upward gesture is
+    // an intent to inspect history. Re-enable when they scroll back
+    // to the bottom. Updates the toggle button class directly to
+    // avoid a full re-render loop while scrolling.
+    if (!el.dataset.scrollHandlerWired) {
+      el.dataset.scrollHandlerWired = '1';
+      el.addEventListener('scroll', () => {
+        const tolerance = 8;
+        const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop <= tolerance;
+        const wasEnabled = isReplayStickEnabled(runId);
+        if (atBottom !== wasEnabled) {
+          setReplayStickEnabled(runId, atBottom);
+          // Targeted DOM update — find the matching toggle button and
+          // flip its class without triggering a full re-render.
+          const toggle = document.querySelector(`.runbook-replay-stick-toggle[data-run-id="${CSS.escape(runId)}"]`);
+          if (toggle) {
+            toggle.classList.toggle('active', atBottom);
+            toggle.textContent = atBottom ? 'Auto-scroll' : 'Manual scroll';
+            toggle.title = atBottom ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.';
+          }
+        }
+      }, { passive: true });
+    }
+  }
 }
 
 function getHistoryInspectionRecord(runbookPath) {
@@ -12799,6 +12882,13 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-history-close') {
       clearHistoryInspection(targetPath);
       renderRunbooksPanel();
+    }
+    else if (action === 'toggle-replay-stick') {
+      const runId = button.dataset.runId || '';
+      if (runId) {
+        setReplayStickEnabled(runId, !isReplayStickEnabled(runId));
+        renderRunbooksPanel();
+      }
     }
     else if (action === 'enable-machine') {
       const ok = await enableManagedRunsForSession();

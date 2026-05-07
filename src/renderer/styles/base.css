@@ -1650,7 +1650,57 @@ body.json-diff-mode #preview-pane {
   align-items: center;
 }
 .runbook-diagnostics,
-.runbook-replay-events { display: grid; gap: calc(5px * var(--us)); }
+.runbook-replay-events {
+  display: grid;
+  gap: calc(5px * var(--us));
+  /* Bounded scroll region so the panel does not grow unbounded as the
+   * run accumulates events. Stick-to-bottom is handled in JS. */
+  max-height: calc(220px * var(--us));
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding-right: calc(4px * var(--us));
+}
+.runbook-replay-events-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(6px * var(--us));
+  font-size: calc(10.5px * var(--us));
+  color: var(--text-tertiary);
+}
+.runbook-replay-stick-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--us));
+  padding: calc(2px * var(--us)) calc(7px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(4px * var(--us));
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: calc(10.5px * var(--us));
+  cursor: pointer;
+}
+.runbook-replay-stick-toggle.active {
+  border-color: color-mix(in srgb, #4ec97d 60%, transparent);
+  color: #4ec97d;
+  background: color-mix(in srgb, #4ec97d 12%, transparent);
+}
+.runbook-replay-stick-toggle.active::before {
+  content: '●';
+  color: #4ec97d;
+  animation: orpad-pulse 1.4s ease-in-out infinite;
+}
+.runbook-replay-events .runbook-event-fresh {
+  /* Subtle highlight for events appended in the most recent poll cycle */
+  border-left-color: color-mix(in srgb, #4ec97d 60%, var(--border-color));
+  background: color-mix(in srgb, #4ec97d 7%, var(--bg-secondary) 74%);
+  animation: orpad-fade-fresh 2.5s ease-out forwards;
+}
+@keyframes orpad-fade-fresh {
+  0% { background: color-mix(in srgb, #4ec97d 22%, var(--bg-secondary) 74%); }
+  100% { background: color-mix(in srgb, var(--bg-secondary) 74%, transparent); }
+}
 .runbook-machine-history {
   display: grid;
   gap: calc(6px * var(--us));
