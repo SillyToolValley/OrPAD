@@ -3059,13 +3059,21 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
 function renderProbeActionButtons(f, runIdAttr, nodePathAttr) {
   const buttons = [];
   if (runIdAttr && nodePathAttr) {
-    // Retry probe — the AI-driven fix path. Appends a fresh
-    // node.scheduled event for attempt N+1 so the dispatcher re-runs
-    // the probe (e.g. after the LLM returned malformed output or hit
-    // a transient error). The user does NOT have to click Continue
-    // afterwards — retrySelectedMachineNode chains executeRunStep.
-    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Re-run this probe at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output) — the next Continue picks it up automatically.">Retry probe</button>`);
-    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this probe. Use only when the probe's evidence is genuinely not required.">Skip node</button>`);
+    // The AI-driven fix path. Appends a fresh node.scheduled event for
+    // attempt N+1 so the dispatcher re-runs the node (probe, worker,
+    // or any other node type) on the next executeRunStep. Use when the
+    // previous attempt failed for transient reasons (LLM error,
+    // malformed output, timeout). retrySelectedMachineNode chains
+    // executeRunStep so the user does not need a separate Continue.
+    const nodeKindLabel = (() => {
+      const t = String(f?.nodeType || '').toLowerCase();
+      if (t.includes('probe')) return 'probe';
+      if (t.includes('worker')) return 'worker';
+      if (t.includes('triage')) return 'triage';
+      return 'node';
+    })();
+    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Re-run this ${nodeKindLabel} at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output, timeout) — Continue is dispatched automatically afterwards.">Retry ${nodeKindLabel}</button>`);
+    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this ${nodeKindLabel}. Use only when its work is genuinely not required for this run.">Skip ${nodeKindLabel}</button>`);
   }
   return buttons.join('');
 }
