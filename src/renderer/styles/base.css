@@ -2676,6 +2676,39 @@ body.json-diff-mode #preview-pane {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 20%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
   animation: orch-runtime-pulse 1.5s ease-in-out infinite;
 }
+/* Phase 3.7: breakpoint marker on graph nodes. Renderer-only —
+ * Continue confirmation is enforced separately in the dispatch path.
+ * The dot pulses to draw the eye to nodes the user wants to inspect. */
+.orch-graph-node-breakpoint {
+  position: absolute;
+  top: calc(-7px * var(--us));
+  right: calc(-7px * var(--us));
+  width: calc(14px * var(--us));
+  height: calc(14px * var(--us));
+  border-radius: 50%;
+  background: #d77c7c;
+  color: #fff;
+  font-size: calc(10px * var(--us));
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px var(--bg-primary);
+  animation: orpad-pulse 1.6s ease-in-out infinite;
+}
+.orch-graph-node.has-breakpoint {
+  outline: 1px dashed color-mix(in srgb, #d77c7c 60%, transparent);
+  outline-offset: calc(2px * var(--us));
+}
+.pipe-breakpoint-active {
+  border-color: color-mix(in srgb, #d77c7c 60%, transparent) !important;
+  background: color-mix(in srgb, #d77c7c 14%, transparent) !important;
+  color: #d77c7c !important;
+  font-weight: 600;
+}
+.pipe-breakpoint-inactive {
+  /* Inactive: standard pipe-failed-probe-link styling, no overrides */
+}
 .orch-graph-node.runtime-completed {
   border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 54%, var(--border-color));
 }

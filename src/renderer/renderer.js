@@ -414,6 +414,62 @@ const machineRunReplayStickDefault = true;
 //     renders truncate events to events[0..position] so the entire UI
 //     reflects the run state AT THAT POINT. null / unset = live view.
 const machineRunReplayPosition = new Map();
+// Breakpoints — Phase 3.7:
+//   per-pipeline (NOT per-run) Set<nodePath>. Persists across runs in
+//   localStorage so the user does not have to re-mark them each time.
+//   These are renderer-only visual markers + pre-run confirmation —
+//   the dispatcher does not halt automatically. A "Bypass once" toggle
+//   lets Continue dispatch despite an active breakpoint.
+const MACHINE_BREAKPOINTS_STORAGE_PREFIX = 'orpad-machine-breakpoints:';
+const machineBreakpointBypass = new Set(); // runId where bypass is armed
+function machineBreakpointStorageKey(runbookPath) {
+  return `${MACHINE_BREAKPOINTS_STORAGE_PREFIX}${runbookNormalizePath(runbookPath || '').toLowerCase()}`;
+}
+function getMachineBreakpoints(runbookPath) {
+  if (!runbookPath) return new Set();
+  try {
+    const raw = localStorage.getItem(machineBreakpointStorageKey(runbookPath));
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr.filter(s => typeof s === 'string' && s) : []);
+  } catch { return new Set(); }
+}
+function setMachineBreakpoints(runbookPath, set) {
+  if (!runbookPath) return;
+  try {
+    const arr = [...set];
+    if (arr.length === 0) localStorage.removeItem(machineBreakpointStorageKey(runbookPath));
+    else localStorage.setItem(machineBreakpointStorageKey(runbookPath), JSON.stringify(arr));
+  } catch {}
+}
+function toggleMachineBreakpoint(runbookPath, nodePath) {
+  if (!runbookPath || !nodePath) return false;
+  const set = getMachineBreakpoints(runbookPath);
+  const wasSet = set.has(nodePath);
+  if (wasSet) set.delete(nodePath);
+  else set.add(nodePath);
+  setMachineBreakpoints(runbookPath, set);
+  return !wasSet; // returns new state
+}
+function machineBreakpointsForRunUnresolvedNodes(runbookPath, record) {
+  // A breakpoint is "active" for the next executeRunStep when the node
+  // has not yet reached a terminal lifecycle event in this run. Once
+  // the node completes / skips / fails, the breakpoint is informational
+  // only.
+  if (!runbookPath || !record) return [];
+  const breakpoints = getMachineBreakpoints(runbookPath);
+  if (breakpoints.size === 0) return [];
+  const events = Array.isArray(record.events) ? record.events : [];
+  const latestByPath = new Map();
+  for (const e of events) {
+    if (!e || !String(e.eventType || '').startsWith('node.')) continue;
+    const np = String(e.nodePath || '').trim();
+    if (!np) continue;
+    latestByPath.set(np, e.eventType);
+  }
+  const TERMINAL = new Set(['node.completed', 'node.skipped', 'node.cancelled']);
+  return [...breakpoints].filter(np => !TERMINAL.has(latestByPath.get(np) || ''));
+}
 // History-inspection cache is separate from the active run cache so that
 // "user clicked an old run in History" does NOT pollute the Pipeline
 // setup panel's banner / failure cards. To bring an inspected run into
@@ -4972,14 +5028,26 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
     }
     : runtime;
   const runtimeClass = displayRuntime ? ` runtime-${displayRuntime.state}` : '';
+  // Phase 3.7: breakpoint marker. The dot is a renderer-only visual
+  // hint — Continue confirmation is enforced separately by the run
+  // dispatch path. Marker shown only when the node has a machine
+  // nodePath and the user has set a breakpoint for it.
+  const runbookForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+  const machineNodePathForBp = displayRuntime?.nodePath || '';
+  const hasBreakpoint = runbookForBp && machineNodePathForBp
+    && getMachineBreakpoints(runbookForBp).has(machineNodePathForBp);
+  const breakpointMarker = hasBreakpoint
+    ? `<span class="orch-graph-node-breakpoint" title="Breakpoint set on ${escapeHtml(machineNodePathForBp)} — Continue will warn before dispatching past this node.">●</span>`
+    : '';
   return `
-    <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}"
+    <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}${hasBreakpoint ? ' has-breakpoint' : ''}"
       data-orch-path="${escapeHtml(path)}"
       ${displayRuntime?.nodePath ? `data-machine-node-path="${escapeHtml(displayRuntime.nodePath)}"` : ''}
       role="button"
       tabindex="0"
       style="left:${Math.round(x)}px;top:${Math.round(y)}px">
       ${renderMachineNodeProgressBadge(progress)}
+      ${breakpointMarker}
       <div class="orch-graph-node-top">
         <strong>${escapeHtml(title)}</strong>
         <span title="${escapeHtml(node?.type || '')}">${escapeHtml(typeLabel)}</span>
@@ -9996,6 +10064,13 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
     const skipBtn = retryDisabled
       ? ''
       : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Mark node as skipped (terminal).">Skip node</button>`;
+    // Phase 3.7: breakpoint toggle (renderer-only). Per-pipeline so it
+    // persists across runs.
+    const runbookPathForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+    const hasBreakpoint = runbookPathForBp ? getMachineBreakpoints(runbookPathForBp).has(machineNodePath) : false;
+    const bpBtn = runbookPathForBp
+      ? `<button class="pipe-failed-probe-link ${hasBreakpoint ? 'pipe-breakpoint-active' : 'pipe-breakpoint-inactive'}" data-probe-action="toggle-breakpoint" data-node-path="${escapeHtml(machineNodePath)}" title="${hasBreakpoint ? 'Breakpoint set. Click to clear. Continue will warn before dispatching past this node.' : 'Set a breakpoint. Continue will warn before dispatching past this node. Cleared by clicking again.'}">${hasBreakpoint ? 'Clear breakpoint' : 'Set breakpoint'}</button>`
+      : '';
     return `
       <div class="orch-inspector-runtime-attempt">
         <div class="orch-inspector-runtime-attempt-head">
@@ -10006,7 +10081,7 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
         ${summaryLine ? `<div class="orch-inspector-runtime-summary">${escapeHtml(summaryLine)}</div>` : ''}
         ${errorBlock}
         ${transcriptLinks}
-        <div class="orch-inspector-runtime-actions">${retryBtn}${skipBtn}</div>
+        <div class="orch-inspector-runtime-actions">${retryBtn}${skipBtn}${bpBtn}</div>
       </div>
     `;
   }).join('');
@@ -11423,6 +11498,30 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
     console.warn('[execute-run-step] preconditions missing — silent return', { workspacePath, runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep) });
     if (!runId) alert('Continue ignored: no run is selected. Pick a run from history first.');
     return;
+  }
+  // Phase 3.7: breakpoint pre-flight. If the user has set breakpoints
+  // on nodes that have not yet reached a terminal lifecycle event in
+  // this run, prompt before dispatching. Bypass-once flag clears
+  // after a single dispatch.
+  if (!machineBreakpointBypass.has(runId)) {
+    const liveRecord = getLiveMachineRunRecord(runbookPath);
+    const activeBreakpoints = machineBreakpointsForRunUnresolvedNodes(runbookPath, liveRecord);
+    if (activeBreakpoints.length) {
+      const list = activeBreakpoints.slice(0, 5).join(', ');
+      const more = activeBreakpoints.length > 5 ? ` and ${activeBreakpoints.length - 5} more` : '';
+      const proceed = window.confirm(
+        `Breakpoint${activeBreakpoints.length === 1 ? '' : 's'} set on: ${list}${more}.\n\n`
+        + 'OrPAD does not pause the dispatcher automatically — these are visual reminders. '
+        + 'Continue will dispatch as usual.\n\n'
+        + 'Press OK to dispatch once (bypass), or Cancel to keep the run paused.',
+      );
+      if (!proceed) return;
+      machineBreakpointBypass.add(runId);
+      // Clear bypass once the next executeRunStep response lands.
+      setTimeout(() => machineBreakpointBypass.delete(runId), 5000);
+    }
+  } else {
+    machineBreakpointBypass.delete(runId);
   }
   // Synchronous mutation guard — same-run double clicks are rejected
   // before we touch IPC. The IPC layer also returns MACHINE_RUN_BUSY,
@@ -12929,6 +13028,21 @@ contentEl?.addEventListener('click', async (event) => {
           notifyFormatError('Probe artifact', err);
         }
       }
+    } else if (probeAction === 'toggle-breakpoint') {
+      // Phase 3.7: renderer-only breakpoint marker. Click toggles the
+      // node's breakpoint membership in localStorage; Continue button
+      // will warn before dispatching past an unresolved breakpoint.
+      const nodePath = probeButton.dataset.nodePath || '';
+      const runbookPath = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      if (!nodePath || !runbookPath) {
+        notifyFormatError('Breakpoint', new Error('Missing nodePath / pipelinePath.'));
+        return;
+      }
+      toggleMachineBreakpoint(runbookPath, nodePath);
+      // Re-render so the marker / button label updates.
+      renderRunbooksPanel();
+      rerenderPipelinePreviewIfActive(runbookPath);
+      return;
     } else if (probeAction === 'retry-probe') {
       const runId = probeButton.dataset.runId || '';
       const nodePath = probeButton.dataset.nodePath || '';
