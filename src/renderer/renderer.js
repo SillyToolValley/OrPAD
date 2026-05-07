@@ -409,6 +409,11 @@ const machineRunListCache = new Map();
 const machineRunReplayStickRunIds = new Set();
 const lastReplayRenderedSequence = new Map();
 const machineRunReplayStickDefault = true;
+// Time travel state — Phase 2.4:
+//   replayPositionByRunId: runId → 1-based event index. When set,
+//     renders truncate events to events[0..position] so the entire UI
+//     reflects the run state AT THAT POINT. null / unset = live view.
+const machineRunReplayPosition = new Map();
 // History-inspection cache is separate from the active run cache so that
 // "user clicked an old run in History" does NOT pollute the Pipeline
 // setup panel's banner / failure cards. To bring an inspected run into
@@ -10497,6 +10502,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
+      ${renderReplayTimelineHtml(record, runId, events)}
       <div class="runbook-replay-events-bar">
         <span>Recent events (${events.length})</span>
         <button class="runbook-replay-stick-toggle ${isReplayStickEnabled(runId) ? 'active' : ''}" data-runbook-action="toggle-replay-stick" data-run-id="${escapeHtml(runId)}" title="${isReplayStickEnabled(runId) ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.'}">${isReplayStickEnabled(runId) ? 'Auto-scroll' : 'Manual scroll'}</button>
@@ -11059,6 +11065,71 @@ async function loadMachineRunRecord(runbookPath, runId) {
   };
 }
 
+// Phase 2.4: time travel state helpers. Replay position is a 1-based
+// index into the run's events array. null/unset = live view.
+function getReplayPosition(runId) {
+  if (!runId) return null;
+  const v = machineRunReplayPosition.get(runId);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function setReplayPosition(runId, position) {
+  if (!runId) return;
+  if (position == null) machineRunReplayPosition.delete(runId);
+  else machineRunReplayPosition.set(runId, Math.max(1, Math.floor(Number(position))));
+}
+
+function clearReplayPosition(runId) {
+  if (!runId) return;
+  machineRunReplayPosition.delete(runId);
+}
+
+// Apply replay snapshot if a position is set for this record's runId.
+// Returns a new record with events truncated to events[0..position-1].
+// Other fields are passed through unchanged — the recompute happens in
+// the renderers (lifecycle banner / runtime projection / etc) which
+// derive from events.
+function applyReplaySnapshot(record) {
+  if (!record) return record;
+  const runId = record.runState?.runId || record.runId || '';
+  const position = getReplayPosition(runId);
+  if (position == null) return record;
+  const events = Array.isArray(record.events) ? record.events : [];
+  if (position >= events.length) return record;
+  const truncated = events.slice(0, position);
+  return {
+    ...record,
+    events: truncated,
+    __replay: { position, total: events.length },
+  };
+}
+
+// Phase 2.4: time travel slider markup. Total event count comes from
+// the live record (preserved as record.__replay.total when a snapshot
+// is active). Renders only when there are events to scrub through.
+function renderReplayTimelineHtml(record, runId, events) {
+  if (!runId) return '';
+  const liveTotal = record?.__replay?.total ?? (events?.length || 0);
+  if (liveTotal < 2) return ''; // nothing to scrub through
+  const replayPosition = record?.__replay?.position ?? liveTotal;
+  const inReplay = record?.__replay != null;
+  const eventAtPosition = events && replayPosition > 0 ? events[Math.min(replayPosition, events.length) - 1] : null;
+  const positionLabel = eventAtPosition?.timestamp || '';
+  return `
+    <div class="runbook-replay-timeline ${inReplay ? 'in-replay' : ''}">
+      <div class="runbook-replay-timeline-head">
+        <span class="runbook-replay-timeline-label">${inReplay ? 'Replaying' : 'Time travel'}</span>
+        <span class="runbook-replay-timeline-position">event ${replayPosition} of ${liveTotal}${positionLabel ? ` · ${escapeHtml(positionLabel)}` : ''}</span>
+        ${inReplay
+          ? `<button class="runbook-replay-timeline-live" data-runbook-action="replay-live" data-run-id="${escapeHtml(runId)}" title="Return to the live view (latest events).">Live</button>`
+          : ''}
+      </div>
+      <input type="range" class="runbook-replay-timeline-slider" min="1" max="${liveTotal}" value="${replayPosition}" data-runbook-replay-slider data-run-id="${escapeHtml(runId)}" aria-label="Time travel: drag to inspect a past event">
+      ${inReplay ? '<div class="runbook-replay-timeline-warning">Replay mode — Continue / Cancel / Stop Work act on the live run, not on this snapshot.</div>' : ''}
+    </div>
+  `;
+}
+
 function isReplayStickEnabled(runId) {
   if (!runId) return machineRunReplayStickDefault;
   // Default ON: a runId is "stick-enabled" unless the user explicitly
@@ -11156,7 +11227,26 @@ function setHistoryRecoverPending(runbookPath, runId, pending) {
 // Read the actual active run for this runbook (NOT the history inspection).
 // Pipeline setup panel and Latest Run "Active" subsection MUST use this so
 // they are not polluted by the user clicking around in History.
+//
+// Phase 2.4: when the user has scrubbed the time travel slider, return
+// a snapshot record with events truncated to the slider position. The
+// rest of the UI (lifecycle banner / graph projection / failure cards /
+// run-bar metrics) derives from events.length so they all see the
+// snapshot consistently.
 function getActiveMachineRunRecord(runbookPath) {
+  if (!runbookPath) return null;
+  const cached = getRunbookCache(machineRunRecordCache, runbookPath);
+  if (cached) return applyReplaySnapshot(cached);
+  const selectedMatches = selectedRunbookPath
+    && runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+  return selectedMatches ? applyReplaySnapshot(lastMachineRunRecord) : null;
+}
+
+// For Latest Run panel renderer — returns the LIVE record (no snapshot)
+// so the slider itself can show position out of total event count, and
+// so the auto-scroll/freshness logic operates on the actual feed even
+// while the user is scrubbing.
+function getLiveMachineRunRecord(runbookPath) {
   if (!runbookPath) return null;
   const cached = getRunbookCache(machineRunRecordCache, runbookPath);
   if (cached) return cached;
@@ -13032,6 +13122,15 @@ runbooksContentEl?.addEventListener('click', async (event) => {
       setHistoryFilter(targetPath, { lifecycle });
       renderRunbooksPanel();
     }
+    else if (action === 'replay-live') {
+      // Phase 2.4: exit time travel back to the live view.
+      const runId = button.dataset.runId || '';
+      if (runId) {
+        clearReplayPosition(runId);
+        renderRunbooksPanel();
+        rerenderPipelinePreviewIfActive(targetPath);
+      }
+    }
     else if (action === 'enable-machine') {
       const ok = await enableManagedRunsForSession();
       if (ok && targetPath) {
@@ -13127,8 +13226,26 @@ runbooksContentEl?.addEventListener('input', (event) => {
         fresh.setSelectionRange(value.length, value.length);
       }
     }, 180);
+    return;
+  }
+  if (event.target.matches?.('[data-runbook-replay-slider]')) {
+    // Phase 2.4: time travel slider. Update the position eagerly
+    // (so the slider track reflects the new value) and debounce the
+    // re-render so dragging is smooth.
+    const runId = event.target.dataset.runId || '';
+    const value = Number(event.target.value) || 1;
+    if (!runId) return;
+    setReplayPosition(runId, value);
+    if (machineReplaySliderDebounce) clearTimeout(machineReplaySliderDebounce);
+    machineReplaySliderDebounce = setTimeout(() => {
+      machineReplaySliderDebounce = null;
+      renderRunbooksPanel();
+      const path = selectedRunbookPath;
+      if (path) rerenderPipelinePreviewIfActive(path);
+    }, 80);
   }
 });
+let machineReplaySliderDebounce = null;
 let machineHistorySearchDebounce = null;
 
 runbooksContentEl?.addEventListener('keydown', (event) => {

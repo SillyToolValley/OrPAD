@@ -1758,6 +1758,66 @@ body.json-diff-mode #preview-pane {
   background: var(--input-bg, var(--bg-primary));
   color: var(--text-primary);
 }
+/* Phase 2.4: time travel slider in the Latest Run panel. The slider
+ * track scrubs through events; lifecycle banner / graph projection /
+ * failure cards all derive from events.length so they replay
+ * consistently. Dragging the slider while the run is live is fine —
+ * the next live tick keeps the position visible until the user
+ * clicks "Live" to return. */
+.runbook-replay-timeline {
+  display: grid;
+  gap: calc(5px * var(--us));
+  padding: calc(7px * var(--us)) calc(8px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: calc(6px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 50%, transparent);
+}
+.runbook-replay-timeline.in-replay {
+  border-color: color-mix(in srgb, var(--accent-color, #6cb6ff) 55%, transparent);
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 10%, var(--bg-secondary) 40%);
+}
+.runbook-replay-timeline-head {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--us));
+  font-size: calc(11px * var(--us));
+}
+.runbook-replay-timeline-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.runbook-replay-timeline.in-replay .runbook-replay-timeline-label {
+  color: var(--accent-color, #6cb6ff);
+}
+.runbook-replay-timeline-position {
+  flex: 1;
+  font-size: calc(10.5px * var(--us));
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.runbook-replay-timeline-live {
+  padding: calc(2px * var(--us)) calc(7px * var(--us));
+  font-size: calc(10.5px * var(--us));
+  border: 1px solid color-mix(in srgb, #4ec97d 60%, transparent);
+  background: color-mix(in srgb, #4ec97d 14%, transparent);
+  color: #4ec97d;
+  font-weight: 600;
+  border-radius: calc(4px * var(--us));
+  cursor: pointer;
+}
+.runbook-replay-timeline-live:hover {
+  background: color-mix(in srgb, #4ec97d 26%, transparent);
+}
+.runbook-replay-timeline-slider {
+  width: 100%;
+  accent-color: var(--accent-color, #6cb6ff);
+}
+.runbook-replay-timeline-warning {
+  font-size: calc(10.5px * var(--us));
+  color: var(--syntax-meta, #e0af68);
+  font-style: italic;
+}
 .runbook-machine-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
