@@ -10270,19 +10270,80 @@ function machineRunListForRunbook(runbookPath) {
   return Array.isArray(cached?.runs) ? cached.runs : [];
 }
 
+// Phase 3.8: history filter state. Per-runbook filter spec (status
+// + free-text query) lets the user narrow a long History list. Default
+// shows everything; chip + input both reset on Refresh runs.
+const machineRunHistoryFilter = new Map();
+const HISTORY_LIFECYCLE_FILTERS = Object.freeze([
+  { id: 'all', label: 'All', match: () => true },
+  { id: 'running', label: 'Live', match: r => ['running', 'cancelling', 'waiting', 'created', 'approval-required'].includes(String(r.lifecycleStatus || '').toLowerCase()) },
+  { id: 'completed', label: 'Done', match: r => String(r.lifecycleStatus || '').toLowerCase() === 'completed' && String(r.summaryStatus || '').toLowerCase() === 'done' },
+  { id: 'partial', label: 'Partial', match: r => String(r.summaryStatus || '').toLowerCase() === 'partial' },
+  { id: 'failed', label: 'Failed', match: r => String(r.lifecycleStatus || '').toLowerCase() === 'failed' },
+  { id: 'cancelled', label: 'Cancelled', match: r => ['cancelled', 'canceled'].includes(String(r.lifecycleStatus || '').toLowerCase()) },
+  { id: 'blocked', label: 'Blocked', match: r => String(r.summaryStatus || '').toLowerCase() === 'blocked' && !['cancelled', 'canceled', 'failed'].includes(String(r.lifecycleStatus || '').toLowerCase()) },
+]);
+
+function getHistoryFilter(runbookPath) {
+  if (!runbookPath) return { lifecycle: 'all', query: '' };
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  return machineRunHistoryFilter.get(key) || { lifecycle: 'all', query: '' };
+}
+
+function setHistoryFilter(runbookPath, patch) {
+  if (!runbookPath) return;
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  const current = machineRunHistoryFilter.get(key) || { lifecycle: 'all', query: '' };
+  machineRunHistoryFilter.set(key, { ...current, ...patch });
+}
+
+function applyHistoryFilter(runs, filter) {
+  const lifecycleSpec = HISTORY_LIFECYCLE_FILTERS.find(f => f.id === filter.lifecycle) || HISTORY_LIFECYCLE_FILTERS[0];
+  const query = String(filter.query || '').trim().toLowerCase();
+  return runs.filter(run => {
+    if (!lifecycleSpec.match(run)) return false;
+    if (!query) return true;
+    const haystack = [
+      run.runId,
+      run.lifecycleStatus,
+      run.summaryStatus,
+      run.createdAt,
+      run.updatedAt,
+    ].filter(Boolean).map(String).join(' ').toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
 function renderMachineRunHistory(runbookPath, currentRunId) {
   const runs = machineRunListForRunbook(runbookPath);
   if (!runs.length) return '';
   const inspected = getHistoryInspectionRecord(runbookPath);
   const inspectedRunId = inspected?.runState?.runId || inspected?.runId || '';
+  const filter = getHistoryFilter(runbookPath);
+  const filtered = applyHistoryFilter(runs, filter);
+  const filterChips = HISTORY_LIFECYCLE_FILTERS.map(spec => {
+    const count = spec.id === 'all' ? runs.length : runs.filter(spec.match).length;
+    const active = spec.id === filter.lifecycle;
+    const disabled = count === 0 && spec.id !== 'all' && !active;
+    return `<button class="runbook-history-filter-chip ${active ? 'active' : ''}" ${disabled ? 'disabled' : ''} data-runbook-action="history-filter-set" data-path="${escapeHtml(runbookPath)}" data-filter-lifecycle="${escapeHtml(spec.id)}" title="${escapeHtml(spec.label)} (${count})">${escapeHtml(spec.label)} <span class="runbook-history-filter-count">${count}</span></button>`;
+  }).join('');
+  const queryInput = `<input class="runbook-history-search" data-runbook-history-search data-path="${escapeHtml(runbookPath)}" placeholder="Search runId or status…" value="${escapeHtml(filter.query || '')}" type="search" autocomplete="off" />`;
+  const visibleRuns = filtered.slice(0, 24);
+  const overflow = filtered.length - visibleRuns.length;
+  const emptyState = !filtered.length
+    ? `<div class="runbook-empty">No runs match the current filter.</div>`
+    : '';
   return `
     <div class="runbook-machine-history">
       <div class="runbook-item-title">
         <strong>History</strong>
         <span class="runbook-chip">${escapeHtml(machineCountLabel(runs.length, 'entry', 'entries'))}</span>
+        ${filtered.length !== runs.length ? `<span class="runbook-chip" title="Filtered count">${filtered.length} shown</span>` : ''}
       </div>
+      <div class="runbook-history-filter-row">${filterChips}</div>
+      <div class="runbook-history-search-row">${queryInput}</div>
       <div class="runbook-action-row">
-        ${runs.slice(0, 6).map(run => {
+        ${visibleRuns.map(run => {
           // 'active' chip = the run currently driving the active panel.
           // 'inspected' chip = the run the user clicked to inspect from
           // history (read-only). They can be the same run (click your
@@ -10303,6 +10364,8 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
           return `<button data-runbook-action="machine-select-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(run.runId || '')}"${classes.length ? ` class="${classes.join(' ')}"` : ''} title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
         }).join('')}
       </div>
+      ${overflow > 0 ? `<div class="runbook-muted">+${overflow} more match — refine the filter to see them.</div>` : ''}
+      ${emptyState}
     </div>
   `;
 }
@@ -12908,6 +12971,11 @@ runbooksContentEl?.addEventListener('click', async (event) => {
         renderRunbooksPanel();
       }
     }
+    else if (action === 'history-filter-set') {
+      const lifecycle = button.dataset.filterLifecycle || 'all';
+      setHistoryFilter(targetPath, { lifecycle });
+      renderRunbooksPanel();
+    }
     else if (action === 'enable-machine') {
       const ok = await enableManagedRunsForSession();
       if (ok && targetPath) {
@@ -12980,11 +13048,32 @@ runbooksContentEl?.addEventListener('click', async (event) => {
 });
 
 runbooksContentEl?.addEventListener('input', (event) => {
-  if (!event.target.matches?.('[data-runbook-task]')) return;
-  runbookDraftTask = event.target.value || '';
-  localStorage.setItem(RUNBOOK_TASK_STORAGE_KEY, runbookDraftTask);
-  syncRunbookExternalResearchWarning(runbookDraftTask);
+  if (event.target.matches?.('[data-runbook-task]')) {
+    runbookDraftTask = event.target.value || '';
+    localStorage.setItem(RUNBOOK_TASK_STORAGE_KEY, runbookDraftTask);
+    syncRunbookExternalResearchWarning(runbookDraftTask);
+    return;
+  }
+  if (event.target.matches?.('[data-runbook-history-search]')) {
+    // Phase 3.8: debounce history search input — re-rendering the
+    // entire panel on every keystroke costs ~50ms and loses focus.
+    const path = event.target.dataset.path || '';
+    const value = event.target.value || '';
+    setHistoryFilter(path, { query: value });
+    if (machineHistorySearchDebounce) clearTimeout(machineHistorySearchDebounce);
+    machineHistorySearchDebounce = setTimeout(() => {
+      machineHistorySearchDebounce = null;
+      renderRunbooksPanel();
+      // Restore focus + caret position after re-render.
+      const fresh = document.querySelector(`[data-runbook-history-search][data-path="${CSS.escape(path)}"]`);
+      if (fresh) {
+        fresh.focus();
+        fresh.setSelectionRange(value.length, value.length);
+      }
+    }, 180);
+  }
 });
+let machineHistorySearchDebounce = null;
 
 runbooksContentEl?.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.altKey && !event.shiftKey) {

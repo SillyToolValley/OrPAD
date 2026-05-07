@@ -1708,6 +1708,56 @@ body.json-diff-mode #preview-pane {
   border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: calc(7px * var(--us));
 }
+/* Phase 3.8: history filter chips + search input. The chip count
+ * lets the user judge skew at a glance (e.g. 3 failed / 12 done). */
+.runbook-history-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--us));
+}
+.runbook-history-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(4px * var(--us));
+  padding: calc(2px * var(--us)) calc(7px * var(--us));
+  font-size: calc(10.5px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: calc(10px * var(--us));
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+.runbook-history-filter-chip:hover {
+  background: var(--hover-bg);
+}
+.runbook-history-filter-chip.active {
+  border-color: color-mix(in srgb, var(--accent-color, #6cb6ff) 60%, transparent);
+  color: var(--accent-color, #6cb6ff);
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 14%, transparent);
+}
+.runbook-history-filter-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.runbook-history-filter-count {
+  font-size: calc(9.5px * var(--us));
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+.runbook-history-search-row {
+  display: flex;
+}
+.runbook-history-search {
+  flex: 1;
+  padding: calc(4px * var(--us)) calc(7px * var(--us));
+  font: inherit;
+  font-size: calc(11px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(5px * var(--us));
+  background: var(--input-bg, var(--bg-primary));
+  color: var(--text-primary);
+}
 .runbook-machine-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
