@@ -10057,20 +10057,6 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
     const adapterChip = adapterStatus
       ? `<span class="runbook-chip state-${escapeHtml(adapterStatus)}" title="adapter.result.status">${escapeHtml(adapterStatus)}</span>`
       : '';
-    const retryDisabled = !runId;
-    const retryBtn = retryDisabled
-      ? ''
-      : `<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Re-run this node at attempt N+1.">Retry attempt</button>`;
-    const skipBtn = retryDisabled
-      ? ''
-      : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Mark node as skipped (terminal).">Skip node</button>`;
-    // Phase 3.7: breakpoint toggle (renderer-only). Per-pipeline so it
-    // persists across runs.
-    const runbookPathForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
-    const hasBreakpoint = runbookPathForBp ? getMachineBreakpoints(runbookPathForBp).has(machineNodePath) : false;
-    const bpBtn = runbookPathForBp
-      ? `<button class="pipe-failed-probe-link ${hasBreakpoint ? 'pipe-breakpoint-active' : 'pipe-breakpoint-inactive'}" data-probe-action="toggle-breakpoint" data-node-path="${escapeHtml(machineNodePath)}" title="${hasBreakpoint ? 'Breakpoint set. Click to clear. Continue will warn before dispatching past this node.' : 'Set a breakpoint. Continue will warn before dispatching past this node. Cleared by clicking again.'}">${hasBreakpoint ? 'Clear breakpoint' : 'Set breakpoint'}</button>`
-      : '';
     return `
       <div class="orch-inspector-runtime-attempt">
         <div class="orch-inspector-runtime-attempt-head">
@@ -10081,16 +10067,32 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
         ${summaryLine ? `<div class="orch-inspector-runtime-summary">${escapeHtml(summaryLine)}</div>` : ''}
         ${errorBlock}
         ${transcriptLinks}
-        <div class="orch-inspector-runtime-actions">${retryBtn}${skipBtn}${bpBtn}</div>
       </div>
     `;
   }).join('');
+  // Node-level actions live ABOVE the attempt list, NOT inside each
+  // attempt block — Retry / Skip / Set breakpoint are operations on
+  // the node, not on a specific past attempt. Putting them once at
+  // the top eliminates the duplicated rows the user reported.
+  const runbookPathForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+  const hasBreakpoint = runbookPathForBp ? getMachineBreakpoints(runbookPathForBp).has(machineNodePath) : false;
+  const retryDisabled = !runId;
+  const nodeActions = (retryDisabled && !runbookPathForBp)
+    ? ''
+    : `
+      <div class="orch-inspector-runtime-actions">
+        ${retryDisabled ? '' : `<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Re-run this node at attempt N+1. Appends a fresh node.scheduled event so the dispatcher re-runs it on the next Continue.">Retry node</button>`}
+        ${retryDisabled ? '' : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Mark this node as skipped (terminal). Use only when its work is genuinely not required.">Skip node</button>`}
+        ${runbookPathForBp ? `<button class="pipe-failed-probe-link ${hasBreakpoint ? 'pipe-breakpoint-active' : 'pipe-breakpoint-inactive'}" data-probe-action="toggle-breakpoint" data-node-path="${escapeHtml(machineNodePath)}" title="${hasBreakpoint ? 'Breakpoint set. Click to clear. Continue will warn before dispatching past this node.' : 'Set a breakpoint. Continue will warn before dispatching past this node. Cleared by clicking again.'}">${hasBreakpoint ? 'Clear breakpoint' : 'Set breakpoint'}</button>` : ''}
+      </div>
+    `;
   return `
     <details class="orch-inspector-runtime" open>
       <summary>Run state ${headerChip}</summary>
       <div class="orch-inspector-runtime-meta">
         <code>${escapeHtml(machineNodePath)}</code>
       </div>
+      ${nodeActions}
       ${attemptBlocks}
     </details>
   `;
