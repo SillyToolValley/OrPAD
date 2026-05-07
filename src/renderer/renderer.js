@@ -9922,7 +9922,29 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
 }
 
 function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = selectedRunbookPath) {
-  if (!record) return '';
+  if (!record) {
+    // Latest-run hydration may fail or race (IPC error, stale cache,
+    // pipeline validation error, etc.). Without a fallback the entire
+    // Latest Run section disappears and the user has no UI surface
+    // for the run at all. Always show a panel with a refresh action
+    // and, if we have any history, the run-picker buttons too.
+    if (runbookPath) {
+      const runs = machineRunListForRunbook(runbookPath);
+      return `
+        <section class="runbook-panel-section">
+          <h3>Latest Run</h3>
+          <div class="runbook-empty">${escapeHtml(runs.length
+            ? 'Latest run could not be loaded automatically. Pick a run below to inspect or continue it.'
+            : 'No run record loaded yet. Click Refresh to fetch the run history, or start a new run.')}</div>
+          <div class="runbook-action-row">
+            <button data-runbook-action="refresh-run-list" data-path="${escapeHtml(runbookPath)}">Refresh runs</button>
+          </div>
+          ${runs.length ? renderMachineRunHistory(runbookPath, '') : ''}
+        </section>
+      `;
+    }
+    return '';
+  }
   const runState = record.runState || {};
   const events = record.events || [];
   const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
@@ -12070,6 +12092,18 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-view-artifacts') await openMachineArtifactViewer(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-select-run') await selectMachineRunRecord(targetPath, button.dataset.runId || '');
+    else if (action === 'refresh-run-list') {
+      // Force-refetch the machine run list and try to hydrate the
+      // latest record. Used when latest-run auto-hydration silently
+      // failed and the panel rendered the empty fallback.
+      await refreshMachineRunList(targetPath);
+      const latest = await loadLatestMachineRunRecord(targetPath);
+      if (latest) {
+        lastMachineRunRecord = latest;
+        setRunbookCache(machineRunRecordCache, targetPath, lastMachineRunRecord);
+      }
+      renderRunbooksPanel();
+    }
   } catch (err) {
     notifyFormatError('Runbooks', err);
   }
