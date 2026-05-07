@@ -2186,6 +2186,59 @@ body.json-diff-mode #preview-pane {
 .pipe-lifecycle-banner-link--cta:hover {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 28%, transparent);
 }
+/* Phase 2.5: inline approval cards inside the lifecycle banner.
+ * Replaces the misleading "approval modal will surface" copy with
+ * actionable Allow/Decline buttons in place. */
+.pipe-interrupt-card-list {
+  display: grid;
+  gap: calc(6px * var(--us));
+  margin-top: calc(2px * var(--us));
+}
+.pipe-interrupt-card {
+  display: grid;
+  gap: calc(5px * var(--us));
+  padding: calc(7px * var(--us)) calc(9px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--accent-color, #6cb6ff) 40%, var(--border-color));
+  border-radius: calc(6px * var(--us));
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 7%, var(--bg-secondary) 70%);
+  transition: opacity 0.4s ease, transform 0.4s ease, max-height 0.4s ease;
+  max-height: 200px;
+  overflow: hidden;
+}
+.pipe-interrupt-card--deciding {
+  opacity: 0.45;
+  transform: scale(0.98);
+}
+.pipe-interrupt-card-head {
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--us));
+  flex-wrap: wrap;
+  font-size: calc(12px * var(--us));
+}
+.pipe-interrupt-card-item {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(10.5px * var(--us));
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--border-color) 30%, transparent);
+  padding: calc(1px * var(--us)) calc(5px * var(--us));
+  border-radius: calc(3px * var(--us));
+}
+.pipe-interrupt-card-reason {
+  font-size: calc(11px * var(--us));
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.pipe-interrupt-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6px * var(--us));
+}
+.pipe-interrupt-card-empty {
+  font-size: calc(11px * var(--us));
+  color: var(--text-tertiary);
+  font-style: italic;
+}
 .pipe-budget-chip {
   border: 1px solid color-mix(in srgb, var(--accent-color, #6cb6ff) 50%, transparent);
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 10%, transparent);

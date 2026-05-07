@@ -3057,12 +3057,40 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
 
   let banner = null;
   if (lifecycle === 'approval-required' || summary === 'pending') {
+    // Phase 2.5: render pending approvals as inline cards with Allow /
+    // Decline buttons directly in the banner. No more 'approval modal
+    // will surface' lie — the user can act here.
+    const pending = (record?.approvals?.pending || []).filter(a => a?.approvalId);
+    const approvalCards = pending.length
+      ? pending.slice(0, 5).map(approval => {
+          const aid = approval.approvalId;
+          const itemId = approval.itemId || '';
+          const subjectLine = approval.title || approval.summary || itemId || aid;
+          const reasonLine = approval.reason || '';
+          return `
+            <div class="pipe-interrupt-card" data-approval-id="${escapeHtml(aid)}">
+              <div class="pipe-interrupt-card-head">
+                <strong>${escapeHtml(subjectLine)}</strong>
+                ${itemId ? `<code class="pipe-interrupt-card-item">${escapeHtml(itemId)}</code>` : ''}
+              </div>
+              ${reasonLine ? `<div class="pipe-interrupt-card-reason">${escapeHtml(reasonLine)}</div>` : ''}
+              <div class="pipe-interrupt-card-actions">
+                <button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(aid)}" title="Allow this request and unblock the run.">Allow</button>
+                <button class="pipe-lifecycle-banner-link" data-runbook-action="machine-deny-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(aid)}" title="Decline this request and leave the run blocked.">Decline</button>
+              </div>
+            </div>
+          `;
+        }).join('')
+      : '<div class="pipe-interrupt-card-empty">Approval marker is set but no pending approval payload is loaded yet.</div>';
     banner = {
       kind: 'warn',
-      title: 'Awaiting approval',
-      detail: 'Machine needs an explicit approval before this run can continue. Approval requests live in events.jsonl; the existing approval modal will surface them next time you focus the run.',
-      conclusion: 'This run is paused — decide approval to continue, or cancel to terminate.',
-      actions: [linkBtn('events.jsonl', eventsAbs), linkBtn('summary.md', summaryAbs), cancelBtn],
+      title: pending.length === 1 ? 'Approval needed' : `${pending.length || 'Awaiting'} approval${pending.length === 1 ? '' : 's'}`,
+      detail: pending.length
+        ? 'Decide each request inline. After Allow/Decline, click Continue to resume the run.'
+        : 'Run paused for an approval marker. Refresh runs to load the pending request payload.',
+      conclusion: 'This run is paused — decide approvals inline below, then Continue to resume.',
+      extraHtml: `<div class="pipe-interrupt-card-list">${approvalCards}</div>`,
+      actions: [linkBtn('events.jsonl', eventsAbs), cancelBtn],
     };
   } else if (lifecycle === 'failed') {
     banner = {
@@ -3120,10 +3148,12 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
   const conclusionHtml = banner.conclusion
     ? `<div class="pipe-lifecycle-banner-conclusion">${escapeHtml(banner.conclusion)}</div>`
     : '';
+  const extraHtml = banner.extraHtml || '';
   return `${gateBanner}
     <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(banner.kind)}">
       <div class="pipe-lifecycle-banner-title">${escapeHtml(banner.title)}</div>
       <div class="pipe-lifecycle-banner-detail">${escapeHtml(banner.detail)}</div>
+      ${extraHtml}
       ${conclusionHtml}
       <div class="pipe-lifecycle-banner-actions">
         ${banner.actions.filter(Boolean).join('')}
@@ -12874,6 +12904,32 @@ contentEl?.addEventListener('click', async (event) => {
       }
     }
     return;
+  }
+  // Phase 2.5: lifecycle banner now embeds Allow/Decline buttons for
+  // pending approvals as inline cards — they use data-runbook-action
+  // because the same handlers live in the sidebar. The runbooks
+  // listener is bound to runbooksContentEl only, so we forward the
+  // approval actions from contentEl here.
+  const inlineRunbookButton = event.target.closest?.('[data-runbook-action]');
+  if (inlineRunbookButton && contentEl.contains(inlineRunbookButton)) {
+    const action = inlineRunbookButton.dataset.runbookAction || '';
+    if (action === 'machine-approve-approval' || action === 'machine-deny-approval') {
+      event.preventDefault();
+      event.stopPropagation();
+      const decision = action === 'machine-approve-approval' ? 'approved' : 'denied';
+      const runId = inlineRunbookButton.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const approvalId = inlineRunbookButton.dataset.approvalId || '';
+      const targetPath = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      const card = inlineRunbookButton.closest('.pipe-interrupt-card');
+      if (card) card.classList.add('pipe-interrupt-card--deciding');
+      try {
+        await decideSelectedMachineApproval(targetPath, runId, approvalId, decision);
+      } catch (err) {
+        if (card) card.classList.remove('pipe-interrupt-card--deciding');
+        notifyFormatError('Decide approval', err);
+      }
+      return;
+    }
   }
   const button = event.target.closest?.('[data-pipeline-run-action]');
   if (!button || !contentEl.contains(button)) return;
