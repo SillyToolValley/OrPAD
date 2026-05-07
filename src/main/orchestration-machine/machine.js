@@ -1088,6 +1088,18 @@ function latestNodeCompletedEvent(events, nodePath) {
   )) || null;
 }
 
+// A node is "resolved" for this run when its latest lifecycle event is
+// either node.completed (success) or node.skipped (user dismissed). The
+// dispatcher must NOT re-attempt a resolved node — otherwise clicking
+// Skip on a failing probe would just re-fire the same probe on the next
+// run-step and surface the same failure card again.
+function latestNodeResolvedEvent(events, nodePath) {
+  return [...events].reverse().find(event => (
+    (event.eventType === 'node.completed' || event.eventType === 'node.skipped')
+    && event.nodePath === nodePath
+  )) || null;
+}
+
 function hasUnresolvedSupportBlock(events, orderedNodes) {
   const supportBlockPaths = new Set(
     orderedNodes
@@ -1115,12 +1127,16 @@ async function validateBarrierNode(runRoot, node, config = {}) {
   const events = await readMachineEvents(runRoot);
   const dependencies = waitFor.map(ref => {
     const nodePath = resolveNodeRefFromConfig(node, ref);
-    const completedEvent = latestNodeCompletedEvent(events, nodePath);
+    // A barrier dependency is satisfied either when it completed
+    // successfully or when the user explicitly skipped it. Treating skip
+    // as still-pending would block the barrier forever.
+    const resolvedEvent = latestNodeResolvedEvent(events, nodePath);
     return {
       ref,
       nodePath,
-      completed: Boolean(completedEvent),
-      eventSequence: completedEvent?.sequence ?? null,
+      completed: Boolean(resolvedEvent),
+      eventSequence: resolvedEvent?.sequence ?? null,
+      resolution: resolvedEvent?.eventType === 'node.skipped' ? 'skipped' : (resolvedEvent ? 'completed' : 'pending'),
     };
   });
   const missing = dependencies.filter(entry => !entry.completed);
@@ -1947,11 +1963,24 @@ async function executeMachineRunStep(options = {}) {
   };
   let workerLoopExecuted = false;
 
+  // Index of the latest lifecycle event per nodePath — used to honor
+  // user-initiated node.skipped decisions across run-steps. A node the
+  // user explicitly skipped must NOT be re-evaluated by the dispatcher,
+  // even for one-shot support gates (exit / artifactContract) that
+  // would otherwise re-emit node.blocked at attempt N+1 and surface the
+  // same gate card again immediately.
+  const latestLifecycleByPath = latestLifecycleStatusByNode(initialEvents);
+
   for (const node of orderedNodes) {
     if (!executablePaths.has(node.nodePath)) continue;
+    // User-skipped nodes are terminal for this run, regardless of node
+    // type. This is what makes the Skip / Skip gate UI actions stick:
+    // without it, the for-loop would re-enter the support node,
+    // re-evaluate evidence, and re-emit node.blocked.
+    if (latestLifecycleByPath.get(node.nodePath)?.eventType === 'node.skipped') continue;
     if (
       resumeAfterSupportBlock
-      && latestNodeCompletedEvent(initialEvents, node.nodePath)
+      && latestNodeResolvedEvent(initialEvents, node.nodePath)
     ) {
       continue;
     }
@@ -1959,19 +1988,25 @@ async function executeMachineRunStep(options = {}) {
       resumeAfterApproval
       && node.nodePath !== dispatcherNode.nodePath
       && node.nodePath !== workerNode.nodePath
-      && latestNodeCompletedEvent(initialEvents, node.nodePath)
+      && latestNodeResolvedEvent(initialEvents, node.nodePath)
     ) {
       continue;
     }
     const attempt = nextNodeAttempt(initialEvents, node.nodePath);
     if (probeNodePaths.has(node.nodePath)) {
       if (!probeFanoutExecuted) {
-        const runnableProbeNodes = resumeAfterApproval
-          ? probeNodes.filter(probeEntry => !latestNodeCompletedEvent(initialEvents, probeEntry.nodePath))
-          : probeNodes;
-        const probeResults = await mapWithConcurrency(runnableProbeNodes, probeConcurrency, executeProbeNode);
-        probes.push(...probeResults);
-        if (!probe && probeResults[0]) probe = probeResults[0].result;
+        // Always exclude probes whose latest lifecycle event is already
+        // node.completed or node.skipped. A user who clicks Skip on a
+        // failing probe should not see it re-attempted (and re-failed) on
+        // the next run-step — the skip is the user's terminal decision.
+        const runnableProbeNodes = probeNodes.filter(probeEntry => (
+          !latestNodeResolvedEvent(initialEvents, probeEntry.nodePath)
+        ));
+        if (runnableProbeNodes.length) {
+          const probeResults = await mapWithConcurrency(runnableProbeNodes, probeConcurrency, executeProbeNode);
+          probes.push(...probeResults);
+          if (!probe && probeResults[0]) probe = probeResults[0].result;
+        }
         probeFanoutExecuted = true;
       }
     } else if (node.nodePath === triageNode.nodePath) {

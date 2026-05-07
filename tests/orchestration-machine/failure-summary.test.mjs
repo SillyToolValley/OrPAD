@@ -388,6 +388,70 @@ test('end-to-end: skip-node IPC writes a node.skipped event for the failing prob
   }
 });
 
+test('end-to-end: skipping a failing probe prevents the next run-step from re-attempting it', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeFailingProbeWorkspace('run_failing_skip_resume_001');
+  try {
+    // First run-step — probe should fail (binary does not exist).
+    try {
+      await orchestration.executeMachineRunStep({
+        workspaceRoot,
+        pipelinePath,
+        pipelineDir,
+        runRoot: run.runRoot,
+        runId: run.runId,
+        exportLatestRunAfterStep: false,
+      });
+    } catch { /* failure expected */ }
+
+    const eventsAfterFirst = await orchestration.readMachineEvents(run.runRoot);
+    const firstStarts = eventsAfterFirst
+      .filter(e => e.eventType === 'node.started' && e.nodePath === 'main/probe');
+    assert.equal(firstStarts.length, 1, 'first run-step should record a single probe.started');
+    const adapterFailure = eventsAfterFirst.find(e => (
+      e.eventType === 'adapter.result'
+      && e.nodePath === 'main/probe'
+      && e.payload?.status === 'failed'
+    ));
+    assert.equal(Boolean(adapterFailure), true, 'probe should record an adapter.result with status=failed');
+
+    // Append node.skipped (mimicking the skip-node IPC handler) without
+    // going through the full IPC plumbing — what we are testing here is
+    // the dispatcher's behavior on the NEXT step, not the IPC.
+    const { recordNodeLifecycleEvent } = require('../../src/main/orchestration-machine/node-lifecycle');
+    await recordNodeLifecycleEvent(run.runRoot, {
+      runId: run.runId,
+      nodePath: 'main/probe',
+      nodeType: 'orpad.probe',
+      attempt: 2,
+      status: 'skipped',
+      payload: { reason: 'user-skipped', decidedBy: 'test' },
+    });
+
+    // Second run-step — probe must NOT be re-attempted; the skip is the
+    // user's terminal decision. The dispatcher should advance through
+    // downstream nodes (triage, dispatcher, worker, support) instead.
+    try {
+      await orchestration.executeMachineRunStep({
+        workspaceRoot,
+        pipelinePath,
+        pipelineDir,
+        runRoot: run.runRoot,
+        runId: run.runId,
+        exportLatestRunAfterStep: false,
+      });
+    } catch { /* downstream nodes may block on evidence — acceptable */ }
+
+    const eventsAfterSecond = await orchestration.readMachineEvents(run.runRoot);
+    const probeStartedEvents = eventsAfterSecond.filter(e => (
+      e.eventType === 'node.started' && e.nodePath === 'main/probe'
+    ));
+    assert.equal(probeStartedEvents.length, 1,
+      `probe must not be re-attempted after skip; saw ${probeStartedEvents.length} starts (attempts: ${probeStartedEvents.map(e => e.payload?.attempt).join(',')})`);
+  } finally {
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('skip-node IPC rejects without nodePath', async () => {
   const ipcMain = (() => {
     const handlers = new Map();
