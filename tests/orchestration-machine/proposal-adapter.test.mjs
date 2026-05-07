@@ -257,6 +257,116 @@ test('candidate proposal missing proof is rejected by the adapter result contrac
   assert.equal((await readQueueItems(run.runRoot)).length, 0);
 });
 
+test('runProposalOnlyAdapter with retryOnInvalidContract retries once and recovers from contract error', async () => {
+  const run = await makeRun();
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/retry-probe',
+    taskKind: 'probe',
+  });
+
+  let calls = 0;
+  const adapter = {
+    adapter: 'fake-llm',
+    async invoke(req, ctx) {
+      calls += 1;
+      if (calls === 1) {
+        // First call: malformed — wrong status enum (LLM hallucinated 'success').
+        return adapterResult(req, { status: 'success' });
+      }
+      // Second call: must have received the correction context.
+      assert.equal(ctx.attempt, 2);
+      assert.ok(ctx.previousValidationError);
+      assert.equal(ctx.previousValidationError.code, 'INVALID_ADAPTER_CONTRACT');
+      return adapterResult(req, {
+        status: 'done',
+        summary: 'After retry, returned valid contract.',
+      });
+    },
+  };
+
+  const applied = await runProposalOnlyAdapter({
+    runRoot: run.runRoot,
+    request,
+    adapter,
+    retryOnInvalidContract: true,
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(applied.summaryStatus, 'partial');
+});
+
+test('runProposalOnlyAdapter without retryOnInvalidContract surfaces INVALID_ADAPTER_CONTRACT immediately', async () => {
+  const run = await makeRun();
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/no-retry-probe',
+    taskKind: 'probe',
+  });
+
+  let calls = 0;
+  const adapter = {
+    adapter: 'fake-llm',
+    async invoke(req) {
+      calls += 1;
+      return adapterResult(req, { status: 'success' });
+    },
+  };
+
+  await assert.rejects(
+    runProposalOnlyAdapter({
+      runRoot: run.runRoot,
+      request,
+      adapter,
+    }),
+    err => err?.code === 'INVALID_ADAPTER_CONTRACT',
+  );
+  assert.equal(calls, 1);
+});
+
+test('proposal-only result with status=blocked and no work + no justification is rejected', async () => {
+  const run = await makeRun();
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/silent-blocked',
+    taskKind: 'triage',
+  });
+
+  await assert.rejects(
+    applyProposalAdapterResult(run.runRoot, request, adapterResult(request, {
+      status: 'blocked',
+      summary: 'LLM produced nothing actionable but did not say why.',
+      candidateProposals: [],
+      // intentionally no triageTransitions, no emptyPass, no deferredReason
+    })),
+    err => err?.code === 'PROPOSAL_EMPTY_PASS_UNPROVEN' && err?.status === 'blocked',
+  );
+
+  // No transitions / proposals were committed.
+  assert.equal((await readQueueItems(run.runRoot)).length, 0);
+});
+
+test('proposal-only result with status=blocked accepts emptyPass.reason as justification', async () => {
+  const run = await makeRun();
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/silent-blocked-reasoned',
+    taskKind: 'triage',
+  });
+
+  const applied = await applyProposalAdapterResult(run.runRoot, request, adapterResult(request, {
+    status: 'blocked',
+    summary: 'LLM saw nothing actionable; explained why.',
+    candidateProposals: [],
+    emptyPass: {
+      reason: 'No candidate proposals matched the triage filter for this run.',
+      evidence: [`node:${request.nodePath}`],
+    },
+  }));
+
+  assert.equal(applied.summaryStatus, 'blocked');
+});
+
 test('deferred or negative proposal-only result leaves the run blocked without queue items', async () => {
   const run = await makeRun();
   const request = createAdapterRequest({

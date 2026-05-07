@@ -577,6 +577,42 @@ test('claim cancellation can block a claimed item and cancel the run', async () 
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
 });
 
+test('claim cancellation emits node.cancelled for any in-flight node.started attempt', async () => {
+  const run = await makeRun('run_20260507_node_cancelled_emit');
+  const itemId = await queueProposal(run, proposal());
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-node-cancelled-emit',
+    now: '2026-05-07T00:00:20.000Z',
+  });
+  // Simulate an in-flight worker attempt: worker calls recordNodeLifecycleEvent
+  // with status='started' before invoking the CLI overlay. Our cancel path
+  // should now emit node.cancelled for that attempt so the renderer's
+  // runtime projection drops the active "Running" badge.
+  const { recordNodeLifecycleEvent } = require('../../src/main/orchestration-machine');
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/worker',
+    nodeType: 'orpad.workerLoop',
+    status: 'started',
+    attempt: 1,
+  });
+
+  await cancelClaimedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: claimed.claim.claimId,
+    itemId,
+    now: '2026-05-07T00:00:30.000Z',
+  });
+
+  const events = await readMachineEvents(run.runRoot);
+  const cancelledNodeEvents = events.filter(e => e.eventType === 'node.cancelled');
+  assert.equal(cancelledNodeEvents.length, 1);
+  assert.equal(cancelledNodeEvents[0].nodePath, 'main/worker');
+  assert.equal(cancelledNodeEvents[0].payload.attempt, 1);
+  assert.equal(cancelledNodeEvents[0].payload.reason, 'worker-loop.cancel');
+});
+
 test('claim cancellation rejects invalid close targets before recording cancelling status', async () => {
   const run = await makeRun('run_20260430_worker_cancel_invalid_target');
   const itemId = await queueProposal(run, proposal());

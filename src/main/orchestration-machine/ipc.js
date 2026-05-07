@@ -25,7 +25,7 @@ const {
 } = require('./path-resolver');
 const { createMachineRun, readRunState } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
-const { cancelClaimedItem } = require('./worker-loop');
+const { cancelClaimedItem, emitNodeCancelledForInflight } = require('./worker-loop');
 const { readActiveWriteSetLocks } = require('./write-sets');
 const { cancelMachineProcessRun } = require('./adapters/process-runner');
 const {
@@ -64,12 +64,73 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
 });
 
 const APPLY_BATCH_MUTEXES = new Map();
+const RUN_LIFECYCLE_QUEUE = new Map();
+// Reference counter (not Set) so two queued+exclusive tasks for the same
+// runRoot do not clobber each other's busy state when the inner task
+// completes — Set.delete from one would falsely clear "busy" while the
+// other is still running.
+const RUN_LIFECYCLE_INFLIGHT = new Map();
+
+function withRunRootQueue(map, runRoot, task) {
+  const previous = map.get(runRoot) || Promise.resolve();
+  const next = previous.then(task, task);
+  // Track the latest tail so we can clean up the map entry once it
+  // settles; otherwise long-lived processes leak one entry per distinct
+  // runRoot they ever touch.
+  const tail = next.catch(() => null);
+  map.set(runRoot, tail);
+  tail.then(() => {
+    if (map.get(runRoot) === tail) map.delete(runRoot);
+  });
+  return next;
+}
 
 function withBatchApplyMutex(runRoot, task) {
-  const previous = APPLY_BATCH_MUTEXES.get(runRoot) || Promise.resolve();
-  const next = previous.then(task, task);
-  APPLY_BATCH_MUTEXES.set(runRoot, next.catch(() => null));
-  return next;
+  return withRunRootQueue(APPLY_BATCH_MUTEXES, runRoot, task);
+}
+
+function incrLifecycleInflight(runRoot) {
+  RUN_LIFECYCLE_INFLIGHT.set(runRoot, (RUN_LIFECYCLE_INFLIGHT.get(runRoot) || 0) + 1);
+}
+
+function decrLifecycleInflight(runRoot) {
+  const next = (RUN_LIFECYCLE_INFLIGHT.get(runRoot) || 0) - 1;
+  if (next <= 0) RUN_LIFECYCLE_INFLIGHT.delete(runRoot);
+  else RUN_LIFECYCLE_INFLIGHT.set(runRoot, next);
+}
+
+// Fail-fast lifecycle guard: rejects with MACHINE_RUN_BUSY when another
+// mutating lifecycle handler (executeRunStep / resumeRun / skipNode) is
+// already in flight OR queued for the same runRoot. Used to block
+// accidental double clicks at the IPC layer in case the renderer's own
+// pending guard is bypassed. Increments inflight counter EAGERLY so the
+// next caller observes the busy state before it reaches the queue.
+async function withRunLifecycleExclusive(runRoot, task) {
+  if ((RUN_LIFECYCLE_INFLIGHT.get(runRoot) || 0) > 0) {
+    throw machineError(
+      'MACHINE_RUN_BUSY',
+      'Another lifecycle operation is in progress for this run. Wait for it to finish before retrying.',
+    );
+  }
+  incrLifecycleInflight(runRoot);
+  try {
+    return await withRunRootQueue(RUN_LIFECYCLE_QUEUE, runRoot, () => task());
+  } finally {
+    decrLifecycleInflight(runRoot);
+  }
+}
+
+// Queued lifecycle guard: always runs, but waits for any in-flight
+// exclusive task to finish first. Cancel paths must call
+// cancelMachineProcessRun BEFORE acquiring this so the in-flight step's
+// child processes are signalled and the queue drains quickly.
+async function withRunLifecycleQueued(runRoot, task) {
+  incrLifecycleInflight(runRoot);
+  try {
+    return await withRunRootQueue(RUN_LIFECYCLE_QUEUE, runRoot, () => task());
+  } finally {
+    decrLifecycleInflight(runRoot);
+  }
 }
 
 function featureGateFromEnv(env = process.env) {
@@ -981,64 +1042,75 @@ async function resumeRunHandler(event, authority, request) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
   }
 
-  try {
-    const resumed = await resumeMachineRun(runRoot, {
-      runId,
-      now: optionalString(request.now, 'now') || undefined,
-      recoverStaleClaims,
-    });
-    const updated = await readRunSnapshot(runRoot);
-    const exported = request.exportLatestRun === false
-      ? null
-      : await exportLatestRun({
-        runRoot,
-        pipelineDir: context.pipelineDir,
-        allowOverwrite: true,
-      });
-    return {
-      success: true,
-      ok: true,
-      runId,
-      runState: updated.runState,
-      events: updated.events,
-      candidateInventory: updated.candidateInventory,
-      worker: updated.worker,
-      approvals: updated.approvals,
-      activeClaims: updated.activeClaims,
-      activeWriteSets: updated.activeWriteSets,
-      resume: {
-        queueRepair: resumed.queueRepair,
-        staleClaimCount: resumed.staleClaims.length,
-        inventory: resumed.inventory,
-      },
-      exported,
-    };
-  } catch (err) {
-    const code = String(err?.code || '');
-    if (code) {
-      const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
-      return {
-        success: false,
-        ok: false,
-        code,
-        error: err.message,
+  return withRunLifecycleExclusive(runRoot, async () => {
+    try {
+      const resumed = await resumeMachineRun(runRoot, {
         runId,
-        runState: failureSnapshot.runState,
-        events: failureSnapshot.events,
-        candidateInventory: failureSnapshot.candidateInventory,
-        worker: failureSnapshot.worker,
-        approvals: failureSnapshot.approvals,
-        activeClaims: failureSnapshot.activeClaims,
-        activeWriteSets: failureSnapshot.activeWriteSets,
+        now: optionalString(request.now, 'now') || undefined,
+        recoverStaleClaims,
+      });
+      const updated = await readRunSnapshot(runRoot);
+      const exported = request.exportLatestRun === false
+        ? null
+        : await exportLatestRun({
+          runRoot,
+          pipelineDir: context.pipelineDir,
+          allowOverwrite: true,
+        });
+      return {
+        success: true,
+        ok: true,
+        runId,
+        runState: updated.runState,
+        events: updated.events,
+        candidateInventory: updated.candidateInventory,
+        worker: updated.worker,
+        approvals: updated.approvals,
+        activeClaims: updated.activeClaims,
+        activeWriteSets: updated.activeWriteSets,
+        resume: {
+          queueRepair: resumed.queueRepair,
+          staleClaimCount: resumed.staleClaims.length,
+          inventory: resumed.inventory,
+        },
+        exported,
       };
+    } catch (err) {
+      const code = String(err?.code || '');
+      if (code) {
+        const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+        return {
+          success: false,
+          ok: false,
+          code,
+          error: err.message,
+          runId,
+          runState: failureSnapshot.runState,
+          events: failureSnapshot.events,
+          candidateInventory: failureSnapshot.candidateInventory,
+          worker: failureSnapshot.worker,
+          approvals: failureSnapshot.approvals,
+          activeClaims: failureSnapshot.activeClaims,
+          activeWriteSets: failureSnapshot.activeWriteSets,
+        };
+      }
+      throw err;
     }
-    throw err;
-  }
+  });
 }
 
 async function cancelClaimHandler(event, authority, request) {
+  // cancelMachineProcessRun must run BEFORE we wait on the lifecycle queue so
+  // an in-flight executeRunStep's child process is signalled immediately and
+  // the queue drains quickly. When cancelRunHandler delegates here it has
+  // already issued the abort; honor its `_priorAbortedProcessCount` so we
+  // don't double-call (which would falsely report 0 aborts).
+  const earlyRunId = assertRunId(request.runId);
+  const abortedProcessCount = typeof request._priorAbortedProcessCount === 'number'
+    ? request._priorAbortedProcessCount
+    : cancelMachineProcessRun(earlyRunId);
   const context = await resolveMachinePipelineContext(event, authority, request);
-  const runId = assertRunId(request.runId);
+  const runId = earlyRunId;
   const claimId = assertOpaqueId(request.claimId, 'claimId');
   const itemId = assertOpaqueId(request.itemId, 'itemId');
   const toState = assertCancelToState(request.toState);
@@ -1048,14 +1120,111 @@ async function cancelClaimHandler(event, authority, request) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
   }
 
-  try {
-    const abortedProcessCount = cancelMachineProcessRun(runId);
-    const cancelled = await cancelClaimedItem(runRoot, {
+  return withRunLifecycleQueued(runRoot, async () => {
+    try {
+      const cancelled = await cancelClaimedItem(runRoot, {
+        runId,
+        claimId,
+        itemId,
+        toState,
+        now: optionalString(request.now, 'now') || undefined,
+      });
+      const updated = await readRunSnapshot(runRoot);
+      const exported = request.exportLatestRun === false
+        ? null
+        : await exportLatestRun({
+          runRoot,
+          pipelineDir: context.pipelineDir,
+          allowOverwrite: true,
+        });
+      return {
+        success: true,
+        ok: true,
+        runId,
+        runState: updated.runState,
+        events: updated.events,
+        candidateInventory: updated.candidateInventory,
+        worker: updated.worker,
+        approvals: updated.approvals,
+        activeClaims: updated.activeClaims,
+        activeWriteSets: updated.activeWriteSets,
+        cancellation: {
+          claimId,
+          itemId,
+          toState,
+          abortedProcessCount,
+          transition: cancelled.transition,
+        },
+        exported,
+      };
+    } catch (err) {
+      const code = String(err?.code || '');
+      if (code) {
+        const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+        return {
+          success: false,
+          ok: false,
+          code,
+          error: err.message,
+          runId,
+          runState: failureSnapshot.runState,
+          events: failureSnapshot.events,
+          candidateInventory: failureSnapshot.candidateInventory,
+          worker: failureSnapshot.worker,
+          approvals: failureSnapshot.approvals,
+          activeClaims: failureSnapshot.activeClaims,
+          activeWriteSets: failureSnapshot.activeWriteSets,
+        };
+      }
+      throw err;
+    }
+  });
+}
+
+async function cancelRunHandler(event, authority, request) {
+  // Signal in-flight subprocesses BEFORE any await so they exit fast and the
+  // lifecycle queue (held by an executeRunStep) drains.
+  const earlyRunId = assertRunId(request.runId);
+  const abortedProcessCount = cancelMachineProcessRun(earlyRunId);
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = earlyRunId;
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  const firstClaim = (snapshot.activeClaims || [])[0] || null;
+  if (firstClaim?.claimId && firstClaim?.itemId) {
+    return cancelClaimHandler(event, authority, {
+      ...request,
+      claimId: firstClaim.claimId,
+      itemId: firstClaim.itemId,
+      toState: request.toState || 'blocked',
+      _priorAbortedProcessCount: abortedProcessCount,
+    });
+  }
+  return withRunLifecycleQueued(runRoot, async () => {
+    // Surface node.cancelled for any node that was still in flight when the
+    // user pressed Cancel — without this the renderer's runtime projection
+    // (which filters on node.completed/failed/blocked/skipped/cancelled)
+    // would keep a stale "Running" badge on a probe whose subprocess has
+    // already been killed by cancelMachineProcessRun.
+    const cancelledNodes = await emitNodeCancelledForInflight(
+      runRoot,
       runId,
-      claimId,
-      itemId,
-      toState,
-      now: optionalString(request.now, 'now') || undefined,
+      'machine-ui.cancel-run',
+    );
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'cancelled',
+      reason: 'machine-ui.cancel-run',
+      payload: { abortedProcessCount, cancelledNodeCount: cancelledNodes.length },
+    });
+    await appendRunSummaryStatus(runRoot, {
+      runId,
+      summaryStatus: 'blocked',
+      reason: 'machine-ui.cancel-run',
+      payload: { abortedProcessCount, cancelledNodeCount: cancelledNodes.length },
     });
     const updated = await readRunSnapshot(runRoot);
     const exported = request.exportLatestRun === false
@@ -1077,93 +1246,13 @@ async function cancelClaimHandler(event, authority, request) {
       activeClaims: updated.activeClaims,
       activeWriteSets: updated.activeWriteSets,
       cancellation: {
-        claimId,
-        itemId,
-        toState,
+        runId,
         abortedProcessCount,
-        transition: cancelled.transition,
+        toState: 'cancelled',
       },
       exported,
     };
-  } catch (err) {
-    const code = String(err?.code || '');
-    if (code) {
-      const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
-      return {
-        success: false,
-        ok: false,
-        code,
-        error: err.message,
-        runId,
-        runState: failureSnapshot.runState,
-        events: failureSnapshot.events,
-        candidateInventory: failureSnapshot.candidateInventory,
-        worker: failureSnapshot.worker,
-        approvals: failureSnapshot.approvals,
-        activeClaims: failureSnapshot.activeClaims,
-        activeWriteSets: failureSnapshot.activeWriteSets,
-      };
-    }
-    throw err;
-  }
-}
-
-async function cancelRunHandler(event, authority, request) {
-  const context = await resolveMachinePipelineContext(event, authority, request);
-  const runId = assertRunId(request.runId);
-  const runRoot = await resolveMachineRunRoot(context, runId);
-  const snapshot = await readRunSnapshot(runRoot);
-  if (!snapshot) {
-    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
-  }
-  const abortedProcessCount = cancelMachineProcessRun(runId);
-  const firstClaim = (snapshot.activeClaims || [])[0] || null;
-  if (firstClaim?.claimId && firstClaim?.itemId) {
-    return cancelClaimHandler(event, authority, {
-      ...request,
-      claimId: firstClaim.claimId,
-      itemId: firstClaim.itemId,
-      toState: request.toState || 'blocked',
-    });
-  }
-  await appendRunLifecycleStatus(runRoot, {
-    runId,
-    toState: 'cancelled',
-    reason: 'machine-ui.cancel-run',
-    payload: { abortedProcessCount },
   });
-  await appendRunSummaryStatus(runRoot, {
-    runId,
-    summaryStatus: 'blocked',
-    reason: 'machine-ui.cancel-run',
-    payload: { abortedProcessCount },
-  });
-  const updated = await readRunSnapshot(runRoot);
-  const exported = request.exportLatestRun === false
-    ? null
-    : await exportLatestRun({
-      runRoot,
-      pipelineDir: context.pipelineDir,
-      allowOverwrite: true,
-    });
-  return {
-    success: true,
-    ok: true,
-    runId,
-    runState: updated.runState,
-    events: updated.events,
-    candidateInventory: updated.candidateInventory,
-    worker: updated.worker,
-    approvals: updated.approvals,
-    activeClaims: updated.activeClaims,
-    activeWriteSets: updated.activeWriteSets,
-    cancellation: {
-      runId,
-      abortedProcessCount,
-      toState: 'cancelled',
-    },
-    exported,
-  };
 }
 
 async function executeRunStepWithHarnessHandler(event, authority, request, runtimeOptions = {}) {
@@ -1178,64 +1267,66 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
   }
 
-  try {
-    const executed = await executeMachineRunStep({
-      workspaceRoot: context.workspaceRoot,
-      pipelinePath: context.pipelinePath,
-      pipelineDir: context.pipelineDir,
-      runRoot,
-      runId,
-      exportLatestRunAfterStep: request.exportLatestRun !== false,
-      taskText,
-      externalResearch,
-      loadProviderKey: runtimeOptions?.loadProviderKey || null,
-      fetchImpl: runtimeOptions?.fetchImpl || null,
-    });
-    const updatedSnapshot = await readRunSnapshot(runRoot);
-    return {
-      success: true,
-      ok: true,
-      runId,
-      runState: updatedSnapshot?.runState || executed.runState,
-      events: updatedSnapshot?.events || executed.events,
-      graphPlan: executed.graphPlan,
-      selectedNodes: executed.selectedNodes,
-      selectedProbeNodes: executed.selectedProbeNodes,
-      supportNodes: executed.supportNodes,
-      candidateInventory: executed.candidateInventory || updatedSnapshot?.candidateInventory || null,
-      worker: executed.worker?.result || updatedSnapshot?.worker || null,
-      finalization: executed.finalization,
-      exported: executed.exported,
-      approvals: updatedSnapshot?.approvals || summarizeApprovalsFromEvents(executed.events),
-      activeClaims: updatedSnapshot?.activeClaims || [],
-      activeWriteSets: updatedSnapshot?.activeWriteSets || [],
-    };
-  } catch (err) {
-    const code = String(err?.code || '');
-    if (code) {
-      const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
-      return {
-        success: false,
-        ok: false,
-        code,
-        error: err.message,
+  return withRunLifecycleExclusive(runRoot, async () => {
+    try {
+      const executed = await executeMachineRunStep({
+        workspaceRoot: context.workspaceRoot,
+        pipelinePath: context.pipelinePath,
+        pipelineDir: context.pipelineDir,
+        runRoot,
         runId,
-        runState: failureSnapshot.runState,
-        events: failureSnapshot.events,
-        candidateInventory: failureSnapshot.candidateInventory,
-        worker: failureSnapshot.worker,
-        approvals: failureSnapshot.approvals,
-        activeClaims: failureSnapshot.activeClaims,
-        activeWriteSets: failureSnapshot.activeWriteSets,
-        failure: {
-          contract: err.contract || null,
-          barrier: err.barrier || null,
-          gate: err.gate || null,
-        },
+        exportLatestRunAfterStep: request.exportLatestRun !== false,
+        taskText,
+        externalResearch,
+        loadProviderKey: runtimeOptions?.loadProviderKey || null,
+        fetchImpl: runtimeOptions?.fetchImpl || null,
+      });
+      const updatedSnapshot = await readRunSnapshot(runRoot);
+      return {
+        success: true,
+        ok: true,
+        runId,
+        runState: updatedSnapshot?.runState || executed.runState,
+        events: updatedSnapshot?.events || executed.events,
+        graphPlan: executed.graphPlan,
+        selectedNodes: executed.selectedNodes,
+        selectedProbeNodes: executed.selectedProbeNodes,
+        supportNodes: executed.supportNodes,
+        candidateInventory: executed.candidateInventory || updatedSnapshot?.candidateInventory || null,
+        worker: executed.worker?.result || updatedSnapshot?.worker || null,
+        finalization: executed.finalization,
+        exported: executed.exported,
+        approvals: updatedSnapshot?.approvals || summarizeApprovalsFromEvents(executed.events),
+        activeClaims: updatedSnapshot?.activeClaims || [],
+        activeWriteSets: updatedSnapshot?.activeWriteSets || [],
       };
+    } catch (err) {
+      const code = String(err?.code || '');
+      if (code) {
+        const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+        return {
+          success: false,
+          ok: false,
+          code,
+          error: err.message,
+          runId,
+          runState: failureSnapshot.runState,
+          events: failureSnapshot.events,
+          candidateInventory: failureSnapshot.candidateInventory,
+          worker: failureSnapshot.worker,
+          approvals: failureSnapshot.approvals,
+          activeClaims: failureSnapshot.activeClaims,
+          activeWriteSets: failureSnapshot.activeWriteSets,
+          failure: {
+            contract: err.contract || null,
+            barrier: err.barrier || null,
+            gate: err.gate || null,
+          },
+        };
+      }
+      throw err;
     }
-    throw err;
-  }
+  });
 }
 
 function createSessionCapabilityToken() {
@@ -1349,6 +1440,16 @@ async function skipNodeHandler(event, authority, request = {}) {
   const runId = assertRunId(request.runId);
   const runRoot = await resolveMachineRunRoot(context, runId);
   const reason = String(request.reason || 'user-skipped').trim() || 'user-skipped';
+  return withRunLifecycleExclusive(runRoot, () => skipNodeBody({
+    runRoot,
+    runId,
+    nodePath,
+    reason,
+    request,
+  }));
+}
+
+async function skipNodeBody({ runRoot, runId, nodePath, reason, request }) {
   const events = await readMachineEvents(runRoot);
   // Prefer the attempt that is currently in flight: if there is a
   // node.started for this nodePath at attempt N with no terminal event
@@ -1367,7 +1468,7 @@ async function skipNodeHandler(event, authority, request = {}) {
     if (a > maxAttempt) maxAttempt = a;
     if (e.eventType === 'node.started') {
       attemptStatus.set(a, 'started');
-    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(e.eventType)) {
+    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'].includes(e.eventType)) {
       attemptStatus.set(a, 'terminal');
     }
   }

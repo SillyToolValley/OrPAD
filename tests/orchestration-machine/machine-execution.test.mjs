@@ -636,6 +636,50 @@ test('patch review gate keeps blocking after approval until batch apply finishes
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });
 
+test('emitGraphDriftWarningIfChanged emits run.graph-drift on orphan + new node paths', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260507_graph_drift_unit');
+  // Seed historical lifecycle events for two nodePaths: one that will
+  // remain in the current graph (main/probe) and one that will be
+  // missing (main/old-probe) — simulating a rename/delete since the
+  // last run-step.
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.skipped',
+    nodePath: 'main/old-probe',
+    payload: { reason: 'user-skipped', attempt: 1 },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.completed',
+    nodePath: 'main/probe',
+    payload: { attempt: 1 },
+  });
+
+  const machineModule = require('../../src/main/orchestration-machine/machine.js');
+  const driftEmitter = machineModule.__test_emitGraphDriftWarningIfChanged;
+
+  const events = await readMachineEvents(run.runRoot);
+  // Current graph contains main/probe and main/new-probe; main/old-probe
+  // has been removed (orphaned lifecycle entry).
+  const orderedNodes = [
+    { nodePath: 'main/probe', nodeType: 'orpad.probe' },
+    { nodePath: 'main/new-probe', nodeType: 'orpad.probe' },
+  ];
+
+  const driftEvent = await driftEmitter(run.runRoot, run.runId, events, orderedNodes);
+  assert.ok(driftEvent, 'expected a run.graph-drift event to be emitted');
+  assert.equal(driftEvent.eventType, 'run.graph-drift');
+  assert.deepEqual(driftEvent.payload.orphanedLifecyclePaths, ['main/old-probe']);
+  assert.deepEqual(driftEvent.payload.newNodePaths, ['main/new-probe']);
+
+  // De-dupe: calling again with same shape returns null (no second event).
+  const eventsAfter = await readMachineEvents(run.runRoot);
+  const driftEventAgain = await driftEmitter(run.runRoot, run.runId, eventsAfter, orderedNodes);
+  assert.equal(driftEventAgain, null, 'duplicate drift detection must not re-emit');
+});
+
 test('graph-driven execute step rejects overlapping running executions', async () => {
   const { workspaceRoot, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260502_graph_harness_running');
   await appendRunLifecycleStatus(run.runRoot, {

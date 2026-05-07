@@ -27,7 +27,7 @@ const {
   finalizeRunFromInventory,
   summarizeQueueInventory,
 } = require('./lifecycle');
-const { projectRunStateFromEvents, readMachineEvents } = require('./events');
+const { appendMachineEvent, projectRunStateFromEvents, readMachineEvents } = require('./events');
 const { readRunState } = require('./run-store');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
 const { runProposalProbe } = require('./probe-runner');
@@ -122,9 +122,10 @@ function activeNodeExecutionsFromEvents(events = []) {
   // node.started sits in the active set forever and assertNoActive...
   // refuses every subsequent run-step.
   const latestTerminalSeqByPath = new Map();
+  const TERMINAL_NODE_EVENTS = ['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'];
   for (const event of events) {
     if (!event || !String(event.eventType || '').startsWith('node.')) continue;
-    if (!['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(event.eventType)) continue;
+    if (!TERMINAL_NODE_EVENTS.includes(event.eventType)) continue;
     const path = event.nodePath || '';
     if (!path) continue;
     const seq = Number(event.sequence) || 0;
@@ -140,7 +141,7 @@ function activeNodeExecutionsFromEvents(events = []) {
         nodePath: event.nodePath || '',
         startedSequence: Number(event.sequence) || 0,
       });
-    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(event.eventType)) {
+    } else if (TERMINAL_NODE_EVENTS.includes(event.eventType)) {
       active.delete(key);
     }
   }
@@ -1118,6 +1119,12 @@ function latestNodeCompletedEvent(events, nodePath) {
 // a node that completed at attempt 1 then re-started/failed at attempt
 // 2 would be wrongly treated as still resolved and the dispatcher would
 // suppress its retry. (Caught by codex review of the prior version.)
+//
+// node.cancelled is intentionally NOT treated as resolved here: a
+// cancelled attempt should be retryable on the next Continue click. The
+// dispatcher uses latestLifecycleStatusByNode to honor the user's
+// terminal decisions (skip), and uses latestNodeResolvedEvent to skip
+// nodes whose work is genuinely done.
 function latestNodeResolvedEvent(events, nodePath) {
   let latestNodeEvent = null;
   for (const event of events) {
@@ -1142,6 +1149,51 @@ function hasUnresolvedSupportBlock(events, orderedNodes) {
   if (!supportBlockPaths.size) return false;
   const latestByPath = latestLifecycleStatusByNode(events);
   return [...supportBlockPaths].some(nodePath => latestByPath.get(nodePath)?.eventType === 'node.blocked');
+}
+
+// A run.graph-drift event is an audit-log breadcrumb: it does NOT change
+// dispatcher behavior. Stale lifecycle entries for missing nodePaths are
+// inert (no node iterates them); but the user benefits from seeing that
+// a node they once skipped no longer exists in the graph (rename / delete)
+// or that new nodes have appeared since the last run-step. Idempotent:
+// emits at most one event per (orphan-set, new-set) shape per run.
+async function emitGraphDriftWarningIfChanged(runRoot, runId, events, orderedNodes) {
+  const knownNodePaths = new Set(orderedNodes.map(node => node.nodePath));
+  const lifecycleByPath = latestLifecycleStatusByNode(events);
+  const lifecycleNodePaths = new Set(lifecycleByPath.keys());
+  const orphanedLifecyclePaths = [...lifecycleNodePaths].filter(p => !knownNodePaths.has(p)).sort();
+  // 'New' = present in current graph but with zero historical lifecycle
+  // events. We only count this as drift when there is ALSO at least one
+  // lifecycle-bearing nodePath (i.e. the run is not on its very first
+  // step), because a fresh run naturally has no history yet.
+  const newNodePaths = lifecycleNodePaths.size === 0
+    ? []
+    : [...knownNodePaths].filter(p => !lifecycleNodePaths.has(p)).sort();
+  if (!orphanedLifecyclePaths.length && !newNodePaths.length) return null;
+  // De-dupe: skip emit if the most recent run.graph-drift event already
+  // reports the same shape. We compare arrays element-wise.
+  const lastDrift = [...events].reverse().find(e => e?.eventType === 'run.graph-drift');
+  const sameOrphans = lastDrift
+    && Array.isArray(lastDrift.payload?.orphanedLifecyclePaths)
+    && lastDrift.payload.orphanedLifecyclePaths.length === orphanedLifecyclePaths.length
+    && lastDrift.payload.orphanedLifecyclePaths.every((p, i) => p === orphanedLifecyclePaths[i]);
+  const sameNew = lastDrift
+    && Array.isArray(lastDrift.payload?.newNodePaths)
+    && lastDrift.payload.newNodePaths.length === newNodePaths.length
+    && lastDrift.payload.newNodePaths.every((p, i) => p === newNodePaths[i]);
+  if (sameOrphans && sameNew) return null;
+  return appendMachineEvent(runRoot, {
+    runId,
+    actor: 'machine',
+    eventType: 'run.graph-drift',
+    reason: 'machine-graph-step.graph-drift-detected',
+    payload: {
+      orphanedLifecyclePaths,
+      newNodePaths,
+      orphanedLifecycleCount: orphanedLifecyclePaths.length,
+      newNodeCount: newNodePaths.length,
+    },
+  });
 }
 
 function nextNodeAttempt(events, nodePath) {
@@ -1756,6 +1808,14 @@ async function executeMachineRunStep(options = {}) {
   const support = [];
   let blockedSupport = null;
   const initialEvents = await readMachineEvents(runRoot);
+  // Detect graph drift: node.* events recorded against nodePaths that no
+  // longer exist in the current graphSet. This happens when the user
+  // edits the pipeline (rename/delete) between run-steps. The existing
+  // skip mask is keyed by nodePath, so a stale mask entry for a removed
+  // node has no functional effect — but a renamed node loses its skip
+  // implicitly, which can be surprising. Emit a single run.graph-drift
+  // warning event so the user / audit log can see the divergence.
+  await emitGraphDriftWarningIfChanged(runRoot, runId, initialEvents, orderedNodes);
   const approvalGrants = summarizeApprovalsFromEvents(initialEvents)
     .all
     .filter(approval => approval.status === 'approved')
@@ -1799,6 +1859,10 @@ async function executeMachineRunStep(options = {}) {
         runId,
         nodePath: currentProbeNode.nodePath,
         workspaceRoot,
+        // Live LLM adapters get one corrective retry on contract failure.
+        // Harness/fixture paths above keep strict semantics (a fixture
+        // that produces invalid output is a test bug, not a flaky LLM).
+        retryOnInvalidContract: true,
         adapter: liveApiPlugin
           ? createApiProbeInvocationAdapter({
             plugin: liveApiPlugin,
@@ -2009,8 +2073,12 @@ async function executeMachineRunStep(options = {}) {
     // User-skipped nodes are terminal for this run, regardless of node
     // type. Without this guard the for-loop would re-enter a skipped
     // support gate, re-evaluate evidence, and re-emit node.blocked.
-    // (node.cancelled is not yet a terminal lifecycle status — adding
-    // its full wiring is tracked separately.)
+    //
+    // node.cancelled is intentionally NOT treated as terminal here: a
+    // cancel interrupts the current attempt but the user can re-run the
+    // node on the next Continue click. activeNodeExecutionsFromEvents
+    // drops the active node.started entry once node.cancelled fires so
+    // assertRunCanExecuteStep is unblocked.
     if (latestLifecycleByPath.get(node.nodePath)?.eventType === 'node.skipped') continue;
     if (
       resumeAfterSupportBlock
@@ -2296,4 +2364,5 @@ module.exports = {
   supportNodesForExecution,
   __test_latestNodeResolvedEvent: latestNodeResolvedEvent,
   __test_activeNodeExecutionsFromEvents: activeNodeExecutionsFromEvents,
+  __test_emitGraphDriftWarningIfChanged: emitGraphDriftWarningIfChanged,
 };

@@ -1942,6 +1942,13 @@ body.json-diff-mode #preview-pane {
   opacity: 0.85;
   line-height: 1.5;
 }
+.pipe-lifecycle-banner-conclusion {
+  font-weight: 500;
+  font-size: calc(12px * var(--us));
+  padding: calc(4px * var(--us)) 0;
+  border-top: 1px dashed color-mix(in srgb, var(--border-color) 50%, transparent);
+  margin-top: calc(2px * var(--us));
+}
 .pipe-lifecycle-banner-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1958,6 +1965,14 @@ body.json-diff-mode #preview-pane {
 }
 .pipe-lifecycle-banner-link:hover {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 18%, transparent);
+}
+.pipe-lifecycle-banner-link--cta {
+  border-color: color-mix(in srgb, var(--accent-color, #6cb6ff) 60%, transparent);
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 14%, transparent);
+  font-weight: 600;
+}
+.pipe-lifecycle-banner-link--cta:hover {
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 28%, transparent);
 }
 .pipe-budget-chip {
   border: 1px solid color-mix(in srgb, var(--accent-color, #6cb6ff) 50%, transparent);

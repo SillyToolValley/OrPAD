@@ -2855,7 +2855,7 @@ function renderMachineBudgetIndicatorHtml(pipelineDoc) {
   return `<span class="pipeline-runbar-status pipe-budget-chip" title="Pipeline budget config (estimate, not provider invoice). hardStop=true는 router가 perCall/perRun 초과 attempt를 즉시 거부.">Budget · ${escapeHtml(parts.join(' · '))}</span>`;
 }
 
-function renderMachineLifecycleBannerHtml(record) {
+function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
   const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
   const summary = String(record?.runState?.summaryStatus || '').toLowerCase();
   const runId = record?.runState?.runId || record?.runId || '';
@@ -2901,11 +2901,17 @@ function renderMachineLifecycleBannerHtml(record) {
 
   const summaryAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/summary.md` : '';
   const eventsAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/events.jsonl` : '';
+  const runbookPath = runbookPathArg || record?.runbookPath || record?.pipelinePath || '';
   const linkBtn = (label, abs) => abs
     ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(abs)}" title="${escapeHtml(abs)}">${escapeHtml(label)}</button>`
     : '';
   const cancelBtn = runId
     ? `<button class="pipe-lifecycle-banner-link" data-pipeline-run-action="machine-cancel-run" data-run-id="${escapeHtml(runId)}">Cancel run</button>`
+    : '';
+  // Conclusion / next-step CTA: a fresh-start button is only meaningful
+  // when the run is terminal AND we have a runbook path to anchor it.
+  const startNewRunBtn = runbookPath
+    ? `<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-pipeline-run-action="machine-start-run" data-runbook-path="${escapeHtml(runbookPath)}" title="Create a fresh run for this pipeline.">Start new run</button>`
     : '';
 
   let banner = null;
@@ -2914,6 +2920,7 @@ function renderMachineLifecycleBannerHtml(record) {
       kind: 'warn',
       title: 'Awaiting approval',
       detail: 'Machine needs an explicit approval before this run can continue. Approval requests live in events.jsonl; the existing approval modal will surface them next time you focus the run.',
+      conclusion: 'This run is paused — decide approval to continue, or cancel to terminate.',
       actions: [linkBtn('events.jsonl', eventsAbs), linkBtn('summary.md', summaryAbs), cancelBtn],
     };
   } else if (lifecycle === 'failed') {
@@ -2921,14 +2928,16 @@ function renderMachineLifecycleBannerHtml(record) {
       kind: 'error',
       title: 'Run failed',
       detail: 'Machine could not complete this run. Inspect the failure cards above and the raw event log to find the trigger.',
-      actions: [linkBtn('events.jsonl', eventsAbs), linkBtn('summary.md', summaryAbs)],
+      conclusion: 'This run terminated with failure. Fix the trigger and start a new run.',
+      actions: [linkBtn('events.jsonl', eventsAbs), linkBtn('summary.md', summaryAbs), startNewRunBtn],
     };
   } else if (lifecycle === 'cancelled' || lifecycle === 'canceled') {
     banner = {
       kind: 'neutral',
       title: 'Run cancelled',
       detail: 'You cancelled this run. The events.jsonl still records every step taken before the cancel decision.',
-      actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+      conclusion: 'This run is terminated. Start a new run when you are ready to continue.',
+      actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs), startNewRunBtn],
     };
   } else if (lifecycle === 'completed') {
     if (summary === 'done') {
@@ -2936,37 +2945,45 @@ function renderMachineLifecycleBannerHtml(record) {
         kind: 'success',
         title: 'Run complete · all required evidence collected',
         detail: 'No active or deferred work items remain. Summary file holds the final state.',
-        actions: [linkBtn('summary.md', summaryAbs)],
+        conclusion: 'This run terminated normally. No further action required.',
+        actions: [linkBtn('summary.md', summaryAbs), startNewRunBtn],
       };
     } else if (summary === 'partial') {
       banner = {
         kind: 'warn',
         title: 'Partial close',
         detail: 'Useful evidence captured but residual actionable / deferred items still remain. Open summary.md for the next steps OrPAD recorded.',
-        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+        conclusion: 'This run terminated with residual work. Review summary, then start a new run to address the remainder.',
+        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs), startNewRunBtn],
       };
     } else if (summary === 'blocked') {
       banner = {
         kind: 'error',
         title: 'Run closed as blocked',
         detail: 'Run reached a terminal close but cannot be marked done — requires decision, fix, or capability grant.',
-        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+        conclusion: 'This run is blocked. Resolve the blocker (decision, fix, or capability) and start a new run.',
+        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs), startNewRunBtn],
       };
     } else {
       banner = {
         kind: 'neutral',
         title: 'Run completed',
         detail: 'Lifecycle reached a terminal close. Summary file holds the final disposition.',
-        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs)],
+        conclusion: 'This run is closed. Start a new run when ready.',
+        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs), startNewRunBtn],
       };
     }
   }
   if (!banner) return gateBanner;
 
+  const conclusionHtml = banner.conclusion
+    ? `<div class="pipe-lifecycle-banner-conclusion">${escapeHtml(banner.conclusion)}</div>`
+    : '';
   return `${gateBanner}
     <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(banner.kind)}">
       <div class="pipe-lifecycle-banner-title">${escapeHtml(banner.title)}</div>
       <div class="pipe-lifecycle-banner-detail">${escapeHtml(banner.detail)}</div>
+      ${conclusionHtml}
       <div class="pipe-lifecycle-banner-actions">
         ${banner.actions.filter(Boolean).join('')}
       </div>
@@ -3116,7 +3133,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         </details>
       </div>
     </div>
-    ${renderMachineLifecycleBannerHtml(previewRunRecord)}
+    ${renderMachineLifecycleBannerHtml(previewRunRecord, runbookPath)}
     ${renderMachineFailedAdaptersHtml(previewRunRecord)}
   `;
 }
@@ -9267,6 +9284,47 @@ function setMachineRunStartPending(runbookPath, pending) {
   rerenderPipelinePreviewIfActive(runbookPath);
 }
 
+// Synchronous mutation guard: held during any user-initiated lifecycle
+// action (start / continue / resume / cancel / cancelClaim / approval).
+// Lives in the renderer so a duplicate click can be rejected before the
+// first `await` (the IPC mutex is the second line of defense). The
+// visual side of the lock is the existing `previewRunInProgress` chrome
+// plus a fresh toast on contention; the runtime side is a Set keyed by
+// (runbookKey, runId|'__start__').
+const machineRunMutationLocks = new Set();
+
+function machineRunMutationLockKey(runbookPath, runId) {
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  return `${key}::${runId || '__start__'}`;
+}
+
+function tryAcquireMachineRunMutationLock(runbookPath, runId) {
+  const key = machineRunMutationLockKey(runbookPath, runId);
+  if (machineRunMutationLocks.has(key)) return null;
+  machineRunMutationLocks.add(key);
+  return key;
+}
+
+function releaseMachineRunMutationLock(key) {
+  if (!key) return;
+  machineRunMutationLocks.delete(key);
+}
+
+function notifyMachineRunBusy(action) {
+  // Best-effort toast. notifyFormatError pipes into the existing toast
+  // surface used by the rest of the renderer, so the user sees the
+  // contention without a modal.
+  try {
+    notifyFormatError(
+      'Run busy',
+      new Error(`${action} ignored: another lifecycle action is already in progress for this run.`),
+    );
+  } catch {
+    // Toast surface may not be ready yet; silent fallback is fine — the
+    // IPC mutex still rejects the duplicate with MACHINE_RUN_BUSY.
+  }
+}
+
 function setMachineRunActionPending(runbookPath, runId, pending) {
   if (!runbookPath || !runId) return;
   const key = machineRunActionKey(runbookPath, runId);
@@ -9301,7 +9359,7 @@ function machineActiveNodeExecutions(record) {
     if (!nodeExecutionId) continue;
     if (type === 'node.started') {
       active.set(nodeExecutionId, event);
-    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped'].includes(type)) {
+    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'].includes(type)) {
       active.delete(nodeExecutionId);
     }
   }
@@ -9325,6 +9383,8 @@ function machineNodeRuntimeStatusFromEvent(event) {
       return { state: 'failed', label: 'Failed' };
     case 'node.skipped':
       return { state: 'skipped', label: 'Skipped' };
+    case 'node.cancelled':
+      return { state: 'cancelled', label: 'Cancelled' };
     default:
       return null;
   }
@@ -10574,6 +10634,28 @@ async function startSelectedMachineRun(runbookPath) {
   const cachedRecord = getRunbookCache(machineRunRecordCache, runbookPath);
   const runbookKey = runbookNormalizePath(runbookPath).toLowerCase();
   if (machineRunStartPendingPaths.has(runbookKey) || isMachineRunInProgress(cachedRecord, runbookPath)) return;
+  // Acquire the mutation lock SYNCHRONOUSLY before any await so a fast
+  // double-click is rejected before we touch IPC. Released in finally.
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, '__start__');
+  if (!mutationLock) {
+    notifyMachineRunBusy('Start run');
+    return;
+  }
+  // Mark start-pending eagerly so the UI (button disable / spinner)
+  // reflects the in-flight start before the first await resolves.
+  setMachineRunStartPending(runbookPath, true);
+  try {
+    return await startSelectedMachineRunInner(runbookPath, cachedRecord);
+  } finally {
+    // Always clear start-pending on exit. Inner may have already
+    // cleared it once the run was created and handed off to the action
+    // pending tracker; clearing again is idempotent.
+    setMachineRunStartPending(runbookPath, false);
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+async function startSelectedMachineRunInner(runbookPath, cachedRecord) {
   if (!await ensureMachineRuntimeReady()) return;
   if (!selectedRunbookValidation || selectedRunbookPath !== runbookPath) {
     await validateSelectedRunbook(runbookPath);
@@ -10592,7 +10674,6 @@ async function startSelectedMachineRun(runbookPath) {
   const taskText = currentRunbookTaskText();
   const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText);
   if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
-  setMachineRunStartPending(runbookPath, true);
   let created = null;
   try {
     created = await window.orpad.machine.createRun({
@@ -10606,12 +10687,10 @@ async function startSelectedMachineRun(runbookPath) {
       },
     });
   } catch (err) {
-    setMachineRunStartPending(runbookPath, false);
     alert(err?.message || 'Managed run could not be created.');
     return;
   }
   if (!created?.success) {
-    setMachineRunStartPending(runbookPath, false);
     if (created?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
     }
@@ -10636,7 +10715,6 @@ async function startSelectedMachineRun(runbookPath) {
     machineRunExternalResearchDecisions.set(externalResearchDecisionKey(runbookPath, created.runId), externalResearch);
   }
   setMachineRunActionPending(runbookPath, created.runId, true);
-  setMachineRunStartPending(runbookPath, false);
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
@@ -10651,6 +10729,22 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
     if (!runId) alert('Continue ignored: no run is selected. Pick a run from history first.');
     return;
   }
+  // Synchronous mutation guard — same-run double clicks are rejected
+  // before we touch IPC. The IPC layer also returns MACHINE_RUN_BUSY,
+  // but bouncing in the renderer keeps the UX snappy.
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, runId);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Continue');
+    return;
+  }
+  try {
+    return await executeSelectedMachineRunStepInner(runbookPath, runId, providedExternalResearch);
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+async function executeSelectedMachineRunStepInner(runbookPath, runId, providedExternalResearch) {
   if (!await ensureMachineRuntimeReady()) {
     console.warn('[execute-run-step] ensureMachineRuntimeReady returned false');
     return;
@@ -10718,6 +10812,19 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
 
 async function resumeSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.resumeRun) return;
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, runId);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Resume');
+    return;
+  }
+  try {
+    return await resumeSelectedMachineRunInner(runbookPath, runId);
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+async function resumeSelectedMachineRunInner(runbookPath, runId) {
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
@@ -10803,6 +10910,25 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
 
 async function cancelSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.cancelRun) return;
+  // Cancel still acquires the mutation lock, but uses a distinct key
+  // (runId + ":cancel") so it CAN run while executeRunStep holds the
+  // base (runId) lock — the IPC layer's withRunLifecycleQueued queues
+  // the cancel state-write behind the in-flight step while the early
+  // cancelMachineProcessRun call signals the subprocess immediately.
+  // Same-key double cancel clicks are still rejected.
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, `${runId}:cancel`);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Cancel run');
+    return;
+  }
+  try {
+    return await cancelSelectedMachineRunInner(runbookPath, runId);
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+async function cancelSelectedMachineRunInner(runbookPath, runId) {
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
@@ -12048,6 +12174,10 @@ contentEl?.addEventListener('click', async (event) => {
   try {
     if (action === 'machine-cancel-run') {
       await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    } else if (action === 'machine-start-run') {
+      // Lifecycle banner's "Start new run" CTA on terminal runs.
+      const startPath = button.dataset.runbookPath || targetPath;
+      if (startPath) await startSelectedMachineRun(startPath);
     } else {
       await runPipelinePreviewAction(action, targetPath);
     }

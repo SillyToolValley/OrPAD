@@ -13,6 +13,7 @@ const {
   readClaimLease,
 } = require('./claims');
 const { createContractValidator } = require('./contracts');
+const { recordNodeLifecycleEvent } = require('./node-lifecycle');
 const { isPathAllowedByWriteSet } = require('./patches');
 const {
   assertQueueState,
@@ -336,6 +337,68 @@ async function runSerialWorkerLoop(options = {}) {
   return { steps, stopReason };
 }
 
+// Returns the in-flight node executions (started but not yet terminal) at
+// the time of the call. A node is "terminal" once any of its post-start
+// lifecycle events fires for the same attempt. The worker's overlay site
+// always emits node.started before invoking the CLI, so a Cancel issued
+// mid-run typically interrupts at least one probe or worker node here.
+function inflightNodeExecutionsFromEvents(events = []) {
+  const active = new Map();
+  for (const event of events || []) {
+    if (!event || !String(event.eventType || '').startsWith('node.')) continue;
+    const nodePath = String(event.nodePath || '').trim();
+    if (!nodePath) continue;
+    const attempt = Number(event.payload?.attempt) || 1;
+    const key = `${nodePath}:${attempt}`;
+    if (event.eventType === 'node.started') {
+      active.set(key, {
+        nodePath,
+        attempt,
+        nodeType: event.payload?.nodeType || '',
+      });
+    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'].includes(event.eventType)) {
+      active.delete(key);
+    }
+  }
+  return [...active.values()];
+}
+
+async function emitNodeCancelledForInflight(runRoot, runId, reason) {
+  // Self-defending against a concurrent terminal append: re-read events
+  // right before each append and skip if any terminal node.* event for
+  // this nodePath:attempt has appeared in between. The caller is
+  // expected to hold the lifecycle queue (so this is mostly belt-and-
+  // braces), but a future code path that bypasses the queue must not
+  // be able to produce duplicate terminal lifecycle events for the
+  // same attempt.
+  const initialEvents = await readMachineEvents(runRoot);
+  const inflight = inflightNodeExecutionsFromEvents(initialEvents);
+  const cancelled = [];
+  for (const node of inflight) {
+    const fresh = await readMachineEvents(runRoot);
+    const stillInflight = inflightNodeExecutionsFromEvents(fresh).some(
+      n => n.nodePath === node.nodePath && n.attempt === node.attempt,
+    );
+    if (!stillInflight) continue;
+    try {
+      await recordNodeLifecycleEvent(runRoot, {
+        runId,
+        nodePath: node.nodePath,
+        nodeType: node.nodeType || 'orpad.unknown',
+        status: 'cancelled',
+        attempt: node.attempt,
+        payload: { reason },
+      });
+      cancelled.push(node);
+    } catch {
+      // Append may fail if validation rejects the event shape; the
+      // run-lifecycle event still records the cancel, so a missed
+      // node.cancelled is not fatal for the run.
+    }
+  }
+  return cancelled;
+}
+
 async function cancelClaimedItem(runRoot, options = {}) {
   const {
     runId,
@@ -355,6 +418,7 @@ async function cancelClaimedItem(runRoot, options = {}) {
     reason: 'worker-loop.cancel',
     payload: { itemId, claimId },
   });
+  const cancelledNodes = await emitNodeCancelledForInflight(runRoot, runId, 'worker-loop.cancel');
   const transition = await transitionQueueItem(runRoot, {
     runId,
     itemId,
@@ -388,13 +452,13 @@ async function cancelClaimedItem(runRoot, options = {}) {
   const finalLifecycleStatus = finalRunLifecycleForCancellation(finalToState);
   await appendRunStatus(runRoot, runId, finalLifecycleStatus, {
     reason: finalLifecycleStatus === 'waiting' ? 'worker-loop.cancel-requeued' : 'worker-loop.cancelled',
-    payload: { itemId, claimId },
+    payload: { itemId, claimId, cancelledNodeCount: cancelledNodes.length },
   });
   const runState = await appendRunSummary(runRoot, runId, finalToState === 'blocked' ? 'blocked' : 'partial', {
     reason: finalLifecycleStatus === 'waiting' ? 'worker-loop.cancel-requeued' : 'worker-loop.cancelled',
-    payload: { itemId, claimId },
+    payload: { itemId, claimId, cancelledNodeCount: cancelledNodes.length },
   });
-  return { transition, runState };
+  return { transition, runState, cancelledNodes };
 }
 
 module.exports = {
@@ -406,8 +470,10 @@ module.exports = {
   cancelClaimedItem,
   assertCancellationTargetQueueState,
   assertWorkerResultTargetQueueState,
+  emitNodeCancelledForInflight,
   findWorkerResultEvent,
   finalRunLifecycleForCancellation,
+  inflightNodeExecutionsFromEvents,
   runSerialWorkerLoop,
   runWorkerLoopOnce,
   summaryStatusForWorkerResult,

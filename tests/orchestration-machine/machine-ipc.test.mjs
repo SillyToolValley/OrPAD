@@ -1013,3 +1013,43 @@ test('Machine IPC denied approval decisions cancel blocked work without grants',
   assert.equal(executeDenied.runState.summaryStatus, 'blocked');
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'before\n');
 });
+
+test('Machine IPC rejects concurrent executeRunStep calls with MACHINE_RUN_BUSY', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260507_busy_guard',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  // Fire two executeRunStep calls back-to-back. The first acquires the
+  // lifecycle lock; the second must reject with MACHINE_RUN_BUSY rather
+  // than queue silently and corrupt run-state.json.
+  const first = handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  const second = handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  // Exactly one of the two must observe MACHINE_RUN_BUSY; the other must
+  // succeed. Promise.all does not guarantee enqueue order on its own, so we
+  // assert the disjunction instead of pinning ordering.
+  const busy = [firstResult, secondResult].find(r => r.code === 'MACHINE_RUN_BUSY');
+  const succeeded = [firstResult, secondResult].find(r => r.success === true);
+  assert.ok(busy, 'expected MACHINE_RUN_BUSY rejection on concurrent executeRunStep');
+  assert.ok(succeeded, 'expected one executeRunStep to succeed');
+  assert.equal(busy.success, false);
+  assert.equal(busy.ok, false);
+});

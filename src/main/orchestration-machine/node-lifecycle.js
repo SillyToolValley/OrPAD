@@ -8,6 +8,11 @@ const NODE_LIFECYCLE_STATUSES = Object.freeze([
   'failed',
   'skipped',
   'blocked',
+  // 'cancelled' marks an attempt that was interrupted by a Cancel/Stop
+  // user action (or by claim cancellation) while node.started was the
+  // last lifecycle event. It is terminal for the current attempt; a
+  // fresh attempt N+1 may still re-run the node.
+  'cancelled',
 ]);
 
 function createNodeExecutionId(runId, nodePath, attempt = 1) {

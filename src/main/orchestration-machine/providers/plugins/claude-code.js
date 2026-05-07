@@ -129,10 +129,38 @@ function resultStatusForClaudeProcess(processResult, parsedResult) {
   return 'blocked';
 }
 
+function appendValidationCorrectionContext(prompt, adapterContext) {
+  // When runProposalOnlyAdapter retries us after a contract failure, append
+  // the validator's complaint as a corrective hint. The LLM has already
+  // produced a malformed result once; this nudge gives it the exact
+  // shape mismatch and asks for a clean re-emit.
+  const previous = adapterContext?.previousValidationError;
+  if (!previous) return prompt;
+  const lines = [
+    '',
+    '---',
+    'IMPORTANT: your previous response failed contract validation:',
+    `  code: ${previous.code}`,
+    `  reason: ${previous.message}`,
+  ];
+  if (previous.contract) {
+    try {
+      lines.push(`  contract hint: ${JSON.stringify(previous.contract).slice(0, 600)}`);
+    } catch {
+      // best-effort serialization
+    }
+  }
+  lines.push(
+    'Re-emit ONLY a clean orpad.workerResult.v1 JSON object that satisfies the contract.',
+    'Do not wrap in code fences. Do not add commentary.',
+  );
+  return `${prompt}${lines.join('\n')}`;
+}
+
 function createProposalAdapter(options = {}) {
   return {
     adapter: 'claude-code-proposal',
-    async invoke(request) {
+    async invoke(request, adapterContext = {}) {
       const runRoot = options.runRoot || '';
       const runId = options.runId || request.runId;
       const workspaceRoot = options.workspaceRoot || request.workspaceRoot;
@@ -141,9 +169,13 @@ function createProposalAdapter(options = {}) {
 
       const resultDir = path.join(path.resolve(runRoot), 'adapters', 'results');
       await fsp.mkdir(resultDir, { recursive: true });
-      const prompt = typeof options.prompt === 'function'
+      // Suffix transcript artifact path on retry so the first failure
+      // transcript is preserved alongside the retry transcript.
+      const attemptSuffix = adapterContext?.attempt > 1 ? `.retry-${adapterContext.attempt}` : '';
+      const basePrompt = typeof options.prompt === 'function'
         ? await options.prompt(request)
         : String(options.prompt || '');
+      const prompt = appendValidationCorrectionContext(basePrompt, adapterContext);
       if (!prompt.trim()) throw new Error('Claude Code CLI proposal adapter prompt is required.');
 
       const invocation = claudeCodeInvocation(options.command || claudeCodeCommand(), options.commandPrefixArgs);
@@ -186,7 +218,7 @@ function createProposalAdapter(options = {}) {
       const artifacts = [];
       const transcriptArtifact = await registerJsonArtifact(runRoot, {
         runId,
-        artifactPath: `artifacts/adapters/${request.adapterCallId}.transcript.json`,
+        artifactPath: `artifacts/adapters/${request.adapterCallId}${attemptSuffix}.transcript.json`,
         producedBy: 'claude-code-proposal',
         value: {
           request: {

@@ -177,10 +177,34 @@ function resultStatusForCodexProcess(processResult, parsedResult) {
   return 'blocked';
 }
 
+function appendValidationCorrectionContext(prompt, adapterContext) {
+  const previous = adapterContext?.previousValidationError;
+  if (!previous) return prompt;
+  const lines = [
+    '',
+    '---',
+    'IMPORTANT: your previous response failed contract validation:',
+    `  code: ${previous.code}`,
+    `  reason: ${previous.message}`,
+  ];
+  if (previous.contract) {
+    try {
+      lines.push(`  contract hint: ${JSON.stringify(previous.contract).slice(0, 600)}`);
+    } catch {
+      // best-effort serialization
+    }
+  }
+  lines.push(
+    'Re-emit ONLY a clean orpad.workerResult.v1 JSON object that satisfies the contract.',
+    'Do not wrap in code fences. Do not add commentary.',
+  );
+  return `${prompt}${lines.join('\n')}`;
+}
+
 function createProposalAdapter(options = {}) {
   return {
     adapter: 'codex-cli-proposal',
-    async invoke(request) {
+    async invoke(request, adapterContext = {}) {
       const runRoot = options.runRoot || '';
       const runId = options.runId || request.runId;
       const workspaceRoot = options.workspaceRoot || request.workspaceRoot;
@@ -189,10 +213,14 @@ function createProposalAdapter(options = {}) {
 
       const resultDir = path.join(path.resolve(runRoot), 'adapters', 'results');
       await fsp.mkdir(resultDir, { recursive: true });
-      const outputLastMessagePath = path.join(resultDir, `${idSegment(request.adapterCallId)}.last-message.json`);
-      const prompt = typeof options.prompt === 'function'
+      // Suffix on retry so the first failure's last-message.json /
+      // transcript are preserved alongside the retry's outputs.
+      const attemptSuffix = adapterContext?.attempt > 1 ? `.retry-${adapterContext.attempt}` : '';
+      const outputLastMessagePath = path.join(resultDir, `${idSegment(request.adapterCallId)}${attemptSuffix}.last-message.json`);
+      const basePrompt = typeof options.prompt === 'function'
         ? await options.prompt(request, { outputLastMessagePath })
         : String(options.prompt || '');
+      const prompt = appendValidationCorrectionContext(basePrompt, adapterContext);
       if (!prompt.trim()) throw new Error('Codex CLI proposal adapter prompt is required.');
 
       const invocation = codexCliInvocation(options.command || codexCliCommand(), options.commandPrefixArgs);
@@ -240,7 +268,7 @@ function createProposalAdapter(options = {}) {
       const artifacts = [];
       const transcriptArtifact = await registerJsonArtifact(runRoot, {
         runId,
-        artifactPath: `artifacts/adapters/${request.adapterCallId}.transcript.json`,
+        artifactPath: `artifacts/adapters/${request.adapterCallId}${attemptSuffix}.transcript.json`,
         producedBy: 'codex-cli-proposal',
         value: {
           request: {
