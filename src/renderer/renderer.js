@@ -4993,7 +4993,7 @@ function renderOrchTypeField(path, node) {
   `;
 }
 
-function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.filePath) {
+function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.filePath, runProjection = null) {
   if (selectedOrchEdgeId) {
     const transition = orchTransitionMeta(selectedOrchEdgeId);
     return `
@@ -5042,6 +5042,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
           ${isOrchTreeRefType(node.type) && node.tree?.root ? `<dt>Tree nodes</dt><dd>${countOrchNestedNodes(node.tree.root)}</dd>` : ''}
         </dl>
         ${renderPipelineInlineDiagnostic(nodeDiagnostic)}
+        ${renderMachineNodeRunInspector(node, selectedOrchNodePath, doc, runProjection)}
       </aside>
     `;
   }
@@ -6304,7 +6305,7 @@ function renderOrchGraphPreview(content) {
       <div class="orch-graph-layout orch-graph-layout-internal-inspector">
         <div class="orch-graph-main">
           ${graphBody}
-          <div class="orch-floating-inspector">${renderOrchInspector(graphDoc, effectiveReadwrite, graphBaseFilePath)}</div>
+          <div class="orch-floating-inspector">${renderOrchInspector(graphDoc, effectiveReadwrite, graphBaseFilePath, runProjection)}</div>
         </div>
       </div>
     </div>
@@ -9792,6 +9793,114 @@ function machineRuntimeStatusForGraphNode(item, runProjection) {
     .map(([, status]) => status);
   if (matches.length === 1) return matches[0];
   return null;
+}
+
+// LangGraph Studio-style node inspector. When the user clicks a node in
+// the graph (read-only run view), this renders the node's full machine
+// runtime history: lifecycle events, attempt-grouped adapter calls,
+// transcript / artifact links, and any error payload. Empty when the
+// run does not yet have data for this node.
+function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) {
+  if (!runProjection?.record) return '';
+  const status = machineRuntimeStatusForGraphNode({ node, path: orchPath }, runProjection);
+  const machineNodePath = status?.nodePath || '';
+  if (!machineNodePath) return '';
+  const record = runProjection.record;
+  const events = (record.events || []).filter(e => (e?.nodePath || '') === machineNodePath);
+  const lifecycleEvents = events.filter(e => String(e?.eventType || '').startsWith('node.'));
+  const adapterEvents = events.filter(e => ['adapter.requested', 'adapter.result', 'worker.result', 'probe.result'].includes(e?.eventType || ''));
+  if (!lifecycleEvents.length && !adapterEvents.length) {
+    return `
+      <details class="orch-inspector-runtime" open>
+        <summary>Run state</summary>
+        <div class="runbook-empty">No machine events for this node yet.</div>
+      </details>
+    `;
+  }
+  const runRoot = record.runRoot || record.runState?.runRoot || '';
+  const cleanRoot = runRoot ? String(runRoot).replace(/[\\/]+$/, '') : '';
+  const runId = record.runState?.runId || record.runId || '';
+  // Group events by attempt so each retry shows as a distinct block.
+  const attempts = new Map();
+  for (const event of [...lifecycleEvents, ...adapterEvents].sort((a, b) => (a.sequence || 0) - (b.sequence || 0))) {
+    const attempt = Number(event.payload?.attempt) || 1;
+    if (!attempts.has(attempt)) attempts.set(attempt, []);
+    attempts.get(attempt).push(event);
+  }
+  const currentStatusLabel = status.label || status.state || '?';
+  const headerChip = `<span class="runbook-chip state-${escapeHtml(status.state || '')}">${escapeHtml(currentStatusLabel)}</span>`;
+  const attemptBlocks = [...attempts.entries()].sort((a, b) => a[0] - b[0]).map(([attempt, evts]) => {
+    const transcripts = [];
+    const lastEvent = evts[evts.length - 1];
+    let errorBlock = '';
+    let summaryLine = '';
+    let adapterStatus = '';
+    for (const e of evts) {
+      const t = e.eventType;
+      if (t === 'adapter.result' || t === 'worker.result' || t === 'probe.result') {
+        adapterStatus = e.payload?.status || '';
+        if (e.payload?.summary) summaryLine = String(e.payload.summary);
+      }
+      const refs = Array.isArray(e.artifactRefs) ? e.artifactRefs : [];
+      for (const ref of refs) {
+        if (transcripts.includes(ref)) continue;
+        transcripts.push(ref);
+      }
+    }
+    const failureCode = lastEvent?.payload?.code || '';
+    const failureMsg = lastEvent?.payload?.message || lastEvent?.payload?.error || '';
+    if (lastEvent?.eventType === 'node.failed' && (failureCode || failureMsg)) {
+      errorBlock = `
+        <div class="orch-inspector-runtime-error">
+          <strong>Error</strong>
+          ${failureCode ? `<code>${escapeHtml(failureCode)}</code>` : ''}
+          ${failureMsg ? `<div>${escapeHtml(failureMsg)}</div>` : ''}
+        </div>`;
+    }
+    const lifecycleChips = evts
+      .filter(e => String(e.eventType || '').startsWith('node.'))
+      .map(e => {
+        const lcLabel = (e.eventType || '').replace(/^node\./, '');
+        return `<span class="orch-inspector-runtime-step state-${escapeHtml(lcLabel)}" title="${escapeHtml(`seq ${e.sequence || ''} · ${e.timestamp || ''}`)}">${escapeHtml(lcLabel)}</span>`;
+      }).join('');
+    const transcriptLinks = transcripts.length && cleanRoot
+      ? `<div class="orch-inspector-runtime-links">
+          ${transcripts.map(ref => `<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${cleanRoot}/${String(ref).replace(/^[\\/]+/, '')}`)}" title="${escapeHtml(ref)}">${escapeHtml(ref.split('/').pop() || ref)}</button>`).join('')}
+        </div>`
+      : '';
+    const adapterChip = adapterStatus
+      ? `<span class="runbook-chip state-${escapeHtml(adapterStatus)}" title="adapter.result.status">${escapeHtml(adapterStatus)}</span>`
+      : '';
+    const retryDisabled = !runId;
+    const retryBtn = retryDisabled
+      ? ''
+      : `<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Re-run this node at attempt N+1.">Retry attempt</button>`;
+    const skipBtn = retryDisabled
+      ? ''
+      : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Mark node as skipped (terminal).">Skip node</button>`;
+    return `
+      <div class="orch-inspector-runtime-attempt">
+        <div class="orch-inspector-runtime-attempt-head">
+          <strong>Attempt ${attempt}</strong>
+          ${adapterChip}
+        </div>
+        <div class="orch-inspector-runtime-steps">${lifecycleChips}</div>
+        ${summaryLine ? `<div class="orch-inspector-runtime-summary">${escapeHtml(summaryLine)}</div>` : ''}
+        ${errorBlock}
+        ${transcriptLinks}
+        <div class="orch-inspector-runtime-actions">${retryBtn}${skipBtn}</div>
+      </div>
+    `;
+  }).join('');
+  return `
+    <details class="orch-inspector-runtime" open>
+      <summary>Run state ${headerChip}</summary>
+      <div class="orch-inspector-runtime-meta">
+        <code>${escapeHtml(machineNodePath)}</code>
+      </div>
+      ${attemptBlocks}
+    </details>
+  `;
 }
 
 function machineRuntimeEdgeStatusFromNodes(sourceStatus, targetStatus, runProjection = null) {

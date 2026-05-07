@@ -2715,6 +2715,99 @@ body.json-diff-mode #preview-pane {
   background: var(--hover-bg);
   color: var(--text-primary);
 }
+/* Run state inspector — LangGraph Studio style. Appears below the
+ * read-only node detail when a node has machine runtime events.
+ * Click to inspect attempt-by-attempt, transcript links, and per-
+ * attempt retry / skip actions. */
+.orch-inspector-runtime {
+  display: grid;
+  gap: calc(6px * var(--us));
+  margin-top: calc(10px * var(--us));
+  padding-top: calc(8px * var(--us));
+  border-top: 1px dashed color-mix(in srgb, var(--border-color) 60%, transparent);
+}
+.orch-inspector-runtime > summary {
+  cursor: pointer;
+  font-size: calc(12px * var(--us));
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--us));
+}
+.orch-inspector-runtime-meta {
+  font-size: calc(10.5px * var(--us));
+  color: var(--text-tertiary);
+}
+.orch-inspector-runtime-meta code {
+  word-break: break-all;
+}
+.orch-inspector-runtime-attempt {
+  display: grid;
+  gap: calc(5px * var(--us));
+  padding: calc(6px * var(--us)) calc(8px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: calc(6px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 50%, transparent);
+}
+.orch-inspector-runtime-attempt-head {
+  display: flex;
+  align-items: center;
+  gap: calc(7px * var(--us));
+  font-size: calc(11px * var(--us));
+}
+.orch-inspector-runtime-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--us));
+}
+.orch-inspector-runtime-step {
+  font-size: calc(10px * var(--us));
+  padding: calc(1px * var(--us)) calc(6px * var(--us));
+  border-radius: calc(8px * var(--us));
+  background: color-mix(in srgb, var(--border-color) 30%, transparent);
+  color: var(--text-secondary);
+}
+.orch-inspector-runtime-step.state-completed {
+  background: color-mix(in srgb, #4ec97d 20%, transparent);
+  color: #4ec97d;
+}
+.orch-inspector-runtime-step.state-failed {
+  background: color-mix(in srgb, #d77c7c 20%, transparent);
+  color: #d77c7c;
+}
+.orch-inspector-runtime-step.state-blocked {
+  background: color-mix(in srgb, #e0af68 20%, transparent);
+  color: #e0af68;
+}
+.orch-inspector-runtime-step.state-skipped,
+.orch-inspector-runtime-step.state-cancelled {
+  background: color-mix(in srgb, var(--text-tertiary) 25%, transparent);
+  color: var(--text-tertiary);
+}
+.orch-inspector-runtime-summary {
+  font-size: calc(10.5px * var(--us));
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.orch-inspector-runtime-error {
+  display: grid;
+  gap: calc(3px * var(--us));
+  font-size: calc(10.5px * var(--us));
+  padding: calc(5px * var(--us));
+  border-left: 2px solid #d77c7c;
+  background: color-mix(in srgb, #d77c7c 10%, transparent);
+}
+.orch-inspector-runtime-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--us));
+}
+.orch-inspector-runtime-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--us));
+  margin-top: calc(2px * var(--us));
+}
 .pipeline-section-header {
   display: flex;
   align-items: start;
