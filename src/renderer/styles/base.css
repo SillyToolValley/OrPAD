@@ -1863,6 +1863,54 @@ body.json-diff-mode #preview-pane {
   border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
   border-radius: calc(8px * var(--us));
   background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
+  /* Sticky pin so the run controls stay visible as the user scrolls
+   * down through the gate banner / failed adapter cards / lifecycle
+   * banner / latest run sections. The pipe preview area scrolls
+   * inside the parent, so position:sticky pins relative to the
+   * scroll container without breaking other layouts. */
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.pipeline-runbar-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6px * var(--us));
+  font-size: calc(11px * var(--us));
+  color: var(--text-secondary);
+  padding: 0 calc(4px * var(--us));
+}
+.pipeline-runbar-progress code {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.pipeline-runbar-current {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5px * var(--us));
+  font-size: calc(11px * var(--us));
+  color: var(--accent-color, #6cb6ff);
+  font-weight: 500;
+}
+.pipeline-runbar-current::before {
+  content: '';
+  display: inline-block;
+  width: calc(7px * var(--us));
+  height: calc(7px * var(--us));
+  border-radius: 50%;
+  background: currentColor;
+  animation: orpad-pulse 1.4s ease-in-out infinite;
+}
+@keyframes orpad-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.pipeline-runbar-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-size: calc(11px * var(--us));
+  color: var(--text-tertiary);
 }
 .pipe-failed-probes {
   margin: calc(-6px * var(--us)) 0 calc(12px * var(--us));

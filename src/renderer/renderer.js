@@ -2858,6 +2858,73 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
   return { state: 'warn', text: 'Checked, but no executable run mode is available yet.' };
 }
 
+// Compact metrics for the sticky pipeline run-bar header. Returns
+// { currentNode, progressLabel, progressTitle, elapsed, startedAt }
+// derived from the active run record's events. Values default to ''
+// when not applicable (no record, no started events, etc).
+function pipelinePreviewRunHeaderMetrics(record) {
+  const empty = { currentNode: '', progressLabel: '', progressTitle: '', elapsed: '', startedAt: '' };
+  if (!record) return empty;
+  const events = Array.isArray(record.events) ? record.events : [];
+  if (!events.length) return empty;
+  // Currently running node: most recent node.started without a
+  // matching terminal event. Walks the tail of events for speed.
+  let currentNode = '';
+  const inflight = new Map();
+  for (const e of events) {
+    const type = String(e?.eventType || '');
+    if (!type.startsWith('node.')) continue;
+    const np = String(e?.nodePath || '').trim();
+    if (!np) continue;
+    const attempt = Number(e?.payload?.attempt) || 1;
+    const key = `${np}:${attempt}`;
+    if (type === 'node.started') {
+      inflight.set(key, np);
+    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'].includes(type)) {
+      inflight.delete(key);
+    }
+  }
+  if (inflight.size > 0) {
+    currentNode = [...inflight.values()].pop();
+  }
+  // Progress: count of distinct node paths that have reached a terminal
+  // lifecycle event vs the count of distinct node paths that have any
+  // node.* event. This is approximate but useful as a sticky indicator.
+  const seenPaths = new Set();
+  const completedPaths = new Set();
+  for (const e of events) {
+    const type = String(e?.eventType || '');
+    if (!type.startsWith('node.')) continue;
+    const np = String(e?.nodePath || '').trim();
+    if (!np) continue;
+    seenPaths.add(np);
+    if (['node.completed', 'node.skipped'].includes(type)) completedPaths.add(np);
+  }
+  let progressLabel = '';
+  let progressTitle = '';
+  if (seenPaths.size > 0) {
+    progressLabel = `${completedPaths.size}/${seenPaths.size}`;
+    progressTitle = `${completedPaths.size} resolved (completed or skipped) out of ${seenPaths.size} nodes touched in this run.`;
+  }
+  // Elapsed: from first run.created to the latest event timestamp.
+  const createdEvent = events.find(e => e?.eventType === 'run.created');
+  const startedAtIso = createdEvent?.timestamp || record.runState?.createdAt || '';
+  let elapsed = '';
+  if (startedAtIso) {
+    const lastEvent = events[events.length - 1];
+    const endIso = lastEvent?.timestamp || record.runState?.updatedAt || new Date().toISOString();
+    const startMs = Date.parse(startedAtIso);
+    const endMs = Date.parse(endIso);
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs) {
+      const totalSec = Math.round((endMs - startMs) / 1000);
+      if (totalSec < 60) elapsed = `${totalSec}s`;
+      else if (totalSec < 3600) elapsed = `${Math.floor(totalSec / 60)}m ${totalSec % 60}s`;
+      else elapsed = `${Math.floor(totalSec / 3600)}h ${Math.floor((totalSec % 3600) / 60)}m`;
+    }
+  }
+  return { currentNode, progressLabel, progressTitle, elapsed, startedAt: startedAtIso };
+}
+
 function pipelinePreviewTitle(context, pipelineDoc = null) {
   const manifestTitle = pipelineDoc?.title || pipelineDoc?.name || pipelineDoc?.id || '';
   if (manifestTitle) return manifestTitle;
@@ -3188,12 +3255,19 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   if (isMachineApiAvailable() && !machineRuntimeStatus && !machineRuntimeStatusLoading) {
     void refreshMachineRuntimeStatus();
   }
+  // Aggregate progress metrics for the sticky run-bar — current node,
+  // X/N completed, elapsed since run.created. All derive from the
+  // active record's events; no new IPC.
+  const runHeaderMetrics = pipelinePreviewRunHeaderMetrics(previewRunRecord);
   return `
     <div class="pipeline-runbar" data-pipeline-preview-runbar data-pipeline-path="${escapeHtml(runbookPath)}">
       <div class="pipeline-runbar-meta">
         <strong>${escapeHtml(displayTitle)}</strong>
         <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
+        ${runHeaderMetrics.currentNode ? `<span class="pipeline-runbar-current" title="${escapeHtml(`Currently running: ${runHeaderMetrics.currentNode}`)}">${escapeHtml(runHeaderMetrics.currentNode)}</span>` : ''}
+        ${runHeaderMetrics.progressLabel ? `<span class="pipeline-runbar-progress" title="${escapeHtml(runHeaderMetrics.progressTitle || '')}">progress <code>${escapeHtml(runHeaderMetrics.progressLabel)}</code></span>` : ''}
+        ${runHeaderMetrics.elapsed ? `<span class="pipeline-runbar-elapsed" title="${escapeHtml(`Started ${runHeaderMetrics.startedAt}`)}">${escapeHtml(runHeaderMetrics.elapsed)}</span>` : ''}
         ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
         ${renderMachineBudgetIndicatorHtml(pipelineDoc)}
       </div>
