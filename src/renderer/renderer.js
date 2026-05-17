@@ -2991,6 +2991,27 @@ function machineBlockedWorkInlineText(record) {
   return `Blocked item: ${blocked.itemId || 'unknown'} - ${blocked.reason}`;
 }
 
+function machineBlockedQueueExhaustedDetails(record) {
+  const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+  if (lifecycle !== 'waiting') return null;
+  const inventory = machineLatestQueueInventory(record);
+  const queue = machineQueueInventoryCounts(inventory);
+  if (queue.totalCount <= 0 || queue.activeCount > 0 || queue.blockedCount <= 0) return null;
+  if (machineLatestActiveLockWait(record)) return null;
+  if (machinePendingApprovals(record).length > 0) return null;
+  if (machinePendingPatchReviewRequiredEvents(record).length > 0) return null;
+  if (machinePendingPatchReviewInfos(record).length > 0) return null;
+  if (machineApprovedPatchReviewInfos(record).length > 0) return null;
+  if (machineHasRawBlockedPatchReviewNode(record)) return null;
+  if ((sharedGateBlockedNodes(record) || []).length > 0) return null;
+  return {
+    inventory,
+    queue,
+    blockedText: machineBlockedWorkInlineText(record),
+    countText: machineCountLabel(queue.blockedCount, 'blocked work item'),
+  };
+}
+
 function machineSkipBlockReason(record, nodePath, nodeType = '') {
   const queue = machineQueueInventoryCounts(machineLatestQueueInventory(record));
   if (queue.activeCount <= 0) return '';
@@ -3063,6 +3084,14 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
           text: queue.blockedCount > 0
             ? `Queue has blockers: ${status}. Continue runs the next queued item.${blockedText}`
             : `Queue waiting: ${status}. Continue runs the next queued item.`,
+        };
+      }
+      const exhaustedQueue = machineBlockedQueueExhaustedDetails(activeRecord);
+      if (exhaustedQueue) {
+        const blockedText = exhaustedQueue.blockedText ? ` ${exhaustedQueue.blockedText}` : '';
+        return {
+          state: 'warn',
+          text: `Run blocked - ${exhaustedQueue.countText} recorded and no queued work remains.${blockedText}`,
         };
       }
       const gateBlocked = (sharedGateBlockedNodes(activeRecord) || []).length > 0;
@@ -10550,6 +10579,10 @@ function machineRunAttentionDetails(record) {
   if (lifecycleStatus === 'waiting' && queue.totalCount > 0 && (queue.activeCount > 0 || queue.blockedCount > 0)) {
     const blockedText = machineBlockedWorkInlineText(record);
     const runId = record?.runState?.runId || record?.runId || '';
+    const actionLabel = queue.activeCount > 0 ? 'Resolve Blocker' : 'Review Blocker';
+    const actionTitle = queue.activeCount > 0
+      ? 'Open blocker details, review evidence, or continue queued work when available.'
+      : 'Open blocker details and review evidence. No queued work remains.';
     notices.push({
       state: queue.blockedCount > 0 ? 'warning' : 'good',
       title: queue.blockedCount > 0 ? 'Queue has blocked work' : 'Work queue still active',
@@ -10561,7 +10594,7 @@ function machineRunAttentionDetails(record) {
         blockedText || '',
       ].filter(Boolean).join(' '),
       actionHtml: runId
-        ? `<div class="runbook-action-row runbook-attention-actions"><button class="primary" data-runbook-action="machine-open-blocked-decision" data-run-id="${escapeHtml(runId)}" title="Open blocker details, review evidence, or continue queued work when available.">Resolve Blocker</button></div>`
+        ? `<div class="runbook-action-row runbook-attention-actions"><button class="primary" data-runbook-action="machine-open-blocked-decision" data-run-id="${escapeHtml(runId)}" title="${escapeHtml(actionTitle)}">${escapeHtml(actionLabel)}</button></div>`
         : '',
     });
   }
@@ -12404,6 +12437,10 @@ function machineExecuteControlDetails(record, validation = null, runbookPath = s
   if (isMachineRunInProgress(record, runbookPath)) return 'Continue paused: OrPAD is already working on this run.';
   if (pendingApprovals > 0) return `Continue blocked: decide ${machineCountLabel(pendingApprovals, 'permission request')} first`;
   if (activeClaims.length) return `Continue paused: ${machineWorkInProgressLabel(activeClaims.length)}; cancel or wait before continuing`;
+  const exhaustedQueue = machineBlockedQueueExhaustedDetails(record);
+  if (exhaustedQueue) {
+    return `Continue unavailable: ${exhaustedQueue.countText} recorded and no queued work remains. Review evidence or start a follow-up run.`;
+  }
   if (queue.activeCount > 0) {
     const blockedText = queue.blockedCount > 0 ? ` ${machineBlockedWorkInlineText(record)}` : '';
     return `Continue: process the next queued item (${machineQueueInventorySummary(inventory)}).${blockedText}`;
@@ -12651,7 +12688,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const displayStatus = machineDisplayStatus(record, runInProgress);
   const hasActiveClaims = activeClaims.length > 0;
   const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
-  const executeDisabled = !runId || machineStepUnavailable || runTerminal || runInProgress || approvalPending || hasActiveClaims;
+  const continueBlockedByExhaustedQueue = Boolean(machineBlockedQueueExhaustedDetails(record));
+  const executeDisabled = !runId || machineStepUnavailable || runTerminal || runInProgress || approvalPending || hasActiveClaims || continueBlockedByExhaustedQueue;
   const resumeDisabled = !runId || runTerminal || runInProgress || approvalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
   const cancelDisabled = runTerminal || (!window.orpad?.machine?.cancelRun && !window.orpad?.machine?.cancelClaim);
   const approvalActions = pendingApprovals.length ? `
@@ -13925,12 +13963,20 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
     if (!runId) alert('Continue ignored: no run is selected. Pick a run from history first.');
     return;
   }
+  const liveRecord = getLiveMachineRunRecord(runbookPath);
+  const exhaustedQueue = machineBlockedQueueExhaustedDetails(liveRecord);
+  if (exhaustedQueue) {
+    notifyFormatError(
+      'Continue run',
+      new Error(`No queued work remains. ${machineQueueInventorySummary(exhaustedQueue.inventory)}. Review Evidence shows why the worker blocked.`),
+    );
+    return;
+  }
   // Phase 3.7: breakpoint pre-flight. If the user has set breakpoints
   // on nodes that have not yet reached a terminal lifecycle event in
   // this run, prompt before dispatching. Bypass-once flag clears
   // after a single dispatch.
   if (!machineBreakpointBypass.has(runId)) {
-    const liveRecord = getLiveMachineRunRecord(runbookPath);
     const activeBreakpoints = machineBreakpointsForRunUnresolvedNodes(runbookPath, liveRecord);
     if (activeBreakpoints.length) {
       const list = activeBreakpoints.slice(0, 5).join(', ');
