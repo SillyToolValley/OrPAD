@@ -132,7 +132,7 @@
     "repeatable": true,
     "handoff": {
       "promptContract": "path-only",
-      "launchPromptShape": "<pipeline.or-pipeline path> 진행해",
+      "launchPromptShape": "Run this OrPAD pipeline: <pipeline.or-pipeline path>",
       "agentExpectation": "Read this manifest, run a fresh maintenance cycle, continue until the cycle reaches done, partial, blocked, or approval-required, and do not wait for extra prompt instructions."
     },
     "cadence": {

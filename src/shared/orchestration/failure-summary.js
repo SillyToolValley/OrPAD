@@ -81,6 +81,15 @@ function extractArtifactRefs(event) {
   };
 }
 
+function acceptedProposalOnlyProgress(event, status) {
+  if (event?.eventType !== 'adapter.result') return false;
+  if (status !== 'approval-required') return false;
+  if (event.reason !== 'proposal-only-result.accepted') return false;
+  const proposalCount = Number(event.payload?.proposalCount) || 0;
+  const triageTransitionCount = Number(event.payload?.triageTransitionCount) || 0;
+  return proposalCount > 0 || triageTransitionCount > 0;
+}
+
 function failedAdapterCallsFromRecord(record) {
   const events = Array.isArray(record?.events) ? record.events : [];
   const seen = new Map();
@@ -128,6 +137,7 @@ function failedAdapterCallsFromRecord(record) {
     const status = String(event.payload?.status || '').toLowerCase();
     if (!FAILED_STATUSES_SET.has(status)) continue;
     if (event.eventType === 'worker.result' && WORKER_CLASSIFICATION_STATUSES_SET.has(status)) continue;
+    if (acceptedProposalOnlyProgress(event, status)) continue;
     if (isResolvedAfter(event.nodePath, event.sequence)) continue;
     const key = failureKeyFor(event);
     if (seen.has(key)) continue;
@@ -217,8 +227,50 @@ const NODE_BLOCK_RESOLUTION_EVENT_TYPES = new Set([
   'node.skipped', 'node.completed', 'node.failed', 'node.cancelled',
 ]);
 
+const PATCH_REVIEW_DECISION_EVENT_TYPES = new Set([
+  'patch.approved',
+  'patch.review_skipped',
+  'patch.applied',
+  'patch.apply_conflict',
+  'patch.apply_failed',
+]);
+const PATCH_REVIEW_RESOLUTION_EVENT_TYPES = new Set(['patch.applied', 'patch.review_skipped']);
+
+function patchReviewGateStateFromEvents(events = []) {
+  const patchArtifacts = [];
+  const seen = new Set();
+  for (const event of events) {
+    if (event?.eventType !== 'worker.result') continue;
+    const payload = event.payload || {};
+    const patchArtifact = String(payload.patchArtifact || '').trim();
+    const changedFiles = Array.isArray(payload.changedFiles) ? payload.changedFiles.filter(Boolean) : [];
+    if (!patchArtifact || !changedFiles.length || seen.has(patchArtifact)) continue;
+    seen.add(patchArtifact);
+    patchArtifacts.push(patchArtifact);
+  }
+
+  const decisions = new Map();
+  for (const event of events) {
+    const type = String(event?.eventType || '');
+    if (!PATCH_REVIEW_DECISION_EVENT_TYPES.has(type)) continue;
+    const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+    if (!patchArtifact) continue;
+    decisions.set(patchArtifact, type);
+  }
+
+  const pending = patchArtifacts.filter(patchArtifact => (
+    !PATCH_REVIEW_RESOLUTION_EVENT_TYPES.has(decisions.get(patchArtifact) || '')
+  ));
+  return {
+    required: patchArtifacts.length > 0,
+    resolved: pending.length === 0,
+    pendingCount: pending.length,
+  };
+}
+
 function gateBlockedNodesFromRecord(record) {
   const events = Array.isArray(record?.events) ? record.events : [];
+  const patchReviewGateState = patchReviewGateStateFromEvents(events);
   // Track the latest blocked AND the latest resolution per nodePath. A
   // gate is currently blocked when its latest blocked sequence is
   // greater than its latest resolution sequence.
@@ -242,10 +294,17 @@ function gateBlockedNodesFromRecord(record) {
     if ((latestResolution.get(nodePath) || 0) >= sequence) continue;
     const nodeType = String(event.payload?.nodeType || '').trim();
     if (!LIFECYCLE_GATE_NODE_TYPES_SET.has(nodeType)) continue;
+    if (
+      nodeType === 'orpad.patchReview'
+      && (!patchReviewGateState.required || patchReviewGateState.resolved)
+    ) {
+      continue;
+    }
     out.push({
       nodePath,
       nodeType,
       reason: event.payload?.reason || event.reason || '',
+      artifactContracts: Array.isArray(event.payload?.artifactContracts) ? event.payload.artifactContracts : [],
       sequence,
       timestamp: event.timestamp || '',
     });
@@ -273,6 +332,7 @@ module.exports = {
   gateBlockedNodesFromRecord,
   isPlainObject,
   lifecycleSuppressesFallback,
+  patchReviewGateStateFromEvents,
   runArtifactAbsPath,
   shouldShowFailureFallback,
 };

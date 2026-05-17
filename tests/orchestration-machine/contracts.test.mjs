@@ -60,6 +60,7 @@ function samples() {
       expectedBehavior: 'Graph-specific node types are available.',
       actualBehavior: 'Graph-specific node types are omitted.',
       sourceOfTruthTargets: ['src/renderer/renderer.js'],
+      targetFiles: ['src/renderer/renderer.js'],
       verificationPlan: 'Run renderer build and focused graph editor tests.',
       coverageEvidenceIds: ['ux-graph-editor-source'],
       approvalRequired: false,
@@ -76,6 +77,8 @@ function samples() {
       confidence: 0.84,
       evidence: [{ id: 'ux-graph-editor-source', file: 'src/renderer/renderer.js' }],
       acceptanceCriteria: ['Graph editor type picker includes graph-specific node types.'],
+      sourceOfTruthTargets: ['src/renderer/renderer.js'],
+      targetFiles: ['src/renderer/renderer.js'],
       coverageEvidenceIds: ['ux-graph-editor-source'],
     },
     candidateInventory: {

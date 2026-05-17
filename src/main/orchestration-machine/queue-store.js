@@ -256,9 +256,11 @@ async function transitionQueueItem(runRoot, options = {}) {
     toState,
     reason = 'queue.transition',
     evidence = '',
+    expectedFromState = '',
   } = options;
   const safeItemId = assertMachineStorageId(itemId, 'itemId');
   const safeToState = assertQueueState(toState);
+  const safeExpectedFromState = expectedFromState ? assertQueueState(expectedFromState) : '';
   const transitionId = options.transitionId || `${safeItemId}:${safeToState}`;
   const duplicateEvent = await findEventByTransitionId(runRoot, transitionId);
   if (duplicateEvent) {
@@ -271,6 +273,14 @@ async function transitionQueueItem(runRoot, options = {}) {
 
   const current = await findQueueItem(runRoot, safeItemId);
   if (!current) throw new Error(`Queue item not found: ${safeItemId}`);
+  if (safeExpectedFromState && current.state !== safeExpectedFromState) {
+    const err = new Error(`Queue item state changed before transition: ${safeItemId} is ${current.state}, expected ${safeExpectedFromState}.`);
+    err.code = 'MACHINE_QUEUE_TRANSITION_STALE';
+    err.itemId = safeItemId;
+    err.actualState = current.state;
+    err.expectedState = safeExpectedFromState;
+    throw err;
+  }
   const action = transitionAction(current.state, safeToState);
   if (!action) throw new Error(`Invalid queue transition: ${current.state} -> ${safeToState}`);
 

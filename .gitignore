@@ -22,9 +22,16 @@ state/bundle-meta.json
 test-results/
 playwright-report/
 
+# Local debug / crash artifacts
+*.stackdump
+~screenshots/
+scripts/codex-output/
+scripts/tmp-*
+
 # OrPAD local run evidence
 .orpad/**/runs/
 .orch-runs/
 
 # OrPAD generated manual harness output
 .orpad/**/harness/generated/**
+.orpad/**/*.adapter-overrides.json

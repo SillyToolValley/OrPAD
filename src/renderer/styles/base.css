@@ -404,6 +404,18 @@ body.zen-mode .cm-content {
   border-top: 1px solid var(--border-color);
   background: var(--bg-secondary);
 }
+.fmt-modal-busy-status {
+  margin-right: auto;
+  align-self: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+#fmt-modal.busy #fmt-modal-content {
+  cursor: progress;
+}
+#fmt-modal.busy #fmt-modal-body {
+  opacity: 0.78;
+}
 #fmt-modal-footer button {
   padding: 6px 14px;
   border-radius: 6px;
@@ -417,6 +429,12 @@ body.zen-mode .cm-content {
 }
 #fmt-modal-footer button:hover {
   background: var(--hover-bg);
+}
+#fmt-modal-footer button:disabled,
+#fmt-modal-footer button:disabled:hover {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: none;
 }
 #fmt-modal-footer button.primary {
   background: var(--accent-color);
@@ -1608,6 +1626,62 @@ body.json-diff-mode #preview-pane {
   opacity: 0.55;
   cursor: not-allowed;
 }
+.runbook-generate-status {
+  display: grid;
+  gap: calc(6px * var(--us));
+  margin-top: calc(8px * var(--us));
+  padding: calc(8px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
+  border-left-width: 3px;
+  border-radius: calc(7px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
+  color: var(--text-secondary);
+}
+.runbook-generate-status.running { border-left-color: var(--accent-color, #6cb6ff); }
+.runbook-generate-status.good { border-left-color: var(--syntax-string, #9ece6a); }
+.runbook-generate-status.warn { border-left-color: var(--syntax-meta, #e0af68); }
+.runbook-generate-status.danger { border-left-color: var(--danger-color, #ff7676); }
+.runbook-generate-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(8px * var(--us));
+  min-width: 0;
+}
+.runbook-generate-status-head strong,
+.runbook-generate-status-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runbook-generate-status-head strong {
+  color: var(--text-primary);
+  font-size: calc(11.5px * var(--us));
+}
+.runbook-generate-status-head span,
+.runbook-generate-request,
+.runbook-generate-events {
+  font-size: calc(10.5px * var(--us));
+  color: var(--text-tertiary);
+}
+.runbook-generate-message {
+  font-size: calc(11px * var(--us));
+  line-height: 1.4;
+}
+.runbook-generate-request {
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.runbook-generate-events {
+  display: grid;
+  gap: calc(3px * var(--us));
+}
+.runbook-generate-events span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Continue button greens out when execute step is actionable. The user's
  * mental model: green = "ready, click me." Falls back to the default
  * runbook button styling when the criteria aren't met. */
@@ -1859,6 +1933,10 @@ body.json-diff-mode #preview-pane {
 }
 .runbook-diagnostic.error { border-left-color: var(--danger-color, #ff7676); }
 .runbook-diagnostic.warning { border-left-color: var(--syntax-meta, #e0af68); }
+.runbook-diagnostic.good { border-left-color: #22c55e; }
+.runbook-attention-actions {
+  margin-top: calc(6px * var(--us));
+}
 .runbook-event {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: calc(10px * var(--us));
@@ -1907,6 +1985,65 @@ body.json-diff-mode #preview-pane {
   font-size: calc(13px * var(--us));
   line-height: 1.45;
   margin: 0;
+}
+.runbook-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6px * var(--us));
+  font-size: calc(12px * var(--us));
+  color: var(--text-secondary);
+}
+.runbook-modal-field input,
+.runbook-modal-field textarea {
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: calc(6px * var(--us));
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  padding: calc(8px * var(--us));
+}
+.runbook-modal-field textarea {
+  resize: vertical;
+  min-height: calc(112px * var(--us));
+}
+.runbook-modal-kv {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: calc(8px * var(--us));
+}
+.runbook-modal-kv div {
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: calc(6px * var(--us));
+  padding: calc(8px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+}
+.runbook-modal-kv strong,
+.runbook-modal-kv span,
+.runbook-modal-kv code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.runbook-modal-kv strong {
+  color: var(--text-secondary);
+  font-size: calc(11px * var(--us));
+  margin-bottom: calc(4px * var(--us));
+}
+.runbook-modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8px * var(--us));
+}
+.runbook-modal-section h4 {
+  color: var(--text-primary);
+  font-size: calc(12px * var(--us));
+  margin: 0;
+}
+.runbook-modal-section ul {
+  margin-left: calc(18px * var(--us));
+  color: var(--text-secondary);
+  line-height: 1.45;
 }
 .view-orch-tree,
 .view-orch-graph,
@@ -2030,7 +2167,7 @@ body.json-diff-mode #preview-pane {
    * scroll container without breaking other layouts. */
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: 80;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
@@ -2206,6 +2343,9 @@ body.json-diff-mode #preview-pane {
   border-color: color-mix(in srgb, var(--border-color) 70%, transparent);
   background: color-mix(in srgb, var(--bg-secondary) 80%, transparent);
 }
+.pipe-lifecycle-banner--event {
+  margin-top: 0;
+}
 .pipe-lifecycle-banner-title {
   font-weight: 600;
   font-size: calc(13px * var(--us));
@@ -2245,6 +2385,54 @@ body.json-diff-mode #preview-pane {
 }
 .pipe-lifecycle-banner-link--cta:hover {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 28%, transparent);
+}
+.pipe-patch-outcome {
+  display: grid;
+  gap: calc(7px * var(--us));
+  padding: calc(7px * var(--us)) calc(8px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+  border-radius: calc(6px * var(--us));
+  background: color-mix(in srgb, var(--bg-color) 54%, transparent);
+}
+.pipe-patch-outcome-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6px * var(--us));
+}
+.pipe-patch-outcome-counts span {
+  padding: calc(2px * var(--us)) calc(6px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
+  border-radius: calc(4px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 65%, transparent);
+}
+.pipe-patch-outcome-row {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) 1fr;
+  gap: calc(8px * var(--us));
+  align-items: start;
+  font-size: calc(11.5px * var(--us));
+}
+.pipe-patch-outcome-row > span:first-child {
+  opacity: 0.72;
+}
+.pipe-patch-outcome-row--empty strong {
+  color: var(--syntax-meta, #e0af68);
+}
+.pipe-patch-outcome-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(5px * var(--us));
+  min-width: 0;
+}
+.pipe-patch-outcome-files code,
+.pipe-patch-outcome-files span {
+  max-width: 100%;
+  padding: calc(1px * var(--us)) calc(5px * var(--us));
+  border-radius: calc(4px * var(--us));
+  background: color-mix(in srgb, var(--bg-tertiary, var(--bg-secondary)) 80%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* Phase 2.5: inline approval cards inside the lifecycle banner.
  * Replaces the misleading "approval modal will surface" copy with
@@ -2332,7 +2520,8 @@ body.json-diff-mode #preview-pane {
   color: var(--text-secondary);
   font-size: calc(11px * var(--us));
 }
-.pipeline-runbar-status.good {
+.pipeline-runbar-status.good,
+.pipeline-runbar-status.done {
   color: var(--syntax-string, #9ece6a);
 }
 .pipeline-runbar-status.warn {
@@ -2417,7 +2606,7 @@ body.json-diff-mode #preview-pane {
   position: absolute;
   top: calc(38px * var(--us));
   right: 0;
-  z-index: 40;
+  z-index: 120;
   min-width: calc(180px * var(--us));
   display: grid;
   gap: calc(3px * var(--us));
@@ -2608,6 +2797,20 @@ body.json-diff-mode #preview-pane {
   letter-spacing: 0;
   pointer-events: none;
 }
+
+/* Respect OS-level "reduce motion" preference: hide the animated arrow on
+ * active edges and fall back to a static glow so users with vestibular
+ * sensitivity (or anyone who finds the moving glyph distracting) can still
+ * see which edge is currently active. */
+@media (prefers-reduced-motion: reduce) {
+  .orch-graph-edges .orch-transition-flow-arrows {
+    display: none;
+  }
+  .orch-graph-edges .orch-transition.runtime-active {
+    stroke-width: 4;
+    filter: drop-shadow(0 0 4px currentColor);
+  }
+}
 .orch-transition-flow-arrows.secondary {
   opacity: 0.62;
 }
@@ -2643,6 +2846,161 @@ body.json-diff-mode #preview-pane {
   cursor: move;
   pointer-events: all;
 }
+/* Edge palette — Okabe-Ito colourblind-safe colors so the graph reads
+ * by colour alone even without distinguishing red/green. Categories were
+ * merged (accept+pass into one "pass", loop-back+loop-revise into
+ * "loop-revise") so the legend stays short. Override in a theme by
+ * redefining the --orch-edge-* tokens. */
+:root {
+  --orch-edge-forward: #0072b2;       /* Okabe-Ito blue */
+  --orch-edge-branch: #cc79a7;        /* Okabe-Ito reddish purple */
+  --orch-edge-accept: #009e73;        /* Okabe-Ito bluish green (pass / accepted) */
+  --orch-edge-reject: #d55e00;        /* Okabe-Ito vermillion (reject / stop) */
+  --orch-edge-queue-empty: #56b4e9;   /* Okabe-Ito sky blue */
+  --orch-edge-queue-loop: #e69f00;    /* Okabe-Ito orange */
+  --orch-edge-loopback: #e69f00;
+  --orch-edge-loop-revise: #e69f00;
+  --orch-edge-loop-reject: #d55e00;
+  --orch-edge-loop-fail: #d55e00;
+}
+
+/* Default — all forward edges. */
+.orch-graph-edges .orch-transition.category-forward { stroke: var(--orch-edge-forward); }
+.orch-graph-edges .orch-transition.category-branch { stroke: var(--orch-edge-branch); }
+.orch-graph-edges .orch-transition.category-accept { stroke: var(--orch-edge-accept); }
+.orch-graph-edges .orch-transition.category-reject { stroke: var(--orch-edge-reject); }
+.orch-graph-edges .orch-transition.category-queue-empty { stroke: var(--orch-edge-queue-empty); }
+.orch-graph-edges .orch-transition.category-queue-not-empty {
+  stroke: var(--orch-edge-queue-loop);
+  stroke-dasharray: 8 4;
+}
+/* All loop-back variants are dashed so the back-edge nature stays visible
+ * even when a runtime state (completed / active / blocked) overrides the
+ * stroke. The colour distinguishes WHY it loops back. */
+.orch-graph-edges .orch-transition.loop-back,
+.orch-graph-edges .orch-transition.category-loop-back,
+.orch-graph-edges .orch-transition.category-loop-revise,
+.orch-graph-edges .orch-transition.category-loop-reject,
+.orch-graph-edges .orch-transition.category-loop-fail {
+  stroke-dasharray: 8 4;
+  stroke-width: 2.4;
+}
+.orch-graph-edges .orch-transition.category-loop-back { stroke: var(--orch-edge-loopback); }
+.orch-graph-edges .orch-transition.category-loop-revise { stroke: var(--orch-edge-loop-revise); }
+.orch-graph-edges .orch-transition.category-loop-reject { stroke: var(--orch-edge-loop-reject); }
+.orch-graph-edges .orch-transition.category-loop-fail { stroke: var(--orch-edge-loop-fail); }
+
+/* Runtime overrides keep precedence over category colour but preserve the
+ * dashed pattern for loop-backs and queue-drain edges so the back/loop
+ * meaning is never lost. */
+.orch-graph-edges .orch-transition.loop-back.runtime-completed,
+.orch-graph-edges .orch-transition.loop-back.runtime-active,
+.orch-graph-edges .orch-transition.loop-back.runtime-blocked,
+.orch-graph-edges .orch-transition.loop-back.runtime-traversed,
+.orch-graph-edges .orch-transition.category-queue-not-empty.runtime-completed,
+.orch-graph-edges .orch-transition.category-queue-not-empty.runtime-active {
+  stroke-dasharray: 8 4;
+}
+
+/* Label rendered as a small rounded chip with a solid background so it never
+ * fights the path or the moving-arrow animation. Positioned next to the edge
+ * control point, not on top of it. */
+.orch-transition-label-group {
+  pointer-events: none;
+}
+.orch-transition-label-bg {
+  fill: color-mix(in srgb, var(--bg-primary, #1d1f23) 92%, var(--bg-secondary, #2a2d33));
+  stroke: color-mix(in srgb, var(--border-color, #3a3d42) 80%, transparent);
+  stroke-width: 1;
+  opacity: 0.95;
+}
+.orch-transition-label-group.loop-back .orch-transition-label-bg {
+  stroke: color-mix(in srgb, var(--orch-edge-loopback) 70%, transparent);
+}
+.orch-transition-label {
+  fill: var(--text-secondary, #c0c4cc);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: calc(11px * var(--us));
+  font-weight: 600;
+  pointer-events: none;
+  user-select: none;
+}
+.orch-transition-label.loop-back {
+  fill: color-mix(in srgb, var(--orch-edge-loopback) 70%, var(--text-primary, #ffffff));
+}
+
+/* Legend box pinned to the bottom-right of the graph frame. Small, semi-
+ * transparent, sized so it stays out of the canvas content. */
+.orch-graph-legend {
+  position: absolute;
+  /* User report 2026-05-15: right/bottom collided with the runtime
+   * status / node inspector panels that sit at the right edge. Move
+   * the edge legend to the left-bottom corner where the canvas is
+   * otherwise empty. */
+  left: 12px;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--border-color, #3a3d42) 70%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-primary, #1d1f23) 90%, transparent);
+  backdrop-filter: blur(4px);
+  font-size: calc(11px * var(--us));
+  line-height: 1.35;
+  color: var(--text-secondary, #c0c4cc);
+  pointer-events: none;
+  user-select: none;
+}
+.orch-graph-legend-title {
+  font-size: calc(10px * var(--us));
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.7;
+  margin-bottom: 2px;
+}
+.orch-graph-legend-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+}
+.orch-graph-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.orch-graph-legend-swatch {
+  width: 22px;
+  height: 0;
+  border-top: 3px solid currentColor;
+  flex-shrink: 0;
+}
+.orch-graph-legend-swatch.category-forward { color: var(--orch-edge-forward); }
+.orch-graph-legend-swatch.category-branch { color: var(--orch-edge-branch); }
+.orch-graph-legend-swatch.category-accept { color: var(--orch-edge-accept); }
+.orch-graph-legend-swatch.category-reject { color: var(--orch-edge-reject); }
+.orch-graph-legend-swatch.category-queue-empty { color: var(--orch-edge-queue-empty); }
+.orch-graph-legend-swatch.category-queue-not-empty {
+  color: var(--orch-edge-queue-loop);
+  border-top-style: dashed;
+}
+.orch-graph-legend-swatch.category-loop-back,
+.orch-graph-legend-swatch.category-loop-revise,
+.orch-graph-legend-swatch.category-loop-reject,
+.orch-graph-legend-swatch.category-loop-fail {
+  border-top-style: dashed;
+}
+.orch-graph-legend-swatch.category-loop-back { color: var(--orch-edge-loopback); }
+.orch-graph-legend-swatch.category-loop-revise { color: var(--orch-edge-loop-revise); }
+.orch-graph-legend-swatch.category-loop-reject { color: var(--orch-edge-loop-reject); }
+.orch-graph-legend-swatch.category-loop-fail { color: var(--orch-edge-loop-fail); }
 .orch-graph-node {
   position: absolute;
   z-index: 2;
@@ -2675,6 +3033,9 @@ body.json-diff-mode #preview-pane {
   border-color: color-mix(in srgb, var(--accent-color) 76%, var(--border-color));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 20%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
   animation: orch-runtime-pulse 1.5s ease-in-out infinite;
+}
+.orch-graph-node.runtime-queued {
+  border-color: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
 }
 /* Phase 3.7: breakpoint marker on graph nodes. Renderer-only —
  * Continue confirmation is enforced separately in the dispatch path.
@@ -2740,6 +3101,10 @@ body.json-diff-mode #preview-pane {
 .orch-graph-node.runtime-running .orch-runtime-status {
   color: var(--accent-color);
 }
+.orch-graph-node.runtime-queued .orch-runtime-status {
+  border-color: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
+  color: var(--text-tertiary);
+}
 .orch-graph-node.runtime-completed .orch-runtime-status {
   border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 48%, var(--border-color));
   color: var(--syntax-string, #9ece6a);
@@ -2753,6 +3118,67 @@ body.json-diff-mode #preview-pane {
 .orch-graph-node.runtime-cancelled .orch-runtime-status {
   border-color: color-mix(in srgb, var(--danger-color, #ff7676) 52%, var(--border-color));
   color: var(--danger-color, #ff7676);
+}
+/* Codex 2026-05-15 cross-review (Top 5 fix #5): always-visible action
+ * row on blocked/failed graph nodes. Buttons mirror the right-click
+ * context menu so the operations are discoverable at a glance.
+ * Compact layout — short single-word labels (Details / Retry / Skip /
+ * Prompt / Model) wrap to a second row on narrow nodes. */
+.orch-graph-node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--us));
+  margin-top: calc(7px * var(--us));
+  padding-top: calc(6px * var(--us));
+  border-top: 1px dashed color-mix(in srgb, var(--border-color) 70%, transparent);
+}
+.orch-graph-node-action {
+  flex: 0 0 auto;
+  font-size: calc(10.5px * var(--us));
+  line-height: 1;
+  padding: calc(3px * var(--us)) calc(7px * var(--us));
+  border-radius: calc(4px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 76%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary));
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+}
+.orch-graph-node-action:hover {
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent-color, #6cb6ff) 50%, var(--border-color));
+  color: var(--text-primary);
+}
+.orch-graph-node-action.primary {
+  border-color: color-mix(in srgb, var(--accent-color, #6cb6ff) 60%, var(--border-color));
+  color: var(--accent-color, #6cb6ff);
+  font-weight: 600;
+}
+.orch-graph-node-action.retry {
+  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 60%, var(--border-color));
+  color: var(--syntax-string, #9ece6a);
+}
+.orch-graph-node-action.retry:hover {
+  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 18%, transparent);
+}
+.orch-graph-node-action.skip {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 56%, var(--border-color));
+  color: var(--syntax-meta, #e0af68);
+}
+.orch-graph-node-action.skip:hover {
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 18%, transparent);
+}
+.orch-graph-node-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+/* Tighter top-border tint for failed cards so the action row reads as
+ * "what to do about this failure" rather than appearing detached. */
+.orch-graph-node.runtime-failed .orch-graph-node-actions {
+  border-top-color: color-mix(in srgb, var(--danger-color, #ff7676) 44%, transparent);
+}
+.orch-graph-node.runtime-blocked .orch-graph-node-actions {
+  border-top-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 50%, transparent);
 }
 @keyframes orch-runtime-pulse {
   0%, 100% {
@@ -3089,6 +3515,10 @@ body.json-diff-mode #preview-pane {
 .orch-inspector-runtime-step.state-blocked {
   background: color-mix(in srgb, #e0af68 20%, transparent);
   color: #e0af68;
+}
+.orch-inspector-runtime-step.state-diagnostic {
+  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 14%, transparent);
+  color: var(--accent-color, #6cb6ff);
 }
 .orch-inspector-runtime-step.state-skipped,
 .orch-inspector-runtime-step.state-cancelled {

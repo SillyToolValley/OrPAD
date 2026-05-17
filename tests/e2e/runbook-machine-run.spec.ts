@@ -239,7 +239,7 @@ async function seedActiveClaimRun(
     claimId: 'claim-machine-ui-smoke',
     workerId: 'machine-ui-e2e-worker',
     recoverStale: false,
-    leaseMs: options.leaseMs ?? 7 * 24 * 60 * 60 * 1000,
+    leaseMs: options.leaseMs ?? 30 * 24 * 60 * 60 * 1000,
     now: '2026-05-01T00:00:03.000Z',
   });
   return {
@@ -276,12 +276,28 @@ async function submitMachineCapabilityToken(win: any): Promise<void> {
   await win.getByRole('button', { name: 'Use Token' }).click();
 }
 
+async function confirmRunProviderSelection(win: any): Promise<void> {
+  const picker = win.locator('.orpad-adapter-picker');
+  await expect(picker).toBeVisible();
+  await expect(win.locator('[data-provider-id="codex-cli"]')).toBeVisible();
+  await win.locator('[data-adapter-picker-confirm="true"]').click();
+  await expect(win.locator('.orpad-adapter-picker-overlay')).toHaveCount(0);
+}
+
+async function skipPatchModalIfVisible(win: any): Promise<void> {
+  const modal = win.locator('#fmt-modal');
+  if (!(await modal.isVisible().catch(() => false))) {
+    return;
+  }
+  await modal.getByRole('button', { name: /^(Cancel|Skip Patch)$/ }).click();
+  await expect(modal).toBeHidden();
+}
+
 async function startManagedRunFromPreview(win: any): Promise<void> {
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
-  await win.locator('[data-pipeline-run-menu]').click();
-  const managedRun = win.locator('button[data-pipeline-run-action="managed"]');
-  await expect(managedRun).toBeEnabled();
-  await managedRun.click();
+  const defaultRun = win.locator('button[data-pipeline-run-action="default"]');
+  await expect(defaultRun).toBeEnabled();
+  await defaultRun.click();
 }
 
 test('Machine UI creates a durable run and executes a dispatcher worker adapter step', async () => {
@@ -320,6 +336,7 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await win.locator('[data-runbook-task]').focus();
   await win.keyboard.press('Control+Enter');
   await submitMachineCapabilityToken(win);
+  await confirmRunProviderSelection(win);
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText(taskText);
   await expect(win.locator('#runbooks-content')).toContainText('Run started');
@@ -561,7 +578,7 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'default');
   await expect(primaryRunButton).toHaveAttribute('aria-label', /Start Run/);
   await expect(primaryRunButton).not.toHaveClass(/danger/);
-  await expect(runningProbeNode).toContainText('Stopped');
+  await expect(runningProbeNode).toContainText('Cancelled');
   await expect(runningProbeNode).toHaveClass(/runtime-cancelled/);
   await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(0);
   await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(0);
@@ -624,6 +641,207 @@ test('Machine UI does not animate inactive transitions after a waiting run', asy
   await expect(completedContextNode).toHaveClass(/runtime-completed/);
   await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(0);
   await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(0);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI opens a decision modal for waiting runs with blocked queue work', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_blocked_queue_decision',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  const baseProposal = pipeline.run.machineHarness.candidateProposal;
+  const blockedItem = await ingestCandidateProposal(run.runRoot, {
+    ...baseProposal,
+    proposalId: 'proposal-machine-ui-blocked',
+    suggestedWorkItemId: 'machine-ui-blocked',
+    title: 'Blocked queue item needs a decision',
+    fingerprint: 'machine-ui-blocked:src/smoke-target.md',
+  }, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-blocked',
+    now: '2026-05-01T00:00:01.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: blockedItem.item.id,
+    toState: 'blocked',
+    reason: 'machine-ui.fixture.blocked',
+    transitionId: 'triage:machine-ui-blocked',
+    now: '2026-05-01T00:00:02.000Z',
+  });
+  const queuedItem = await ingestCandidateProposal(run.runRoot, {
+    ...baseProposal,
+    proposalId: 'proposal-machine-ui-queued',
+    suggestedWorkItemId: 'machine-ui-queued',
+    title: 'Queued queue item can continue',
+    fingerprint: 'machine-ui-queued:src/smoke-target.md',
+  }, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-queued',
+    now: '2026-05-01T00:00:03.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: queuedItem.item.id,
+    toState: 'queued',
+    reason: 'machine-ui.fixture.queued',
+    transitionId: 'triage:machine-ui-queued',
+    now: '2026-05-01T00:00:04.000Z',
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'machine-ui.fixture.waiting',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'machine-ui.fixture.partial',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
+  await expect(win.locator('#fmt-modal-body')).toContainText('1 queued, 1 blocked');
+  await expect(win.locator('#fmt-modal-body')).toContainText('machine-ui-blocked');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Continue Queue');
+  await win.locator('#fmt-modal-footer').getByRole('button', { name: 'Decide Later' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  await expect(win.locator('#runbooks-content')).toContainText('Queue has blocked work');
+
+  await win.locator('button[data-runbook-action="machine-open-blocked-decision"]').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI does not offer stop as the terminal blocked-queue follow-up', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_blocked_queue_exhausted',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  const baseProposal = pipeline.run.machineHarness.candidateProposal;
+  const blockedItem = await ingestCandidateProposal(run.runRoot, {
+    ...baseProposal,
+    proposalId: 'proposal-machine-ui-terminal-blocked',
+    suggestedWorkItemId: 'machine-ui-terminal-blocked',
+    title: 'Blocked queue item remains for follow-up',
+    fingerprint: 'machine-ui-terminal-blocked:src/smoke-target.md',
+  }, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-terminal-blocked',
+    now: '2026-05-01T00:00:01.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: blockedItem.item.id,
+    toState: 'blocked',
+    reason: 'machine-ui.fixture.blocked',
+    transitionId: 'triage:machine-ui-terminal-blocked',
+    now: '2026-05-01T00:00:02.000Z',
+  });
+  const doneItem = await ingestCandidateProposal(run.runRoot, {
+    ...baseProposal,
+    proposalId: 'proposal-machine-ui-terminal-done',
+    suggestedWorkItemId: 'machine-ui-terminal-done',
+    title: 'Done queue item',
+    fingerprint: 'machine-ui-terminal-done:src/smoke-target.md',
+  }, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-terminal-done',
+    now: '2026-05-01T00:00:03.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: doneItem.item.id,
+    toState: 'queued',
+    reason: 'machine-ui.fixture.queued',
+    transitionId: 'triage:machine-ui-terminal-done',
+    now: '2026-05-01T00:00:04.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: doneItem.item.id,
+    toState: 'claimed',
+    reason: 'machine-ui.fixture.claimed',
+    transitionId: 'claim:machine-ui-terminal-done',
+    now: '2026-05-01T00:00:05.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: doneItem.item.id,
+    toState: 'done',
+    reason: 'machine-ui.fixture.done',
+    transitionId: 'close:machine-ui-terminal-done',
+    now: '2026-05-01T00:00:06.000Z',
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'machine-ui.fixture.waiting',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'machine-ui.fixture.partial',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  await expect(win.locator('#runbooks-content')).toContainText('Queue has blocked work');
+  await expect(win.locator('#runbooks-content')).toContainText('No queued work remains; review blocked items or start a follow-up run.');
+
+  await win.locator('button[data-runbook-action="machine-open-blocked-decision"]').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
+  await expect(win.locator('#fmt-modal-body')).toContainText('1 blocked, 1 done');
+  await expect(win.locator('#fmt-modal-body')).toContainText('No queued work remains');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Review Evidence');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Close');
+  await expect(win.locator('#fmt-modal-footer')).not.toContainText('Stop Run');
+  await expect(win.locator('#fmt-modal-footer')).not.toContainText('Cancel Remaining Work');
+  await expect(win.locator('#fmt-modal-footer')).not.toContainText('Continue Queue');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -822,6 +1040,7 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   await expect(win.locator('#runbooks-content')).toContainText('2 required evidence files missing; 1 required queue file missing');
   await expect(win.locator('#runbooks-content')).toContainText('Work needs review');
   await expect(win.locator('#runbooks-content')).toContainText('review needed; 2 evidence files; 1 check; 1 changed file');
+  await skipPatchModalIfVisible(win);
   await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
   await expect(win.locator('.tab-item.active')).toContainText('Run Evidence');
   await expect(win.locator('.tab-item.active')).not.toHaveClass(/modified/);
@@ -829,7 +1048,7 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   await expect(win.locator('.cm-content')).toContainText('Workspace changed: no, changes are staged in run evidence only');
   await expect(win.locator('.cm-content')).toContainText('Patch artifact: artifacts/patches/worker.patch.json');
   await expect(win.locator('.cm-content')).toContainText('Patch artifact summary: 1 file change; 2 allowed files; 0 write-set violations.');
-  await expect(win.locator('.cm-content')).toContainText('Continue runs the next machine step; it does not apply this patch to the workspace.');
+  await expect(win.locator('.cm-content')).toContainText('Review Patch opens the changed files with apply/skip controls.');
   await expect(win.locator('.cm-content')).toContainText('`src/smoke-target.md`: Modified; 1 -> 2 lines (+1); SHA 111111111111 -> 222222222222');
   await expect(win.locator('.cm-content')).toContainText('Changed files staged in evidence: src/smoke-target.md');
   await expect(win.locator('.cm-content')).toContainText('Missing expected changes: src/main/runbooks/validator.js');
@@ -867,10 +1086,95 @@ test('Machine UI play action attempts managed run and blocks non-runnable pipeli
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
   await win.locator('[data-pipeline-run-menu]').click();
-  await win.locator('button[data-pipeline-run-action="default"]').click();
-
-  await expect.poll(() => win.evaluate(() => ((window as any).__orpadAlerts || []).join('\n'))).toContain('run.machineHarness');
+  await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeDisabled();
+  await expect(win.locator('button[data-pipeline-run-action="default"]')).toHaveAttribute('title', /run\.machineHarness/);
   expect(fs.existsSync(path.join(pipelineDir, 'runs'))).toBe(false);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI implements node harness contracts for the selected pipeline', async () => {
+  const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
+  removeMachineHarness(pipelinePath);
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('runnable adapter');
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="implement-harness"]').click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready');
+  const probeNode = win.locator('.orch-graph-node[data-machine-node-path="main/probe"]');
+  await expect(probeNode).toContainText('Harness ready');
+  await expect(probeNode).toHaveClass(/runtime-completed/);
+  await win.locator('[data-pipeline-run-menu]').click();
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeEnabled();
+
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  expect(pipeline.run.machineAdapter.type).toBe('codex-cli');
+  expect(pipeline.metadata.harnessImplementation.nodeCount).toBeGreaterThan(0);
+  const statePath = path.join(pipelineDir, 'harness', 'generated', 'implementation-state.json');
+  expect(fs.existsSync(statePath)).toBe(true);
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+  expect(state.status).toBe('succeeded');
+  expect(state.nodes.every((node: any) => node.status === 'succeeded')).toBe(true);
+  const probeState = state.nodes.find((node: any) => node.nodePath === 'main/probe');
+  expect(probeState).toBeTruthy();
+  expect(fs.existsSync(path.join(pipelineDir, 'harness', 'generated', probeState.artifact))).toBe(true);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI shows harness implementation failure details on graph nodes', async () => {
+  const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
+  removeMachineHarness(pipelinePath);
+  fs.mkdirSync(path.join(pipelineDir, 'harness', 'generated'), { recursive: true });
+  fs.writeFileSync(path.join(pipelineDir, 'harness', 'generated', 'nodes'), 'blocks node artifact directory\n');
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="implement-harness"]').click();
+
+  const failedContextNode = win.locator('.orch-graph-node[data-machine-node-path="main/context"]');
+  await expect(failedContextNode).toContainText('Harness failed');
+  await expect(failedContextNode).toHaveClass(/runtime-failed/);
+  await failedContextNode.click({ button: 'right' });
+  await expect(win.locator('.orch-context-menu')).toContainText('Failure details');
+  await win.locator('button[data-orch-context-action="failure-details"]').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Failure Details');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Harness implementation failed');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Solution choices');
+  await win.getByRole('button', { name: 'Close' }).click();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -956,6 +1260,7 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
   });
   await managedRun.click();
   await expect.poll(() => win.evaluate(() => ((window as any).__orpadConfirms || []).join('\n'))).toContain('Allow OrPAD to start runs');
+  await confirmRunProviderSelection(win);
   await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
   await expect(win.locator('#runbooks-content')).toContainText('Run started');
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
@@ -986,8 +1291,13 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
-  await startManagedRunFromPreview(win);
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="managed-ask"]').click();
   await submitMachineCapabilityToken(win);
+  await confirmRunProviderSelection(win);
+  await expect(win.locator('#fmt-modal-title')).toContainText('Run Approval Required');
+  await win.getByRole('button', { name: 'Later' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
 
   await expect(win.locator('#runbooks-content')).toContainText('Permission requested');
   await expect(win.locator('#runbooks-content')).toContainText('Permission');
@@ -1001,10 +1311,12 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-export"]')).toBeEnabled();
-  await expect(win.locator('button[data-runbook-action="machine-approve-approval"]')).toHaveText('Allow');
-  await expect(win.locator('button[data-runbook-action="machine-deny-approval"]')).toHaveText('Decline');
+  const approveButton = win.locator('#runbooks-content button[data-runbook-action="machine-approve-approval"]');
+  const denyButton = win.locator('#runbooks-content button[data-runbook-action="machine-deny-approval"]');
+  await expect(approveButton).toHaveText('Allow');
+  await expect(denyButton).toHaveText('Decline');
 
-  await win.locator('button[data-runbook-action="machine-approve-approval"]').click();
+  await approveButton.click();
   await expect(win.locator('#runbooks-content')).toContainText('Permission allowed');
   await expect(win.locator('#runbooks-content')).toContainText('1 permission decision: allowed');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery ready');
@@ -1014,13 +1326,69 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeEnabled();
 
-  await win.locator('button[data-runbook-action="machine-execute-step"]').click();
+  if (await win.locator('#fmt-modal').isVisible().catch(() => false)) {
+    const modalTitle = await win.locator('#fmt-modal-title').textContent();
+    if (/Review Patch/.test(modalTitle || '')) {
+      await skipPatchModalIfVisible(win);
+    } else {
+      await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
+      await win.getByRole('button', { name: 'Continue Queue' }).click();
+      await expect(win.locator('#fmt-modal')).not.toHaveClass(/busy|locked/);
+      if (await win.locator('#fmt-modal').isVisible().catch(() => false)) {
+        const nextTitle = await win.locator('#fmt-modal-title').textContent();
+        if (/Review Patch/.test(nextTitle || '')) {
+          await skipPatchModalIfVisible(win);
+        } else {
+          await win.locator('#fmt-modal-footer').getByRole('button', { name: /^(Decide Later|Close)$/ }).click();
+          await expect(win.locator('#fmt-modal')).toBeHidden();
+        }
+      }
+    }
+  } else {
+    await win.locator('#runbooks-content button[data-runbook-action="machine-execute-step"]').click();
+  }
   await expect(win.locator('#runbooks-content')).toContainText('1 work item found');
   await expect(win.locator('#runbooks-content')).toContainText('Work result');
   await expect(win.locator('#runbooks-content')).toContainText('done');
   await expect(win.locator('#runbooks-content')).toContainText('Recovery unavailable: completed/done is finished');
   await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI default run auto-drives approval gated work to patch review', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  requireMachineApproval(pipelinePath);
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await enableMachineUi(win);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await startManagedRunFromPreview(win);
+  await submitMachineCapabilityToken(win);
+  await confirmRunProviderSelection(win);
+
+  await expect(win.locator('#runbooks-content')).toContainText('Permission allowed');
+  await expect(win.locator('#runbooks-content')).not.toContainText('permission request waiting');
+  await expect(win.locator('#runbooks-content')).toContainText('Work result');
+  await expect(win.locator('#runbooks-content')).toContainText('done');
+  await expect(win.locator('#fmt-modal-title')).toContainText('Review Patch');
+  expect(fs.readFileSync(path.join(workspace, 'src', 'smoke-target.md'), 'utf-8')).toBe('before\n');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -1048,30 +1416,38 @@ test('Machine UI switches between durable run history snapshots', async () => {
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await startManagedRunFromPreview(win);
   await submitMachineCapabilityToken(win);
+  await confirmRunProviderSelection(win);
   const runRoot = path.join(pipelineDir, 'runs');
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(1);
   const firstRunId = fs.readdirSync(runRoot)[0];
 
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
+  await skipPatchModalIfVisible(win);
 
   await startManagedRunFromPreview(win);
+  await confirmRunProviderSelection(win);
   await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(2);
   const runIds = fs.readdirSync(runRoot);
   const secondRunId = runIds.find(runId => runId !== firstRunId) || '';
   await expect(win.locator('#runbooks-content')).toContainText('History');
   await expect(win.locator('#runbooks-content')).toContainText('2 entries');
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
+  await skipPatchModalIfVisible(win);
 
-  await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${firstRunId}"]`).click();
-  await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${firstRunId}"]`)).toHaveClass(/primary/);
-  await expect(win.locator('#runbooks-content')).not.toContainText(firstRunId);
+  const activeRunButton = win.locator('button[data-runbook-action="machine-select-run"].primary');
+  await expect(activeRunButton).toBeVisible();
+  const activeRunId = await activeRunButton.getAttribute('data-run-id') || secondRunId;
+  const historyRunId = runIds.find(runId => runId !== activeRunId) || firstRunId;
+  await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${historyRunId}"]`).click();
+  await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${historyRunId}"]`)).toHaveClass(/history-inspected/);
+  await expect(win.locator('#runbooks-content')).not.toContainText(historyRunId);
   await expect(win.locator('#runbooks-content')).toContainText('Work completed');
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
 
-  await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`).click();
-  await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${secondRunId}"]`)).toHaveClass(/primary/);
-  await expect(win.locator('#runbooks-content')).not.toContainText(secondRunId);
+  await win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${activeRunId}"]`).click();
+  await expect(win.locator(`button[data-runbook-action="machine-select-run"][data-run-id="${activeRunId}"]`)).toHaveClass(/primary/);
+  await expect(win.locator('#runbooks-content')).not.toContainText(activeRunId);
   await expect(win.locator('#runbooks-content')).toContainText('done; 2 evidence files; 1 check; 1 changed file');
 
   await app.close();
@@ -1102,16 +1478,18 @@ test('Machine UI cancels work in progress and releases visible locks', async () 
   await expect(win.locator('#runbooks-content')).not.toContainText(seeded.runId);
   await expect(win.locator('#runbooks-content')).toContainText('1 work item in progress: machine-ui-smoke');
   await expect(win.locator('#runbooks-content')).toContainText('1 reserved file: src/smoke-target.md');
-  await expect(win.locator('#runbooks-content')).toContainText('Recovery paused: 1 work item in progress');
+  await expect(win.locator('#runbooks-content')).toContainText('Recovery paused: OrPAD is already working on this run');
   await expect(win.locator('#runbooks-content')).toContainText('Ready to stop: machine-ui-smoke is in progress');
   await expect(win.locator('#runbooks-content')).toContainText('Stop work');
   await expect(win.locator('#runbooks-content')).not.toContainText('Cancellation');
-  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeDisabled();
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toHaveCount(0);
   await expect(win.locator('button[data-runbook-action="machine-resume-run"]')).toBeDisabled();
-  await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toBeEnabled();
-  await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveText('Stop Work');
+  const primaryRunButton = win.locator('[data-pipeline-preview-runbar] button.pipeline-run-primary');
+  await expect(primaryRunButton).toBeEnabled();
+  await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'machine-cancel-run');
+  await expect(primaryRunButton).toHaveAttribute('aria-label', 'Stop Run');
 
-  await win.locator('button[data-runbook-action="machine-cancel-claim"]').click();
+  await primaryRunButton.click();
   await submitMachineCapabilityToken(win);
   await expect(win.locator('#runbooks-content')).toContainText('Stopped: machine-ui-smoke; work reservation released');
   await expect(win.locator('#runbooks-content')).toContainText('No work in progress');
@@ -1161,11 +1539,11 @@ test('Machine UI recovers interrupted work and reports work state repair', async
 
   await win.locator('button[data-runbook-action="machine-resume-run"]').click();
   await submitMachineCapabilityToken(win);
-  await expect(win.locator('#runbooks-content')).toContainText('Last recovery: 1 work state repair; 1 interrupted work item recovered; 1 ready');
+  await expect(win.locator('#runbooks-content')).toContainText('Last recovery: 1 work state repair; 1 interrupted work item recovered; 1 queued');
   await expect(win.locator('#runbooks-content')).toContainText('No work in progress');
   await expect(win.locator('#runbooks-content')).toContainText('No reserved files');
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Waiting$/ })).toHaveCount(0);
-  await expect(win.locator('.runbook-chip').filter({ hasText: /^Ready to continue$/ })).toBeVisible();
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Queue waiting$/ })).toBeVisible();
   await expect(win.locator('#runbooks-content')).toContainText('Partial proof');
   await expect(win.locator('button[data-runbook-action="machine-cancel-claim"]')).toHaveCount(0);
   expect(JSON.parse(fs.readFileSync(path.join(seeded.runRoot, 'queue', 'queued', `${seeded.itemId}.json`), 'utf-8')).state).toBe('queued');
@@ -1197,9 +1575,13 @@ test('Machine UI keeps denied approval runs terminal', async () => {
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
-  await startManagedRunFromPreview(win);
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="managed-ask"]').click();
   await submitMachineCapabilityToken(win);
-  await win.locator('button[data-runbook-action="machine-deny-approval"]').click();
+  await confirmRunProviderSelection(win);
+  await expect(win.locator('#fmt-modal-title')).toContainText('Run Approval Required');
+  await win.locator('#fmt-modal-footer').getByRole('button', { name: 'Decline' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
 
   await expect(win.locator('#runbooks-content')).toContainText('Permission declined');
   await expect(win.locator('#runbooks-content')).toContainText('1 permission decision: declined');
@@ -1234,11 +1616,24 @@ test('Machine UI renders failure evidence from a failed runtime node', async () 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await startManagedRunFromPreview(win);
   await submitMachineCapabilityToken(win);
+  await confirmRunProviderSelection(win);
 
   await expect(win.locator('#runbooks-content')).toContainText('MACHINE_ARTIFACT_CONTRACT_MISSING');
   await expect(win.locator('#runbooks-content')).toContainText('Required evidence missing: 1 evidence file');
   await expect(win.locator('#runbooks-content')).toContainText('main/artifact');
   await expect(win.locator('#runbooks-content')).toContainText('Step failed');
+  const failedNode = win.locator('.orch-graph-node[data-machine-node-path="main/artifact"]');
+  await expect(failedNode).toContainText('Failed');
+  await failedNode.click({ button: 'right' });
+  await expect(win.locator('.orch-context-menu')).toContainText('Failure details');
+  await expect(win.locator('.orch-context-menu')).toContainText('Choose node model');
+  await expect(win.locator('.orch-context-menu')).toContainText('Improve node prompt');
+  await win.locator('button[data-orch-context-action="failure-details"]').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Failure Details');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Failure reason');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Solution choices');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Choose a stronger or different model');
+  await win.getByRole('button', { name: 'Close' }).click();
 
   const runRoot = path.join(pipelineDir, 'runs');
   const runDirs = fs.readdirSync(runRoot);

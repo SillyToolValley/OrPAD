@@ -13,17 +13,27 @@ const { readActiveClaimLeases } = require('./claims');
 const { SCHEMA_VERSIONS } = require('./contracts');
 const { readMachineEvents, projectRunStateFromEvents } = require('./events');
 const { assertNoSymlinkInRunPath, assertRunRelativePath } = require('./artifacts');
-const { applyPatchArtifact } = require('./patches');
+const {
+  applyPatchArtifact,
+  inspectPatchBase,
+  loadRunPatchArtifact: loadRegisteredRunPatchArtifact,
+} = require('./patches');
 const { recoverStaleClaims } = require('./dispatcher');
+const { normalizeLockPath } = require('./file-lock-manager');
 const { batchApplyStateFromEvents, executeMachineRunStep, patchReviewStateFromEvents } = require('./machine');
 const { appendMachineEvent } = require('./events');
-const { appendRunLifecycleStatus, appendRunSummaryStatus, resumeMachineRun } = require('./lifecycle');
+const {
+  appendRunLifecycleStatus,
+  appendRunSummaryStatus,
+  resumeMachineRun,
+  summarizeQueueInventory,
+} = require('./lifecycle');
 const {
   assertNoSymlinkInWorkspacePath,
   latestRunExportRoot,
   durableRunRoot,
 } = require('./path-resolver');
-const { createMachineRun, readRunState } = require('./run-store');
+const { createMachineRun, normalizeRunLlmApprovalMode, readRunState } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { cancelClaimedItem, emitNodeCancelledForInflight } = require('./worker-loop');
 const { readActiveWriteSetLocks } = require('./write-sets');
@@ -214,6 +224,33 @@ function optionalTaskText(options) {
 function optionalExternalResearch(options) {
   if (options.externalResearch == null) return null;
   return assertPlainObject(options.externalResearch, 'options.externalResearch');
+}
+
+function optionalLlmApprovalMode(options) {
+  if (options.llmApprovalMode == null || options.llmApprovalMode === '') return 'ask';
+  const mode = optionalString(options.llmApprovalMode, 'options.llmApprovalMode').trim().toLowerCase();
+  if (mode !== 'ask' && mode !== 'bypass') {
+    throw machineError('MACHINE_IPC_SCHEMA_INVALID', 'options.llmApprovalMode must be ask or bypass.');
+  }
+  return normalizeRunLlmApprovalMode(mode);
+}
+
+function optionalRunUntil(options) {
+  if (options.runUntil == null || options.runUntil === '') return 'step';
+  const mode = optionalString(options.runUntil, 'options.runUntil').trim().toLowerCase();
+  if (!['step', 'human-decision'].includes(mode)) {
+    throw machineError('MACHINE_IPC_SCHEMA_INVALID', 'options.runUntil must be step or human-decision.');
+  }
+  return mode;
+}
+
+function optionalPatchReviewMode(options) {
+  if (options.patchReviewMode == null || options.patchReviewMode === '') return 'manual';
+  const mode = optionalString(options.patchReviewMode, 'options.patchReviewMode').trim().toLowerCase();
+  if (!['manual', 'auto-apply'].includes(mode)) {
+    throw machineError('MACHINE_IPC_SCHEMA_INVALID', 'options.patchReviewMode must be manual or auto-apply.');
+  }
+  return mode;
 }
 
 function requiredString(value, label) {
@@ -454,6 +491,7 @@ async function createRunHandler(event, authority, request) {
   const options = assertPlainObject(request.options == null ? {} : request.options, 'options');
   const taskText = optionalTaskText(options);
   const externalResearch = optionalExternalResearch(options);
+  const llmApprovalMode = optionalLlmApprovalMode(options);
   const validation = await validateRunbookFile(context.pipelinePath, {
     trustLevel: normalizeTrustLevel(options),
     checkFiles: options.checkFiles !== false,
@@ -473,6 +511,7 @@ async function createRunHandler(event, authority, request) {
     runId: assertOptionalRunId(request.runId) || undefined,
     taskText,
     externalResearch,
+    llmApprovalMode,
   });
   return {
     success: true,
@@ -543,33 +582,52 @@ async function exportLatestRunHandler(event, authority, request) {
 
 function normalizeSelectedFiles(value) {
   return Array.isArray(value)
-    ? [...new Set(value.map(item => optionalString(item, 'selectedFiles[]').trim()).filter(Boolean))]
+    ? [...new Set(value
+      .map(item => normalizeLockPath(optionalString(item, 'selectedFiles[]')))
+      .filter(Boolean))]
+      .sort()
     : [];
 }
 
+function sameSelectedFiles(left = [], right = []) {
+  const normalizedLeft = normalizeSelectedFiles(left);
+  const normalizedRight = normalizeSelectedFiles(right);
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((item, index) => item === normalizedRight[index]);
+}
+
 async function loadRunPatchArtifact(runRoot, patchArtifact) {
-  const artifactPath = await runRelativeArtifactPath(runRoot, patchArtifact);
-  if (!artifactPath) {
-    throw machineError('MACHINE_PATCH_ARTIFACT_DENIED', 'Patch artifact path is not readable for this run.');
+  try {
+    return await loadRegisteredRunPatchArtifact(runRoot, patchArtifact);
+  } catch (err) {
+    throw machineError(
+      err?.code || 'MACHINE_PATCH_ARTIFACT_DENIED',
+      err?.message || 'Patch artifact path is not readable for this run.',
+    );
   }
-  const patch = JSON.parse(await fsp.readFile(artifactPath, 'utf8'));
-  if (patch?.schemaVersion !== 'orpad.patchArtifact.v1') {
-    throw machineError('MACHINE_PATCH_SCHEMA_INVALID', 'Patch artifact schema is not recognized.');
-  }
-  return patch;
 }
 
 function selectPatchSubset(patch, selectedFiles) {
-  const wanted = new Set(selectedFiles);
-  const available = new Set((patch.changes || []).map(change => change?.path).filter(Boolean));
-  const missing = selectedFiles.filter(file => !available.has(file));
+  const wanted = new Set((selectedFiles || []).map(file => normalizeLockPath(file)).filter(Boolean));
+  const available = new Set((patch.changes || []).map(change => normalizeLockPath(change?.path)).filter(Boolean));
+  const missing = [...wanted].filter(file => !available.has(file));
   if (missing.length) {
     throw machineError('MACHINE_PATCH_SELECTION_INVALID', `Patch selection includes unknown files: ${missing.join(', ')}`);
   }
   return {
     ...patch,
-    changes: (patch.changes || []).filter(change => wanted.has(change?.path)),
+    changes: (patch.changes || []).filter(change => wanted.has(normalizeLockPath(change?.path))),
   };
+}
+
+function selectedFilesForLoadedPatch(patch, fallbackFiles = []) {
+  const patchFiles = [...new Set((patch?.changes || [])
+    .map(change => normalizeLockPath(change?.path))
+    .filter(Boolean))].sort();
+  if (patchFiles.length) return patchFiles;
+  return [...new Set((Array.isArray(fallbackFiles) ? fallbackFiles : [])
+    .map(file => normalizeLockPath(file))
+    .filter(Boolean))].sort();
 }
 
 function approvalSnapshotForChanges(changes = []) {
@@ -584,6 +642,27 @@ function approvalSnapshotForChanges(changes = []) {
     };
   }
   return snapshot;
+}
+
+function approvedSelectedFileConflicts(reviewState, patchArtifact, selectedFiles) {
+  const wanted = new Set(normalizeSelectedFiles(selectedFiles));
+  const conflicts = [];
+  for (const review of reviewState?.reviews || []) {
+    if (!review?.patchArtifact || review.patchArtifact === patchArtifact) continue;
+    if (review.status !== 'approved') continue;
+    const files = Array.isArray(review.decision?.selectedFiles) && review.decision.selectedFiles.length
+      ? review.decision.selectedFiles
+      : review.changedFiles || [];
+    for (const file of files) {
+      const normalized = normalizeLockPath(file);
+      if (!wanted.has(normalized)) continue;
+      conflicts.push({
+        path: normalized,
+        patchArtifact: review.patchArtifact,
+      });
+    }
+  }
+  return conflicts;
 }
 
 function snapshotResponseFields(snapshot) {
@@ -606,6 +685,7 @@ async function applyOnePatchToWorkspace({
   patch,
   selectedFiles,
   reason,
+  actor = 'renderer',
 }) {
   const selectedPatch = selectPatchSubset(patch, selectedFiles);
   try {
@@ -613,10 +693,11 @@ async function applyOnePatchToWorkspace({
       workspaceRoot,
       patch: selectedPatch,
       allowedFiles: patch.allowedFiles || [],
+      treatAlreadyAppliedAsSuccess: true,
     });
     const appliedEvent = await appendMachineEvent(runRoot, {
       runId,
-      actor: 'renderer',
+      actor,
       eventType: 'patch.applied',
       reason,
       artifactRefs: [patchArtifact],
@@ -632,7 +713,7 @@ async function applyOnePatchToWorkspace({
     const eventType = isMismatch ? 'patch.apply_conflict' : 'patch.apply_failed';
     const conflictEvent = await appendMachineEvent(runRoot, {
       runId,
-      actor: 'renderer',
+      actor,
       eventType,
       reason,
       artifactRefs: [patchArtifact],
@@ -723,59 +804,107 @@ async function approvePatchHandler(event, authority, request) {
     throw machineError('MACHINE_PATCH_SELECTION_REQUIRED', 'Select at least one patch file to approve.');
   }
   const runRoot = await resolveMachineRunRoot(context, runId);
-  const snapshot = await readRunSnapshot(runRoot);
-  if (!snapshot) {
-    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
-  }
-  const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
-  const review = patchReviewStateFromEvents(snapshot.events).reviews
-    .find(item => item.patchArtifact === patchArtifact);
-  if (review?.status === 'applied' || review?.status === 'skipped') {
+  return withBatchApplyMutex(runRoot, async () => {
+    const snapshot = await readRunSnapshot(runRoot);
+    if (!snapshot) {
+      throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+    }
+    const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+    const reviewState = patchReviewStateFromEvents(snapshot.events);
+    const review = reviewState.reviews.find(item => item.patchArtifact === patchArtifact);
+    if (review?.status === 'applied' || review?.status === 'skipped') {
+      return {
+        success: true,
+        ok: true,
+        runId,
+        patchArtifact,
+        idempotent: true,
+        decision: review.status,
+        ...snapshotResponseFields(snapshot),
+      };
+    }
+    if (review?.status === 'approved' && sameSelectedFiles(review.decision?.selectedFiles, selectedFiles)) {
+      return {
+        success: true,
+        ok: true,
+        runId,
+        patchArtifact,
+        idempotent: true,
+        decision: 'approved',
+        selectedFiles,
+        ...snapshotResponseFields(snapshot),
+      };
+    }
+    // Validate selection up front so we fail before recording an unusable approval.
+    const selectedPatch = selectPatchSubset(patch, selectedFiles);
+    const overlapConflicts = approvedSelectedFileConflicts(reviewState, patchArtifact, selectedFiles);
+    if (overlapConflicts.length) {
+      return {
+        success: false,
+        ok: false,
+        code: 'MACHINE_PATCH_APPROVAL_OVERLAP',
+        error: `Selected files are already approved in another patch: ${overlapConflicts.map(item => item.path).join(', ')}`,
+        runId,
+        patchArtifact,
+        selectedFiles,
+        conflicts: overlapConflicts,
+        ...snapshotResponseFields(snapshot),
+      };
+    }
+    const base = await inspectPatchBase({
+      workspaceRoot: context.workspaceRoot,
+      patch: selectedPatch,
+      allowedFiles: patch.allowedFiles || [],
+    });
+    const blockingMismatches = base.mismatches.filter(item => !item.alreadyApplied);
+    if (blockingMismatches.length) {
+      return {
+        success: false,
+        ok: false,
+        code: 'PATCH_BASE_MISMATCH',
+        error: `Patch base mismatch for ${blockingMismatches[0].path}.`,
+        runId,
+        patchArtifact,
+        selectedFiles,
+        path: blockingMismatches[0].path,
+        mismatches: blockingMismatches,
+        ...snapshotResponseFields(snapshot),
+      };
+    }
+    const approvalSnapshot = approvalSnapshotForChanges(
+      (patch.changes || []).filter(change => selectedFiles.includes(normalizeLockPath(change?.path))),
+    );
+    const approvedEvent = await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'renderer',
+      eventType: 'patch.approved',
+      reason: 'machine-ui.patch-review.approve',
+      artifactRefs: [patchArtifact],
+      payload: {
+        patchArtifact,
+        selectedFiles,
+        approvalSnapshot,
+      },
+    });
+    const updated = await readRunSnapshot(runRoot) || snapshot;
+    const exported = request.exportLatestRun === false
+      ? null
+      : await exportLatestRun({
+        runRoot,
+        pipelineDir: context.pipelineDir,
+        allowOverwrite: true,
+      });
     return {
       success: true,
       ok: true,
       runId,
       patchArtifact,
-      idempotent: true,
-      decision: review.status,
-      ...snapshotResponseFields(snapshot),
-    };
-  }
-  // Validate selection up front so we fail before recording an unusable approval.
-  selectPatchSubset(patch, selectedFiles);
-  const approvalSnapshot = approvalSnapshotForChanges(
-    (patch.changes || []).filter(change => selectedFiles.includes(change?.path)),
-  );
-  const approvedEvent = await appendMachineEvent(runRoot, {
-    runId,
-    actor: 'renderer',
-    eventType: 'patch.approved',
-    reason: 'machine-ui.patch-review.approve',
-    artifactRefs: [patchArtifact],
-    payload: {
-      patchArtifact,
+      approvedEvent,
       selectedFiles,
-      approvalSnapshot,
-    },
+      ...snapshotResponseFields(updated),
+      exported,
+    };
   });
-  const updated = await readRunSnapshot(runRoot) || snapshot;
-  const exported = request.exportLatestRun === false
-    ? null
-    : await exportLatestRun({
-      runRoot,
-      pipelineDir: context.pipelineDir,
-      allowOverwrite: true,
-    });
-  return {
-    success: true,
-    ok: true,
-    runId,
-    patchArtifact,
-    approvedEvent,
-    selectedFiles,
-    ...snapshotResponseFields(updated),
-    exported,
-  };
 }
 
 async function applyApprovedPatchesHandler(event, authority, request) {
@@ -936,14 +1065,7 @@ async function reviewPatchHandler(event, authority, request) {
     throw machineError('MACHINE_PATCH_REVIEW_DECISION_INVALID', 'Patch review decision must be skipped or follow-up.');
   }
   const runRoot = await resolveMachineRunRoot(context, runId);
-  const artifactPath = await runRelativeArtifactPath(runRoot, patchArtifact);
-  if (!artifactPath) {
-    throw machineError('MACHINE_PATCH_ARTIFACT_DENIED', 'Patch artifact path is not readable for this run.');
-  }
-  const patch = JSON.parse(await fsp.readFile(artifactPath, 'utf8'));
-  if (patch?.schemaVersion !== 'orpad.patchArtifact.v1') {
-    throw machineError('MACHINE_PATCH_SCHEMA_INVALID', 'Patch artifact schema is not recognized.');
-  }
+  const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
   const reviewedEvent = await appendMachineEvent(runRoot, {
     runId,
     actor: 'renderer',
@@ -1256,12 +1378,343 @@ async function cancelRunHandler(event, authority, request) {
   });
 }
 
+function runStateIsTerminal(runState = {}) {
+  const lifecycle = String(runState.lifecycleStatus || '').toLowerCase();
+  const summary = String(runState.summaryStatus || '').toLowerCase();
+  return ['completed', 'cancelled', 'canceled', 'failed'].includes(lifecycle) || summary === 'done';
+}
+
+function pendingPatchDecisionReviews(events = []) {
+  return patchReviewStateFromEvents(events).reviews.filter(review => (
+    review?.patchArtifact
+    && review.reviewRequired
+    && !review.resolved
+    && review.status !== 'approved'
+  ));
+}
+
+function activeQueueCount(inventory = {}) {
+  return Number(inventory.activeCount) || 0;
+}
+
+function hasBlockedPatchReviewNodeAwaitingResume(events = []) {
+  const latestByPath = new Map();
+  for (const event of events || []) {
+    if (!String(event?.eventType || '').startsWith('node.')) continue;
+    if (!event?.nodePath) continue;
+    latestByPath.set(event.nodePath, event);
+  }
+  for (const event of latestByPath.values()) {
+    if (event?.eventType === 'node.blocked'
+        && event?.payload?.nodeType === 'orpad.patchReview') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function autoDecisionStopReason(snapshot, inventory) {
+  if (!snapshot) return 'missing-run';
+  if (pendingPatchDecisionReviews(snapshot.events).length) return 'patch-review';
+  if ((snapshot.approvals?.pending || []).length) return 'approval-required';
+  if (runStateIsTerminal(snapshot.runState)) return 'terminal';
+  const lifecycle = String(snapshot.runState?.lifecycleStatus || '').toLowerCase();
+  if (activeQueueCount(inventory) <= 0 && ['waiting', 'approval-required'].includes(lifecycle)) {
+    // A blocked patchReview node whose pending reviews are all now
+    // resolved (no patch-review stop reason fired above) must be
+    // re-attempted so the orchestrator can mark it completed and
+    // finalize the run. Without this bypass the driver short-circuits
+    // before executeMachineRunStep runs, and the run sits in waiting
+    // forever even though there is no remaining decision to make.
+    if (hasBlockedPatchReviewNodeAwaitingResume(snapshot.events)) {
+      return '';
+    }
+    return 'no-active-work';
+  }
+  return '';
+}
+
+async function autoApprovePendingApprovals(runRoot, runId, approvals = []) {
+  const decisions = [];
+  for (const approval of approvals) {
+    if (!approval?.approvalId || !approval?.itemId) continue;
+    const result = await recordApprovalDecision(runRoot, {
+      runId,
+      approvalId: approval.approvalId,
+      decision: 'approved',
+      itemId: approval.itemId,
+      grants: [approvalGrantForItem(approval.itemId, approval.approvalId)],
+      decidedBy: 'machine-autonomous-driver',
+      reason: 'machine-autonomous.approval.bypass',
+    });
+    decisions.push({
+      approvalId: approval.approvalId,
+      itemId: approval.itemId,
+      eventSequence: result.event?.sequence ?? null,
+    });
+  }
+  return decisions;
+}
+
+// Auto-Apply Patches mode: emits the same `patch.approved` →
+// `patches.apply_started` → per-patch apply → `patches.apply_finished`
+// event sequence that the renderer-driven Approve & Apply flow would
+// produce, but originates from the autonomous driver instead of a UI
+// click. Each pending review is approved over its full `changedFiles`
+// set; base-mismatched patches fall through to `patch.apply_conflict`
+// (same as the supervised path) so the run stays auditable.
+async function autoApplyPendingPatches(runRoot, runId, context) {
+  return withBatchApplyMutex(runRoot, async () => {
+    const snapshot = await readRunSnapshot(runRoot);
+    if (!snapshot) {
+      return { approved: [], applied: [], conflicts: [], skipped: 'missing-run' };
+    }
+    const review = patchReviewStateFromEvents(snapshot.events);
+    if (review.batch.inFlight) {
+      return { approved: [], applied: [], conflicts: [], skipped: 'batch-in-flight' };
+    }
+
+    const approved = [];
+    let workingReview = review;
+    for (const item of review.reviews) {
+      if (item.status !== 'pending') continue;
+      const patchArtifact = item.patchArtifact;
+      let patch;
+      try {
+        patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+      } catch (err) {
+        approved.push({ patchArtifact, ok: false, code: err?.code || 'MACHINE_PATCH_LOAD_FAILED', message: err?.message || '' });
+        continue;
+      }
+      const selectedFiles = selectedFilesForLoadedPatch(patch, item.changedFiles);
+      if (!selectedFiles.length) continue;
+      const overlap = approvedSelectedFileConflicts(workingReview, patchArtifact, selectedFiles);
+      if (overlap.length) {
+        approved.push({ patchArtifact, ok: false, code: 'MACHINE_PATCH_APPROVAL_OVERLAP', conflicts: overlap });
+        continue;
+      }
+      const selectedPatch = selectPatchSubset(patch, selectedFiles);
+      const base = await inspectPatchBase({
+        workspaceRoot: context.workspaceRoot,
+        patch: selectedPatch,
+        allowedFiles: patch.allowedFiles || [],
+      });
+      const blocking = base.mismatches.filter(entry => !entry.alreadyApplied);
+      if (blocking.length) {
+        approved.push({ patchArtifact, ok: false, code: 'PATCH_BASE_MISMATCH', mismatches: blocking });
+        continue;
+      }
+      const approvalSnapshot = approvalSnapshotForChanges(
+        selectedPatch.changes || [],
+      );
+      const approvedEvent = await appendMachineEvent(runRoot, {
+        runId,
+        actor: 'machine-autonomous-driver',
+        eventType: 'patch.approved',
+        reason: 'machine-autonomous.patch-review.auto-apply',
+        artifactRefs: [patchArtifact],
+        payload: { patchArtifact, selectedFiles, approvalSnapshot },
+      });
+      approved.push({ patchArtifact, ok: true, selectedFiles, eventSequence: approvedEvent?.sequence ?? null });
+      const refreshed = await readRunSnapshot(runRoot);
+      if (refreshed) workingReview = patchReviewStateFromEvents(refreshed.events);
+    }
+
+    const postApproveSnapshot = await readRunSnapshot(runRoot);
+    const postApproveReview = postApproveSnapshot
+      ? patchReviewStateFromEvents(postApproveSnapshot.events)
+      : workingReview;
+    const approvedReviews = postApproveReview.reviews.filter(entry => entry.status === 'approved');
+    if (!approvedReviews.length) {
+      return { approved, applied: [], conflicts: [], skipped: 'no-approved' };
+    }
+
+    const startedEvent = await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine-autonomous-driver',
+      eventType: 'patches.apply_started',
+      reason: 'machine-autonomous.patch-review.auto-apply',
+      artifactRefs: approvedReviews.map(entry => entry.patchArtifact),
+      payload: { approvedPatchArtifacts: approvedReviews.map(entry => entry.patchArtifact) },
+    });
+
+    const applied = [];
+    const conflicts = [];
+    for (const entry of approvedReviews) {
+      const patchArtifact = entry.patchArtifact;
+      const fallbackSelectedFiles = Array.isArray(entry.decision?.selectedFiles) && entry.decision.selectedFiles.length
+        ? entry.decision.selectedFiles
+        : entry.changedFiles;
+      let patch;
+      try {
+        patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+      } catch (err) {
+        await appendMachineEvent(runRoot, {
+          runId,
+          actor: 'machine-autonomous-driver',
+          eventType: 'patch.apply_failed',
+          reason: 'machine-autonomous.patch-review.auto-apply',
+          artifactRefs: [patchArtifact],
+          payload: {
+            patchArtifact,
+            selectedFiles: fallbackSelectedFiles,
+            code: err?.code || 'MACHINE_PATCH_APPLY_FAILED',
+            message: err?.message || 'Patch artifact could not be loaded.',
+          },
+        }).catch(() => null);
+        conflicts.push({ patchArtifact, ok: false, code: err?.code || 'MACHINE_PATCH_APPLY_FAILED', message: err?.message || '' });
+        continue;
+      }
+      const selectedFiles = selectedFilesForLoadedPatch(
+        patch,
+        fallbackSelectedFiles,
+      );
+      const outcome = await applyOnePatchToWorkspace({
+        workspaceRoot: context.workspaceRoot,
+        runRoot,
+        runId,
+        patchArtifact,
+        patch,
+        selectedFiles,
+        reason: 'machine-autonomous.patch-review.auto-apply',
+        actor: 'machine-autonomous-driver',
+      });
+      if (outcome.ok) {
+        applied.push({ patchArtifact, applied: outcome.applied });
+      } else {
+        conflicts.push({ patchArtifact, ok: false, code: outcome.code, message: outcome.message, mismatches: outcome.mismatches });
+      }
+    }
+
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine-autonomous-driver',
+      eventType: 'patches.apply_finished',
+      reason: 'machine-autonomous.patch-review.auto-apply',
+      artifactRefs: approvedReviews.map(entry => entry.patchArtifact),
+      payload: {
+        appliedCount: applied.length,
+        conflictCount: conflicts.length,
+        startedEventSequence: startedEvent?.sequence ?? null,
+      },
+    });
+
+    return { approved, applied, conflicts, skipped: '' };
+  });
+}
+
+function driveResponseFields({ steps = [], autoApprovedApprovals = [], autoAppliedPatchBatches = [], stopReason = '', maxSteps = 0 } = {}) {
+  const autoAppliedPatches = autoAppliedPatchBatches.flatMap(batch => batch.applied || []);
+  const autoApplyConflicts = autoAppliedPatchBatches.flatMap(batch => batch.conflicts || []);
+  return {
+    mode: 'human-decision',
+    stepsRun: steps.length,
+    maxSteps,
+    stopReason,
+    autoApprovedApprovalCount: autoApprovedApprovals.length,
+    autoApprovedApprovals,
+    autoAppliedPatchCount: autoAppliedPatches.length,
+    autoAppliedPatches,
+    autoApplyConflictCount: autoApplyConflicts.length,
+    autoApplyConflicts,
+  };
+}
+
+async function executeMachineRunToHumanDecision({
+  context,
+  runRoot,
+  runId,
+  request,
+  taskText,
+  externalResearch,
+  llmApprovalMode,
+  patchReviewMode,
+  runtimeOptions,
+}) {
+  const maxSteps = Math.max(1, Math.min(50, Number(request.options?.maxAutonomousSteps) || 20));
+  const steps = [];
+  const autoApprovedApprovals = [];
+  const autoAppliedPatchBatches = [];
+  let lastStep = null;
+  let stopReason = '';
+
+  for (let index = 0; index < maxSteps; index += 1) {
+    let snapshot = await readRunSnapshot(runRoot);
+    const inventory = await summarizeQueueInventory(runRoot);
+    stopReason = autoDecisionStopReason(snapshot, inventory);
+    if (stopReason === 'approval-required' && llmApprovalMode === 'bypass') {
+      const decisions = await autoApprovePendingApprovals(runRoot, runId, snapshot.approvals.pending || []);
+      autoApprovedApprovals.push(...decisions);
+      snapshot = await readRunSnapshot(runRoot);
+      const afterApprovalInventory = await summarizeQueueInventory(runRoot);
+      stopReason = autoDecisionStopReason(snapshot, afterApprovalInventory);
+      if (stopReason === 'approval-required') break;
+    }
+    if (stopReason === 'patch-review' && patchReviewMode === 'auto-apply') {
+      const batch = await autoApplyPendingPatches(runRoot, runId, context);
+      autoAppliedPatchBatches.push(batch);
+      // Stop if no patches were actually applied this cycle — prevents
+      // an infinite loop when every pending review is blocked by base
+      // mismatch, missing artifact, or already-in-flight apply.
+      if (!batch.applied.length) break;
+      snapshot = await readRunSnapshot(runRoot);
+      const afterPatchInventory = await summarizeQueueInventory(runRoot);
+      stopReason = autoDecisionStopReason(snapshot, afterPatchInventory);
+      if (stopReason === 'patch-review') break;
+    }
+    if (stopReason) break;
+
+    const beforeSequence = Number(snapshot?.runState?.eventSequence ?? snapshot?.events?.at?.(-1)?.sequence ?? 0);
+    lastStep = await executeMachineRunStep({
+      workspaceRoot: context.workspaceRoot,
+      pipelinePath: context.pipelinePath,
+      pipelineDir: context.pipelineDir,
+      runRoot,
+      runId,
+      exportLatestRunAfterStep: request.exportLatestRun !== false,
+      taskText,
+      externalResearch,
+      llmApprovalMode,
+      loadProviderKey: runtimeOptions?.loadProviderKey || null,
+      fetchImpl: runtimeOptions?.fetchImpl || null,
+    });
+    steps.push(lastStep);
+
+    snapshot = await readRunSnapshot(runRoot);
+    const afterSequence = Number(snapshot?.runState?.eventSequence ?? snapshot?.events?.at?.(-1)?.sequence ?? 0);
+    if (afterSequence <= beforeSequence) {
+      stopReason = 'no-progress';
+      break;
+    }
+  }
+
+  if (!stopReason) {
+    const snapshot = await readRunSnapshot(runRoot);
+    const inventory = await summarizeQueueInventory(runRoot);
+    stopReason = autoDecisionStopReason(snapshot, inventory) || 'max-steps';
+  }
+
+  return {
+    ...(lastStep || {}),
+    drive: driveResponseFields({
+      steps,
+      autoApprovedApprovals,
+      autoAppliedPatchBatches,
+      stopReason,
+      maxSteps,
+    }),
+  };
+}
+
 async function executeRunStepWithHarnessHandler(event, authority, request, runtimeOptions = {}) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
   const options = assertPlainObject(request.options == null ? {} : request.options, 'options');
   const taskText = optionalTaskText(options);
   const externalResearch = optionalExternalResearch(options);
+  const llmApprovalMode = optionalLlmApprovalMode(options);
+  const runUntil = optionalRunUntil(options);
+  const patchReviewMode = optionalPatchReviewMode(options);
   const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
@@ -1270,18 +1723,31 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
 
   return withRunLifecycleExclusive(runRoot, async () => {
     try {
-      const executed = await executeMachineRunStep({
-        workspaceRoot: context.workspaceRoot,
-        pipelinePath: context.pipelinePath,
-        pipelineDir: context.pipelineDir,
-        runRoot,
-        runId,
-        exportLatestRunAfterStep: request.exportLatestRun !== false,
-        taskText,
-        externalResearch,
-        loadProviderKey: runtimeOptions?.loadProviderKey || null,
-        fetchImpl: runtimeOptions?.fetchImpl || null,
-      });
+      const executed = runUntil === 'human-decision'
+        ? await executeMachineRunToHumanDecision({
+          context,
+          runRoot,
+          runId,
+          request,
+          taskText,
+          externalResearch,
+          llmApprovalMode,
+          patchReviewMode,
+          runtimeOptions,
+        })
+        : await executeMachineRunStep({
+          workspaceRoot: context.workspaceRoot,
+          pipelinePath: context.pipelinePath,
+          pipelineDir: context.pipelineDir,
+          runRoot,
+          runId,
+          exportLatestRunAfterStep: request.exportLatestRun !== false,
+          taskText,
+          externalResearch,
+          llmApprovalMode,
+          loadProviderKey: runtimeOptions?.loadProviderKey || null,
+          fetchImpl: runtimeOptions?.fetchImpl || null,
+        });
       const updatedSnapshot = await readRunSnapshot(runRoot);
       return {
         success: true,
@@ -1297,6 +1763,7 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
         worker: executed.worker?.result || updatedSnapshot?.worker || null,
         finalization: executed.finalization,
         exported: executed.exported,
+        drive: executed.drive || { mode: 'step', stepsRun: 1, stopReason: 'step-complete' },
         approvals: updatedSnapshot?.approvals || summarizeApprovalsFromEvents(executed.events),
         activeClaims: updatedSnapshot?.activeClaims || [],
         activeWriteSets: updatedSnapshot?.activeWriteSets || [],

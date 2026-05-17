@@ -6,7 +6,9 @@ const commandGrants = require('./command-grants');
 const proposalAdapter = require('./adapters/proposal-adapter');
 const claims = require('./claims');
 const dispatcher = require('./dispatcher');
+const edgeEvaluator = require('./edge-evaluator');
 const events = require('./events');
+const fileLockManager = require('./file-lock-manager');
 const artifacts = require('./artifacts');
 const latestRunExporter = require('./exporters/latest-run-exporter');
 const legacyJournalExporter = require('./exporters/legacy-journal-exporter');
@@ -19,6 +21,7 @@ const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
 const nodePacks = require('./node-packs');
 const patches = require('./patches');
+const patchReviewClassifier = require('./patch-review-classifier');
 const pathResolver = require('./path-resolver');
 const processRunner = require('./adapters/process-runner');
 const processContainment = require('./adapters/process-containment');
@@ -51,7 +54,9 @@ module.exports = {
   ...proposalAdapter,
   ...claims,
   ...dispatcher,
+  ...edgeEvaluator,
   ...events,
+  ...fileLockManager,
   ...artifacts,
   ...latestRunExporter,
   ...legacyJournalExporter,
@@ -64,6 +69,7 @@ module.exports = {
   ...nodeLifecycle,
   ...nodePacks,
   ...patches,
+  ...patchReviewClassifier,
   ...pathResolver,
   ...processRunner,
   ...processContainment,
@@ -89,6 +95,7 @@ module.exports = {
   claudeCodeExecArgs: claudeCodePlugin.claudeCodeExecArgs,
   claudeCodeInvocation: claudeCodePlugin.claudeCodeInvocation,
   parseClaudeAdapterResultFromStdout: claudeCodePlugin.parseClaudeAdapterResultFromStdout,
+  claudeProcessLooksApprovalRequired: claudeCodePlugin.claudeProcessLooksApprovalRequired,
   ...genericCliPlugin,
   ...queueStore,
   ...runStore,

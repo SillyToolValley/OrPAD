@@ -11,6 +11,7 @@ const {
   assertGenericCliConfig,
   claudeCodeExecArgs,
   claudeCodeInvocation,
+  claudeProcessLooksApprovalRequired,
   commandAllowed,
   createGenericCliPlugin,
   dangerousArgsForProvider,
@@ -132,6 +133,49 @@ test('claude-code buildWorkerCommandSpec produces stable args from a generic pro
   assert.equal(spec.args[0], '/tmp/fake-claude.js');
   assert.equal(spec.args.includes('--print'), true);
   assert.equal(spec.args.at(-1), 'hello worker.');
+});
+
+test('claude-code buildWorkerCommandSpec adds skip-permissions only for bypass runs', () => {
+  const plugin = getProviderPlugin('claude-code');
+  const spec = plugin.buildWorkerCommandSpec({
+    adapter: {
+      command: process.execPath,
+      commandPrefixArgs: ['/tmp/fake-claude.js'],
+      bypassLlmApprovals: true,
+    },
+    prompt: 'hello worker.',
+    overlayRoot: '/tmp/overlay',
+  });
+  assert.equal(spec.args.includes('--dangerously-skip-permissions'), true);
+});
+
+test('claude-code provider treats sandbox edit denials as approval-required', () => {
+  assert.equal(claudeProcessLooksApprovalRequired({
+    stdout: JSON.stringify({
+      type: 'result',
+      result: 'Sandbox denied write to the overlay file; repeated Edit calls returned permission errors.',
+      permission_denials: [{ tool_name: 'Edit' }],
+    }),
+    stderr: '',
+  }, { summary: 'No overlay change was produced.' }), true);
+});
+
+test('claude-code provider does not treat empty permission_denials metadata as approval-required', () => {
+  assert.equal(claudeProcessLooksApprovalRequired({
+    stdout: JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: JSON.stringify({
+        schemaVersion: 'orpad.workerResult.v1',
+        status: 'done',
+        summary: 'ok',
+      }),
+      permission_denials: [],
+      terminal_reason: 'completed',
+    }),
+    stderr: '',
+  }, { status: 'done', summary: 'ok' }), false);
 });
 
 test('createGenericCliPlugin rejects missing config fields', () => {

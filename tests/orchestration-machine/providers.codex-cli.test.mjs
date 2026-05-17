@@ -183,3 +183,19 @@ test('codex plugin buildWorkerCommandSpec produces stable codex CLI args from a 
   assert.equal(spec.args.includes('--ephemeral'), true);
   assert.equal(spec.args.at(-1), 'Hello worker.');
 });
+
+test('codex plugin adds dangerous bypass arg only when run bypass is explicit', () => {
+  const plugin = getProviderPlugin('codex-cli');
+  const spec = plugin.buildWorkerCommandSpec({
+    adapter: {
+      command: process.execPath,
+      commandPrefixArgs: ['/tmp/fake-codex.js'],
+      workerSandbox: 'workspace-write',
+      approvalPolicy: 'never',
+      bypassLlmApprovals: true,
+    },
+    prompt: 'Hello worker.',
+    overlayRoot: '/tmp/overlay',
+  });
+  assert.equal(spec.args.includes(DANGEROUS_CODEX_BYPASS_ARG), true);
+});

@@ -11,11 +11,14 @@ const {
   buildNodeInventory,
   buildTraversalPlan,
   createMachineRun,
+  detectGraphCycles,
   loadPipelineGraphSet,
   readMachineEvents,
   readRunState,
   recordNodeLifecycleEvent,
   runtimeHandlerKind,
+  selectNode,
+  selectNodes,
   topologicalOrder,
 } = require('../../src/main/orchestration-machine');
 
@@ -141,6 +144,50 @@ test('traversal plan expands inline nested graph containers at their source posi
   assert.equal(paths.at(-1), 'main/exit');
 });
 
+// Fork-Join Phase 1 (Deliverable 3): once orpad.graph wrappers default
+// to inline execution, an inner graph that authored its own
+// canonical-rail node (orpad.probe / orpad.triage / orpad.dispatcher /
+// orpad.workerLoop) will appear in orderedNodes alongside the main
+// rail's nodes. The explicit-path branch of selectNode/selectNodes is
+// unaffected because it's an exact-path lookup, but the unscoped
+// fallback used to return "first match by nodeType" — which could land
+// on an inner-graph node if it preceded the main one in topological
+// order. After Phase 1 the fallback must bias toward the entry graph.
+test('selectNode/selectNodes fallback prefers the entry-graph node when an inner graph contains the same nodeType', () => {
+  const orderedNodes = [
+    // The first ordered node always lives in the entry graph. Phase 1
+    // uses its graphKey as the entry-graph hint.
+    { nodePath: 'main/entry', nodeType: 'orpad.entry', graphKey: 'main' },
+    { nodePath: 'main/per-service-verify', nodeType: 'orpad.graph', graphKey: 'main' },
+    // Inner-graph nodes inlined right after the wrapper. The inner
+    // graph happens to author its own orpad.dispatcher — Phase 1's
+    // entry-graph bias keeps this from hijacking the main dispatcher.
+    { nodePath: 'per-service-verify/inner-dispatch', nodeType: 'orpad.dispatcher', graphKey: 'per-service-verify' },
+    { nodePath: 'per-service-verify/inner-worker', nodeType: 'orpad.workerLoop', graphKey: 'per-service-verify' },
+    // Main rail.
+    { nodePath: 'main/triage', nodeType: 'orpad.triage', graphKey: 'main' },
+    { nodePath: 'main/dispatch', nodeType: 'orpad.dispatcher', graphKey: 'main' },
+    { nodePath: 'main/worker', nodeType: 'orpad.workerLoop', graphKey: 'main' },
+    { nodePath: 'main/exit', nodeType: 'orpad.exit', graphKey: 'main' },
+  ];
+
+  // No explicit path -> falls back. Without entry-graph bias the inner
+  // dispatcher (appears earlier in orderedNodes) would win and break
+  // the canonical rail.
+  assert.equal(selectNode(orderedNodes, 'orpad.dispatcher').nodePath, 'main/dispatch');
+  assert.equal(selectNode(orderedNodes, 'orpad.workerLoop').nodePath, 'main/worker');
+  // selectNodes with no explicit path returns only entry-graph matches
+  // so probe/triage discovery does not accidentally fan out into
+  // sub-graph internals.
+  const dispatchers = selectNodes(orderedNodes, 'orpad.dispatcher');
+  assert.deepEqual(dispatchers.map(node => node.nodePath), ['main/dispatch']);
+
+  // Explicit path still works in both directions, so any pipeline that
+  // *wants* to bind an inner-graph node (e.g. a future sub-graph
+  // executor) can still do so by passing the full nodePath.
+  assert.equal(selectNode(orderedNodes, 'orpad.dispatcher', 'per-service-verify/inner-dispatch').nodePath, 'per-service-verify/inner-dispatch');
+});
+
 test('topological order falls back to source order for cyclic leftovers', () => {
   const ordered = topologicalOrder(
     [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
@@ -148,6 +195,137 @@ test('topological order falls back to source order for cyclic leftovers', () => 
   );
 
   assert.deepEqual(ordered, ['c', 'a', 'b']);
+});
+
+// Fork-Join Phase 1 (Deliverable 4): cycle detection.
+// `topologicalOrder` returning cyclic nodes in source order hides
+// legitimate loop-backs (Pattern B / Pattern I / Pattern K — every
+// Ralph loop, queue-drain, and patchReview reject) and authored cycle
+// bugs under the same bucket. Phase 3 will need to reject the latter
+// while preserving the former. Phase 1 surfaces the distinction so
+// downstream code can decide; the actual rejection is deferred.
+// Codex CLI cross-review 2026-05-16 found two bugs in the original
+// cycle detector: Kahn-in-both-directions over-reports cycle membership
+// for path nodes between SCCs, and `nonLoopBackCycleNodeIds` was
+// permanently `[]` because removing back-edges always leaves a DAG. The
+// detector now uses Tarjan's SCC + per-SCC back-edge classification.
+test('detectGraphCycles reports exact SCC membership and per-SCC back-edge classification', () => {
+  // Pattern B: worker -> gate, gate -> worker. Exact SCC = {worker,gate}.
+  // gate appears later in source order so gate->worker is the back edge.
+  // Exactly one back edge -> isCleanLoopBack = true (the shape Phase 3
+  // will allow via node.resetForLoopBack events).
+  const loopBackOnly = detectGraphCycles(
+    [{ id: 'worker' }, { id: 'gate' }, { id: 'exit' }],
+    [
+      { from: 'worker', to: 'gate' },
+      { from: 'gate', to: 'worker' },
+      { from: 'gate', to: 'exit' },
+    ],
+  );
+  assert.equal(loopBackOnly.hasCycle, true);
+  // Exact SCC membership — exit is NOT included, even though earlier
+  // Kahn-based approaches falsely marked it cyclic.
+  assert.deepEqual(loopBackOnly.cyclicNodeIds.sort(), ['gate', 'worker']);
+  assert.equal(loopBackOnly.cyclicSCCs.length, 1);
+  assert.deepEqual(loopBackOnly.cyclicSCCs[0].nodeIds.sort(), ['gate', 'worker']);
+  assert.equal(loopBackOnly.cyclicSCCs[0].backEdges.length, 1);
+  assert.equal(loopBackOnly.cyclicSCCs[0].forwardEdges.length, 1);
+  assert.equal(loopBackOnly.cyclicSCCs[0].isCleanLoopBack, true);
+  assert.deepEqual(loopBackOnly.tangledCycleNodeIds, []);
+  assert.equal(loopBackOnly.loopBackEdges.length, 1);
+  assert.equal(loopBackOnly.loopBackEdges[0].from, 'gate');
+  assert.equal(loopBackOnly.loopBackEdges[0].to, 'worker');
+});
+
+test('detectGraphCycles flags tangled multi-back-edge cycles as non-clean-loop-back', () => {
+  // Three-node cycle a -> b -> c -> a, c -> b (extra back edge).
+  // SCC = {a,b,c}. Back edges = c->a, c->b. 2 back edges -> tangled.
+  const tangled = detectGraphCycles(
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+    [
+      { from: 'a', to: 'b' },
+      { from: 'b', to: 'c' },
+      { from: 'c', to: 'a' }, // back edge
+      { from: 'c', to: 'b' }, // back edge
+    ],
+  );
+  assert.equal(tangled.hasCycle, true);
+  assert.equal(tangled.cyclicSCCs.length, 1);
+  assert.deepEqual(tangled.cyclicSCCs[0].nodeIds.sort(), ['a', 'b', 'c']);
+  assert.equal(tangled.cyclicSCCs[0].backEdges.length, 2);
+  assert.equal(tangled.cyclicSCCs[0].isCleanLoopBack, false);
+  assert.deepEqual(tangled.tangledCycleNodeIds.sort(), ['a', 'b', 'c']);
+});
+
+test('detectGraphCycles does not over-report path nodes between two distinct SCCs', () => {
+  // SCC #1 = {a, b}. SCC #2 = {d, e}. The bridge node `c` is on the
+  // path from SCC #1 to SCC #2 but is NOT in either SCC. Codex caught
+  // that the previous Kahn-both-directions approach would falsely mark
+  // `c` as cyclic because it fails to drain forward (b never drains)
+  // AND fails to drain reverse (d never drains).
+  const twoCyclesWithBridge = detectGraphCycles(
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }],
+    [
+      { from: 'a', to: 'b' },
+      { from: 'b', to: 'a' }, // SCC #1
+      { from: 'b', to: 'c' }, // bridge into c
+      { from: 'c', to: 'd' }, // bridge into SCC #2
+      { from: 'd', to: 'e' },
+      { from: 'e', to: 'd' }, // SCC #2
+    ],
+  );
+  assert.equal(twoCyclesWithBridge.hasCycle, true);
+  // c is NOT included in cyclicNodeIds. Two distinct SCCs detected.
+  assert.deepEqual(twoCyclesWithBridge.cyclicNodeIds.sort(), ['a', 'b', 'd', 'e']);
+  assert.equal(twoCyclesWithBridge.cyclicSCCs.length, 2);
+  const sccByMember = (id) => twoCyclesWithBridge.cyclicSCCs.find(s => s.nodeIds.includes(id));
+  assert.deepEqual(sccByMember('a').nodeIds.sort(), ['a', 'b']);
+  assert.deepEqual(sccByMember('d').nodeIds.sort(), ['d', 'e']);
+});
+
+test('detectGraphCycles recognizes a single-node self-loop as a cycle', () => {
+  // Degenerate case: a -> a. Tarjan reports {a} as an SCC, but a
+  // singleton is only "a cycle" if it has a self-loop. Without this
+  // guard, every node would be reported as a trivial cycle.
+  const selfLoop = detectGraphCycles(
+    [{ id: 'a' }, { id: 'b' }],
+    [
+      { from: 'a', to: 'a' },
+      { from: 'a', to: 'b' },
+    ],
+  );
+  assert.equal(selfLoop.hasCycle, true);
+  assert.deepEqual(selfLoop.cyclicNodeIds, ['a']);
+  assert.equal(selfLoop.cyclicSCCs.length, 1);
+  assert.deepEqual(selfLoop.cyclicSCCs[0].nodeIds, ['a']);
+});
+
+test('detectGraphCycles returns empty cycle data for a pure DAG', () => {
+  const dag = detectGraphCycles(
+    [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+    [
+      { from: 'a', to: 'b' },
+      { from: 'b', to: 'c' },
+    ],
+  );
+  assert.equal(dag.hasCycle, false);
+  assert.deepEqual(dag.cyclicNodeIds, []);
+  assert.deepEqual(dag.cyclicSCCs, []);
+  assert.deepEqual(dag.tangledCycleNodeIds, []);
+  assert.deepEqual(dag.loopBackEdges, []);
+});
+
+test('buildTraversalPlan surfaces per-graph cycle metadata so Phase 3 can decide whether to reject', async () => {
+  const graphSet = await loadPipelineGraphSet({ pipelinePath: maintenancePipelinePath });
+  const plan = buildTraversalPlan(graphSet);
+  for (const graphPlan of plan.graphPlans) {
+    assert.ok(graphPlan.cycles, `graph ${graphPlan.graphKey} should carry a cycles report`);
+    assert.equal(typeof graphPlan.cycles.hasCycle, 'boolean');
+    assert.ok(Array.isArray(graphPlan.cycles.cyclicNodeIds));
+    assert.ok(Array.isArray(graphPlan.cycles.cyclicSCCs));
+    assert.ok(Array.isArray(graphPlan.cycles.loopBackEdges));
+    assert.ok(Array.isArray(graphPlan.cycles.tangledCycleNodeIds));
+  }
 });
 
 test('node lifecycle events are recorded as Machine events', async () => {

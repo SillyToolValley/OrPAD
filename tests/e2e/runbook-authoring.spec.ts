@@ -11,9 +11,87 @@ function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
   }));
 }
 
+function writeFakeCodexAuthoringCli(workspace: string): string {
+  const scriptPath = path.join(workspace, 'fake-codex-authoring.js');
+  fs.writeFileSync(scriptPath, `
+const childProcess = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+const args = process.argv.slice(2);
+const outputIndex = args.indexOf('--output-last-message');
+if (outputIndex < 0 || !args[outputIndex + 1]) throw new Error('missing --output-last-message');
+const outputPath = args[outputIndex + 1];
+const prompt = args[args.length - 1] || '';
+const match = prompt.match(/<orpad-authoring-input>\\s*([\\s\\S]*?)\\s*<\\/orpad-authoring-input>/);
+if (!match) throw new Error('missing authoring input');
+const input = JSON.parse(match[1]);
+fs.mkdirSync(path.dirname(input.authoringSpecPath), { recursive: true });
+const spec = {
+  title: 'Competitive Improvement Pipeline',
+  description: 'LLM-authored graph for competitive product improvement work.',
+  graph: {
+    id: 'competitive-improvement',
+    label: 'Competitive improvement flow',
+    start: 'entry',
+    nodes: [
+      { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+      { id: 'map-product-surface', type: 'orpad.context', label: 'Map product surface', config: { summary: 'Inspect workspace features, UI paths, and existing OrPAD pipeline behavior.' } },
+      { id: 'external-research-mode', type: 'orpad.selector', label: 'Confirm competitive research mode', config: { selector: 'externalResearchMode', options: ['local-only-research-gap', 'approved-or-attached-evidence'], default: 'local-only-research-gap' } },
+      { id: 'find-competitive-gaps', type: 'orpad.probe', label: 'Find competitive improvement gaps', config: { lens: 'competitive-product-gap', maxCandidates: 5, candidateLimitPolicy: 'collect-all-visible' } },
+      { id: 'queue-competitive-work', type: 'orpad.workQueue', label: 'Queue competitive work' },
+      { id: 'triage-competitive-work', type: 'orpad.triage', label: 'Prioritize competitive impact' },
+      { id: 'dispatch-competitive-work', type: 'orpad.dispatcher', label: 'Dispatch competitive work' },
+      { id: 'worker', type: 'orpad.workerLoop', label: 'Implement competitive improvement' },
+      { id: 'patch-review', type: 'orpad.patchReview', label: 'Review competitive patch' },
+      { id: 'competitive-verification', type: 'orpad.gate', label: 'Verify competitive improvement', config: { criteria: ['local evidence backs competitive claims', 'implementation improves target workflow'], onFail: 'warn' } },
+      { id: 'artifact', type: 'orpad.artifactContract', label: 'Record competitive evidence' },
+      { id: 'exit', type: 'orpad.exit', label: 'Exit' }
+    ],
+    transitions: [
+      { from: 'entry', to: 'map-product-surface' },
+      { from: 'map-product-surface', to: 'external-research-mode' },
+      { from: 'external-research-mode', to: 'find-competitive-gaps' },
+      { from: 'find-competitive-gaps', to: 'queue-competitive-work' },
+      { from: 'queue-competitive-work', to: 'triage-competitive-work' },
+      { from: 'triage-competitive-work', to: 'dispatch-competitive-work' },
+      { from: 'dispatch-competitive-work', to: 'worker' },
+      { from: 'worker', to: 'patch-review' },
+      { from: 'patch-review', to: 'competitive-verification' },
+      { from: 'competitive-verification', to: 'artifact' },
+      { from: 'artifact', to: 'exit' }
+    ]
+  },
+  skill: {
+    acceptanceCriteria: ['local evidence backs competitive claims', 'implementation improves target workflow']
+  },
+  metadata: {
+    authoringNotes: 'Fake Codex authoring agent wrote this spec, then invoked OrPAD CLI.'
+  }
+};
+fs.writeFileSync(input.authoringSpecPath, JSON.stringify(spec, null, 2));
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 650);
+const stdout = childProcess.execFileSync(process.execPath, [
+  input.orpadCliPath,
+  'generate',
+  '--workspace',
+  input.workspaceRoot,
+  '--prompt-file',
+  input.promptFile,
+  '--authoring-spec-file',
+  input.authoringSpecPath,
+  '--json'
+], { encoding: 'utf-8' });
+fs.writeFileSync(outputPath, stdout);
+process.stdout.write(stdout);
+`, 'utf-8');
+  return scriptPath;
+}
+
 test('creates an OrPAD pipeline inside the current workspace', async () => {
   test.setTimeout(60_000);
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-runbook-author-'));
+  const fakeCodexPath = writeFakeCodexAuthoringCli(workspace);
   fs.mkdirSync(path.join(workspace, 'skills'), { recursive: true });
   fs.writeFileSync(path.join(workspace, 'README.md'), '# OrPAD Authoring Fixture\n');
   fs.writeFileSync(path.join(workspace, 'skills', 'audit.md'), '# Existing Audit\n');
@@ -37,7 +115,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
     ],
   }, null, 2));
 
-  const app = await launchElectron();
+  const app = await launchElectron([], { ORPAD_CODEX_CLI_PATH: fakeCodexPath });
   const win = await app.firstWindow();
   const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
   writeApprovedWorkspace(userData, workspace);
@@ -72,11 +150,27 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('[data-runbook-external-research-warning]')).toBeVisible();
   await expect(win.locator('[data-runbook-external-research-warning]')).toContainText('external competitor claims require approved browsing or attached research evidence');
   await win.locator('button[data-runbook-action="starter"]').click();
+  // Generate now opens an AI tool picker modal before authoring starts.
+  // Confirm with the default provider (codex-cli, exercised by the fake CLI shim).
+  const generatePicker = win.locator('.orpad-generate-picker-overlay');
+  await expect(generatePicker).toBeVisible();
+  await generatePicker.locator('button', { hasText: 'Generate with this tool' }).click();
+  await expect(generatePicker).toHaveCount(0);
+  await expect(win.locator('button[data-runbook-action="starter"]')).toBeDisabled();
+  await expect(win.locator('[data-runbook-generate-status]')).toBeVisible();
+  await expect(win.locator('[data-runbook-generate-status]')).toContainText(/Collecting context|Starting LLM agent|LLM authoring graph|Preparing request/);
+  await expect(win.locator('[data-runbook-generate-status]')).toContainText('Search for competing products');
 
   await expect(win.locator('#sidebar-runbooks')).toBeVisible();
   await expect(win.locator('.runbook-item.selected')).toHaveAttribute('aria-pressed', 'true');
   await expect(win.locator('.runbook-item.selected')).toHaveAttribute('data-runbook-path', /[\\\/]\.orpad[\\\/]pipelines[\\\/].+[\\\/]pipeline\.or-pipeline/);
   await expect(win.locator('.runbook-item.selected')).not.toContainText('pipeline.or-pipeline');
+  await expect(win.locator('[data-runbook-generate-status]')).toContainText('Pipeline generated');
+  await win.locator('[data-pipeline-run-menu]').click();
+  await expect(win.locator('button[data-pipeline-run-action="implement-harness"]')).toBeEnabled();
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toHaveAttribute('title', /Implement Harness/);
+  await win.locator('[data-pipeline-run-menu]').click();
 
   const pipelinesRoot = path.join(workspace, '.orpad', 'pipelines');
   const pipelineDirs = fs.readdirSync(pipelinesRoot);
@@ -90,7 +184,11 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(skillFiles.length).toBe(1);
   const pipeline = JSON.parse(fs.readFileSync(path.join(runbookDir, pipelineFile), 'utf-8'));
   expect(pipeline.entryGraph).toBe('graphs/main.or-graph');
-  expect(pipeline.description).toContain('Local-only generated run');
+  expect(pipeline.title).toBe('Competitive Improvement Pipeline');
+  expect(pipeline.description).toContain('LLM-authored graph');
+  expect(pipeline.metadata.orchestrationAuthoring.tool).toBe('orpad-cli');
+  expect(pipeline.metadata.orchestrationAuthoring.focus).toBe('orchestration-authoring');
+  expect(pipeline.metadata.orchestrationAuthoring.mode).toBe('llm-authored-spec');
   expect(pipeline.metadata.externalResearch.limitation).toContain('external competitor claims require approved browsing or attached research evidence');
   expect(pipeline.run.externalResearchLimitation).toContain('report a research gap');
   expect(pipeline.nodePacks.map((entry: { id: string }) => entry.id)).toContain('orpad.workstream');
@@ -98,10 +196,12 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(pipeline.run.machineAdapter.candidateLimit).toBe(5);
   expect(pipeline.run.runSelection.collectAllVisibleCandidates).toBe(true);
   expect(pipeline.run.runSelection.queueAllActionableCandidates).toBe(true);
+  expect(pipeline.run.queueProtocol.schema).toBe('orpad.workItem.v1');
+  expect(pipeline.run.queueProtocol.states).toEqual(['candidate', 'queued', 'claimed', 'done', 'blocked', 'rejected']);
   expect(pipeline.run.queueProtocol.claimPolicy.concurrency).toBe(1);
-  expect(pipeline.run.machineAdapter.probeNodePaths).toEqual(['main/probe']);
+  expect(pipeline.run.machineAdapter.probeNodePaths).toEqual(['main/find-competitive-gaps']);
   const graph = JSON.parse(fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8'));
-  const probeNode = graph.graph.nodes.find((node: { id: string }) => node.id === 'probe') as { config?: { candidateLimitPolicy?: string } } | undefined;
+  const probeNode = graph.graph.nodes.find((node: { id: string }) => node.id === 'find-competitive-gaps') as { config?: { candidateLimitPolicy?: string } } | undefined;
   expect(probeNode?.config?.candidateLimitPolicy).toBe('collect-all-visible');
   expect(graph.graph.nodes.map((node: { type: string }) => node.type)).toEqual([
     'orpad.entry',
@@ -119,9 +219,15 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   ]);
   const generatedSkill = fs.readFileSync(path.join(runbookDir, 'skills', skillFiles[0]), 'utf-8');
   expect(generatedSkill).toContain('Search for competing products');
+  expect(generatedSkill).toContain('implementation improves target workflow');
   expect(generatedSkill).toContain('External Competitor Research Guard');
   expect(generatedSkill).toContain('approved browsing or attached research evidence');
   expect(generatedSkill).toContain('report a research gap');
+  const authoringDirs = fs.readdirSync(path.join(workspace, '.orpad', 'authoring')).filter(name => name.startsWith('generate-'));
+  expect(authoringDirs.length).toBeGreaterThan(0);
+  const authoringDir = path.join(workspace, '.orpad', 'authoring', authoringDirs[0]);
+  expect(fs.existsSync(path.join(authoringDir, 'authoring-spec.json'))).toBe(true);
+  expect(fs.existsSync(path.join(authoringDir, 'authoring-agent-result.json'))).toBe(true);
   await win.locator('#btn-preview').click();
   await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
   await expect(win.locator('.pipeline-editor-tabs button.active')).toContainText('Flow');
@@ -129,8 +235,22 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('button[data-pipeline-run-action="default"]')).toBeVisible();
   await expect(win.locator('.orch-inspector')).not.toContainText('Step key');
   await expect(win.locator('.orch-inspector')).not.toContainText(/\bID\b/);
+  await win.locator('[data-pipeline-run-menu]').click();
+  const runMenuStacking = await win.evaluate(() => {
+    const runbar = document.querySelector('.pipeline-runbar');
+    const menu = document.querySelector('.pipeline-run-menu');
+    const inspector = document.querySelector('.orch-floating-inspector');
+    return {
+      runbar: Number(getComputedStyle(runbar as Element).zIndex),
+      menu: Number(getComputedStyle(menu as Element).zIndex),
+      inspector: Number(getComputedStyle(inspector as Element).zIndex),
+    };
+  });
+  expect(runMenuStacking.runbar).toBeGreaterThan(runMenuStacking.inspector);
+  expect(runMenuStacking.menu).toBeGreaterThan(runMenuStacking.inspector);
+  await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('.orch-graph-node')).toHaveCount(12);
-  await expect(win.locator('.orch-graph-node')).toContainText(['Prepare workspace', 'Confirm external research mode', 'Find evidence-backed candidate work', 'Implement claimed work in overlay']);
+  await expect(win.locator('.orch-graph-node')).toContainText(['Map product surface', 'Confirm competitive research mode', 'Find competitive improvement gaps', 'Implement competitive improvement']);
   await expect(win.locator('button[data-orch-tool="select"]')).toHaveClass(/active/);
   await expect(win.locator('.orch-graph-tools .ogi')).toHaveCount(8);
   await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
@@ -363,7 +483,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Edited graph context');
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await win.keyboard.press('Control+Z');
-  await expect(win.locator('.orch-graph-node.selected')).toContainText('Prepare workspace');
+  await expect(win.locator('.orch-graph-node.selected')).toContainText('Map product surface');
   await win.keyboard.press('Control+Y');
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Edited graph context');
   const approvalBeforeMove = await graphApprovalNode.evaluate((el) => ({

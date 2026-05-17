@@ -5,6 +5,7 @@ const { registerArtifact } = require('../../artifacts');
 const {
   failedProcessResult,
   idSegment,
+  processLooksApprovalRequired,
   registerJsonArtifact,
 } = require('../../adapters/cli-agent');
 const { runMachineProcess } = require('../../adapters/process-runner');
@@ -120,12 +121,17 @@ function codexCliExecArgs(options = {}) {
   const args = [
     ...(Array.isArray(options.prefixArgs) ? options.prefixArgs.map(arg => String(arg)) : []),
     'exec',
+  ];
+  if (options.dangerouslyBypassApprovalsAndSandbox === true) {
+    args.push(DANGEROUS_CODEX_BYPASS_ARG);
+  }
+  args.push(
     '--sandbox',
     normalizeCodexSandbox(options.sandbox),
     '-c',
     `approval_policy='${normalizeApprovalPolicy(options.approvalPolicy)}'`,
     '--skip-git-repo-check',
-  ];
+  );
   if (options.outputLastMessagePath) {
     args.push('--output-last-message', options.outputLastMessagePath);
   }
@@ -170,11 +176,16 @@ async function readCodexAdapterResult(filePath) {
 }
 
 function resultStatusForCodexProcess(processResult, parsedResult) {
+  if (codexProcessLooksApprovalRequired(processResult, parsedResult)) return 'approval-required';
   if (processResult.timedOut) return 'failed';
   if (processResult.code !== 0) return 'failed';
   const status = parsedResult?.status;
   if (['done', 'blocked', 'queued', 'failed', 'approval-required', 'rejected'].includes(status)) return status;
   return 'blocked';
+}
+
+function codexProcessLooksApprovalRequired(processResult = {}, parsedResult = null) {
+  return processLooksApprovalRequired(processResult, parsedResult);
 }
 
 function appendValidationCorrectionContext(prompt, adapterContext) {
@@ -230,6 +241,7 @@ function createProposalAdapter(options = {}) {
           prefixArgs: invocation.prefixArgs,
           sandbox: options.sandbox || 'read-only',
           approvalPolicy: options.approvalPolicy || 'never',
+          dangerouslyBypassApprovalsAndSandbox: options.dangerouslyBypassApprovalsAndSandbox === true,
           outputLastMessagePath,
           prompt,
           ephemeral: options.ephemeral,
@@ -366,6 +378,7 @@ function buildWorkerCommandSpec(input = {}) {
       prefixArgs: invocation.prefixArgs,
       sandbox: adapter.workerSandbox || adapter.sandbox || 'workspace-write',
       approvalPolicy: adapter.approvalPolicy || 'never',
+      dangerouslyBypassApprovalsAndSandbox: adapter.bypassLlmApprovals === true,
       prompt,
       ephemeral: adapter.ephemeral,
     }),
@@ -407,5 +420,6 @@ module.exports = {
   createCodexCliProposalAdapter: createProposalAdapter,
   nodeExecutableForCli,
   readCodexAdapterResult,
+  codexProcessLooksApprovalRequired,
   DANGEROUS_CODEX_BYPASS_ARG,
 };

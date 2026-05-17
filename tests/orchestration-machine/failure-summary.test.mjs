@@ -60,6 +60,25 @@ test('failedAdapterCallsFromRecord catches blocked / rejected / approval-require
   assert.deepEqual(statuses, ['approval-required', 'blocked', 'rejected']);
 });
 
+test('failedAdapterCallsFromRecord ignores accepted proposal-only approval statuses with progress', () => {
+  const event = syntheticAdapterResult({
+    sequence: 1,
+    status: 'approval-required',
+    nodePath: 'main/probe-a',
+    adapterCallId: 'a',
+  });
+  event.reason = 'proposal-only-result.accepted';
+  event.payload.proposalCount = 3;
+  event.payload.summaryStatus = 'blocked';
+  const record = {
+    events: [
+      event,
+      { sequence: 2, eventType: 'node.completed', nodePath: 'main/probe-a', payload: { attempt: 1, status: 'completed' } },
+    ],
+  };
+  assert.deepEqual(summary.failedAdapterCallsFromRecord(record), []);
+});
+
 test('failedAdapterCallsFromRecord keeps only the latest attempt per adapterCallId', () => {
   const record = {
     events: [
@@ -688,15 +707,99 @@ test('gateBlockedNodesFromRecord drops gates that already completed after the bl
   assert.equal(gates.length, 0);
 });
 
+test('gateBlockedNodesFromRecord drops stale patchReview blocks after patches are resolved', () => {
+  const patchArtifact = 'artifacts/worker/patches/wi-001.patch.json';
+  const record = {
+    events: [
+      {
+        sequence: 1,
+        eventType: 'worker.result',
+        nodePath: 'main/worker',
+        itemId: 'wi-001',
+        payload: {
+          status: 'done',
+          patchArtifact,
+          changedFiles: ['src/target.md'],
+        },
+      },
+      {
+        sequence: 2,
+        eventType: 'node.blocked',
+        nodePath: 'main/review-patch',
+        payload: { nodeType: 'orpad.patchReview', reason: 'patch-review.required' },
+        reason: 'patch-review.required',
+      },
+      {
+        sequence: 3,
+        eventType: 'patch.applied',
+        payload: {
+          patchArtifact,
+          selectedFiles: ['src/target.md'],
+          applied: [{ path: 'src/target.md' }],
+        },
+      },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates.length, 0);
+});
+
+test('gateBlockedNodesFromRecord keeps patchReview blocks while approved patches await apply', () => {
+  const patchArtifact = 'artifacts/worker/patches/wi-001.patch.json';
+  const record = {
+    events: [
+      {
+        sequence: 1,
+        eventType: 'worker.result',
+        nodePath: 'main/worker',
+        itemId: 'wi-001',
+        payload: {
+          status: 'done',
+          patchArtifact,
+          changedFiles: ['src/target.md'],
+        },
+      },
+      {
+        sequence: 2,
+        eventType: 'node.blocked',
+        nodePath: 'main/review-patch',
+        payload: { nodeType: 'orpad.patchReview', reason: 'patch-review.required' },
+        reason: 'patch-review.required',
+      },
+      {
+        sequence: 3,
+        eventType: 'patch.approved',
+        payload: {
+          patchArtifact,
+          selectedFiles: ['src/target.md'],
+        },
+      },
+    ],
+  };
+  const gates = summary.gateBlockedNodesFromRecord(record);
+  assert.equal(gates.length, 1);
+  assert.equal(gates[0].nodePath, 'main/review-patch');
+});
+
 test('gateBlockedNodesFromRecord keeps gate when latest event is still block', () => {
   const record = {
     events: [
       { sequence: 1, eventType: 'node.running', nodePath: 'main/exit' },
-      { sequence: 2, eventType: 'node.blocked', nodePath: 'main/exit', payload: { nodeType: 'orpad.exit' }, reason: 'evidence-incomplete' },
+      {
+        sequence: 2,
+        eventType: 'node.blocked',
+        nodePath: 'main/exit',
+        payload: {
+          nodeType: 'orpad.exit',
+          artifactContracts: [{ missingArtifacts: [{ path: 'artifacts/analysis/missing.md' }], missingQueue: [] }],
+        },
+        reason: 'evidence-incomplete',
+      },
     ],
   };
   const gates = summary.gateBlockedNodesFromRecord(record);
   assert.equal(gates.length, 1);
   assert.equal(gates[0].nodePath, 'main/exit');
   assert.equal(gates[0].nodeType, 'orpad.exit');
+  assert.equal(gates[0].artifactContracts[0].missingArtifacts[0].path, 'artifacts/analysis/missing.md');
 });

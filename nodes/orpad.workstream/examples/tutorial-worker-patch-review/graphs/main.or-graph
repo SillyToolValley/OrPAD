@@ -55,7 +55,8 @@
         "type": "orpad.workerLoop",
         "label": "Apply tutorial fixture",
         "config": {
-          "queueRef": "queue"
+          "queueRef": "queue",
+          "reviewRequired": true
         }
       },
       {

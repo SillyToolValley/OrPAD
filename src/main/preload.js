@@ -113,6 +113,15 @@ contextBridge.exposeInMainWorld('orpad', {
     readRunRecord: (workspacePath, runDir) => ipcRenderer.invoke('pipeline-read-run-record', workspacePath, runDir),
     auditRunEvidence: (workspacePath, pipelinePath) => ipcRenderer.invoke('pipeline-audit-run-evidence', workspacePath, pipelinePath),
   },
+  orchestration: {
+    generatePipeline: (request) => ipcRenderer.invoke('orchestration-generate-pipeline', request),
+    cancelGeneratePipeline: (requestId) => ipcRenderer.invoke('orchestration-cancel-generate-pipeline', requestId),
+    onGenerateEvent: (cb) => {
+      const listener = (_event, payload) => cb(payload);
+      ipcRenderer.on('orchestration-generate-pipeline-event', listener);
+      return () => ipcRenderer.removeListener('orchestration-generate-pipeline-event', listener);
+    },
+  },
   machine: {
     status: () => ipcRenderer.invoke('machine-status'),
     enableSession: () => ipcRenderer.invoke('machine-enable-session'),

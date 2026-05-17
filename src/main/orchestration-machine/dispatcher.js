@@ -1,3 +1,5 @@
+const path = require('path');
+
 const { readMachineEvents } = require('./events');
 const {
   requestApprovalForItem,
@@ -16,6 +18,8 @@ const {
 } = require('./claims');
 const { readQueueItems, transitionQueueItem } = require('./queue-store');
 const { acquireWriteSetLock, releaseWriteSetLock } = require('./write-sets');
+
+const claimSelectionQueues = new Map();
 
 const SEVERITY_ORDER = Object.freeze({
   P0: 0,
@@ -52,6 +56,27 @@ function approvedApprovalGrantsFromEvents(events = []) {
     .all
     .filter(approval => approval.status === 'approved')
     .flatMap(approval => approval.grants || []);
+}
+
+function writeSetPathsForItem(item = {}) {
+  if (Object.prototype.hasOwnProperty.call(item, 'targetFiles') && Array.isArray(item.targetFiles)) {
+    return item.targetFiles;
+  }
+  return item.sourceOfTruthTargets || [];
+}
+
+async function withClaimSelectionQueue(runRoot, task) {
+  const key = path.resolve(runRoot);
+  const previous = claimSelectionQueues.get(key) || Promise.resolve();
+  const operation = previous
+    .catch(() => {})
+    .then(task);
+  claimSelectionQueues.set(key, operation);
+  try {
+    return await operation;
+  } finally {
+    if (claimSelectionQueues.get(key) === operation) claimSelectionQueues.delete(key);
+  }
 }
 
 async function appendRunStatus(runRoot, runId, toState, options = {}) {
@@ -116,7 +141,7 @@ async function recoverStaleClaims(runRoot, options = {}) {
   return recovered;
 }
 
-async function claimNextQueuedItem(runRoot, options = {}) {
+async function claimNextQueuedItemUnlocked(runRoot, options = {}) {
   const {
     runId,
     workerId = 'orpad.workerLoop',
@@ -163,8 +188,9 @@ async function claimNextQueuedItem(runRoot, options = {}) {
     runId,
     claimId,
     itemId: next.item.id,
-    paths: next.item.sourceOfTruthTargets || [],
+    paths: writeSetPathsForItem(next.item),
     now,
+    enforceConflicts: options.enforceWriteSetConflicts !== false,
   });
   const claimResult = await createClaimLease(runRoot, {
     runId,
@@ -178,27 +204,46 @@ async function claimNextQueuedItem(runRoot, options = {}) {
   });
   const claim = claimResult.lease;
 
-  const transition = await transitionQueueItem(runRoot, {
-    runId,
-    itemId: next.item.id,
-    toState: 'claimed',
-    reason: 'dispatcher.claimed',
-    evidence: `locks/claims/${claim.claimId}.json`,
-    transitionId: `claim:${next.item.id}:${claim.claimId}`,
-    now,
-    itemPatch: {
-      claimId: claim.claimId,
-      claimedBy: workerId,
-      claimedAt: now,
-      claimLeaseExpiresAt: claim.expiresAt,
-      writeSetLockId: writeSet.lock.lockId,
-    },
-    payload: {
-      claimId: claim.claimId,
-      workerId,
-      writeSetLockId: writeSet.lock.lockId,
-    },
-  });
+  let transition;
+  try {
+    transition = await transitionQueueItem(runRoot, {
+      runId,
+      itemId: next.item.id,
+      toState: 'claimed',
+      expectedFromState: 'queued',
+      reason: 'dispatcher.claimed',
+      evidence: `locks/claims/${claim.claimId}.json`,
+      transitionId: `claim:${next.item.id}:${claim.claimId}`,
+      now,
+      itemPatch: {
+        claimId: claim.claimId,
+        claimedBy: workerId,
+        claimedAt: now,
+        claimLeaseExpiresAt: claim.expiresAt,
+        writeSetLockId: writeSet.lock.lockId,
+      },
+      payload: {
+        claimId: claim.claimId,
+        workerId,
+        writeSetLockId: writeSet.lock.lockId,
+      },
+    });
+  } catch (err) {
+    if (!claimResult.duplicate) {
+      await markClaimLeaseReleased(runRoot, claim.claimId, {
+        now,
+        state: 'released',
+        reason: 'dispatcher.claim-aborted',
+      }).catch(() => null);
+    }
+    if (!writeSet.duplicate) {
+      await releaseWriteSetLock(runRoot, writeSet.lock.lockId, {
+        now,
+        reason: 'dispatcher.claim-aborted',
+      }).catch(() => null);
+    }
+    throw err;
+  }
   await appendRunStatus(runRoot, runId, 'running', {
     reason: 'dispatcher.claimed',
     payload: {
@@ -217,6 +262,10 @@ async function claimNextQueuedItem(runRoot, options = {}) {
   };
 }
 
+async function claimNextQueuedItem(runRoot, options = {}) {
+  return withClaimSelectionQueue(runRoot, () => claimNextQueuedItemUnlocked(runRoot, options));
+}
+
 module.exports = {
   claimNextQueuedItem,
   approvedApprovalGrantsFromEvents,
@@ -224,4 +273,5 @@ module.exports = {
   hasApprovalGrant,
   recoverStaleClaims,
   severityRank,
+  writeSetPathsForItem,
 };

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://orpad.dev/schemas/or-graph/v1.json",
+  "kind": "orpad.graph",
+  "version": "1.0",
+  "graph": {
+    "id": "sample-06-loop-through-column",
+    "label": "Sample 06: Long loop-back through a deep column (regression for complaint #1)",
+    "start": "entry",
+    "nodes": [
+      { "id": "entry", "type": "orpad.entry", "label": "Entry" },
+      { "id": "context", "type": "orpad.context", "label": "Map workspace" },
+      { "id": "probe", "type": "orpad.probe", "label": "Probe candidates", "config": { "lens": "deep-loop", "maxCandidates": 5 } },
+      { "id": "queue", "type": "orpad.workQueue", "label": "Own work queue" },
+      { "id": "triage", "type": "orpad.triage", "label": "Prioritize work", "config": { "queueRef": "queue" } },
+      { "id": "dispatch", "type": "orpad.dispatcher", "label": "Claim one item", "config": { "queueRef": "queue", "workerLoopRef": "worker" } },
+      { "id": "worker", "type": "orpad.workerLoop", "label": "Apply slice", "config": { "queueRef": "queue" } },
+      { "id": "review", "type": "orpad.patchReview", "label": "Patch review" },
+      { "id": "gate-quality", "type": "orpad.gate", "label": "Quality gate", "config": { "criteria": ["quality met"], "onFail": "warn" } },
+      { "id": "gate-runtime", "type": "orpad.gate", "label": "Runtime gate", "config": { "criteria": ["runtime ok"], "onFail": "warn" } },
+      { "id": "record", "type": "orpad.artifactContract", "label": "Record evidence", "config": { "artifactRoot": "harness/generated/latest-run/artifacts", "queueRoot": "harness/generated/latest-run/queue", "required": ["discovery/candidate-inventory.json"], "requiredQueue": ["journal.jsonl"], "onMissing": "mark-partial" } },
+      { "id": "exit", "type": "orpad.exit", "label": "Exit" }
+    ],
+    "transitions": [
+      { "id": "t1", "from": "entry", "to": "context" },
+      { "id": "t2", "from": "context", "to": "probe" },
+      { "id": "t3", "from": "probe", "to": "queue" },
+      { "id": "t4", "from": "queue", "to": "triage" },
+      { "id": "t5", "from": "triage", "to": "dispatch" },
+      { "id": "t6", "from": "dispatch", "to": "worker" },
+      { "id": "t7", "from": "worker", "to": "review" },
+      { "id": "t8-reject", "from": "review", "to": "worker", "condition": "rejected" },
+      { "id": "t8-accept", "from": "review", "to": "gate-quality", "condition": "accepted" },
+      { "id": "t9-revise", "from": "gate-quality", "to": "worker", "condition": "revise" },
+      { "id": "t9-pass", "from": "gate-quality", "to": "gate-runtime", "condition": "pass" },
+      { "id": "t10-revise", "from": "gate-runtime", "to": "triage", "condition": "revise" },
+      { "id": "t10-not-empty", "from": "gate-runtime", "to": "dispatch", "condition": "queue-not-empty" },
+      { "id": "t10-empty", "from": "gate-runtime", "to": "record", "condition": "queue-empty" },
+      { "id": "t11", "from": "record", "to": "exit" }
+    ]
+  }
+}

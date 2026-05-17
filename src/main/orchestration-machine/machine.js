@@ -27,9 +27,13 @@ const {
   finalizeRunFromInventory,
   summarizeQueueInventory,
 } = require('./lifecycle');
+const { evaluateOutgoingEdges } = require('./edge-evaluator');
+const { createFileLockManager, normalizeLockPath } = require('./file-lock-manager');
 const { appendMachineEvent, projectRunStateFromEvents, readMachineEvents } = require('./events');
-const { readRunState } = require('./run-store');
+const { normalizeRunLlmApprovalMode, readRunState } = require('./run-store');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
+const { applyPatchArtifact, loadRunPatchArtifact } = require('./patches');
+const { PATCH_REVIEW_REASONS, shouldRequestPatchReview } = require('./patch-review-classifier');
 const { runProposalProbe } = require('./probe-runner');
 const { runProposalTriage } = require('./triage-runner');
 const { runWorkerLoopOnce } = require('./worker-loop');
@@ -52,6 +56,13 @@ const SUPPORT_NODE_TYPES = new Set([
   'orpad.patchReview',
   'orpad.exit',
   'orpad.graph',
+  // Fork-Join Phase 1 (Deliverable 5): orpad.tree wrappers used to
+  // be skipped entirely (not in executablePaths -> for-loop never
+  // emitted a lifecycle event). Phase 1 makes them execute as
+  // support nodes; executeSupportNode loads the referenced .or-tree,
+  // walks the root, and emits per-tick lifecycle events scoped under
+  // the wrapper's nodePath.
+  'orpad.tree',
 ]);
 const PATCH_REVIEW_RESOLUTION_EVENT_TYPES = new Set(['patch.applied', 'patch.review_skipped']);
 const PATCH_REVIEW_EVENT_TYPES = new Set([
@@ -60,6 +71,7 @@ const PATCH_REVIEW_EVENT_TYPES = new Set([
   'patch.apply_failed',
   'patch.apply_conflict',
 ]);
+const PATCH_REVIEW_REQUEST_EVENT_TYPE = 'patch.review_required';
 const PATCH_BATCH_APPLY_EVENT_TYPES = new Set([
   'patches.apply_started',
   'patches.apply_finished',
@@ -112,6 +124,8 @@ function nodeExecutionKey(event) {
     || `${event?.nodePath || ''}:attempt-${event?.payload?.attempt || 1}`;
 }
 
+const TERMINAL_NODE_EVENT_TYPES = new Set(['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled']);
+
 function activeNodeExecutionsFromEvents(events = []) {
   const active = new Map();
   // Track the highest sequence at which any terminal lifecycle event
@@ -122,10 +136,9 @@ function activeNodeExecutionsFromEvents(events = []) {
   // node.started sits in the active set forever and assertNoActive...
   // refuses every subsequent run-step.
   const latestTerminalSeqByPath = new Map();
-  const TERMINAL_NODE_EVENTS = ['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'];
   for (const event of events) {
     if (!event || !String(event.eventType || '').startsWith('node.')) continue;
-    if (!TERMINAL_NODE_EVENTS.includes(event.eventType)) continue;
+    if (!TERMINAL_NODE_EVENT_TYPES.has(event.eventType)) continue;
     const path = event.nodePath || '';
     if (!path) continue;
     const seq = Number(event.sequence) || 0;
@@ -141,7 +154,7 @@ function activeNodeExecutionsFromEvents(events = []) {
         nodePath: event.nodePath || '',
         startedSequence: Number(event.sequence) || 0,
       });
-    } else if (TERMINAL_NODE_EVENTS.includes(event.eventType)) {
+    } else if (TERMINAL_NODE_EVENT_TYPES.has(event.eventType)) {
       active.delete(key);
     }
   }
@@ -217,6 +230,10 @@ const PIPELINE_ORCHESTRATION_FIELDS = Object.freeze([
   'workerClaimLimit',
   'maxWorkerClaims',
   'claimLimit',
+  'claimPolicy',
+  'workerConcurrency',
+  'maxParallelWorkers',
+  'parallelWorkers',
   'continueAfterReviewableBlockedPatch',
   'supportNodePolicy',
 ]);
@@ -352,6 +369,7 @@ function candidateProposalFromWorkItem(item) {
     actualBehavior: item.actualBehavior,
     verificationPlan: item.verificationPlan,
     coverageEvidenceIds: item.coverageEvidenceIds || [],
+    targetFiles: item.targetFiles || [],
     approvalRequired: item.approvalRequired === true,
   };
 }
@@ -374,11 +392,36 @@ function configuredProbeConcurrency(config = {}, probeCount = 1) {
 }
 
 function configuredWorkerClaimLimit(config = {}, fallbackCount = 1) {
-  const configured = config.workerClaimLimit ?? config.maxWorkerClaims ?? config.claimLimit;
+  const claimPolicy = config.claimPolicy && typeof config.claimPolicy === 'object' ? config.claimPolicy : {};
+  const configured = claimPolicy.maxClaims
+    ?? claimPolicy.claimLimit
+    ?? config.workerClaimLimit
+    ?? config.maxWorkerClaims
+    ?? config.claimLimit;
   if (String(configured || '').toLowerCase() === 'all') return Math.max(1, fallbackCount);
   const parsed = Number(configured);
   if (Number.isFinite(parsed) && parsed > 0) return Math.max(1, Math.trunc(parsed));
   return Math.max(1, fallbackCount);
+}
+
+function workerParallelDisabled(env = process.env) {
+  return ['1', 'true', 'yes'].includes(String(env.MACHINE_DISABLE_PARALLEL_WORKERS || '').trim().toLowerCase());
+}
+
+function configuredWorkerConcurrency(config = {}, claimLimit = 1, env = process.env) {
+  const max = Math.max(1, claimLimit || 1);
+  if (workerParallelDisabled(env)) return 1;
+  const claimPolicy = config.claimPolicy && typeof config.claimPolicy === 'object' ? config.claimPolicy : {};
+  const configured = claimPolicy.concurrency
+    ?? config.workerConcurrency
+    ?? config.maxParallelWorkers
+    ?? config.parallelWorkers;
+  if (configured === true) return max;
+  if (configured === false) return 1;
+  if (String(configured || '').toLowerCase() === 'all') return max;
+  const parsed = Number(configured);
+  if (Number.isFinite(parsed) && parsed > 0) return Math.max(1, Math.min(max, Math.trunc(parsed)));
+  return max;
 }
 
 function isReviewableBlockedPatch(step) {
@@ -396,6 +439,11 @@ function shouldStopWorkerLoopAfterStep(step, config = {}) {
   if (config.continueAfterReviewableBlockedPatch === true && isReviewableBlockedPatch(step)) return false;
   const toState = String(step?.result?.toState || step?.result?.event?.payload?.toState || '').toLowerCase();
   return ['approval-required', 'blocked', 'failed', 'rejected'].includes(status) || toState === 'queued';
+}
+
+async function shouldDeferFinalSupportNodes(runRoot) {
+  const inventory = await summarizeQueueInventory(runRoot);
+  return inventory.activeCount > 0;
 }
 
 async function mapWithConcurrency(items, concurrency, worker) {
@@ -417,6 +465,15 @@ async function mapWithConcurrency(items, concurrency, worker) {
 
 function normalizeRuntimeTaskText(value) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 2000);
+}
+
+function dangerousBypassApprovalForRun(mode, existingApproval = null) {
+  if (existingApproval) return existingApproval;
+  if (normalizeRunLlmApprovalMode(mode) !== 'bypass') return null;
+  return {
+    approved: true,
+    reason: 'User selected Run with LLM approval bypass. Process still runs in a Machine-owned temp overlay.',
+  };
 }
 
 function hasMachineExternalResearchIntent(taskText) {
@@ -529,6 +586,7 @@ function liveProbePrompt(input = {}) {
         evidence: [{ id: 'evidence-id', file: 'relative/path', summary: 'current evidence' }],
         acceptanceCriteria: ['specific done criterion'],
         sourceOfTruthTargets: ['relative/path/to/source'],
+        targetFiles: ['relative/path/to/source'],
         userImpact: 'why this matters',
         reproSteps: ['how to observe it'],
         expectedBehavior: 'expected behavior',
@@ -701,6 +759,26 @@ function flattenTraversalNodes(plan) {
   return ordered;
 }
 
+// Fork-Join Phase 1: after `buildInlinePlan` flattens inner-graph nodes
+// into orderedNodes, two distinct nodes can share the same nodeType —
+// e.g. a sub-graph that authored its own `orpad.dispatcher`. The
+// explicit-path branch is unaffected (it's an exact-path lookup), but
+// the fallback "first match by type" would happily return an
+// inner-graph node and break the canonical rail. Bias the fallback
+// toward the entry graph (orderedNodes[0].graphKey is always the entry
+// graph after topological sort + inline expansion) so unscoped lookups
+// never silently bind to a sub-graph node.
+function preferEntryGraphMatch(orderedNodes, nodeType) {
+  const entryGraphKey = orderedNodes[0]?.graphKey;
+  if (entryGraphKey) {
+    const entryMatch = orderedNodes.find(node => (
+      node.nodeType === nodeType && node.graphKey === entryGraphKey
+    ));
+    if (entryMatch) return entryMatch;
+  }
+  return orderedNodes.find(node => node.nodeType === nodeType) || null;
+}
+
 function selectNode(orderedNodes, nodeType, explicitNodePath = '') {
   if (explicitNodePath) {
     const explicit = orderedNodes.find(node => node.nodePath === explicitNodePath);
@@ -712,15 +790,706 @@ function selectNode(orderedNodes, nodeType, explicitNodePath = '') {
     }
     return explicit;
   }
-  return orderedNodes.find(node => node.nodeType === nodeType) || null;
+  return preferEntryGraphMatch(orderedNodes, nodeType);
 }
 
 function selectNodes(orderedNodes, nodeType, explicitNodePaths = []) {
   const explicitPaths = Array.isArray(explicitNodePaths)
     ? explicitNodePaths.filter(Boolean)
     : (explicitNodePaths ? [explicitNodePaths] : []);
-  if (!explicitPaths.length) return orderedNodes.filter(node => node.nodeType === nodeType);
+  if (!explicitPaths.length) {
+    const entryGraphKey = orderedNodes[0]?.graphKey;
+    if (entryGraphKey) {
+      const entryMatches = orderedNodes.filter(node => (
+        node.nodeType === nodeType && node.graphKey === entryGraphKey
+      ));
+      if (entryMatches.length) return entryMatches;
+    }
+    return orderedNodes.filter(node => node.nodeType === nodeType);
+  }
   return explicitPaths.map(nodePath => selectNode(orderedNodes, nodeType, nodePath));
+}
+
+// Fork-Join Phase 2: build a `from-nodePath -> outgoing edges[]` index
+// from the loaded graphSet. The edges are keyed by full nodePath
+// (`${graphKey}/${nodeId}`) so the for-loop's dry-run lookup can match
+// the same shape that orderedNodes uses. Sub-graph internal transitions
+// are included; cross-graph wrapper edges are NOT — Phase 2's
+// diagnostic scope is per-graph, the cross-boundary edges are Phase 4
+// (sub-graph internal parallelism) territory.
+function buildTransitionsByFromNodePath(graphSet) {
+  const index = new Map();
+  for (const graph of (graphSet?.graphs || [])) {
+    for (const edge of (graph.transitions || [])) {
+      if (!edge?.from || !edge?.to) continue;
+      const fromPath = `${graph.graphKey}/${edge.from}`;
+      const toPath = `${graph.graphKey}/${edge.to}`;
+      if (!index.has(fromPath)) index.set(fromPath, []);
+      index.get(fromPath).push({
+        from: fromPath,
+        to: toPath,
+        ...(edge.condition ? { condition: String(edge.condition) } : {}),
+      });
+    }
+  }
+  return index;
+}
+
+// Fork-Join Phase 3 Step 1: ready-set scheduler bookkeeping. Given the
+// topologically-sorted orderedNodes and the per-graph transitions,
+// compute forward-predecessor / forward-successor sets keyed by full
+// nodePath. "Forward" means `orderedIndex(from) < orderedIndex(to)` —
+// loop-back edges (Pattern B/I/K) do NOT count toward readiness,
+// otherwise no node downstream of a Ralph-loop gate would ever be
+// "ready." Loop-back semantics are Step 3+ work.
+//
+// The driver below uses these maps to walk orderedNodes in the same
+// order today's for-loop produces, but expressed as a ready-set
+// rather than a fixed iteration. Step 1's contract: identical visit
+// order, identical dispatch behavior. Step 2 will add fan-out
+// concurrency for unconditional sibling edges; Step 3 the rest.
+function buildReadySetMaps(orderedNodes, graphSet, inlinePlan = null, transitionsByFromNodePath = null) {
+  const orderedIndex = new Map(orderedNodes.map((node, idx) => [node.nodePath, idx]));
+  const forwardPredecessors = new Map();
+  const forwardSuccessors = new Map();
+  for (const node of orderedNodes) {
+    forwardPredecessors.set(node.nodePath, new Set());
+    forwardSuccessors.set(node.nodePath, new Set());
+  }
+  for (const graph of (graphSet?.graphs || [])) {
+    for (const edge of (graph.transitions || [])) {
+      if (!edge?.from || !edge?.to) continue;
+      const fromPath = `${graph.graphKey}/${edge.from}`;
+      const toPath = `${graph.graphKey}/${edge.to}`;
+      const fromIdx = orderedIndex.get(fromPath);
+      const toIdx = orderedIndex.get(toPath);
+      if (fromIdx == null || toIdx == null) continue;
+      // Loop-back: target's source-order index is <= source's. These
+      // are Pattern B (Ralph loop), Pattern I (queue-drain), Pattern K
+      // (patchReview reject). Step 1 preserves the original
+      // behavior by EXCLUDING loop-back edges from readiness gating;
+      // Step 3.C emits scheduler.loopBackReset events instead.
+      if (fromIdx >= toIdx) continue;
+      forwardPredecessors.get(toPath).add(fromPath);
+      forwardSuccessors.get(fromPath).add(toPath);
+    }
+  }
+  // Phase 3 Step 4 (Step 4.A): bridge cross-graph wrapper edges so
+  // sub-graph entries gate on their parent wrapper AND the parent's
+  // main-graph downstream waits for sub-graph completion.
+  //
+  // Without bridging, Phase 1 inline-expansion produces sub-graph
+  // nodes with EMPTY forward predecessors (their predecessors live
+  // inside the child graph's transitions, which are correctly
+  // captured above, but the CROSS-GRAPH wrapper→entry edge is not).
+  // They'd enter the initial ready set and run before their parent
+  // wrapper visits. Step 1+2's lowest-orderedIndex tie-breaker
+  // papered over this for the serial path; Step 2's fan-out path
+  // explicitly required non-empty preds to avoid the issue. Step 4
+  // closes the gap honestly: add a synthetic edge from each parent
+  // wrapper to its child graph's first node, and from the child
+  // graph's last node to each of the parent's main-graph successors.
+  //
+  // The wrapper's original outgoing edges to its main-graph
+  // successors STAY in place. The successor's predecessor set now
+  // includes BOTH the wrapper AND the child exit — and both must
+  // resolve before the successor enters ready. That matches the
+  // semantic "sub-graph completion is part of the wrapper's
+  // observable progress."
+  if (inlinePlan && Array.isArray(inlinePlan.expansions)) {
+    // Codex S4-Fix3: idempotent re-invocation. Strip prior synthetic
+    // bridges from transitionsByFromNodePath before re-adding them so
+    // a second buildReadySetMaps call on the same input produces the
+    // same result (no duplicate synthetic edges that would inflate
+    // diagnostic emissions or fall through markEdgeResolved's
+    // distinct-key path).
+    if (transitionsByFromNodePath) {
+      for (const [from, edges] of transitionsByFromNodePath) {
+        const filtered = edges.filter(edge => !edge?.__syntheticBridge);
+        if (filtered.length === 0) transitionsByFromNodePath.delete(from);
+        else if (filtered.length !== edges.length) {
+          transitionsByFromNodePath.set(from, filtered);
+        }
+      }
+    }
+    const childNodesByGraphKey = new Map();
+    for (const node of orderedNodes) {
+      if (!childNodesByGraphKey.has(node.graphKey)) {
+        childNodesByGraphKey.set(node.graphKey, []);
+      }
+      childNodesByGraphKey.get(node.graphKey).push(node);
+    }
+    for (const expansion of inlinePlan.expansions) {
+      if (expansion.skipped) continue;
+      const childNodes = childNodesByGraphKey.get(expansion.childGraphKey) || [];
+      if (!childNodes.length) continue;
+      const parentPath = expansion.nodePath;
+      if (!forwardSuccessors.has(parentPath)) continue;
+      const parentIdx = orderedIndex.get(parentPath);
+      // Codex S4-Fix1: bridge parent to EVERY in-child entry (any
+      // child node with no in-child forward predecessors), not just
+      // the topologically-first one. A child graph with Pattern J at
+      // its head (multiple unconditional roots) would otherwise
+      // leave the second+ roots ungated by the parent — they'd
+      // enter the initial ready set and fire before the wrapper
+      // visits, AND they'd run even when the wrapper branch is
+      // pruned (dead cascade can't reach a node that's already
+      // initial-ready). The "in-child" check uses the predecessor
+      // sets BEFORE bridging mutates them.
+      const childEntries = childNodes
+        .filter(node => forwardPredecessors.get(node.nodePath).size === 0)
+        .map(node => node.nodePath);
+      // Codex S4-Fix2: bridge from EVERY in-child terminal (any
+      // child node with no in-child forward successors), not just
+      // the topologically-last one. Multi-exit child graphs (e.g.,
+      // selector at the child's end producing two terminal
+      // branches) need all terminals to gate the parent successor —
+      // otherwise a pruned selector branch could become the
+      // single bridged exit and pollute the successor's "any fired"
+      // check, dispatching downstream before the live branch
+      // actually completes.
+      const childExits = childNodes
+        .filter(node => forwardSuccessors.get(node.nodePath).size === 0)
+        .map(node => node.nodePath);
+      // Step 4.A bridge 1: parent wrapper → each child entry.
+      // Establishes sub-graph gating on the wrapper.
+      for (const childEntry of childEntries) {
+        const entryIdx = orderedIndex.get(childEntry);
+        if (parentIdx == null || entryIdx == null || entryIdx <= parentIdx) continue;
+        forwardPredecessors.get(childEntry).add(parentPath);
+        forwardSuccessors.get(parentPath).add(childEntry);
+        if (transitionsByFromNodePath) {
+          if (!transitionsByFromNodePath.has(parentPath)) {
+            transitionsByFromNodePath.set(parentPath, []);
+          }
+          transitionsByFromNodePath.get(parentPath).push({
+            from: parentPath,
+            to: childEntry,
+            __syntheticBridge: 'parent-to-child-entry',
+          });
+        }
+      }
+      // Step 4.A bridge 2: each child exit → each of parent's
+      // existing main-graph successors. Snapshot the parent's
+      // successors after bridge 1 added the child entries, then
+      // filter those out so only ORIGINAL main-graph successors
+      // gain the child exit predecessor.
+      const childEntrySet = new Set(childEntries);
+      const parentMainGraphSuccessors = [...forwardSuccessors.get(parentPath)]
+        .filter(succ => !childEntrySet.has(succ));
+      for (const childExit of childExits) {
+        const exitIdx = orderedIndex.get(childExit);
+        for (const succ of parentMainGraphSuccessors) {
+          const succIdx = orderedIndex.get(succ);
+          if (exitIdx == null || succIdx == null || succIdx <= exitIdx) continue;
+          forwardPredecessors.get(succ).add(childExit);
+          forwardSuccessors.get(childExit).add(succ);
+          if (transitionsByFromNodePath) {
+            if (!transitionsByFromNodePath.has(childExit)) {
+              transitionsByFromNodePath.set(childExit, []);
+            }
+            transitionsByFromNodePath.get(childExit).push({
+              from: childExit,
+              to: succ,
+              __syntheticBridge: 'child-exit-to-parent-successor',
+            });
+          }
+        }
+      }
+    }
+  }
+  return { orderedIndex, forwardPredecessors, forwardSuccessors };
+}
+
+// Pick the lowest-orderedIndex node from a ready Set<nodePath>. This
+// tie-breaker is what makes the ready-set's visit order identical to
+// the for-loop's: orderedNodes is topologically sorted, and at every
+// step we pick the topologically-earliest ready node. Step 2 still
+// uses this for fall-through (canonical-rail nodes + post-fan-out
+// remainders); the parallel batch path bypasses it.
+function pickNextReadyNode(readyPaths, orderedIndex, deferredSkipSet = null) {
+  // Codex S3-Fix3: prefer non-deferred ready nodes so a barrier
+  // that's been deferred once doesn't keep stealing turns from
+  // siblings that could still satisfy its waitFor. Only when every
+  // remaining ready node is deferred do we pick one (force-dispatch
+  // territory — the dispatch body then falls through to
+  // validateBarrierNode for the failure path).
+  if (deferredSkipSet && deferredSkipSet.size > 0) {
+    let preferred = '';
+    let preferredIdx = Infinity;
+    for (const path of readyPaths) {
+      if (deferredSkipSet.has(path)) continue;
+      const idx = orderedIndex.get(path);
+      if (idx == null) continue;
+      if (idx < preferredIdx) {
+        preferredIdx = idx;
+        preferred = path;
+      }
+    }
+    if (preferred) return preferred;
+  }
+  let chosen = '';
+  let chosenIdx = Infinity;
+  for (const path of readyPaths) {
+    const idx = orderedIndex.get(path);
+    if (idx == null) continue;
+    if (idx < chosenIdx) {
+      chosenIdx = idx;
+      chosen = path;
+    }
+  }
+  return chosen;
+}
+
+// Fork-Join Phase 3 Step 2: identify nodes safe to dispatch in
+// parallel. Canonical-rail nodes (probe / triage / dispatcher /
+// workerLoop) stay serial — probes have their own internal fan-out
+// (`probeFanoutExecuted`), dispatcher and worker manage shared
+// queue-claim state, and patchReview's blocked status decides whether
+// to halt the run. Every other support type runs read-only (gates /
+// selectors / barriers / artifactContract validate against the event
+// log) or produces only event-log writes (entry / context / workQueue
+// / graph wrapper / tree wrapper / exit), which `appendMachineEvent`
+// already serializes via a global queue. So parallel dispatch is
+// inherently safe at the event-log level — the artifact-path
+// stopgap below catches any filesystem-write surprises until the
+// file-lock queue lands (Phase 5).
+function isParallelizableSupportNode(node, canonicalRailPaths) {
+  if (!node || !node.nodePath) return false;
+  if (canonicalRailPaths && canonicalRailPaths.has(node.nodePath)) return false;
+  if (node.nodeType === 'orpad.patchReview') return false;
+  // Codex S3-Fix2: barriers run serially. The parallel-batch path
+  // pre-marks every node as `schedulerVisited` before dispatch so the
+  // batch's mapWithConcurrency can mutate freely; that pre-mark would
+  // make a barrier-in-batch with `waitFor` pointing at a batch-mate
+  // think the dependency was already satisfied — racing the mate's
+  // actual completion. Serial single-pick checks waitFor against the
+  // true visited set after every dispatch, so barriers belong there.
+  if (node.nodeType === 'orpad.barrier') return false;
+  return SUPPORT_NODE_TYPES.has(node.nodeType);
+}
+
+// Fork-Join Phase 3 Step 2 stopgap: detect artifact-root /
+// queue-root overlaps across a parallel batch. The design's risk
+// register (rev. 3) flags this as a critical gap until the
+// file-lock queue lands: two parallel siblings declaring the same
+// artifactRoot would race writes and silently corrupt evidence. We
+// catch the case BEFORE dispatching and either serialize (callers
+// fall back to single-pick) or emit
+// `scheduler.parallelArtifactConflict` if the conflict survives
+// retries. Today's support nodes rarely write artifact paths
+// directly (artifactContract validates; workQueue uses the
+// event-log-backed queue protocol) but the rail is here for Phase 5
+// when worker parallelism comes online.
+function detectArtifactPathConflicts(nodes) {
+  const owners = new Map(); // path -> first owner nodePath
+  const conflicts = [];
+  for (const node of nodes) {
+    const paths = artifactPathsForNode(node);
+    for (const declaredPath of paths) {
+      if (!declaredPath) continue;
+      const normalized = String(declaredPath).replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!normalized) continue;
+      if (owners.has(normalized)) {
+        conflicts.push({
+          path: normalized,
+          ownerA: owners.get(normalized),
+          ownerB: node.nodePath,
+        });
+        continue;
+      }
+      owners.set(normalized, node.nodePath);
+    }
+  }
+  return conflicts;
+}
+
+// onInnerFailure policy (Phase 3+ follow-up to Step 4): a sub-graph
+// wrapper's `config.onInnerFailure` controls how the scheduler reacts
+// when an inner node throws inside an inline-expanded child graph.
+//   - 'block' (default, current behavior): re-throw. The scheduler
+//     halts at the failing node and surfaces the error per
+//     withNodeLifecycle's recorded `node.failed`. Matches the
+//     pre-Phase-3 semantics.
+//   - 'continue': suppress the throw. Append a
+//     `scheduler.subGraphInnerFailure` diagnostic, then synthesize a
+//     "recovered" sourceResult so propagation fires the failing
+//     node's outgoing forward edges as if it had completed. The
+//     wrapper itself is unaffected (no partial flag).
+//   - 'partial': same as 'continue', plus append a
+//     `scheduler.subGraphPartial` marker keyed on the wrapper so
+//     downstream artifactContract / banner readers can surface the
+//     "wrapper completed but some inner work failed" state.
+// The recovered sourceResult carries `__innerFailureRecovered: true`
+// so propagateReadinessAfterVisit treats it as a non-decision source
+// and fires every forward edge unconditionally.
+const INNER_FAILURE_POLICIES = new Set(['block', 'continue', 'partial']);
+
+function sanitizeInnerFailurePolicy(value) {
+  if (typeof value === 'string' && INNER_FAILURE_POLICIES.has(value)) return value;
+  return 'block';
+}
+
+async function recordInnerFailureRecovery({
+  runRoot,
+  runId,
+  failingNodePath,
+  failingNodeType,
+  wrapperNodePath,
+  policy,
+  error,
+}) {
+  try {
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      nodePath: wrapperNodePath,
+      eventType: 'scheduler.subGraphInnerFailure',
+      payload: {
+        phase: 'phase-3-step-4-on-inner-failure',
+        policy,
+        failingNodePath,
+        failingNodeType,
+        wrapperNodePath,
+        error: error ? { code: error.code || 'INNER_FAILURE', message: error.message || String(error) } : null,
+      },
+    });
+    if (policy === 'partial') {
+      await appendMachineEvent(runRoot, {
+        runId,
+        actor: 'machine',
+        nodePath: wrapperNodePath,
+        eventType: 'scheduler.subGraphPartial',
+        payload: {
+          phase: 'phase-3-step-4-on-inner-failure',
+          wrapperNodePath,
+          failingNodePath,
+          reason: 'inner-node-failed',
+        },
+      });
+    }
+    // Codex Fix5: withNodeLifecycle's catch path already emitted
+    // run.lifecycle=waiting + run.summary=blocked before re-throwing.
+    // For a recovered inner failure those side effects contradict
+    // the recovery contract (the run is continuing, not blocked).
+    // Append corrective events to restore run.lifecycle=running.
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'running',
+      reason: 'scheduler.innerFailureRecovered',
+      payload: {
+        wrapperNodePath,
+        failingNodePath,
+        policy,
+      },
+    }).catch(() => null);
+    // Codex Phase 2 P2 #5 fix: only the 'partial' policy downgrades
+    // the run summary. 'continue' explicitly means "the wrapper is
+    // unaffected" — emitting summary=partial there contradicts the
+    // policy contract and would falsely mark a normal-progress run
+    // as partial. 'partial' policy still emits run.summary=partial
+    // so finalization-aware consumers see the marker.
+    if (policy === 'partial') {
+      await appendRunSummaryStatus(runRoot, {
+        runId,
+        summaryStatus: 'partial',
+        reason: 'scheduler.innerFailureRecovered',
+        payload: {
+          wrapperNodePath,
+          failingNodePath,
+          policy,
+        },
+      }).catch(() => null);
+    }
+  } catch { /* diagnostic must never fail the run */ }
+}
+
+// Fork-Join Phase 3 Step 3.C: loop-back reset event. When a source
+// fires a loop-back-classed outgoing edge (target's orderedIndex <=
+// source's), the scheduler appends this event and re-adds the target
+// to the ready set with a fresh attempt. The event is append-only —
+// the previous attempt's lifecycle events remain in the log, and
+// downstream readers (nextNodeAttempt, latestNodeResolvedEvent) walk
+// the log latest-first so the new attempt's events take precedence
+// naturally. The reset event itself serves two purposes: (1) an
+// auditable "this is a deliberate loop-back, not a stuck retry"
+// marker, and (2) an epoch-stamping anchor for renderer / replay
+// consumers that want to filter the visual state to the current
+// epoch only.
+async function appendLoopBackResetEvent({ runRoot, runId, sourceNodePath, targetNodePath }) {
+  try {
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      nodePath: targetNodePath,
+      eventType: 'scheduler.loopBackReset',
+      payload: {
+        phase: 'phase-3-step-3-loop-back',
+        sourceNodePath,
+        targetNodePath,
+      },
+    });
+  } catch { /* diagnostic must never fail the run */ }
+}
+
+// Fork-Join Phase 3 Step 3.B: scheduler-side barrier readiness. Each
+// barrier declares `config.waitFor: [nodeId, ...]` listing the
+// predecessors it waits on. The default `onPartialFailure:
+// 'continue-with-warning'` lets `validateBarrierNode` complete with
+// `valid: false` even when a waitFor entry is missing, so the run
+// advances past an incomplete join. Phase 3 keeps barrier
+// validation as a RESULT check but moves the WAIT into the scheduler:
+// the barrier doesn't dispatch until every waitFor entry is visited
+// (resolved either via a normal completion or via skip → both
+// populate schedulerVisited). The waitFor entries are graph-relative
+// node IDs (just the id, not `${graphKey}/${id}`); we resolve them
+// against the barrier's own graphKey so a misconfigured cross-graph
+// reference doesn't accidentally satisfy the wait.
+function barrierWaitForSatisfied(barrierNode, schedulerVisited, schedulerDead = null) {
+  const waitFor = Array.isArray(barrierNode?.config?.waitFor)
+    ? barrierNode.config.waitFor.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (!waitFor.length) return true;
+  for (const dep of waitFor) {
+    // Resolve dep to a full nodePath. waitFor entries are typically
+    // bare node ids relative to the barrier's own graph.
+    const candidate = dep.includes('/') ? dep : `${barrierNode.graphKey}/${dep}`;
+    // Codex S3-Fix5: a pruned (dead) dependency is "resolved" for
+    // waitFor purposes. Without this, a selector that drops branch B
+    // would leave a downstream barrier with waitFor:['B'] permanently
+    // stuck — defer once, fall through to validateBarrierNode, which
+    // sees no completion event for B and reports it as missing. The
+    // scheduler knows the pruning was intentional, so it must
+    // surface that as a satisfied (dropped) slot.
+    if (schedulerVisited.has(candidate)) continue;
+    if (schedulerDead && schedulerDead.has(candidate)) continue;
+    return false;
+  }
+  return true;
+}
+
+function artifactPathsForNode(node) {
+  const config = node?.config || {};
+  const paths = [];
+  if (typeof config.artifactRoot === 'string') paths.push(config.artifactRoot);
+  if (typeof config.queueRoot === 'string') paths.push(config.queueRoot);
+  // Required artifact files declared on artifactContract nodes — each
+  // is a real path that COULD conflict if two artifactContracts in a
+  // batch claim the same evidence file.
+  if (Array.isArray(config.required)) {
+    for (const item of config.required) {
+      if (typeof item === 'string' && item) paths.push(item);
+    }
+  }
+  return paths;
+}
+
+// Fork-Join Phase 3 Step 3.A (conditional pruning): every visited node
+// is propagated through this helper. For decision-emitting nodes
+// (selector / gate / patchReview / barrier) it runs the Phase 2
+// evaluator against `sourceResult` and decides which outgoing edges
+// fire; for everything else it treats every forward edge as
+// unconditional. Edges with `toIdx <= fromIdx` are loop-backs handled
+// by Step 3.C and are NOT propagated through readiness here.
+//
+// `markEdgeResolved` accumulates per-target incoming-edge statuses.
+// A target becomes ready when every forward predecessor has resolved
+// AND at least one fired; if every predecessor resolved with `dropped`
+// the target is DEAD (selector's unselected branch) and its own
+// outgoing edges propagate deadness transitively. This is the
+// algorithmic centerpiece that makes selector branches actually prune.
+const DECISION_EMITTING_NODE_TYPES = new Set([
+  'orpad.selector',
+  'orpad.gate',
+  'orpad.patchReview',
+  'orpad.barrier',
+]);
+
+function propagateReadinessAfterVisit({
+  visitedPath,
+  sourceResult,
+  orderedNodes,
+  orderedIndex,
+  forwardPredecessors,
+  transitionsByFromNodePath,
+  schedulerVisited,
+  schedulerDead,
+  schedulerReady,
+  incomingEdgeStatus,
+  loopBackResets,
+}) {
+  const node = orderedNodes[orderedIndex.get(visitedPath)];
+  const outgoingEdges = transitionsByFromNodePath.get(visitedPath) || [];
+  const isDecisionEmitting = DECISION_EMITTING_NODE_TYPES.has(node?.nodeType);
+  let decisions;
+  // Codex S4 follow-up Fix4: __innerFailureRecovered also bypasses
+  // the decision-emitting path. A failed inner gate / selector /
+  // barrier doesn't have a meaningful `valid` / `selected` field;
+  // running it through evaluateOutgoingEdges would fire the wrong
+  // edges (gate-failed sends `revise`, selector with no selection
+  // drops all branches, barrier-invalid fires `partial`). Recovered
+  // failures must propagate every forward edge unconditionally so
+  // the wrapper's downstream continues normally.
+  const isRecoveredFailure = Boolean(sourceResult?.__innerFailureRecovered);
+  const isDeadPropagation = Boolean(sourceResult?.__deadPropagation);
+  if (isDecisionEmitting && sourceResult && !isDeadPropagation && !isRecoveredFailure) {
+    decisions = evaluateOutgoingEdges(node, outgoingEdges, sourceResult);
+  } else {
+    decisions = outgoingEdges.map(edge => ({
+      edge,
+      fired: !isDeadPropagation,
+      reason: isDeadPropagation
+        ? 'dead-propagation'
+        : (isRecoveredFailure ? 'inner-failure-recovered' : 'unconditional-or-non-decision'),
+    }));
+  }
+  for (let i = 0; i < decisions.length; i += 1) {
+    const { edge, fired } = decisions[i];
+    if (!edge?.to) continue;
+    const fromIdx = orderedIndex.get(edge.from);
+    const toIdx = orderedIndex.get(edge.to);
+    if (fromIdx == null || toIdx == null) continue;
+    if (toIdx <= fromIdx) {
+      // Loop-back: Step 3.C records the (source, target) pair so the
+      // emission step preserves attribution even when multiple
+      // sources in a parallel batch fire loop-backs concurrently.
+      if (fired && loopBackResets) {
+        loopBackResets.push({
+          sourceNodePath: visitedPath,
+          targetNodePath: edge.to,
+          edgeId: edge.id || '',
+          condition: edge.condition || '',
+        });
+      }
+      continue;
+    }
+    markEdgeResolved({
+      predPath: visitedPath,
+      succPath: edge.to,
+      // Codex S3-Fix1: incomingEdgeStatus must distinguish multiple
+      // edges from the same pred to the same succ — otherwise the
+      // first edge's decision collapses the second one. Compound
+      // key uses the edge id (falls back to condition + index).
+      edgeKey: `${visitedPath}|${edge.id || `${edge.condition || ''}|#${i}`}`,
+      fired,
+      orderedNodes,
+      orderedIndex,
+      forwardPredecessors,
+      transitionsByFromNodePath,
+      schedulerVisited,
+      schedulerDead,
+      schedulerReady,
+      incomingEdgeStatus,
+      loopBackResets,
+    });
+  }
+}
+
+function markEdgeResolved(params) {
+  const {
+    predPath,
+    succPath,
+    edgeKey,
+    fired,
+    forwardPredecessors,
+    schedulerVisited,
+    schedulerDead,
+    schedulerReady,
+    incomingEdgeStatus,
+  } = params;
+  if (!incomingEdgeStatus.has(succPath)) incomingEdgeStatus.set(succPath, new Map());
+  const statuses = incomingEdgeStatus.get(succPath);
+  if (statuses.has(edgeKey)) return; // idempotent — same edge resolved twice is a no-op
+  statuses.set(edgeKey, { predPath, status: fired ? 'fired' : 'dropped' });
+  const preds = forwardPredecessors.get(succPath) || new Set();
+  // Codex S3-Fix1: "all preds resolved" must count UNIQUE preds via
+  // the predPath stored alongside each edgeKey — not Map.size, which
+  // would over-count when a single pred sends multiple edges.
+  const distinctPreds = new Set([...statuses.values()].map(entry => entry.predPath));
+  if (distinctPreds.size < preds.size) return;
+  const anyFired = [...statuses.values()].some(entry => entry.status === 'fired');
+  if (anyFired) {
+    if (!schedulerVisited.has(succPath) && !schedulerDead.has(succPath)) {
+      schedulerReady.add(succPath);
+    }
+    return;
+  }
+  if (schedulerDead.has(succPath) || schedulerVisited.has(succPath)) return;
+  schedulerDead.add(succPath);
+  schedulerReady.delete(succPath);
+  propagateReadinessAfterVisit({
+    visitedPath: succPath,
+    sourceResult: { __deadPropagation: true },
+    ...params,
+  });
+}
+
+const EDGE_EVAL_DECISION_EMITTING_TYPES = new Set([
+  'orpad.selector',
+  'orpad.gate',
+  'orpad.patchReview',
+  'orpad.barrier',
+]);
+
+// Returns true if Phase 2 should emit a diagnostic for this source.
+// Decision-emitting types always interesting. Non-decision sources are
+// interesting only when at least one of their outgoing edges carries a
+// condition (which the evaluator will default-fire and tag for audit).
+function shouldEmitEdgeDiagnostic(sourceNode, transitions) {
+  if (EDGE_EVAL_DECISION_EMITTING_TYPES.has(sourceNode?.nodeType)) return true;
+  return (transitions || []).some(edge => String(edge?.condition || '').trim());
+}
+
+async function emitEdgeEvaluationDiagnostic({
+  runRoot,
+  runId,
+  sourceNode,
+  sourceResult,
+  transitions,
+}) {
+  if (!transitions || !transitions.length) return;
+  if (!shouldEmitEdgeDiagnostic(sourceNode, transitions)) return;
+  // Codex CLI cross-review 2026-05-16 caught that a blocked source
+  // (e.g. patchReview returning `{ blocked: true, ... }`) hasn't
+  // actually "completed" — emitting "exit would fire" with reason
+  // 'unconditional' contradicts the semantics of edge evaluation
+  // ("after this node decides, which outgoing edges fire?"). Phase 3
+  // would mis-trust that decision if it ever reused this event for
+  // gating. Skip the diagnostic for blocked sources; the
+  // node.blocked event itself carries the relevant state.
+  if (sourceResult && sourceResult.blocked) return;
+  const decisions = evaluateOutgoingEdges(sourceNode, transitions, sourceResult);
+  // Slim down for the event payload — the source result has already
+  // been recorded inside the node.completed payload, so we don't need
+  // to duplicate it here. Carry only the per-edge decision.
+  const summarized = decisions.map(({ edge, fired, reason, ...extras }) => ({
+    from: edge?.from,
+    to: edge?.to,
+    condition: String(edge?.condition || '').trim(),
+    fired,
+    reason,
+    ...extras,
+  }));
+  try {
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      nodePath: sourceNode.nodePath,
+      eventType: 'scheduler.edgeEvaluation',
+      payload: {
+        sourceNodePath: sourceNode.nodePath,
+        sourceNodeType: sourceNode.nodeType,
+        phase: 'phase-2-dry-run',
+        decisions: summarized,
+        firedCount: summarized.filter(entry => entry.fired).length,
+        droppedCount: summarized.filter(entry => !entry.fired).length,
+      },
+    });
+  } catch {
+    // Diagnostic events must NEVER fail the run-step. Swallow silently —
+    // Phase 3 will re-introduce strictness when these decisions
+    // actually gate dispatch.
+  }
 }
 
 function supportNodesForExecution(orderedNodes, operationNodes) {
@@ -779,6 +1548,12 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
     });
     return result;
   } catch (err) {
+    const alreadyTerminal = (await readMachineEvents(runRoot)).some(event => (
+      TERMINAL_NODE_EVENT_TYPES.has(event?.eventType)
+      && event.nodePath === node.nodePath
+      && (Number(event.payload?.attempt) || 1) === attempt
+    ));
+    if (alreadyTerminal) throw err;
     const failurePayload = {
       code: err?.code || 'MACHINE_NODE_FAILED',
       message: err?.message || String(err),
@@ -897,9 +1672,239 @@ async function executeBlockingSupportNode(runRoot, node, options = {}, evaluate)
   }
 }
 
+function patchReviewRequestPayload(review) {
+  const classification = review.classification || {};
+  return {
+    patchArtifact: review.patchArtifact,
+    reason: classification.reason || review.reviewReason || PATCH_REVIEW_REASONS.destructiveScope,
+    reasons: classification.reasons || review.reviewReasons || [],
+    changedFiles: classification.changedFiles || review.changedFiles || [],
+    declaredTargetFiles: classification.declaredTargetFiles || review.declaredTargetFiles || [],
+    outsideTargetFiles: classification.outsideTargetFiles || [],
+    missingDeclaredTargetFiles: classification.missingDeclaredTargetFiles === true,
+    itemId: review.itemId || '',
+    sourceSequence: review.sourceSequence ?? null,
+  };
+}
+
+async function appendPatchReviewRequiredEvents(runRoot, runId, reviews = []) {
+  const appended = [];
+  for (const review of reviews) {
+    if (!review?.patchArtifact || review.reviewRequest) continue;
+    const payload = patchReviewRequestPayload(review);
+    const event = await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      eventType: PATCH_REVIEW_REQUEST_EVENT_TYPE,
+      reason: `patch-review.${payload.reason}`,
+      artifactRefs: [review.patchArtifact],
+      payload,
+    }).catch(() => null);
+    if (event) appended.push(event);
+  }
+  return appended;
+}
+
+function selectedFilesForPatch(review, patch) {
+  const patchFiles = [...new Set((patch?.changes || []).map(change => normalizeLockPath(change?.path)).filter(Boolean))].sort();
+  if (patchFiles.length) return patchFiles;
+  const changed = Array.isArray(review?.changedFiles)
+    ? [...new Set(review.changedFiles.map(file => normalizeLockPath(file)).filter(Boolean))].sort()
+    : [];
+  return changed;
+}
+
+function patchSubsetForSelectedFiles(patch, selectedFiles = []) {
+  if (!selectedFiles.length) return patch;
+  const wanted = new Set(selectedFiles.map(file => normalizeLockPath(file)).filter(Boolean));
+  const matched = new Set();
+  const changes = (patch?.changes || []).filter(change => {
+    const normalized = normalizeLockPath(change?.path);
+    if (!wanted.has(normalized)) return false;
+    matched.add(normalized);
+    return true;
+  });
+  const missing = [...wanted].filter(file => !matched.has(file));
+  if (missing.length) {
+    const err = new Error(`Patch selected files are not present in the patch artifact: ${missing.join(', ')}`);
+    err.code = 'PATCH_SELECTED_FILE_MISSING';
+    err.missingSelectedFiles = missing;
+    throw err;
+  }
+  return {
+    ...patch,
+    changes,
+  };
+}
+
+async function appendPatchApplyFailureEvent(runRoot, options = {}) {
+  const {
+    runId,
+    patchArtifact,
+    selectedFiles = [],
+    reason,
+    actor = 'machine',
+    error,
+  } = options;
+  const isMismatch = error?.code === 'PATCH_BASE_MISMATCH';
+  return appendMachineEvent(runRoot, {
+    runId,
+    actor,
+    eventType: isMismatch ? 'patch.apply_conflict' : 'patch.apply_failed',
+    reason,
+    artifactRefs: [patchArtifact],
+    payload: {
+      patchArtifact,
+      selectedFiles,
+      code: error?.code || 'MACHINE_PATCH_APPLY_FAILED',
+      message: error?.message || 'Patch could not be applied.',
+      path: error?.path || '',
+      mismatches: Array.isArray(error?.mismatches) ? error.mismatches : [],
+    },
+  }).catch(() => null);
+}
+
+async function applyRoutinePatchReviews(runRoot, options = {}) {
+  const { runId, workspaceRoot, reviews = [] } = options;
+  if (!workspaceRoot || !reviews.length) {
+    return { applied: [], conflicts: [], requested: [] };
+  }
+
+  const startedEvent = await appendMachineEvent(runRoot, {
+    runId,
+    actor: 'machine',
+    eventType: 'patches.apply_started',
+    reason: 'machine.patch-review.auto-apply-routine',
+    artifactRefs: reviews.map(review => review.patchArtifact),
+    payload: { approvedPatchArtifacts: reviews.map(review => review.patchArtifact) },
+  }).catch(() => null);
+
+  const applied = [];
+  const conflicts = [];
+  const requested = [];
+  for (const review of reviews) {
+    const patchArtifact = review.patchArtifact;
+    let patch;
+    try {
+      patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+    } catch (error) {
+      const event = await appendPatchApplyFailureEvent(runRoot, {
+        runId,
+        patchArtifact,
+        selectedFiles: review.changedFiles || [],
+        reason: 'machine.patch-review.auto-apply-routine',
+        error,
+      });
+      conflicts.push({ patchArtifact, event, code: error?.code || 'MACHINE_PATCH_LOAD_FAILED' });
+      continue;
+    }
+
+    const selectedFiles = selectedFilesForPatch(review, patch);
+    let selectedPatch;
+    try {
+      selectedPatch = patchSubsetForSelectedFiles(patch, selectedFiles);
+    } catch (error) {
+      const event = await appendPatchApplyFailureEvent(runRoot, {
+        runId,
+        patchArtifact,
+        selectedFiles,
+        reason: 'machine.patch-review.auto-apply-routine',
+        error,
+      });
+      conflicts.push({ patchArtifact, event, code: error?.code || 'MACHINE_PATCH_SELECTION_INVALID' });
+      continue;
+    }
+    const classification = shouldRequestPatchReview(review.sourceEvent, {
+      patch: selectedPatch,
+      declaredTargetFiles: review.declaredTargetFiles,
+      lockTargetFiles: review.lockTargetFiles,
+      changedFiles: selectedFiles,
+      reviewRequired: review.reviewRequired === true,
+    });
+    if (classification.requestReview) {
+      const requestReview = {
+        ...review,
+        classification,
+        reviewRequired: true,
+        reviewReason: classification.reason,
+        reviewReasons: classification.reasons,
+      };
+      requested.push(requestReview);
+      continue;
+    }
+
+    try {
+      const result = await applyPatchArtifact({
+        workspaceRoot,
+        patch: selectedPatch,
+        allowedFiles: patch.allowedFiles || [],
+        treatAlreadyAppliedAsSuccess: true,
+      });
+      const event = await appendMachineEvent(runRoot, {
+        runId,
+        actor: 'machine',
+        eventType: 'patch.applied',
+        reason: 'machine.patch-review.auto-apply-routine',
+        artifactRefs: [patchArtifact],
+        payload: {
+          patchArtifact,
+          selectedFiles,
+          applied: result.applied,
+          reviewClassifier: {
+            requestReview: false,
+            reason: '',
+            reasons: [],
+          },
+        },
+      });
+      applied.push({ patchArtifact, applied: result.applied, event });
+    } catch (error) {
+      const event = await appendPatchApplyFailureEvent(runRoot, {
+        runId,
+        patchArtifact,
+        selectedFiles,
+        reason: 'machine.patch-review.auto-apply-routine',
+        error,
+      });
+      conflicts.push({ patchArtifact, event, code: error?.code || 'MACHINE_PATCH_APPLY_FAILED' });
+    }
+  }
+
+  await appendMachineEvent(runRoot, {
+    runId,
+    actor: 'machine',
+    eventType: 'patches.apply_finished',
+    reason: 'machine.patch-review.auto-apply-routine',
+    artifactRefs: reviews.map(review => review.patchArtifact),
+    payload: {
+      appliedCount: applied.length,
+      conflictCount: conflicts.length + requested.length,
+      startedEventSequence: startedEvent?.sequence ?? null,
+    },
+  }).catch(() => null);
+
+  return { applied, conflicts, requested };
+}
+
 async function executePatchReviewNode(runRoot, node, options = {}) {
   return executeBlockingSupportNode(runRoot, node, options, async () => {
-    const review = patchReviewStateFromEvents(await readMachineEvents(runRoot));
+    let review = patchReviewStateFromEvents(await readMachineEvents(runRoot), {
+      reviewRequired: node.config?.reviewRequired === true,
+    });
+    if (review.autoApplyPending.length) {
+      const autoApply = await applyRoutinePatchReviews(runRoot, {
+        runId: options.runId,
+        workspaceRoot: options.workspaceRoot,
+        reviews: review.autoApplyPending,
+      });
+      if (autoApply.requested.length) {
+        await appendPatchReviewRequiredEvents(runRoot, options.runId, autoApply.requested);
+      }
+      review = patchReviewStateFromEvents(await readMachineEvents(runRoot), {
+        reviewRequired: node.config?.reviewRequired === true,
+      });
+    }
+    await appendPatchReviewRequiredEvents(runRoot, options.runId, review.pending);
     if (review.required && !review.resolved) {
       return {
         blocked: true,
@@ -913,6 +1918,11 @@ async function executePatchReviewNode(runRoot, node, options = {}) {
         skippedCount: review.skippedCount,
         failedCount: review.failedCount,
         pendingPatchArtifacts: review.pending.map(entry => entry.patchArtifact),
+        pendingReviewReasons: review.pending.map(entry => ({
+          patchArtifact: entry.patchArtifact,
+          reason: entry.reviewReason,
+          reasons: entry.reviewReasons,
+        })),
       };
     }
     return {
@@ -970,6 +1980,17 @@ async function executeExitNode(runRoot, node, options = {}) {
     }
     const partialContracts = latestArtifactContractPartials(events);
     if (partialContracts.length) {
+      const inventory = await summarizeQueueInventory(runRoot);
+      if (inventory.activeCount > 0) {
+        return {
+          status: 'deferred-active-queue',
+          patchCount: review.patchCount,
+          appliedCount: review.appliedCount,
+          skippedCount: review.skippedCount,
+          artifactContracts: partialContracts,
+          inventory,
+        };
+      }
       return {
         blocked: true,
         summaryStatus: 'partial',
@@ -1141,14 +2162,17 @@ function latestNodeResolvedEvent(events, nodePath) {
 }
 
 function hasUnresolvedSupportBlock(events, orderedNodes) {
-  const supportBlockPaths = new Set(
-    orderedNodes
-      .filter(node => ['orpad.patchReview', 'orpad.exit'].includes(node.nodeType))
-      .map(node => node.nodePath),
-  );
-  if (!supportBlockPaths.size) return false;
+  const supportBlockNodes = orderedNodes.filter(node => (
+    ['orpad.patchReview', 'orpad.exit'].includes(node.nodeType)
+  ));
+  if (!supportBlockNodes.length) return false;
   const latestByPath = latestLifecycleStatusByNode(events);
-  return [...supportBlockPaths].some(nodePath => latestByPath.get(nodePath)?.eventType === 'node.blocked');
+  const patchReview = patchReviewStateFromEvents(events);
+  return supportBlockNodes.some(node => {
+    if (latestByPath.get(node.nodePath)?.eventType !== 'node.blocked') return false;
+    if (node.nodeType === 'orpad.patchReview') return patchReview.required && !patchReview.resolved;
+    return true;
+  });
 }
 
 // A run.graph-drift event is an audit-log breadcrumb: it does NOT change
@@ -1257,7 +2281,7 @@ function acceptedWorkerProof(events) {
   )) || null;
 }
 
-function patchReviewStateFromEvents(events = []) {
+function patchReviewStateFromEvents(events = [], options = {}) {
   const patchArtifacts = [];
   const seen = new Set();
   for (const event of events) {
@@ -1265,13 +2289,18 @@ function patchReviewStateFromEvents(events = []) {
     const payload = event.payload || {};
     const patchArtifact = String(payload.patchArtifact || '').trim();
     const changedFiles = Array.isArray(payload.changedFiles) ? payload.changedFiles.filter(Boolean) : [];
-    if (!patchArtifact || !changedFiles.length || seen.has(patchArtifact)) continue;
+    if (!patchArtifact || seen.has(patchArtifact)) continue;
     seen.add(patchArtifact);
     patchArtifacts.push({
       patchArtifact,
       itemId: event.itemId || payload.itemId || '',
       workerStatus: payload.status || '',
       changedFiles,
+      declaredTargetFiles: Array.isArray(payload.declaredTargetFiles) ? payload.declaredTargetFiles : [],
+      lockTargetFiles: Array.isArray(payload.lockTargetFiles) ? payload.lockTargetFiles : [],
+      targetFilesSource: payload.targetFilesSource || '',
+      reviewRequired: payload.reviewRequired === true,
+      sourceEvent: event,
       sourceSequence: event.sequence ?? null,
     });
   }
@@ -1293,28 +2322,61 @@ function patchReviewStateFromEvents(events = []) {
     });
   }
 
+  const reviewRequests = new Map();
+  for (const event of events) {
+    if (event?.eventType !== PATCH_REVIEW_REQUEST_EVENT_TYPE) continue;
+    const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+    if (!patchArtifact) continue;
+    reviewRequests.set(patchArtifact, {
+      eventType: PATCH_REVIEW_REQUEST_EVENT_TYPE,
+      sequence: event.sequence ?? null,
+      reason: event?.payload?.reason || '',
+      reasons: Array.isArray(event?.payload?.reasons) ? event.payload.reasons : [],
+      changedFiles: Array.isArray(event?.payload?.changedFiles) ? event.payload.changedFiles : [],
+      declaredTargetFiles: Array.isArray(event?.payload?.declaredTargetFiles) ? event.payload.declaredTargetFiles : [],
+      outsideTargetFiles: Array.isArray(event?.payload?.outsideTargetFiles) ? event.payload.outsideTargetFiles : [],
+    });
+  }
+
   const reviews = patchArtifacts.map(review => {
     const decision = decisions.get(review.patchArtifact) || null;
+    const reviewRequest = reviewRequests.get(review.patchArtifact) || null;
+    const classification = shouldRequestPatchReview(review.sourceEvent, {
+      decision,
+      reviewRequest,
+      reviewRequired: options.reviewRequired === true || review.reviewRequired === true,
+      declaredTargetFiles: review.declaredTargetFiles,
+      lockTargetFiles: review.lockTargetFiles,
+      changedFiles: review.changedFiles,
+    });
     const resolved = decision && PATCH_REVIEW_RESOLUTION_EVENT_TYPES.has(decision.eventType);
     const status = decision
       ? (PATCH_REVIEW_STATUS_BY_EVENT.get(decision.eventType) || 'pending')
-      : 'pending';
+      : (classification.requestReview ? 'pending' : 'auto-pending');
     return {
       ...review,
       decision,
+      reviewRequest,
+      reviewRequired: classification.requestReview,
+      reviewReason: classification.reason,
+      reviewReasons: classification.reasons,
+      classification,
       status,
       resolved: Boolean(resolved),
     };
   });
-  const pending = reviews.filter(review => !review.resolved);
+  const pending = reviews.filter(review => review.reviewRequired && !review.resolved);
+  const autoApplyPending = reviews.filter(review => !review.reviewRequired && !review.resolved);
   const approved = reviews.filter(review => review.status === 'approved');
   const conflict = reviews.filter(review => review.status === 'conflict');
   const failed = pending.filter(review => review.decision?.eventType === 'patch.apply_failed');
   const batch = batchApplyStateFromEvents(events);
   return {
-    required: reviews.length > 0,
-    resolved: pending.length === 0,
+    required: pending.length > 0,
+    resolved: pending.length === 0 && autoApplyPending.length === 0,
     patchCount: reviews.length,
+    reviewRequiredCount: pending.length,
+    autoApplyPendingCount: autoApplyPending.length,
     pendingCount: pending.length,
     appliedCount: reviews.filter(review => review.status === 'applied').length,
     skippedCount: reviews.filter(review => review.status === 'skipped').length,
@@ -1323,6 +2385,7 @@ function patchReviewStateFromEvents(events = []) {
     failedCount: failed.length,
     reviews,
     pending,
+    autoApplyPending,
     approved,
     conflict,
     failed,
@@ -1524,8 +2587,101 @@ async function executeSupportNode(runRoot, node, options = {}) {
         viewMode: config.viewMode || '',
       };
     }
+    if (node.nodeType === 'orpad.tree') {
+      return executeTreeWrapper(runRoot, node, {
+        runId,
+        attempt,
+        pipelineDir: options.pipelineDir,
+      });
+    }
     return {};
   });
+}
+
+// Fork-Join Phase 1 (Deliverable 5): inline expansion for orpad.tree.
+// Loads the wrapper's referenced .or-tree, walks the root in DFS
+// pre-order, and emits scheduled/started/completed lifecycle events
+// for each inner tree node under nodePath `${wrapper.nodePath}/${treeNodeId}`.
+//
+// The actual behavior-tree semantics (Sequence = all-must-succeed,
+// Selector = first-success, Parallel = fan-out, Decorator = wrap a
+// child outcome) are deferred to Phase 3+ — Phase 1's contract is
+// "ticks fire," nothing more. The lifecycle events that fire here are
+// what unblocks downstream Phase 2 (conditional edge evaluator) and
+// Phase 3 (ready-set scheduler) work.
+async function executeTreeWrapper(runRoot, wrapper, options) {
+  const { runId, attempt = 1, pipelineDir } = options;
+  const config = wrapper.config || {};
+  const treeRef = String(config.treeRef || '').trim();
+  if (!treeRef) {
+    return { treeRef: '', status: 'skipped', reason: 'no-tree-ref' };
+  }
+  if (!pipelineDir) {
+    return { treeRef, status: 'skipped', reason: 'no-pipeline-dir' };
+  }
+  const graphDir = wrapper.graphRef
+    ? path.posix.dirname(String(wrapper.graphRef).replace(/\\/g, '/'))
+    : '';
+  const treePath = path.resolve(pipelineDir, graphDir, treeRef);
+  let treeDoc;
+  try {
+    const raw = await fsp.readFile(treePath, 'utf8');
+    treeDoc = JSON.parse(raw);
+  } catch (err) {
+    return {
+      treeRef,
+      treePath,
+      status: 'failed-to-load',
+      error: { code: err?.code || 'TREE_READ_FAILED', message: err?.message || String(err) },
+    };
+  }
+  const root = treeDoc?.root;
+  if (!root || typeof root !== 'object') {
+    return { treeRef, treePath, status: 'empty', reason: 'tree-root-missing' };
+  }
+  const ticks = [];
+  await walkTreeRoot(root, async (treeNode, depth) => {
+    if (!treeNode.id) return;
+    const innerNodePath = `${wrapper.nodePath}/${treeNode.id}`;
+    const innerNodeType = `orpad.tree.${treeNode.type || 'Unknown'}`;
+    const tickPayload = {
+      treeRef,
+      parentWrapper: wrapper.nodePath,
+      tickDepth: depth,
+      label: treeNode.label || '',
+      childCount: Array.isArray(treeNode.children) ? treeNode.children.length : 0,
+    };
+    await recordNodeLifecycleEvent(runRoot, {
+      runId, nodePath: innerNodePath, nodeType: innerNodeType,
+      attempt, status: 'scheduled', payload: tickPayload,
+    });
+    await recordNodeLifecycleEvent(runRoot, {
+      runId, nodePath: innerNodePath, nodeType: innerNodeType,
+      attempt, status: 'started', payload: tickPayload,
+    });
+    await recordNodeLifecycleEvent(runRoot, {
+      runId, nodePath: innerNodePath, nodeType: innerNodeType,
+      attempt, status: 'completed', payload: { ...tickPayload, phase: 'phase-1-stub-tick' },
+    });
+    ticks.push({ nodePath: innerNodePath, nodeType: innerNodeType });
+  });
+  return {
+    treeRef,
+    treePath,
+    status: 'ticked',
+    tickCount: ticks.length,
+    ticks,
+  };
+}
+
+async function walkTreeRoot(root, visit, depth = 0) {
+  await visit(root, depth);
+  const children = Array.isArray(root?.children) ? root.children : [];
+  for (const child of children) {
+    if (child && typeof child === 'object') {
+      await walkTreeRoot(child, visit, depth + 1);
+    }
+  }
 }
 
 function candidatesForProbeNode(probeNode, probeNodes, candidates) {
@@ -1688,6 +2844,7 @@ async function executeMachineRunStep(options = {}) {
     timeoutMs = 60_000,
     taskText = '',
     externalResearch = null,
+    llmApprovalMode = '',
     loadProviderKey = null,
     fetchImpl = null,
   } = options;
@@ -1698,9 +2855,22 @@ async function executeMachineRunStep(options = {}) {
   if (!runId) throw new Error('runId is required.');
 
   await assertRunCanExecuteStep(runRoot);
+  // File-Lock Queue Phase 1: create a per-run-step lock manager. The
+  // manager is pure in-memory state — it doesn't persist across
+  // run-steps because every in-flight claim is considered failed on
+  // crash/restart and gets re-dispatched (per the design's "no
+  // persisted lock state" decision). Workers acquire/release through
+  // this instance via runWorkerLoopOnce(options.lockManager).
+  const runStepLockManager = createFileLockManager();
   const graphSet = await loadPipelineGraphSet({ pipelinePath });
   const plan = buildTraversalPlan(graphSet);
   const orderedNodes = flattenTraversalNodes(plan);
+  const transitionsByFromNodePath = buildTransitionsByFromNodePath(graphSet);
+  const {
+    orderedIndex: schedulerOrderedIndex,
+    forwardPredecessors: schedulerForwardPredecessors,
+    forwardSuccessors: schedulerForwardSuccessors,
+  } = buildReadySetMaps(orderedNodes, graphSet, plan.inlinePlan, transitionsByFromNodePath);
   const pipeline = graphSet.pipeline || await readJsonFile(pipelinePath, 'Machine pipeline');
   const harnessSource = harnessFromPipeline(pipeline);
   const rawAdapterSource = machineAdapterFromPipeline(pipeline);
@@ -1713,6 +2883,18 @@ async function executeMachineRunStep(options = {}) {
   const usingLiveAdapter = !hasHarness && hasLiveAdapter;
   const runtimeTaskText = normalizeRuntimeTaskText(taskText);
   const runStateBeforeStep = await readRunState(runRoot);
+  const runtimeLlmApprovalMode = normalizeRunLlmApprovalMode(
+    llmApprovalMode || runStateBeforeStep?.metadata?.llmApprovalMode || 'ask',
+  );
+  const effectiveAllowDangerousSandboxBypass = allowDangerousSandboxBypass === true
+    || (usingLiveAdapter && runtimeLlmApprovalMode === 'bypass');
+  const effectiveDangerousSandboxBypassApproval = dangerousBypassApprovalForRun(
+    runtimeLlmApprovalMode,
+    dangerousSandboxBypassApproval,
+  );
+  const effectiveOverlayRootMode = effectiveAllowDangerousSandboxBypass
+    ? 'system-temp'
+    : (overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root');
   const runtimeExternalResearch = normalizeExternalResearchState(externalResearch)
     || normalizeExternalResearchState(runStateBeforeStep?.metadata?.externalResearch);
   if (!hasHarness && !hasLiveAdapter) {
@@ -1787,6 +2969,7 @@ async function executeMachineRunStep(options = {}) {
       triageNode: triageNode.nodePath,
       dispatcherNode: dispatcherNode.nodePath,
       workerNode: workerNode.nodePath,
+      llmApprovalMode: runtimeLlmApprovalMode,
     },
   });
 
@@ -1912,7 +3095,7 @@ async function executeMachineRunStep(options = {}) {
       || candidateProposalFromWorkItem(currentClaim.item)
       || candidates[0];
   };
-  const executeWorkerClaim = async (currentClaim, workerIndex = 0) => {
+  const executeWorkerClaim = async (currentClaim, workerIndex = 0, nodeAttempt = 1) => {
     const adapterCallId = options.adapterCallId && workerIndex === 0
       ? options.adapterCallId
       : `${currentClaim.claim.claimId}-graph-cli`;
@@ -1933,14 +3116,17 @@ async function executeMachineRunStep(options = {}) {
       idempotencyKey: `${adapterCallId}:attempt-1`,
     });
     adapterRequest.expectedChangedFiles = workerExpectedChangedFiles;
-    adapterRequest.overlayRootMode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
+    adapterRequest.overlayRootMode = effectiveOverlayRootMode;
     adapterRequest.overlayRoot = overlayRoot
       || (adapterRequest.overlayRootMode === 'system-temp'
         ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
         : cliOverlayRoot(runRoot, adapterRequest));
-    if (dangerousSandboxBypassApproval) {
-      adapterRequest.dangerousSandboxBypassApproval = dangerousSandboxBypassApproval;
+    if (effectiveDangerousSandboxBypassApproval) {
+      adapterRequest.dangerousSandboxBypassApproval = effectiveDangerousSandboxBypassApproval;
     }
+    const workerAdapterConfig = !hasHarness && effectiveAllowDangerousSandboxBypass
+      ? { ...adapter, bypassLlmApprovals: true }
+      : adapter;
     const commandSpec = createWorkerCommandSpec
       ? await createWorkerCommandSpec({
         request: adapterRequest,
@@ -1956,7 +3142,7 @@ async function executeMachineRunStep(options = {}) {
       : (hasHarness
         ? nodeCliPatchCommandSpec(patchConfig, adapterRequest.overlayRoot, { nodeExecutable })
         : await liveWorkerCommandSpec({
-          adapter,
+          adapter: workerAdapterConfig,
           request: adapterRequest,
           overlayRoot: adapterRequest.overlayRoot,
           claim: currentClaim,
@@ -1975,21 +3161,37 @@ async function executeMachineRunStep(options = {}) {
       ...adapterRequest.commandSpec,
       grantId: `grant-${adapterCallId}`,
       scope: 'machine-graph-harness',
-      allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
+      allowDangerousSandboxBypass: effectiveAllowDangerousSandboxBypass === true,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
       reason: 'explicit Machine graph harness command',
     })];
+    // File-Lock Queue Phase 2.A: prefer the worker node's authored
+    // `config.targetFiles` over the claim's writeSet when available.
+    // The node-level declaration is the static upper bound the
+    // pipeline author / probe committed to; the per-claim
+    // sourceOfTruthTargets is the candidate's specific scope. When
+    // the node declares targetFiles, the lock manager schedules
+    // against THAT bound — so two workers with disjoint authored
+    // declarations run concurrently even if a future probe's
+    // candidate scope happens to overlap.
+    const workerTargetFilesAuthored = Array.isArray(workerNode?.config?.targetFiles)
+      ? workerNode.config.targetFiles
+      : null;
     return runWorkerLoopOnce({
       runRoot,
       runId,
       workspaceRoot,
       claim: currentClaim,
       request: adapterRequest,
+      lockManager: runStepLockManager,
+      lockTargetFiles: workerTargetFilesAuthored,
+      nodeAttempt,
+      reviewRequired: workerNode?.config?.reviewRequired === true,
       adapter: createCliAgentAdapter({
         enabled: true,
         runRoot,
         workspaceRoot,
-        allowDangerousSandboxBypass: allowDangerousSandboxBypass === true,
+        allowDangerousSandboxBypass: effectiveAllowDangerousSandboxBypass === true,
         timeoutMs: hasHarness ? timeoutMs : (adapter.workerTimeoutMs || timeoutMs),
         maxOutputBytes: 64 * 1024,
         dangerousArgs: hasHarness
@@ -2006,10 +3208,11 @@ async function executeMachineRunStep(options = {}) {
       machineConfig,
       initialQueuedCount,
     );
+    const workerConcurrency = configuredWorkerConcurrency(machineConfig, workerClaimLimit);
     const steps = [];
     let stopReason = 'claim-limit';
-    for (let index = 0; index < workerClaimLimit; index += 1) {
-      const currentClaim = await withNodeLifecycle(runRoot, dispatcherNode, {
+    const claimWorkerItem = async (index) => {
+      return withNodeLifecycle(runRoot, dispatcherNode, {
         runId,
         attempt: dispatchAttempt + index,
         completedPayload: result => ({
@@ -2023,36 +3226,97 @@ async function executeMachineRunStep(options = {}) {
         claimId: index === 0 ? options.claimId : undefined,
         leaseMs: usingLiveAdapter ? (adapter.claimLeaseMs || adapter.workerTimeoutMs || undefined) : undefined,
         approvalGrants,
+        enforceWriteSetConflicts: false,
       }));
+    };
+
+    if (workerConcurrency <= 1) {
+      for (let index = 0; index < workerClaimLimit; index += 1) {
+        const currentClaim = await claimWorkerItem(index);
+        claim = currentClaim;
+        if (!currentClaim?.claimed) {
+          stopReason = currentClaim?.stopReason || 'not-claimed';
+          break;
+        }
+        claims.push(currentClaim);
+
+        const workerAttempt = nextNodeAttempt(await readMachineEvents(runRoot), workerNode.nodePath);
+        const currentWorker = await withNodeLifecycle(runRoot, workerNode, {
+          runId,
+          attempt: workerAttempt,
+          completedPayload: result => ({
+            workerStatus: result.result?.event?.payload?.status || '',
+            itemId: currentClaim.item?.id || '',
+            claimIndex: index + 1,
+          }),
+        }, () => executeWorkerClaim(currentClaim, index, workerAttempt));
+        worker = currentWorker;
+        workers.push(currentWorker);
+        steps.push({ claim: currentClaim, worker: currentWorker });
+
+        if (shouldStopWorkerLoopAfterStep(currentWorker, machineConfig)) {
+          stopReason = currentWorker.result?.event?.payload?.status || currentWorker.result?.toState || 'worker-stop';
+          break;
+        }
+      }
+      return {
+        steps,
+        stopReason,
+        maxClaims: workerClaimLimit,
+        workerConcurrency,
+        initialQueuedCount,
+        claimCount: claims.length,
+        workerCount: workers.length,
+      };
+    }
+
+    const claimedBatch = [];
+    for (let index = 0; index < workerClaimLimit; index += 1) {
+      const currentClaim = await claimWorkerItem(index);
       claim = currentClaim;
       if (!currentClaim?.claimed) {
         stopReason = currentClaim?.stopReason || 'not-claimed';
         break;
       }
       claims.push(currentClaim);
+      claimedBatch.push({ claim: currentClaim, index });
+    }
 
-      const currentWorker = await withNodeLifecycle(runRoot, workerNode, {
-        runId,
-        attempt: nextNodeAttempt(await readMachineEvents(runRoot), workerNode.nodePath),
-        completedPayload: result => ({
-          workerStatus: result.result?.event?.payload?.status || '',
-          itemId: currentClaim.item?.id || '',
-          claimIndex: index + 1,
-        }),
-      }, () => executeWorkerClaim(currentClaim, index));
-      worker = currentWorker;
-      workers.push(currentWorker);
-      steps.push({ claim: currentClaim, worker: currentWorker });
+    if (claimedBatch.length) {
+      const workerBaseAttempt = nextNodeAttempt(await readMachineEvents(runRoot), workerNode.nodePath);
+      const currentWorkers = await mapWithConcurrency(claimedBatch, workerConcurrency, async (entry, batchIndex) => {
+        const workerAttempt = workerBaseAttempt + batchIndex;
+        return withNodeLifecycle(runRoot, workerNode, {
+          runId,
+          attempt: workerAttempt,
+          completedPayload: result => ({
+            workerStatus: result.result?.event?.payload?.status || '',
+            itemId: entry.claim.item?.id || '',
+            claimIndex: entry.index + 1,
+          }),
+        }, () => executeWorkerClaim(entry.claim, entry.index, workerAttempt));
+      });
 
-      if (shouldStopWorkerLoopAfterStep(currentWorker, machineConfig)) {
-        stopReason = currentWorker.result?.event?.payload?.status || currentWorker.result?.toState || 'worker-stop';
-        break;
+      for (let batchIndex = 0; batchIndex < claimedBatch.length; batchIndex += 1) {
+        const currentClaim = claimedBatch[batchIndex].claim;
+        const currentWorker = currentWorkers[batchIndex];
+        worker = currentWorker;
+        workers.push(currentWorker);
+        steps.push({ claim: currentClaim, worker: currentWorker });
+      }
+
+      const stoppingStep = steps.find(step => shouldStopWorkerLoopAfterStep(step.worker, machineConfig));
+      if (stoppingStep) {
+        stopReason = stoppingStep.worker.result?.event?.payload?.status
+          || stoppingStep.worker.result?.toState
+          || 'worker-stop';
       }
     }
     return {
       steps,
       stopReason,
       maxClaims: workerClaimLimit,
+      workerConcurrency,
       initialQueuedCount,
       claimCount: claims.length,
       workerCount: workers.length,
@@ -2068,8 +3332,308 @@ async function executeMachineRunStep(options = {}) {
   // same gate card again immediately.
   const latestLifecycleByPath = latestLifecycleStatusByNode(initialEvents);
 
+  // Fork-Join Phase 3 Step 1: ready-set scheduler. The previous for-loop
+  // visited orderedNodes in fixed topological order and used `continue`
+  // / `break` for skip and stop. The ready-set driver below produces
+  // the IDENTICAL visit sequence (lowest-orderedIndex from the ready
+  // set, with forward-only predecessor gating) but expresses dispatch
+  // as a ready-set update so Step 2 can swap the single pick for
+  // `mapWithConcurrency` and Step 3 can extend it with loop-back resets
+  // and conditional pruning without re-rewriting this whole block.
+  //
+  // The `do { ... } while (false)` pattern wrapping the dispatch body
+  // lets us keep the existing `continue` semantics as `break` (skip
+  // dispatch, proceed to successor propagation) while a top-level
+  // `stopScheduler` flag handles the cases that previously `break`-ed
+  // out of the for-loop entirely (approval-required, defer-final,
+  // support-blocked).
+  const schedulerVisited = new Set();
+  const schedulerDead = new Set();
+  const schedulerReady = new Set();
+  // Phase 3 Step 3.A: per-target per-edge incoming status. The edge
+  // key compounds predPath + edge id/condition so two edges from the
+  // same pred to the same succ are tracked separately (Codex S3-Fix1).
+  // Phase 3 Step 3.C: loop-back resets are recorded as
+  // {sourceNodePath, targetNodePath, ...} so emission attribution
+  // works even when a parallel batch contains multiple sources
+  // (Codex S3-Fix4).
+  const schedulerIncomingEdgeStatus = new Map();
+  const schedulerLoopBackResets = [];
+  const schedulerSourceResults = new Map(); // nodePath -> sourceResult, fed into propagation
+  // onInnerFailure (Phase 3+): build a map from child graphKey to its
+  // parent wrapper's onInnerFailure policy. When an inner node throws
+  // inside an inline sub-graph, the scheduler consults this map to
+  // decide whether to re-throw (block, the default) or recover
+  // (continue / partial). The map is keyed by graphKey (not nodePath)
+  // so any node within that child graph routes to the same wrapper.
+  const innerFailurePolicyByChildGraphKey = new Map();
+  if (plan.inlinePlan && Array.isArray(plan.inlinePlan.expansions)) {
+    for (const expansion of plan.inlinePlan.expansions) {
+      if (expansion.skipped) continue;
+      const parentNode = orderedNodes[schedulerOrderedIndex.get(expansion.nodePath)];
+      if (!parentNode) continue;
+      const policy = sanitizeInnerFailurePolicy(parentNode.config?.onInnerFailure);
+      innerFailurePolicyByChildGraphKey.set(expansion.childGraphKey, {
+        policy,
+        wrapperNodePath: expansion.nodePath,
+      });
+    }
+  }
   for (const node of orderedNodes) {
-    if (!executablePaths.has(node.nodePath)) continue;
+    if ((schedulerForwardPredecessors.get(node.nodePath) || new Set()).size === 0) {
+      schedulerReady.add(node.nodePath);
+    }
+  }
+  // Phase 3 Step 2: canonical-rail nodePaths stay serial. The set is
+  // computed once outside the loop so isParallelizableSupportNode can
+  // exclude them in O(1) lookups.
+  const canonicalRailPaths = new Set([
+    ...probeNodePaths,
+    triageNode.nodePath,
+    dispatcherNode.nodePath,
+    workerNode.nodePath,
+  ]);
+  // Phase 3 Step 3.B: per-iteration barrier-defer guard. A barrier
+  // whose `config.waitFor` references an unreachable node (e.g.,
+  // 'missing-probe' in the test suite) would otherwise re-enter the
+  // ready set every iteration and never dispatch. Codex S3-Fix3
+  // reshape: the guard works WITH pickNextReadyNode now — picker
+  // prefers non-deferred ready nodes, so a deferred barrier only
+  // gets re-picked when no live alternative exists. The guard set
+  // resets whenever ANY node successfully visits (= the visited
+  // count grows), giving deferred barriers a fresh chance after
+  // siblings advance.
+  const recentlyDeferredBarriers = new Set();
+  let visitedSizeBeforeDispatch = 0;
+  let stopScheduler = false;
+  // Step 2 helper: dispatch a single support node from the parallel
+  // batch. Same dispatch body as the single-pick else-branch but
+  // packaged for mapWithConcurrency. Shared mutable state (`support`
+  // array, `blockedSupport`, `stopScheduler`) is closed over — JS is
+  // single-threaded so synchronous mutations don't race; awaits
+  // interleave but per-call writes remain atomic.
+  const dispatchParallelSupportNode = async (node) => {
+    // Skip-and-still-propagate paths (= previous `continue` semantics).
+    if (!executablePaths.has(node.nodePath)) return;
+    if (latestLifecycleByPath.get(node.nodePath)?.eventType === 'node.skipped') return;
+    if (resumeAfterSupportBlock && latestNodeResolvedEvent(initialEvents, node.nodePath)) return;
+    if (
+      resumeAfterApproval
+      && node.nodePath !== dispatcherNode.nodePath
+      && node.nodePath !== workerNode.nodePath
+      && latestNodeResolvedEvent(initialEvents, node.nodePath)
+    ) return;
+    const attempt = nextNodeAttempt(initialEvents, node.nodePath);
+    // shouldDeferFinalSupportNodes also lives in the serial path; in
+    // the parallel batch we honor it BEFORE dispatching so a
+    // deferred-final block aborts the whole iteration cleanly.
+    if (workerLoopExecuted && await shouldDeferFinalSupportNodes(runRoot)) {
+      stopScheduler = true;
+      return;
+    }
+    // Step 3.B: scheduler-side barrier readiness. Don't dispatch a
+    // barrier until every node in `config.waitFor` is in
+    // schedulerVisited. The defer-guard caps each barrier at one
+    // deferral per stuck-state — if the visited set hasn't grown
+    // by the next iteration, fall through to validateBarrierNode
+    // so the barrier's onPartialFailure policy decides
+    // (continue-with-warning / fail / block).
+    if (
+      node.nodeType === 'orpad.barrier'
+      && !barrierWaitForSatisfied(node, schedulerVisited, schedulerDead)
+      && !recentlyDeferredBarriers.has(node.nodePath)
+    ) {
+      recentlyDeferredBarriers.add(node.nodePath);
+      schedulerReady.add(node.nodePath);
+      schedulerVisited.delete(node.nodePath);
+      return;
+    }
+    let supportResult;
+    let recoveredInnerFailure = null;
+    try {
+      supportResult = await executeSupportNode(runRoot, node, {
+        runId,
+        attempt,
+        supportMode: usingLiveAdapter ? 'live-adapter' : 'harness',
+        workspaceRoot,
+        taskText: runtimeTaskText,
+        externalResearch: runtimeExternalResearch,
+        pipelineDir,
+      });
+    } catch (innerError) {
+      // onInnerFailure mirror for the parallel batch path. Same
+      // recovery semantics as the serial path: synthesize a
+      // recovered result if the parent wrapper opted in. Otherwise
+      // re-throw — mapWithConcurrency's Promise.allSettled propagates
+      // the rejection to the caller.
+      const innerPolicy = innerFailurePolicyByChildGraphKey.get(node.graphKey);
+      if (innerPolicy && innerPolicy.policy !== 'block') {
+        await recordInnerFailureRecovery({
+          runRoot,
+          runId,
+          failingNodePath: node.nodePath,
+          failingNodeType: node.nodeType,
+          wrapperNodePath: innerPolicy.wrapperNodePath,
+          policy: innerPolicy.policy,
+          error: innerError,
+        });
+        supportResult = {
+          __innerFailureRecovered: true,
+          policy: innerPolicy.policy,
+          wrapperNodePath: innerPolicy.wrapperNodePath,
+          error: { code: innerError?.code || 'INNER_FAILURE', message: innerError?.message || String(innerError) },
+        };
+        recoveredInnerFailure = supportResult;
+      } else {
+        throw innerError;
+      }
+    }
+    const supportEntry = {
+      nodePath: node.nodePath,
+      nodeType: node.nodeType,
+      result: supportResult,
+      recoveredInnerFailure,
+    };
+    support.push(supportEntry);
+    schedulerSourceResults.set(node.nodePath, supportResult);
+    await emitEdgeEvaluationDiagnostic({
+      runRoot,
+      runId,
+      sourceNode: node,
+      sourceResult: supportResult,
+      transitions: transitionsByFromNodePath.get(node.nodePath) || [],
+    });
+    if (supportResult?.blocked) {
+      blockedSupport = supportEntry;
+      stopScheduler = true;
+    }
+  };
+  while (schedulerReady.size > 0 && !stopScheduler) {
+    // Step 3.B (Codex S3-Fix3): clear the recently-deferred-barriers
+    // guard whenever the scheduler made progress since the previous
+    // dispatch. A new visit means previously deferred barriers
+    // might now have their waitFor satisfied; they get a fresh
+    // shot. Note we compare against the count BEFORE the prior
+    // iteration's dispatch (not just any change), since a barrier's
+    // own defer-and-requeue cycle decrements then increments
+    // schedulerVisited without representing real progress.
+    if (schedulerVisited.size > visitedSizeBeforeDispatch) {
+      recentlyDeferredBarriers.clear();
+    }
+    visitedSizeBeforeDispatch = schedulerVisited.size;
+    // Phase 3 Step 2 fan-out: gather every parallelizable support node
+    // currently in the ready set. If there's more than one AND no
+    // artifact-path conflict, dispatch them concurrently via
+    // mapWithConcurrency. Anything else (canonical-rail nodes, single
+    // support nodes, or a conflicting batch) falls through to the
+    // serial single-pick path inherited from Step 1.
+    // Batching gate: only nodes that were UNLOCKED by a predecessor
+    // completing are eligible — i.e. they have at least one forward
+    // predecessor and that predecessor is now in `schedulerVisited`.
+    // Initial-ready nodes (empty forward predecessor set) get serial
+    // single-pick treatment so Phase 1's inline-expansion visit order
+    // is preserved (sub-graph entry nodes have no in-graph predecessor
+    // today because cross-graph wrapper edges aren't bridged yet —
+    // that's Phase 4 territory). Without this gate, Step 2 fan-out
+    // would batch every initial-ready node together and break
+    // pipelines that depend on the linear inline flow.
+    const parallelBatchPaths = [];
+    for (const path of schedulerReady) {
+      const candidate = orderedNodes[schedulerOrderedIndex.get(path)];
+      if (!isParallelizableSupportNode(candidate, canonicalRailPaths)) continue;
+      const preds = schedulerForwardPredecessors.get(path);
+      if (!preds || preds.size === 0) continue;
+      parallelBatchPaths.push(path);
+    }
+    if (parallelBatchPaths.length > 1) {
+      parallelBatchPaths.sort((a, b) => (
+        schedulerOrderedIndex.get(a) - schedulerOrderedIndex.get(b)
+      ));
+      const parallelBatchNodes = parallelBatchPaths.map(p => (
+        orderedNodes[schedulerOrderedIndex.get(p)]
+      ));
+      const conflicts = detectArtifactPathConflicts(parallelBatchNodes);
+      if (conflicts.length > 0) {
+        // Phase 5 (file-lock queue) replaces this with proper acquire/
+        // wait semantics. For Step 2 we emit a diagnostic and fall back
+        // to single-pick so the conflicting writes serialize naturally
+        // (they re-enter the batch one at a time on subsequent
+        // iterations).
+        try {
+          await appendMachineEvent(runRoot, {
+            runId,
+            actor: 'machine',
+            eventType: 'scheduler.parallelArtifactConflict',
+            payload: {
+              phase: 'phase-3-step-2-stopgap',
+              conflicts,
+              fallbackMode: 'serialize-via-single-pick',
+              batchSize: parallelBatchPaths.length,
+            },
+          });
+        } catch { /* diagnostic must never fail the run */ }
+      } else {
+        for (const path of parallelBatchPaths) {
+          schedulerReady.delete(path);
+          schedulerVisited.add(path);
+        }
+        await mapWithConcurrency(parallelBatchPaths, parallelBatchPaths.length, async (path) => {
+          const node = orderedNodes[schedulerOrderedIndex.get(path)];
+          await dispatchParallelSupportNode(node);
+        });
+        // Step 3.A: propagate each batched node's edges via the
+        // evaluator so dead branches and dropped selector arms don't
+        // accidentally re-enter readiness. Skip nodes that the
+        // dispatch deferred (Step 3.B's barrier wait removes
+        // unsatisfied barriers from schedulerVisited and re-queues
+        // them — their outgoing edges must NOT fire yet).
+        for (const path of parallelBatchPaths) {
+          if (schedulerDead.has(path)) continue;
+          if (!schedulerVisited.has(path)) continue;
+          propagateReadinessAfterVisit({
+            visitedPath: path,
+            sourceResult: schedulerSourceResults.get(path),
+            orderedNodes,
+            orderedIndex: schedulerOrderedIndex,
+            forwardPredecessors: schedulerForwardPredecessors,
+            transitionsByFromNodePath,
+            schedulerVisited,
+            schedulerDead,
+            schedulerReady,
+            incomingEdgeStatus: schedulerIncomingEdgeStatus,
+            loopBackResets: schedulerLoopBackResets,
+          });
+        }
+        if (schedulerLoopBackResets.length > 0) {
+          const resets = schedulerLoopBackResets.splice(0);
+          for (const reset of resets) {
+            // Codex S3-Fix4: emit with the TRUE source node, not a
+            // batch-arbitrary one. Each reset event preserves the
+            // exact (source, target) pairing produced during
+            // propagation.
+            await appendLoopBackResetEvent({
+              runRoot,
+              runId,
+              sourceNodePath: reset.sourceNodePath,
+              targetNodePath: reset.targetNodePath,
+            });
+          }
+        }
+        continue;
+      }
+    }
+    const nodePath = pickNextReadyNode(schedulerReady, schedulerOrderedIndex, recentlyDeferredBarriers);
+    if (!nodePath) break;
+    schedulerReady.delete(nodePath);
+    schedulerVisited.add(nodePath);
+    const node = orderedNodes[schedulerOrderedIndex.get(nodePath)];
+    // Each iteration uses a `do { ... } while (false)` block so the
+    // dispatch body can `break` out to the successor-propagation step
+    // (= previous `continue` semantics) while the outer while loop
+    // continues processing the ready set. Outer break-equivalents
+    // toggle `stopScheduler` before breaking the dispatch block.
+    do {
+    if (!executablePaths.has(node.nodePath)) break;
     // User-skipped nodes are terminal for this run, regardless of node
     // type. Without this guard the for-loop would re-enter a skipped
     // support gate, re-evaluate evidence, and re-emit node.blocked.
@@ -2079,12 +3643,12 @@ async function executeMachineRunStep(options = {}) {
     // node on the next Continue click. activeNodeExecutionsFromEvents
     // drops the active node.started entry once node.cancelled fires so
     // assertRunCanExecuteStep is unblocked.
-    if (latestLifecycleByPath.get(node.nodePath)?.eventType === 'node.skipped') continue;
+    if (latestLifecycleByPath.get(node.nodePath)?.eventType === 'node.skipped') break;
     if (
       resumeAfterSupportBlock
       && latestNodeResolvedEvent(initialEvents, node.nodePath)
     ) {
-      continue;
+      break;
     }
     if (
       resumeAfterApproval
@@ -2092,7 +3656,7 @@ async function executeMachineRunStep(options = {}) {
       && node.nodePath !== workerNode.nodePath
       && latestNodeResolvedEvent(initialEvents, node.nodePath)
     ) {
-      continue;
+      break;
     }
     const attempt = nextNodeAttempt(initialEvents, node.nodePath);
     if (probeNodePaths.has(node.nodePath)) {
@@ -2177,29 +3741,145 @@ async function executeMachineRunStep(options = {}) {
         workerLoop = await executeSerialWorkerLoop(attempt);
         workerLoopExecuted = true;
       }
-      if (claim?.stopReason === 'approval-required') break;
+      if (claim?.stopReason === 'approval-required') {
+        stopScheduler = true;
+        break;
+      }
     } else if (node.nodePath === workerNode.nodePath) {
       if (!workerLoopExecuted) {
         workerLoop = await executeSerialWorkerLoop(nextNodeAttempt(initialEvents, dispatcherNode.nodePath));
         workerLoopExecuted = true;
       }
     } else {
-      const supportResult = await executeSupportNode(runRoot, node, {
-        runId,
-        attempt,
-        supportMode: usingLiveAdapter ? 'live-adapter' : 'harness',
-        taskText: runtimeTaskText,
-        externalResearch: runtimeExternalResearch,
-      });
+      if (workerLoopExecuted && await shouldDeferFinalSupportNodes(runRoot)) {
+        stopScheduler = true;
+        break;
+      }
+      // Phase 3 Step 3.B: scheduler-side barrier wait. Defer dispatch
+      // until every config.waitFor entry is visited, capped at one
+      // deferral per stuck-state so an unreachable waitFor entry
+      // can't infinite-loop the scheduler.
+      if (
+        node.nodeType === 'orpad.barrier'
+        && !barrierWaitForSatisfied(node, schedulerVisited, schedulerDead)
+        && !recentlyDeferredBarriers.has(node.nodePath)
+      ) {
+        recentlyDeferredBarriers.add(node.nodePath);
+        schedulerReady.add(node.nodePath);
+        schedulerVisited.delete(node.nodePath);
+        break;
+      }
+      let supportResult;
+      let recoveredInnerFailure = null;
+      try {
+        supportResult = await executeSupportNode(runRoot, node, {
+          runId,
+          attempt,
+          supportMode: usingLiveAdapter ? 'live-adapter' : 'harness',
+          workspaceRoot,
+          taskText: runtimeTaskText,
+          externalResearch: runtimeExternalResearch,
+          pipelineDir,
+        });
+      } catch (innerError) {
+        // onInnerFailure (Phase 3+): if this node lives inside an
+        // inline sub-graph whose parent wrapper declared a
+        // non-'block' policy, recover instead of re-throwing. The
+        // recorded `node.failed` event (emitted inside
+        // withNodeLifecycle's catch) stays as audit; we add a
+        // diagnostic and synthesize a recovered result for
+        // propagation.
+        const innerPolicy = innerFailurePolicyByChildGraphKey.get(node.graphKey);
+        if (innerPolicy && innerPolicy.policy !== 'block') {
+          await recordInnerFailureRecovery({
+            runRoot,
+            runId,
+            failingNodePath: node.nodePath,
+            failingNodeType: node.nodeType,
+            wrapperNodePath: innerPolicy.wrapperNodePath,
+            policy: innerPolicy.policy,
+            error: innerError,
+          });
+          supportResult = {
+            __innerFailureRecovered: true,
+            policy: innerPolicy.policy,
+            wrapperNodePath: innerPolicy.wrapperNodePath,
+            error: { code: innerError?.code || 'INNER_FAILURE', message: innerError?.message || String(innerError) },
+          };
+          recoveredInnerFailure = supportResult;
+        } else {
+          throw innerError;
+        }
+      }
       const supportEntry = {
         nodePath: node.nodePath,
         nodeType: node.nodeType,
         result: supportResult,
+        recoveredInnerFailure,
       };
       support.push(supportEntry);
+      schedulerSourceResults.set(node.nodePath, supportResult);
+      // Phase 2 dry-run: emit a non-mutating `scheduler.edgeEvaluation`
+      // event so the user / audit log can see which outgoing edges
+      // WOULD fire under Phase 3's ready-set scheduler. Phase 3 Step
+      // 3.A makes the decisions actually gate downstream readiness
+      // propagation; the diagnostic event remains for observability.
+      await emitEdgeEvaluationDiagnostic({
+        runRoot,
+        runId,
+        sourceNode: node,
+        sourceResult: supportResult,
+        transitions: transitionsByFromNodePath.get(node.nodePath) || [],
+      });
       if (supportResult?.blocked) {
         blockedSupport = supportEntry;
+        stopScheduler = true;
         break;
+      }
+    }
+    } while (false);
+    // Phase 3 Step 3.A: propagate readiness using the Phase 2
+    // evaluator. For decision-emitting nodes (selector / gate /
+    // patchReview / barrier) only fired outgoing edges contribute to
+    // successor readiness; dropped edges propagate deadness so dead
+    // branches' downstream nodes never enter the ready set. For
+    // everything else (canonical-rail nodes + skipped support nodes
+    // with no captured result) every forward edge fires
+    // unconditionally — matching the previous behavior.
+    //
+    // Skip propagation when the dispatch DEFERRED the node — Step
+    // 3.B's barrier wait removes the node from schedulerVisited and
+    // re-queues it. Propagating its outgoing edges in that case
+    // would unlock downstream nodes prematurely.
+    if (!schedulerDead.has(nodePath) && schedulerVisited.has(nodePath)) {
+      propagateReadinessAfterVisit({
+        visitedPath: nodePath,
+        sourceResult: schedulerSourceResults.get(nodePath),
+        orderedNodes,
+        orderedIndex: schedulerOrderedIndex,
+        forwardPredecessors: schedulerForwardPredecessors,
+        transitionsByFromNodePath,
+        schedulerVisited,
+        schedulerDead,
+        schedulerReady,
+        incomingEdgeStatus: schedulerIncomingEdgeStatus,
+        loopBackResets: schedulerLoopBackResets,
+      });
+    }
+    // Step 3.C: process any loop-back resets gathered during
+    // propagation. Each reset carries its TRUE source node (Codex
+    // S3-Fix4); within-step re-dispatch is deferred to a future
+    // increment that cascades downstream incomingEdgeStatus resets
+    // and per-iteration event re-reads.
+    if (schedulerLoopBackResets.length > 0) {
+      const resets = schedulerLoopBackResets.splice(0);
+      for (const reset of resets) {
+        await appendLoopBackResetEvent({
+          runRoot,
+          runId,
+          sourceNodePath: reset.sourceNodePath,
+          targetNodePath: reset.targetNodePath,
+        });
       }
     }
   }
@@ -2247,14 +3927,15 @@ async function executeMachineRunStep(options = {}) {
       runState,
       supportBlocked: blockedSupport,
     };
-  } else if (claim?.stopReason === 'approval-required') {
+  } else if (claim?.stopReason === 'approval-required' || workerLoop?.stopReason === 'approval-required') {
     const inventory = await summarizeQueueInventory(runRoot);
+    const workerApproval = [...workers].reverse().find(entry => entry?.result?.approval)?.result?.approval || null;
     finalization = {
       inventory,
       summaryStatus: 'blocked',
       runState: await readRunState(runRoot),
       approvalRequired: true,
-      approval: claim.approval || null,
+      approval: claim?.approval || workerApproval || null,
       ...(partialArtifactContracts.length ? {
         artifactContracts: {
           partial: true,
@@ -2365,4 +4046,12 @@ module.exports = {
   __test_latestNodeResolvedEvent: latestNodeResolvedEvent,
   __test_activeNodeExecutionsFromEvents: activeNodeExecutionsFromEvents,
   __test_emitGraphDriftWarningIfChanged: emitGraphDriftWarningIfChanged,
+  __test_executeTreeWrapper: executeTreeWrapper,
+  __test_buildReadySetMaps: buildReadySetMaps,
+  __test_configuredWorkerConcurrency: configuredWorkerConcurrency,
+  __test_configuredWorkerClaimLimit: configuredWorkerClaimLimit,
+  __test_pickNextReadyNode: pickNextReadyNode,
+  __test_emitEdgeEvaluationDiagnostic: emitEdgeEvaluationDiagnostic,
+  __test_isParallelizableSupportNode: isParallelizableSupportNode,
+  __test_detectArtifactPathConflicts: detectArtifactPathConflicts,
 };

@@ -83,9 +83,15 @@ const AGENT_ORCHESTRATED_NODE_TYPES = new Set([
   'orpad.graph',
   'orpad.patchReview',
   'orpad.probe',
+  'orpad.rule',
   'orpad.triage',
   'orpad.workQueue',
   'orpad.workerLoop',
+]);
+
+const RUNNABLE_ADAPTER_TYPES = new Set([
+  'codex-cli',
+  'claude-code',
 ]);
 
 const MACHINE_EXECUTABLE_NODE_TYPES = new Set([
@@ -427,7 +433,7 @@ function summarizeMachineStepExecution(machineExecution, pipeline) {
   const hasRunnableAdapter = adapter
     && typeof adapter === 'object'
     && !Array.isArray(adapter)
-    && adapter.type === 'codex-cli'
+    && RUNNABLE_ADAPTER_TYPES.has(adapter.type)
     && adapter.enabled !== false;
   if (!hasHarness && !hasRunnableAdapter) {
     blockedReasons.push('machine-harness-required');

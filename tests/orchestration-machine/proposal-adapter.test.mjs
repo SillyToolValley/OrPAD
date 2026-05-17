@@ -100,6 +100,34 @@ test('proposal-only probe ingests candidates without letting adapter close the r
   assert.equal(events.some(event => event.eventType === 'run.summary' && event.payload?.summaryStatus === 'partial'), true);
 });
 
+test('proposal-only probe preserves candidate targetFiles on ingested work items', async () => {
+  const run = await makeRun();
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/ux-probe',
+    taskKind: 'probe',
+    workspaceRoot: run.workspaceRoot,
+  });
+
+  await runProposalProbe({
+    runRoot: run.runRoot,
+    request,
+    fixtureResult: adapterResult(request, {
+      candidateProposals: [proposal({
+        sourceOfTruthTargets: ['src/renderer/renderer.js'],
+        targetFiles: ['src/./renderer/renderer.js', 'tests\\renderer.test.mjs'],
+      })],
+    }),
+    now: '2026-04-30T00:00:01.000Z',
+  });
+
+  const item = await findQueueItem(run.runRoot, 'graph-editor-graph-specific-node-types');
+  assert.deepEqual(item.item.targetFiles, [
+    'src/renderer/renderer.js',
+    'tests/renderer.test.mjs',
+  ]);
+});
+
 test('adapter requests reject unsafe ids and run-relative refs before Machine events', async () => {
   const run = await makeRun();
 

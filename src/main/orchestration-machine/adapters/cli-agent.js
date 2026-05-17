@@ -193,7 +193,102 @@ function missingExpectedChangedFiles(patch, expectedChangedFiles = []) {
   return expectedChangedFiles.filter(file => !changed.has(file));
 }
 
+const APPROVAL_REQUIRED_TEXT_RE = /\b(approval required|requires approval|permission required|permission denied|permission errors?|sandbox denied|denied write|tool use denied|not approved|not allowed without approval|haven't granted|have not granted|grant(ed)? permission|tool call was not approved)\b/i;
+
+function collectStringValues(value, options = {}) {
+  const {
+    depth = 0,
+    seen = new Set(),
+    output = [],
+  } = options;
+  if (output.length >= 200 || depth > 8 || value == null) return output;
+  if (typeof value === 'string') {
+    output.push(value);
+    return output;
+  }
+  if (typeof value !== 'object') return output;
+  if (seen.has(value)) return output;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) collectStringValues(item, { depth: depth + 1, seen, output });
+    return output;
+  }
+  for (const item of Object.values(value)) collectStringValues(item, { depth: depth + 1, seen, output });
+  return output;
+}
+
+function hasNonEmptyPermissionDenial(value, options = {}) {
+  const {
+    depth = 0,
+    seen = new Set(),
+  } = options;
+  if (depth > 8 || value == null || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  const entries = Object.entries(value);
+  for (const [key, item] of entries) {
+    if (/^permission_?denials?$/i.test(key)) {
+      if (Array.isArray(item)) return item.length > 0;
+      if (item && typeof item === 'object') return Object.keys(item).length > 0;
+      if (typeof item === 'string') {
+        const normalized = item.trim().toLowerCase();
+        return Boolean(normalized && !['[]', 'null', 'none', 'false'].includes(normalized));
+      }
+      return Boolean(item);
+    }
+  }
+  for (const [, item] of entries) {
+    if (hasNonEmptyPermissionDenial(item, { depth: depth + 1, seen })) return true;
+  }
+  return false;
+}
+
+function parseJsonDocuments(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+  try {
+    return [JSON.parse(raw)];
+  } catch {}
+  const parsed = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const candidate = line.trim();
+    if (!candidate || candidate[0] !== '{') continue;
+    try {
+      parsed.push(JSON.parse(candidate));
+    } catch {}
+  }
+  return parsed;
+}
+
+function approvalSearchText(value) {
+  if (value == null) return '';
+  if (typeof value !== 'string') return collectStringValues(value).join('\n');
+  const docs = parseJsonDocuments(value);
+  if (!docs.length) return value;
+  return docs.flatMap(doc => collectStringValues(doc)).join('\n');
+}
+
+function processLooksApprovalRequired(processResult = {}, parsedResult = null) {
+  const structuredSources = [
+    parsedResult,
+    ...parseJsonDocuments(processResult.stdout),
+    ...parseJsonDocuments(processResult.stderr),
+  ].filter(Boolean);
+  if (structuredSources.some(source => hasNonEmptyPermissionDenial(source))) return true;
+  const text = [
+    approvalSearchText(processResult.stdout),
+    approvalSearchText(processResult.stderr),
+    processResult.spawnError?.message,
+  ].filter(Boolean).join('\n');
+  const parsedText = [
+    approvalSearchText(parsedResult?.summary),
+    approvalSearchText(parsedResult?.deferredReason),
+  ].filter(Boolean).join('\n');
+  return APPROVAL_REQUIRED_TEXT_RE.test([text, parsedText].filter(Boolean).join('\n'));
+}
+
 function resultStatusForProcess(processResult, patch, request = {}) {
+  if (processLooksApprovalRequired(processResult)) return 'approval-required';
   if ((patch.violations || []).length) return 'blocked';
   if (processResult.code !== 0 || processResult.timedOut) return 'failed';
   if (missingExpectedChangedFiles(patch, normalizeExpectedChangedFiles(request)).length) return 'blocked';
@@ -300,22 +395,36 @@ function createCliAgentAdapter(options = {}) {
         const expectedChangedFiles = normalizeExpectedChangedFiles(request);
         const missingExpectedChanges = missingExpectedChangedFiles(patch, expectedChangedFiles);
         const status = resultStatusForProcess(processResult, patch, request);
+        const approvalRequired = status === 'approval-required';
         return {
           schemaVersion: 'orpad.workerResult.v1',
           adapterCallId: request.adapterCallId,
           attemptId: request.attemptId,
           idempotencyKey: request.idempotencyKey,
           status,
-          summary: status === 'done'
-            ? 'CLI adapter completed in overlay and produced a Machine-owned result.'
-            : (
+          summary: approvalRequired
+            ? 'CLI provider requested tool permission. Approve to retry this work item with the run bypass option, or decline to keep it blocked.'
+            : (status === 'done'
+              ? 'CLI adapter completed in overlay and produced a Machine-owned result.'
+              : (
               processResult.spawnError
                 ? `CLI adapter process could not start: ${processResult.spawnError.message}`
                 : 'CLI adapter result requires Machine review before any canonical mutation.'
-            ),
+              )),
           artifacts,
           patchArtifact: patchArtifactPath,
           changedFiles: (patch.changes || []).map(change => change.path),
+          ...(approvalRequired ? {
+            requestedCapabilities: ['llm-cli-tool-permission', 'workspace-overlay-write'],
+            approvalRequest: {
+              reason: 'llm-cli-permission-required',
+              commandSpec: {
+                command: commandSpec.command,
+                args: processResult.args || [],
+                cwdKind: 'overlay',
+              },
+            },
+          } : {}),
           verification: [{
             command: commandSpec.command,
             args: processResult.args || [],
@@ -354,6 +463,7 @@ module.exports = {
   missingExpectedChangedFiles,
   normalizeExpectedChangedFiles,
   prepareCliOverlayWorkspace,
+  processLooksApprovalRequired,
   registerJsonArtifact,
   resultStatusForProcess,
   sameResolvedPath,

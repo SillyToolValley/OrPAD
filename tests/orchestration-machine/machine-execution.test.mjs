@@ -23,6 +23,7 @@ const {
 } = require('../../src/main/orchestration-machine');
 const {
   batchApplyStateFromEvents,
+  __test_configuredWorkerConcurrency,
   effectiveProbeCandidateLimit,
   liveProbePrompt,
   patchReviewStateFromEvents,
@@ -157,6 +158,15 @@ async function addPatchReviewAndExitNodes(pipelineDir) {
     { from: 'patch-review', to: 'verification-gate' },
     { from: 'artifact', to: 'exit' },
   );
+  await fs.writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf8');
+}
+
+async function updateGraphNodeConfig(pipelineDir, nodeId, patch) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  const node = graph.graph.nodes.find(entry => entry.id === nodeId);
+  if (!node) throw new Error(`Graph node not found: ${nodeId}`);
+  node.config = { ...(node.config || {}), ...patch };
   await fs.writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf8');
 }
 
@@ -361,6 +371,88 @@ async function writeFakeCodexCliScript(dir) {
   return scriptPath;
 }
 
+async function writeFakeParallelCodexCliScript(dir) {
+  const scriptPath = path.join(dir, 'fake-parallel-codex-cli.mjs');
+  await fs.writeFile(scriptPath, [
+    'import fs from "node:fs";',
+    'import path from "node:path";',
+    'const args = process.argv.slice(2);',
+    'const outputIndex = args.indexOf("--output-last-message");',
+    'const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : "";',
+    'const prompt = args.at(-1) || "";',
+    'function field(name) {',
+    '  const match = prompt.match(new RegExp(`${name}:\\\\s*([^\\\\n]+)`));',
+    '  return match ? match[1].trim() : "";',
+    '}',
+    'function allowedFile() {',
+    '  const match = prompt.match(/allowedFiles:\\s*(\\[[^\\n]*\\])/);',
+    '  if (!match) return "src/parallel-fallback.md";',
+    '  const files = JSON.parse(match[1]);',
+    '  return files[0] || "src/parallel-fallback.md";',
+    '}',
+    'const adapterCallId = field("adapterCallId");',
+    'const attemptId = field("attemptId");',
+    'const idempotencyKey = field("idempotencyKey");',
+    'let result;',
+    'if (prompt.includes("managed-run worker adapter")) {',
+    '  const file = allowedFile();',
+    '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);',
+    '  fs.mkdirSync(path.dirname(file), { recursive: true });',
+    '  fs.writeFileSync(file, `after ${file}\\n`, "utf8");',
+    '  result = {',
+    '    schemaVersion: "orpad.workerResult.v1",',
+    '    adapterCallId,',
+    '    attemptId,',
+    '    idempotencyKey,',
+    '    status: "done",',
+    '    summary: `Fake parallel worker changed ${file}.`,',
+    '    artifacts: []',
+    '  };',
+    '} else {',
+    '  result = {',
+    '    schemaVersion: "orpad.workerResult.v1",',
+    '    adapterCallId,',
+    '    attemptId,',
+    '    idempotencyKey,',
+    '    status: "done",',
+    '    summary: "Fake parallel proposal found two disjoint targets.",',
+    '    artifacts: [],',
+    '    candidateProposals: [',
+    '      {',
+    '        schemaVersion: "orpad.candidateProposal.v1",',
+    '        proposalId: "proposal-parallel-a",',
+    '        suggestedWorkItemId: "parallel-a",',
+    '        sourceNode: "main/probe",',
+    '        title: "Exercise parallel worker A",',
+    '        fingerprint: "parallel:src/parallel-a.md",',
+    '        evidence: [{ id: "parallel-a-before", file: "src/parallel-a.md" }],',
+    '        acceptanceCriteria: ["Patch artifact records src/parallel-a.md."],',
+    '        sourceOfTruthTargets: ["src/parallel-a.md"],',
+    '        targetFiles: ["src/parallel-a.md"]',
+    '      },',
+    '      {',
+    '        schemaVersion: "orpad.candidateProposal.v1",',
+    '        proposalId: "proposal-parallel-b",',
+    '        suggestedWorkItemId: "parallel-b",',
+    '        sourceNode: "main/probe",',
+    '        title: "Exercise parallel worker B",',
+    '        fingerprint: "parallel:src/parallel-b.md",',
+    '        evidence: [{ id: "parallel-b-before", file: "src/parallel-b.md" }],',
+    '        acceptanceCriteria: ["Patch artifact records src/parallel-b.md."],',
+    '        sourceOfTruthTargets: ["src/parallel-b.md"],',
+    '        targetFiles: ["src/parallel-b.md"]',
+    '      }',
+    '    ]',
+    '  };',
+    '}',
+    'if (outputPath) {',
+    '  fs.mkdirSync(path.dirname(outputPath), { recursive: true });',
+    '  fs.writeFileSync(outputPath, `${JSON.stringify(result)}\\n`, "utf8");',
+    '}',
+  ].join('\n'), 'utf8');
+  return scriptPath;
+}
+
 test('live proposal prompt gives collect-all-visible probes the managed safe candidate cap', () => {
   const request = {
     adapterCallId: 'proposal-call',
@@ -395,6 +487,14 @@ test('live proposal prompt gives collect-all-visible probes the managed safe can
 
   assert.equal(prompt.includes('Return at most 5 candidateProposals.'), true);
   assert.equal(prompt.includes('Return at most 1 candidateProposals.'), false);
+});
+
+test('worker concurrency defaults to all with an environment escape hatch', () => {
+  assert.equal(__test_configuredWorkerConcurrency({}, 4, {}), 4);
+  assert.equal(__test_configuredWorkerConcurrency({ claimPolicy: { concurrency: 'all' } }, 4, {}), 4);
+  assert.equal(__test_configuredWorkerConcurrency({ claimPolicy: { concurrency: 2 } }, 4, {}), 2);
+  assert.equal(__test_configuredWorkerConcurrency({ parallelWorkers: false }, 4, {}), 1);
+  assert.equal(__test_configuredWorkerConcurrency({}, 4, { MACHINE_DISABLE_PARALLEL_WORKERS: '1' }), 1);
 });
 
 test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes in graph order', async () => {
@@ -488,6 +588,7 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
 
 test('graph-driven execute step waits at patch review before exit', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_patch_review_exit');
+  await updateGraphNodeConfig(pipelineDir, 'worker', { reviewRequired: true });
   await addPatchReviewAndExitNodes(pipelineDir);
 
   const first = await executeMachineRunStep({
@@ -538,8 +639,38 @@ test('graph-driven execute step waits at patch review before exit', async () => 
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });
 
+test('targetFiles-contained patchReview auto-applies routine patches without blocking', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260517_patch_review_classifier_routine');
+  await updateGraphNodeConfig(pipelineDir, 'worker', { targetFiles: ['src/target.md'] });
+  await addPatchReviewAndExitNodes(pipelineDir);
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  assert.equal(executed.finalization.summaryStatus, 'done');
+  assert.equal(executed.events.some(event => event.eventType === 'node.blocked' && event.nodePath === 'main/patch-review'), false);
+  assert.equal(executed.events.some(event => event.eventType === 'patch.applied' && event.reason === 'machine.patch-review.auto-apply-routine'), true);
+  assert.equal(executed.events.some(event => event.eventType === 'patch.review_required'), false);
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/target.md'), 'utf8'), 'after from graph harness\n');
+
+  const review = patchReviewStateFromEvents(await readMachineEvents(run.runRoot));
+  assert.equal(review.required, false);
+  assert.equal(review.resolved, true);
+  assert.equal(review.appliedCount, 1);
+
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
 test('patch review gate keeps blocking after approval until batch apply finishes', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260504_approve_gate_blocked');
+  await updateGraphNodeConfig(pipelineDir, 'worker', { reviewRequired: true });
   await addPatchReviewAndExitNodes(pipelineDir);
 
   const first = await executeMachineRunStep({
@@ -788,6 +919,75 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
   assert.equal(leaseCreated.payload.leaseMs, 123_456);
 });
 
+test('graph-driven worker loop claims default all and starts disjoint live workers in parallel', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260517_live_parallel_workers');
+  await fs.writeFile(path.join(workspaceRoot, 'src/parallel-a.md'), 'before a\n', 'utf8');
+  await fs.writeFile(path.join(workspaceRoot, 'src/parallel-b.md'), 'before b\n', 'utf8');
+  const fakeCodexDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-parallel-codex-cli-'));
+  const fakeCodexScript = await writeFakeParallelCodexCliScript(fakeCodexDir);
+  const pipeline = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  delete pipeline.run.machineHarness;
+  pipeline.run.machineAdapter = {
+    type: 'codex-cli',
+    enabled: true,
+    command: process.execPath,
+    commandPrefixArgs: [fakeCodexScript],
+    proposalSandbox: 'read-only',
+    workerSandbox: 'workspace-write',
+    approvalPolicy: 'never',
+    probeNodePaths: ['main/probe'],
+    candidateLimit: 2,
+    proposalTimeoutMs: 30_000,
+    workerTimeoutMs: 30_000,
+  };
+  await fs.writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`, 'utf8');
+
+  const previousDisableParallel = process.env.MACHINE_DISABLE_PARALLEL_WORKERS;
+  delete process.env.MACHINE_DISABLE_PARALLEL_WORKERS;
+  let executed;
+  try {
+    executed = await executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      taskText: 'Exercise default parallel workers.',
+      exportLatestRunAfterStep: false,
+    });
+  } finally {
+    if (previousDisableParallel === undefined) {
+      delete process.env.MACHINE_DISABLE_PARALLEL_WORKERS;
+    } else {
+      process.env.MACHINE_DISABLE_PARALLEL_WORKERS = previousDisableParallel;
+    }
+  }
+
+  assert.equal(executed.workerLoop.workerConcurrency, 2);
+  assert.equal(executed.workerLoop.claimCount, 2);
+  assert.equal(executed.workerLoop.workerCount, 2);
+  assert.equal((await findQueueItem(run.runRoot, 'parallel-a')).state, 'done');
+  assert.equal((await findQueueItem(run.runRoot, 'parallel-b')).state, 'done');
+
+  const workerLifecycle = executed.events.filter(event => (
+    event.nodePath === 'main/worker'
+    && ['node.started', 'node.completed'].includes(event.eventType)
+  ));
+  const firstWorkerComplete = workerLifecycle.findIndex(event => event.eventType === 'node.completed');
+  assert.equal(
+    workerLifecycle.slice(0, firstWorkerComplete).filter(event => event.eventType === 'node.started').length,
+    2,
+    'both worker attempts should start before the first one completes',
+  );
+  const grantedEvents = executed.events.filter(event => event.eventType === 'lock.granted');
+  assert.equal(grantedEvents.length, 2);
+  assert.deepEqual(grantedEvents.map(event => event.payload.targetFiles), [
+    ['src/parallel-a.md'],
+    ['src/parallel-b.md'],
+  ]);
+  assert.deepEqual(grantedEvents.map(event => event.payload.attempt), [1, 2]);
+});
+
 test('graph-driven worker spawn failures close claimed work as blocked instead of leaving the run active', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260504_worker_spawn_failure');
   await updateMainNodeConfig(pipelineDir, 'verification-gate', {
@@ -820,6 +1020,101 @@ test('graph-driven worker spawn failures close claimed work as blocked instead o
   const transcript = await readRunArtifactJson(run.runRoot, transcriptPath);
   assert.equal(transcript.process.spawnError.code, 'ENOENT');
   assert.equal(transcript.process.command, missingNodeExecutable);
+});
+
+test('graph-driven execution defers final evidence gates while queued work remains after worker block', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260508_worker_block_with_backlog');
+  await addPatchReviewAndExitNodes(pipelineDir);
+  const pipeline = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  pipeline.run.machineHarness.candidateProposals = [
+    pipeline.run.machineHarness.candidateProposal,
+    {
+      ...pipeline.run.machineHarness.candidateProposal,
+      proposalId: 'proposal-graph-harness-target-two',
+      suggestedWorkItemId: 'graph-harness-target-two',
+      title: 'Second queued work item',
+      fingerprint: 'graph-harness:src/target.md:two',
+    },
+  ];
+  delete pipeline.run.machineHarness.candidateProposal;
+  pipeline.run.machineHarness.claimPolicy = { concurrency: 1 };
+  await fs.writeFile(pipelinePath, JSON.stringify(pipeline, null, 2), 'utf8');
+
+  const missingNodeExecutable = process.platform === 'win32'
+    ? 'C:\\orpad-missing-node\\node.exe'
+    : '/orpad-missing-node/node';
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    nodeExecutable: missingNodeExecutable,
+    exportLatestRunAfterStep: false,
+  });
+
+  assert.equal(executed.worker.result.event.payload.status, 'failed');
+  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'blocked');
+  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target-two')).state, 'queued');
+  assert.equal(executed.finalization.summaryStatus, 'partial');
+  assert.equal(executed.runState.lifecycleStatus, 'waiting');
+  assert.equal(executed.runState.summaryStatus, 'partial');
+  assert.equal(executed.events.some(event => event.nodePath === 'main/verification-gate'), false);
+  assert.equal(executed.events.some(event => event.nodePath === 'main/artifact'), false);
+
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.completed',
+    nodePath: 'main/verification-gate',
+    payload: { nodeType: 'orpad.gate', valid: true },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.completed',
+    nodePath: 'main/artifact',
+    payload: {
+      nodeType: 'orpad.artifactContract',
+      valid: false,
+      onMissing: 'mark-partial',
+      missingArtifactCount: 1,
+      missingQueueCount: 0,
+      missingArtifacts: [{ declared: 'analysis/missing.md', path: 'artifacts/analysis/missing.md' }],
+      missingQueue: [],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.blocked',
+    nodePath: 'main/exit',
+    reason: 'exit.evidence-incomplete',
+    payload: {
+      nodeType: 'orpad.exit',
+      reason: 'exit.evidence-incomplete',
+      artifactContracts: [{
+        nodePath: 'main/artifact',
+        missingArtifacts: [{ declared: 'analysis/missing.md', path: 'artifacts/analysis/missing.md' }],
+        missingQueue: [],
+      }],
+    },
+  });
+
+  const recovered = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    nodeExecutable: process.execPath,
+    exportLatestRunAfterStep: false,
+  });
+  const exitEvents = recovered.events.filter(event => event.nodePath === 'main/exit');
+  assert.equal(exitEvents.at(-1).eventType, 'node.completed');
+  assert.equal(exitEvents.at(-1).payload.status, 'deferred-active-queue');
+  assert.equal(recovered.finalization.summaryStatus, 'partial');
+  assert.equal(recovered.runState.lifecycleStatus, 'waiting');
 });
 
 test('graph-driven execute step rejects pipelines without a deterministic MVP harness', async () => {

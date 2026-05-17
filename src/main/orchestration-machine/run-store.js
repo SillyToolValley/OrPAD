@@ -102,6 +102,13 @@ function normalizeRunExternalResearch(value) {
   };
 }
 
+function normalizeRunLlmApprovalMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (mode === 'bypass') return 'bypass';
+  if (mode === 'ask') return 'ask';
+  return 'ask';
+}
+
 async function createMachineRun(options = {}) {
   const {
     workspaceRoot,
@@ -111,6 +118,7 @@ async function createMachineRun(options = {}) {
     canonicalStoreKind = 'jsonl',
     taskText = '',
     externalResearch = null,
+    llmApprovalMode = 'ask',
   } = options;
   const context = resolvePipelineContext({ workspaceRoot, pipelinePath });
   await assertNoSymlinkInWorkspacePath(context.workspaceRoot, context.pipelinePath, {
@@ -137,6 +145,7 @@ async function createMachineRun(options = {}) {
   if (normalizedTaskText) metadata.taskText = normalizedTaskText;
   const normalizedExternalResearch = normalizeRunExternalResearch(externalResearch);
   if (normalizedExternalResearch) metadata.externalResearch = normalizedExternalResearch;
+  metadata.llmApprovalMode = normalizeRunLlmApprovalMode(llmApprovalMode);
   const createdEvent = await appendMachineEvent(targetRunRoot, {
     runId,
     timestamp,
@@ -179,6 +188,7 @@ module.exports = {
   assertRunStatePathSafe,
   createMachineRun,
   createRunId,
+  normalizeRunLlmApprovalMode,
   readRunState,
   repairRunStateFromEvents,
   runStatePath,

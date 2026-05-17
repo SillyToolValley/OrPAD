@@ -1,0 +1,31 @@
+{
+  "$schema": "https://orpad.dev/schemas/or-graph/v1.json",
+  "kind": "orpad.graph",
+  "version": "1.0",
+  "graph": {
+    "id": "sample-02-fork-join",
+    "label": "Sample 02: Fork-Join (Pattern J — multiple unconditional outgoing)",
+    "start": "entry",
+    "nodes": [
+      { "id": "entry", "type": "orpad.entry", "label": "Entry" },
+      { "id": "map-scope", "type": "orpad.context", "label": "Map workspace scope", "config": { "summary": "Inventory files for the lens probes below." } },
+      { "id": "probe-security", "type": "orpad.probe", "label": "Probe: security lens", "config": { "lens": "security", "maxCandidates": 5 } },
+      { "id": "probe-performance", "type": "orpad.probe", "label": "Probe: performance lens", "config": { "lens": "performance", "maxCandidates": 5 } },
+      { "id": "probe-readability", "type": "orpad.probe", "label": "Probe: readability lens", "config": { "lens": "readability", "maxCandidates": 5 } },
+      { "id": "join-lenses", "type": "orpad.barrier", "label": "Join probe findings", "config": { "waitFor": ["probe-security", "probe-performance", "probe-readability"], "mergePolicy": "concat-coverage" } },
+      { "id": "record", "type": "orpad.artifactContract", "label": "Record evidence", "config": { "artifactRoot": "harness/generated/latest-run/artifacts", "queueRoot": "harness/generated/latest-run/queue", "required": ["discovery/candidate-inventory.json"], "requiredQueue": ["journal.jsonl"], "onMissing": "mark-partial" } },
+      { "id": "exit", "type": "orpad.exit", "label": "Exit" }
+    ],
+    "transitions": [
+      { "id": "t1", "from": "entry", "to": "map-scope" },
+      { "id": "t2a", "from": "map-scope", "to": "probe-security" },
+      { "id": "t2b", "from": "map-scope", "to": "probe-performance" },
+      { "id": "t2c", "from": "map-scope", "to": "probe-readability" },
+      { "id": "t3a", "from": "probe-security", "to": "join-lenses" },
+      { "id": "t3b", "from": "probe-performance", "to": "join-lenses" },
+      { "id": "t3c", "from": "probe-readability", "to": "join-lenses" },
+      { "id": "t4", "from": "join-lenses", "to": "record" },
+      { "id": "t5", "from": "record", "to": "exit" }
+    ]
+  }
+}

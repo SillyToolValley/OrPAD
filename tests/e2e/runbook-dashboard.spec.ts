@@ -237,6 +237,15 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
     .filter({ has: win.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })
     .click();
   await expect(win.locator('.runbook-item.selected')).toContainText('Agent Workstream');
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
+  const templatesAfterLatestRun = await win.evaluate(() => {
+    const templates = document.querySelector('#runbooks-content [data-runbook-section="templates"]');
+    const latestRun = [...document.querySelectorAll('#runbooks-content .runbook-panel-section h3')]
+      .find(node => node.textContent?.trim() === 'Latest Run')
+      ?.closest('.runbook-panel-section');
+    return !!latestRun && !!templates && !!(latestRun.compareDocumentPosition(templates) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  expect(templatesAfterLatestRun).toBe(true);
   await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
   await expect(win.locator('[data-pipeline-preview-runbar] strong')).toContainText('Agent Workstream');
   await expect(win.locator('[data-pipeline-preview-runbar]')).not.toContainText('.orpad/pipelines');
@@ -299,4 +308,54 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('workspace switch clears stale selected pipeline and graph preview', async () => {
+  const firstWorkspace = writeFixtureWorkspace();
+  const emptyWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-runbook-empty-'));
+  fs.writeFileSync(path.join(emptyWorkspace, 'README.md'), '# Empty pipeline workspace\n');
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, firstWorkspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item[data-runbook-format="or-pipeline"]')
+    .filter({ has: win.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })
+    .click();
+  await expect(win.locator('.runbook-item.selected')).toContainText('Agent Workstream');
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+  await expect(win.locator('.orch-graph-node')).toHaveCount(6);
+
+  const patchedDialog = await app.evaluate(({ dialog }, nextWorkspace) => {
+    if (!dialog?.showOpenDialog) return false;
+    dialog.showOpenDialog = async () => ({
+      canceled: false,
+      filePaths: [nextWorkspace],
+    });
+    return true;
+  }, emptyWorkspace);
+  expect(patchedDialog).toBe(true);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('file.openFolder');
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await expect(win.locator('[data-runbook-workspace-meta] strong')).toContainText(path.basename(emptyWorkspace));
+  await expect(win.locator('[data-runbook-section="pipelines"]')).toContainText('No OrPAD pipelines found yet');
+  await expect(win.locator('.runbook-item.selected')).toHaveCount(0);
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toHaveCount(0);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(0);
+
+  await app.close();
+  fs.rmSync(firstWorkspace, { recursive: true, force: true });
+  fs.rmSync(emptyWorkspace, { recursive: true, force: true });
 });

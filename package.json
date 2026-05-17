@@ -4,6 +4,9 @@
   "productName": "OrPAD",
   "description": "OrPAD (Orchestration Pipeline Authoring & Development) is a local-first multi-format workspace for Markdown, structured data, diagrams, AI actions, MCP tools, terminals, Git status, and web/PWA workflows.",
   "main": "src/main/main.js",
+  "bin": {
+    "orpad": "bin/orpad-cli.mjs"
+  },
   "scripts": {
     "start": "electron .",
     "build:renderer": "node scripts/build-renderer.js",
@@ -25,7 +28,11 @@
     "test:web": "playwright test --project=web-chromium",
     "test:web:compat": "playwright test --project=web-chromium --project=web-firefox --project=web-webkit",
     "test:machine": "node --test tests/orchestration-machine/*.test.mjs",
+    "orpad:generate": "node bin/orpad-cli.mjs generate",
+    "debug:electron": "node scripts/debug-electron-ui.mjs",
+    "debug:electron:shot": "node scripts/debug-electron-ui.mjs --shot-only",
     "smoke:machine": "node scripts/smoke-orpad-machine-run.mjs",
+    "smoke:machine-fat": "node scripts/smoke-orpad-machine-run-fat.mjs",
     "audit:orpad-node-schemas": "node scripts/audit-orpad-node-schemas.mjs",
     "audit:orpad-queue": "node scripts/audit-orpad-workqueue.mjs",
     "audit:orpad-run": "node scripts/audit-orpad-run.mjs",

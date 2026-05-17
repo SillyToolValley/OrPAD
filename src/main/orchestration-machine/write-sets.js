@@ -110,6 +110,7 @@ async function acquireWriteSetLock(runRoot, options = {}) {
     itemId,
     paths = [],
     now = new Date().toISOString(),
+    enforceConflicts = true,
   } = options;
   if (!runId) throw new Error('runId is required.');
   if (!claimId) throw new Error('claimId is required.');
@@ -120,12 +121,14 @@ async function acquireWriteSetLock(runRoot, options = {}) {
   if (existing?.state === 'active') return { duplicate: true, lock: existing };
 
   const normalizedPaths = normalizeWriteSetPaths(paths);
-  const conflict = await findConflictingWriteSetLock(runRoot, normalizedPaths, lockId);
-  if (conflict) {
-    const err = new Error(`Write-set lock conflict with ${conflict.lockId}.`);
-    err.code = 'WRITE_SET_LOCK_CONFLICT';
-    err.conflict = conflict;
-    throw err;
+  if (enforceConflicts !== false) {
+    const conflict = await findConflictingWriteSetLock(runRoot, normalizedPaths, lockId);
+    if (conflict) {
+      const err = new Error(`Write-set lock conflict with ${conflict.lockId}.`);
+      err.code = 'WRITE_SET_LOCK_CONFLICT';
+      err.conflict = conflict;
+      throw err;
+    }
   }
 
   const lock = {
@@ -151,6 +154,7 @@ async function acquireWriteSetLock(runRoot, options = {}) {
       lockId,
       claimId,
       paths: normalizedPaths,
+      conflictPolicy: enforceConflicts === false ? 'audit-only' : 'enforced',
     },
   });
   return { event, lock };

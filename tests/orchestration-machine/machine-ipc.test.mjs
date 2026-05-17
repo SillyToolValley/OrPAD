@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -15,12 +16,17 @@ const {
   claimNextQueuedItem,
   findQueueItem,
   ingestCandidateProposal,
+  registerPatchArtifact,
   registerMachineHandlers,
   transitionQueueItem,
 } = require('../../src/main/orchestration-machine');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
+
+function sha256Text(value) {
+  return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
+}
 
 function runMachineAudit(runRoot, latestRunExportRoot = '') {
   const args = ['scripts/audit-orpad-machine-run.mjs', runRoot];
@@ -157,6 +163,15 @@ async function appendHarnessArtifactContract(pipelineDir, config) {
     type: 'orpad.artifactContract',
     config,
   });
+  await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
+}
+
+async function updateHarnessGraphNodeConfig(pipelineDir, nodeId, patch) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  const node = graph.graph.nodes.find(entry => entry.id === nodeId);
+  if (!node) throw new Error(`Graph node not found: ${nodeId}`);
+  node.config = { ...(node.config || {}), ...patch };
   await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
 }
 
@@ -669,11 +684,12 @@ test('Machine IPC approve+applyApproved defers writes until batch and emits sequ
     selectedFiles: ['src/smoke-target.md'],
   });
   assert.equal(reapproved.success, true);
-  assert.equal(reapproved.events.at(-1).eventType, 'patch.approved');
+  assert.equal(reapproved.idempotent, true, 'duplicate approve clicks with the same selection must not append duplicate events');
+  assert.equal(reapproved.decision, 'approved');
   assert.equal(
     reapproved.events.filter(item => item.eventType === 'patch.approved' && item.payload.patchArtifact === patchArtifact).length,
-    2,
-    'each approve call appends a fresh approval event so the latest selection wins',
+    1,
+    'same-selection reapprove keeps the original approval event',
   );
 
   const applied = await handlers.get(MACHINE_IPC_CHANNELS.applyApprovedPatches)(event, {
@@ -714,6 +730,79 @@ test('Machine IPC approve+applyApproved defers writes until batch and emits sequ
   assert.equal(reapproveAfterApplied.success, true);
   assert.equal(reapproveAfterApplied.idempotent, true, 'already-applied patch must not append a new approval event');
   assert.equal(reapproveAfterApplied.decision, 'applied');
+});
+
+test('Machine IPC rejects approval overlap before batch apply creates avoidable conflicts', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260508_approve_overlap_guard',
+    capabilityToken: 'test-token',
+  });
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  const firstPatchArtifact = executed.worker.event.payload.patchArtifact;
+  const firstPatchPath = path.join(created.runRoot, ...firstPatchArtifact.split('/'));
+  const secondPatchArtifact = 'artifacts/patches/overlap-second.patch.json';
+  const secondPatch = JSON.parse(await fs.readFile(firstPatchPath, 'utf8'));
+  secondPatch.createdAt = '2026-05-08T00:00:00.000Z';
+  secondPatch.changes[0].afterContent = 'second overlapping edit\n';
+  secondPatch.changes[0].afterSha256 = sha256Text('second overlapping edit\n');
+  await registerPatchArtifact(created.runRoot, {
+    runId: created.runId,
+    patch: secondPatch,
+    artifactPath: secondPatchArtifact,
+    producedBy: 'test.overlap-guard',
+  });
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'ipc-harness-overlap',
+    reason: 'worker-result.accepted',
+    artifactRefs: [secondPatchArtifact],
+    payload: {
+      status: 'done',
+      toState: 'done',
+      patchArtifact: secondPatchArtifact,
+      changedFiles: ['src/smoke-target.md'],
+      verification: [{ command: 'overlap fixture', status: 'passed' }],
+    },
+  });
+
+  const firstApproval = await handlers.get(MACHINE_IPC_CHANNELS.approvePatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact: firstPatchArtifact,
+    selectedFiles: ['src\\smoke-target.md'],
+  });
+  assert.equal(firstApproval.success, true);
+  assert.deepEqual(firstApproval.events.at(-1).payload.selectedFiles, ['src/smoke-target.md']);
+
+  const secondApproval = await handlers.get(MACHINE_IPC_CHANNELS.approvePatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact: secondPatchArtifact,
+    selectedFiles: ['src/smoke-target.md'],
+  });
+  assert.equal(secondApproval.success, false);
+  assert.equal(secondApproval.code, 'MACHINE_PATCH_APPROVAL_OVERLAP');
+  assert.equal(secondApproval.conflicts[0].path, 'src/smoke-target.md');
+  assert.equal(
+    secondApproval.events.filter(item => item.eventType === 'patch.approved').length,
+    1,
+    'overlap rejection must not record a second approval event',
+  );
 });
 
 test('Machine IPC applyApprovedPatches surfaces SHA conflict per patch without aborting batch', async () => {
@@ -943,6 +1032,99 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   const audit = runMachineAudit(created.runRoot, resumed.exported.targetRoot);
   assert.equal(audit.exitCode, 0, audit.stderr || audit.stdout);
   assert.equal(audit.json.ok, true);
+});
+
+test('Machine IPC autonomous run auto-approves bypassable approvals and stops at patch review', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
+  const source = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  source.run.machineHarness.candidateProposal.approvalRequired = true;
+  await fs.writeFile(pipelinePath, `${JSON.stringify(source, null, 2)}\n`, 'utf8');
+  await updateHarnessGraphNodeConfig(pipelineDir, 'worker', { reviewRequired: true });
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260512_ipc_autonomous_bypass',
+    capabilityToken: 'test-token',
+    options: { llmApprovalMode: 'bypass' },
+  });
+  assert.equal(created.success, true);
+  assert.equal(created.runState.metadata.llmApprovalMode, 'bypass');
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: {
+      llmApprovalMode: 'bypass',
+      runUntil: 'human-decision',
+    },
+  });
+
+  assert.equal(executed.success, true);
+  assert.equal(executed.drive.mode, 'human-decision');
+  assert.equal(executed.drive.stopReason, 'patch-review');
+  assert.equal(executed.drive.stepsRun, 2);
+  assert.equal(executed.drive.autoApprovedApprovalCount, 1);
+  assert.equal(executed.approvals.pendingCount, 0);
+  assert.equal(executed.approvals.all[0].status, 'approved');
+  assert.equal(executed.events.some(item => item.eventType === 'approval.decided' && item.reason === 'machine-autonomous.approval.bypass'), true);
+  assert.equal(executed.worker.event.payload.status, 'done');
+  assert.ok(executed.worker.event.payload.patchArtifact, 'autonomous run should stop with a patch ready for user review');
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'before\n');
+});
+
+test('Machine IPC autonomous run with patchReviewMode auto-apply approves and applies pending patches without halting', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
+  await updateHarnessGraphNodeConfig(pipelineDir, 'worker', { reviewRequired: true });
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260516_ipc_auto_apply_patches',
+    capabilityToken: 'test-token',
+    options: { llmApprovalMode: 'bypass' },
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: {
+      llmApprovalMode: 'bypass',
+      runUntil: 'human-decision',
+      patchReviewMode: 'auto-apply',
+    },
+  });
+
+  assert.equal(executed.success, true);
+  assert.equal(executed.drive.mode, 'human-decision');
+  assert.notEqual(executed.drive.stopReason, 'patch-review', 'auto-apply must clear patch-review without halting');
+  assert.equal(executed.drive.autoAppliedPatchCount, 1);
+  assert.equal(executed.drive.autoApplyConflictCount, 0);
+  assert.equal(executed.drive.autoAppliedPatches[0].patchArtifact.endsWith('.patch.json'), true);
+
+  const eventTypes = executed.events.map(item => item.eventType);
+  assert.ok(eventTypes.includes('patch.approved'), 'driver emits patch.approved');
+  assert.ok(eventTypes.includes('patches.apply_started'), 'driver emits patches.apply_started');
+  assert.ok(eventTypes.includes('patch.applied'), 'driver emits patch.applied');
+  assert.ok(eventTypes.includes('patches.apply_finished'), 'driver emits patches.apply_finished');
+
+  const driverPatchEvents = executed.events.filter(item => (
+    item.actor === 'machine-autonomous-driver'
+    && ['patch.approved', 'patch.applied', 'patches.apply_started', 'patches.apply_finished'].includes(item.eventType)
+  ));
+  assert.ok(driverPatchEvents.length >= 4, 'patch lifecycle events are attributed to the autonomous driver');
+
+  const after = await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8');
+  assert.equal(after, 'after from Machine IPC harness\n');
 });
 
 test('Machine IPC denied approval decisions cancel blocked work without grants', async () => {

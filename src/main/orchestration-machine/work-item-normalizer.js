@@ -1,5 +1,6 @@
 const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
 const { assertMachineStorageId } = require('./ids');
+const { normalizeLockPath } = require('./file-lock-manager');
 
 const validator = createContractValidator();
 
@@ -26,6 +27,14 @@ function evidenceFiles(evidence) {
     .map(String))];
 }
 
+function normalizeTargetFiles(files) {
+  if (!Array.isArray(files)) return [];
+  return [...new Set(files
+    .map(file => normalizeLockPath(file))
+    .filter(Boolean))]
+    .sort();
+}
+
 function normalizeCandidateProposal(proposal, options = {}) {
   if (proposal?.suggestedWorkItemId !== undefined) {
     assertMachineStorageId(proposal.suggestedWorkItemId, 'workItem.id');
@@ -42,6 +51,9 @@ function normalizeCandidateProposal(proposal, options = {}) {
   const sourceOfTruthTargets = proposal.sourceOfTruthTargets?.length
     ? proposal.sourceOfTruthTargets
     : evidenceFiles(proposal.evidence);
+  const targetFiles = Object.prototype.hasOwnProperty.call(proposal, 'targetFiles')
+    ? normalizeTargetFiles(proposal.targetFiles)
+    : normalizeTargetFiles(sourceOfTruthTargets);
 
   const workItem = {
     schemaVersion: SCHEMA_VERSIONS.workItem,
@@ -61,6 +73,7 @@ function normalizeCandidateProposal(proposal, options = {}) {
     expectedBehavior: proposal.expectedBehavior || proposal.acceptanceCriteria[0],
     actualBehavior: proposal.actualBehavior || proposal.title,
     sourceOfTruthTargets: sourceOfTruthTargets.length ? sourceOfTruthTargets : ['unresolved-source-target'],
+    targetFiles,
     verificationPlan: proposal.verificationPlan || 'Verify the accepted implementation against the candidate acceptance criteria.',
     coverageEvidenceIds: coverageEvidenceIds.length ? coverageEvidenceIds : [`${proposal.sourceNode}:proposal`],
     approvalRequired: proposal.approvalRequired === true,

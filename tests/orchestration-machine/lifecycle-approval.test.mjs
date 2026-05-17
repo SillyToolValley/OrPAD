@@ -8,6 +8,7 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   approvalGrantForItem,
+  appendMachineEvent,
   appendRunLifecycleStatus,
   appendRunSummaryStatus,
   assertNoActiveInventoryForDone,
@@ -16,6 +17,7 @@ const {
   finalizeRunFromInventory,
   findQueueItem,
   ingestCandidateProposal,
+  patchReviewResumeStateFromEvents,
   queueItemPath,
   readMachineEvents,
   readRunState,
@@ -336,6 +338,174 @@ test('final lifecycle status cannot become done while active queue inventory rem
   assert.equal(done.runState.lifecycleStatus, 'completed');
 });
 
+test('patch review resume state reports applied skipped and conflict history', () => {
+  const state = patchReviewResumeStateFromEvents([
+    {
+      eventType: 'worker.result',
+      sequence: 1,
+      payload: {
+        patchArtifact: 'artifacts/patches/a.patch.json',
+        changedFiles: ['src/a.txt'],
+      },
+    },
+    {
+      eventType: 'worker.result',
+      sequence: 2,
+      payload: {
+        patchArtifact: 'artifacts/patches/b.patch.json',
+        changedFiles: ['src/b.txt'],
+      },
+    },
+    {
+      eventType: 'patch.apply_conflict',
+      sequence: 3,
+      payload: {
+        patchArtifact: 'artifacts/patches/b.patch.json',
+        selectedFiles: ['src/b.txt'],
+      },
+    },
+    {
+      eventType: 'patch.applied',
+      sequence: 4,
+      payload: {
+        patchArtifact: 'artifacts/patches/a.patch.json',
+        selectedFiles: ['src/a.txt'],
+        applied: [{ path: 'src/a.txt' }],
+      },
+    },
+    {
+      eventType: 'patch.review_skipped',
+      sequence: 5,
+      payload: {
+        patchArtifact: 'artifacts/patches/b.patch.json',
+      },
+    },
+  ]);
+
+  assert.equal(state.required, false);
+  assert.equal(state.resolved, true);
+  assert.equal(state.patchCount, 2);
+  assert.equal(state.appliedCount, 1);
+  assert.equal(state.skippedCount, 1);
+  assert.equal(state.historicalConflictCount, 1);
+  assert.deepEqual(state.appliedFiles, ['src/a.txt']);
+  assert.deepEqual(state.pendingPatchArtifacts, []);
+});
+
+test('patch review resume state blocks patch artifacts with empty changedFiles', () => {
+  const state = patchReviewResumeStateFromEvents([
+    {
+      eventType: 'worker.result',
+      sequence: 1,
+      payload: {
+        patchArtifact: 'artifacts/patches/empty-changed-files.patch.json',
+        changedFiles: [],
+      },
+    },
+  ]);
+
+  assert.equal(state.required, true);
+  assert.equal(state.resolved, false);
+  assert.equal(state.pendingPatchArtifacts[0], 'artifacts/patches/empty-changed-files.patch.json');
+});
+
+test('finalize keeps run blocked when review-required patch has not emitted node.blocked', async () => {
+  const run = await makeRun('run_20260517_finalize_patch_review_crash_window');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'finalize-patch-review-crash-window',
+    fingerprint: 'lifecycle:finalize-patch-review-crash-window',
+  }));
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'claimed',
+    transitionId: 'claim:finalize-patch-review-crash-window',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'done',
+    transitionId: 'close:finalize-patch-review-crash-window',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId,
+    reason: 'worker-result.accepted',
+    payload: {
+      status: 'done',
+      toState: 'done',
+      patchArtifact: 'artifacts/patches/finalize-crash-window.patch.json',
+      changedFiles: [],
+    },
+  });
+
+  const finalized = await finalizeRunFromInventory(run.runRoot, { runId: run.runId });
+
+  assert.equal(finalized.patchReview.required, true);
+  assert.equal(finalized.summaryStatus, 'blocked');
+  assert.equal(finalized.runState.lifecycleStatus, 'waiting');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+});
+
+test('finalize honors patch.review_required emitted before node.blocked', async () => {
+  const run = await makeRun('run_20260517_finalize_patch_review_request_window');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'finalize-patch-review-request-window',
+    fingerprint: 'lifecycle:finalize-patch-review-request-window',
+  }));
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'claimed',
+    transitionId: 'claim:finalize-patch-review-request-window',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'done',
+    transitionId: 'close:finalize-patch-review-request-window',
+  });
+  const patchArtifact = 'artifacts/patches/request-window.patch.json';
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId,
+    reason: 'worker-result.accepted',
+    payload: {
+      status: 'done',
+      toState: 'done',
+      patchArtifact,
+      changedFiles: ['src/routine.txt'],
+      lockTargetFiles: ['src/routine.txt'],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'patch.review_required',
+    reason: 'patch-review.destructive_scope',
+    artifactRefs: [patchArtifact],
+    payload: {
+      patchArtifact,
+      reason: 'destructive_scope',
+      reasons: ['destructive_scope'],
+      changedFiles: ['src/routine.txt'],
+      declaredTargetFiles: ['src/routine.txt'],
+      outsideTargetFiles: ['src/unplanned.txt'],
+    },
+  });
+
+  const finalized = await finalizeRunFromInventory(run.runRoot, { runId: run.runId });
+
+  assert.equal(finalized.patchReview.required, true);
+  assert.equal(finalized.summaryStatus, 'blocked');
+  assert.equal(finalized.runState.lifecycleStatus, 'waiting');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+});
+
 test('resume cannot reopen a terminal run even when run-state is missing', async () => {
   const run = await makeRun('run_20260430_resume_terminal');
   const itemId = await queueProposal(run);
@@ -389,4 +559,116 @@ test('resume repairs derived queue directories from canonical transition events'
   }]);
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'waiting');
+});
+
+test('resume keeps run blocked while approved patch review is not applied', async () => {
+  const run = await makeRun('run_20260430_resume_patch_review_blocked');
+  const itemId = await queueProposal(run);
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'claimed',
+    transitionId: 'claim:lifecycle-patch-review-item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'done',
+    transitionId: 'close:lifecycle-patch-review-item',
+  });
+  const patchArtifact = 'artifacts/patches/lifecycle-patch-review.patch.json';
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId,
+    reason: 'worker-result.accepted',
+    payload: {
+      status: 'done',
+      toState: 'done',
+      patchArtifact,
+      changedFiles: ['src/lifecycle.txt'],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'renderer',
+    eventType: 'patch.approved',
+    reason: 'machine-ui.patch-review.approve',
+    artifactRefs: [patchArtifact],
+    payload: {
+      patchArtifact,
+      selectedFiles: ['src/lifecycle.txt'],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/patch-review',
+    eventType: 'node.blocked',
+    reason: 'patch-review.required',
+    payload: {
+      nodeType: 'orpad.patchReview',
+      status: 'blocked',
+      reason: 'patch-review.required',
+      patchCount: 1,
+      pendingCount: 1,
+    },
+  });
+
+  const resumed = await resumeMachineRun(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  assert.equal(resumed.inventory.activeCount, 0);
+  assert.equal(resumed.patchReview.required, true);
+  assert.equal(resumed.patchReview.resolved, false);
+  assert.equal(resumed.runState.lifecycleStatus, 'waiting');
+  assert.equal(resumed.runState.summaryStatus, 'blocked');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+});
+
+test('resume keeps run blocked when review-required patch predates patchReview node blocking', async () => {
+  const run = await makeRun('run_20260517_resume_patch_review_crash_window');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'resume-patch-review-crash-window',
+    fingerprint: 'lifecycle:resume-patch-review-crash-window',
+  }));
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'claimed',
+    transitionId: 'claim:resume-patch-review-crash-window',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'done',
+    transitionId: 'close:resume-patch-review-crash-window',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId,
+    reason: 'worker-result.accepted',
+    payload: {
+      status: 'done',
+      toState: 'done',
+      patchArtifact: 'artifacts/patches/resume-crash-window.patch.json',
+      changedFiles: [],
+    },
+  });
+
+  const resumed = await resumeMachineRun(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  assert.equal(resumed.inventory.activeCount, 0);
+  assert.equal(resumed.patchReview.required, true);
+  assert.equal(resumed.runState.lifecycleStatus, 'waiting');
+  assert.equal(resumed.runState.summaryStatus, 'blocked');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
 });

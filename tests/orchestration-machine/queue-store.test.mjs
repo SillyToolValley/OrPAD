@@ -102,6 +102,46 @@ test('candidate proposals normalize into Machine-owned candidate work items', as
   assert.equal(journal[0].action, 'ingest');
 });
 
+test('candidate proposal targetFiles are normalized from sourceOfTruthTargets when omitted', async () => {
+  const run = await makeRun();
+  const result = await ingestCandidateProposal(run.runRoot, proposal({
+    sourceOfTruthTargets: ['src/./renderer/renderer.js', 'src\\main\\runbooks\\validator.js'],
+  }), {
+    runId: run.runId,
+    now: '2026-04-30T00:00:01.000Z',
+    transitionId: 'ingest:target-files-from-source-targets',
+  });
+
+  assert.deepEqual(result.item.targetFiles, [
+    'src/main/runbooks/validator.js',
+    'src/renderer/renderer.js',
+  ]);
+
+  const stored = await findQueueItem(run.runRoot, result.item.id);
+  assert.deepEqual(stored.item.targetFiles, result.item.targetFiles);
+});
+
+test('candidate proposal explicit targetFiles pass through normalized and deduped', async () => {
+  const run = await makeRun();
+  const result = await ingestCandidateProposal(run.runRoot, proposal({
+    proposalId: 'proposal-explicit-target-files',
+    suggestedWorkItemId: 'explicit-target-files',
+    fingerprint: 'ux:explicit-target-files',
+    sourceOfTruthTargets: ['src/renderer/renderer.js'],
+    targetFiles: ['tests\\renderer.test.mjs', './tests/renderer.test.mjs', 'src/./renderer/renderer.js', 'src/components/../renderer/renderer.js'],
+  }), {
+    runId: run.runId,
+    now: '2026-04-30T00:00:01.000Z',
+    transitionId: 'ingest:explicit-target-files',
+  });
+
+  assert.deepEqual(result.item.sourceOfTruthTargets, ['src/renderer/renderer.js']);
+  assert.deepEqual(result.item.targetFiles, [
+    'src/renderer/renderer.js',
+    'tests/renderer.test.mjs',
+  ]);
+});
+
 test('candidate ingest dedupes by fingerprint without creating another canonical item', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {

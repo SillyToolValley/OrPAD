@@ -2,6 +2,26 @@ const fs = require('fs');
 const path = require('path');
 
 const fsp = fs.promises;
+let atomicWriteCounter = 0;
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function renameWithRetry(tempPath, target) {
+  const retryable = new Set(['EACCES', 'EBUSY', 'EPERM']);
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      await fsp.rename(tempPath, target);
+      return;
+    } catch (err) {
+      if (!retryable.has(err?.code) || attempt === 5) {
+        throw err;
+      }
+      await delay(15 * (attempt + 1));
+    }
+  }
+}
 
 async function ensureDir(dirPath) {
   await fsp.mkdir(dirPath, { recursive: true });
@@ -13,10 +33,10 @@ async function atomicWriteFile(filePath, contents, encoding = 'utf8') {
   await ensureDir(path.dirname(target));
   const tempPath = path.join(
     path.dirname(target),
-    `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`,
+    `.${path.basename(target)}.${process.pid}.${Date.now()}.${atomicWriteCounter += 1}.tmp`,
   );
   await fsp.writeFile(tempPath, contents, encoding);
-  await fsp.rename(tempPath, target);
+  await renameWithRetry(tempPath, target);
   return target;
 }
 

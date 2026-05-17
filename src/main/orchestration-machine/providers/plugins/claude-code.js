@@ -13,6 +13,7 @@ const { registerArtifact } = require('../../artifacts');
 const {
   failedProcessResult,
   idSegment,
+  processLooksApprovalRequired,
   registerJsonArtifact,
 } = require('../../adapters/cli-agent');
 const { runMachineProcess } = require('../../adapters/process-runner');
@@ -73,6 +74,7 @@ function claudeCodeExecArgs(options = {}) {
     '--output-format',
     normalizeClaudeOutputFormat(options.outputFormat),
   ];
+  if (options.dangerouslySkipPermissions === true) args.push(DANGEROUS_CLAUDE_BYPASS_ARG);
   if (options.allowedTools) args.push('--allowed-tools', String(options.allowedTools));
   if (options.disallowedTools) args.push('--disallowed-tools', String(options.disallowedTools));
   if (options.cd) args.push('--cd', String(options.cd));
@@ -122,11 +124,16 @@ function isPlainObject(value) {
 }
 
 function resultStatusForClaudeProcess(processResult, parsedResult) {
+  if (claudeProcessLooksApprovalRequired(processResult, parsedResult)) return 'approval-required';
   if (processResult.timedOut) return 'failed';
   if (processResult.code !== 0) return 'failed';
   const status = parsedResult?.status;
   if (['done', 'blocked', 'queued', 'failed', 'approval-required', 'rejected'].includes(status)) return status;
   return 'blocked';
+}
+
+function claudeProcessLooksApprovalRequired(processResult = {}, parsedResult = null) {
+  return processLooksApprovalRequired(processResult, parsedResult);
 }
 
 function appendValidationCorrectionContext(prompt, adapterContext) {
@@ -184,6 +191,7 @@ function createProposalAdapter(options = {}) {
         args: claudeCodeExecArgs({
           prefixArgs: invocation.prefixArgs,
           outputFormat: options.outputFormat || 'json',
+          dangerouslySkipPermissions: options.dangerouslySkipPermissions === true,
           allowedTools: options.allowedTools,
           disallowedTools: options.disallowedTools,
           prompt,
@@ -302,6 +310,7 @@ function buildWorkerCommandSpec(input = {}) {
     args: claudeCodeExecArgs({
       prefixArgs: invocation.prefixArgs,
       outputFormat: adapter.outputFormat || 'json',
+      dangerouslySkipPermissions: adapter.bypassLlmApprovals === true,
       allowedTools: adapter.allowedTools,
       disallowedTools: adapter.disallowedTools,
       prompt,
@@ -335,5 +344,6 @@ module.exports = {
   claudeCodeInvocation,
   normalizeClaudeOutputFormat,
   parseClaudeAdapterResultFromStdout,
+  claudeProcessLooksApprovalRequired,
   DANGEROUS_CLAUDE_BYPASS_ARG,
 };

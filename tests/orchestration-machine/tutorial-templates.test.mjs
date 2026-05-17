@@ -102,5 +102,89 @@ test('worker patch review tutorial runs to completion against its harness fixtur
   assert.equal(executed.finalization.summaryStatus, 'blocked');
   assert.equal(executed.finalization.supportBlocked.nodePath, 'main/patch-review');
 
+  // Fork-Join Phase 2 dry-run diagnostic: when a support node
+  // completes (non-blocked) the scheduler emits a
+  // `scheduler.edgeEvaluation` event listing fired/dropped outgoing
+  // edges. Codex cross-review 2026-05-16 caught that the original
+  // wiring emitted the diagnostic even for BLOCKED patchReview,
+  // surfacing "exit would fire" on a node that hadn't actually
+  // decided anything. The fix skips the diagnostic when
+  // `supportResult.blocked === true`. The tutorial pipeline has no
+  // labelled edges and only one decision-emitting source
+  // (patch-review) which blocks here, so no diagnostics fire on this
+  // particular run — that's the EXPECTED outcome and pins the
+  // blocked-source skip behavior. The active-wiring path is covered
+  // by the edge-evaluator unit tests.
+  const edgeEvalEvents = events.filter(event => event.eventType === 'scheduler.edgeEvaluation');
+  const reviewEval = edgeEvalEvents.find(event => event.nodePath === 'main/patch-review');
+  assert.equal(reviewEval, undefined, 'patchReview that BLOCKS must NOT emit a scheduler.edgeEvaluation diagnostic');
+  for (const event of edgeEvalEvents) {
+    assert.equal(event.payload.phase, 'phase-2-dry-run');
+    assert.equal(typeof event.payload.firedCount, 'number');
+    assert.equal(typeof event.payload.droppedCount, 'number');
+  }
+
+  // Fork-Join Phase 3 Step 1 (ready-set scheduler refactor) replay
+  // guard: the scheduler must produce the SAME visit sequence the
+  // pre-refactor for-loop produced. Codex cross-review caught that
+  // the original assertion only checked the first 4 nodes and was
+  // too loose — it allowed multiple post-triage reorderings. The
+  // tightened version pins the FULL lifecycle subsequence so any
+  // Step 2 fan-out enabling shows up as a visible failure.
+  const completedSequence = events
+    .filter(event => event.eventType === 'node.completed')
+    .map(event => event.nodePath);
+  // Required prefix (single-threaded harness mode): entry → probe →
+  // queue → triage. These must appear in this exact order at the
+  // start of the run.
+  assert.deepEqual(completedSequence.slice(0, 4), [
+    'main/entry',
+    'main/probe',
+    'main/queue',
+    'main/triage',
+  ], `expected entry -> probe -> queue -> triage prefix, got ${JSON.stringify(completedSequence)}`);
+
+  // Strict ordering after triage: dispatcher must appear before
+  // worker, and BOTH must appear before patch-review's
+  // node.blocked event. This locks Phase 3 Step 1's per-node forward
+  // predecessor gating against accidental Step 2 fan-out leakage.
+  const dispatcherIdx = completedSequence.indexOf('main/dispatcher');
+  const workerIdx = completedSequence.indexOf('main/worker');
+  assert.ok(dispatcherIdx >= 0, 'dispatcher should have completed at least once');
+  assert.ok(workerIdx >= 0, 'worker should have completed at least once');
+  assert.ok(dispatcherIdx < workerIdx, `dispatcher (${dispatcherIdx}) must come before worker (${workerIdx})`);
+
+  // patch-review doesn't fire a node.completed because it blocks.
+  const reviewIdx = completedSequence.indexOf('main/patch-review');
+  assert.equal(reviewIdx, -1, 'patch-review blocks rather than completing');
+  const blockedEvents = events.filter(event => (
+    event.eventType === 'node.blocked' && event.nodePath === 'main/patch-review'
+  ));
+  assert.equal(blockedEvents.length, 1, 'patch-review should emit exactly one node.blocked event');
+
+  // File-Lock Queue Phase 1: the worker-loop now acquires/releases
+  // file locks around adapter.invoke. The tutorial's worker fixture
+  // ran once, so we expect exactly one lock.granted/lock.released
+  // pair tagged with the file-lock-queue-phase-1 phase.
+  const lockGrantedEvents = events.filter(event => event.eventType === 'lock.granted');
+  const lockReleasedEvents = events.filter(event => event.eventType === 'lock.released');
+  assert.equal(lockGrantedEvents.length, 1, 'tutorial worker run should emit exactly one lock.granted event');
+  assert.equal(lockReleasedEvents.length, 1, 'tutorial worker run should emit exactly one lock.released event');
+  assert.equal(lockGrantedEvents[0].payload.phase, 'file-lock-queue-phase-1');
+  // First worker run has no contention so it should NOT have waited.
+  assert.equal(lockGrantedEvents[0].payload.waited, false);
+  // Granted must come BEFORE released.
+  assert.ok(lockGrantedEvents[0].sequence < lockReleasedEvents[0].sequence);
+  // The blocked event must come AFTER the worker's last completion
+  // — Step 1's forward-predecessor gating guarantees this.
+  const lastWorkerCompleted = events.findLast(event => (
+    event.eventType === 'node.completed' && event.nodePath === 'main/worker'
+  ));
+  assert.ok(lastWorkerCompleted, 'worker must have at least one completion event');
+  assert.ok(
+    blockedEvents[0].sequence > lastWorkerCompleted.sequence,
+    `patch-review blocked sequence (${blockedEvents[0].sequence}) must come after last worker completed (${lastWorkerCompleted.sequence})`,
+  );
+
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });

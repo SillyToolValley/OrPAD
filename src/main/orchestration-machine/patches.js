@@ -2,7 +2,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const { registerArtifact } = require('./artifacts');
+const { assertNoSymlinkInRunPath, assertRegisteredArtifactFilesUnchanged, registerArtifact } = require('./artifacts');
+const { readMachineEvents } = require('./events');
 const { normalizeWriteSetPath, normalizeWriteSetPaths, pathsOverlap } = require('./write-sets');
 
 const fsp = fs.promises;
@@ -222,43 +223,66 @@ function assertPatchWithinWriteSet(patch, allowedFiles = patch?.allowedFiles || 
   return patch;
 }
 
-async function applyPatchArtifact(options = {}) {
+async function inspectPatchBase(options = {}) {
   const {
     workspaceRoot,
     patch,
     allowedFiles = patch?.allowedFiles || [],
-    now = new Date().toISOString(),
   } = options;
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   assertPatchWithinWriteSet(patch, allowedFiles);
 
   const prepared = [];
   const mismatches = [];
+  const alreadyApplied = [];
   for (const change of patch.changes || []) {
     await assertNoSymlinkInWorkspacePath(workspaceRoot, change.path);
     const target = resolveWorkspacePath(workspaceRoot, change.path);
     const current = await readTextIfExists(target);
     const currentSha = current === null ? '' : sha256Text(current);
     const expectedSha = change.beforeExists === false ? '' : change.beforeSha256;
+    const afterSha = change.afterExists === false ? '' : change.afterSha256;
     if (currentSha !== expectedSha) {
-      mismatches.push({
+      const mismatch = {
         path: change.path,
         expectedSha256: expectedSha,
         currentSha256: currentSha,
-      });
+        afterSha256: afterSha,
+        alreadyApplied: currentSha === afterSha,
+      };
+      mismatches.push(mismatch);
+      if (mismatch.alreadyApplied) {
+        alreadyApplied.push({ change, target });
+        continue;
+      }
     }
     prepared.push({ change, target });
   }
-  if (mismatches.length) {
-    const err = new Error(`Patch base mismatch for ${mismatches[0].path}.`);
+  return { prepared, mismatches, alreadyApplied };
+}
+
+async function applyPatchArtifact(options = {}) {
+  const {
+    workspaceRoot,
+    patch,
+    allowedFiles = patch?.allowedFiles || [],
+    now = new Date().toISOString(),
+    treatAlreadyAppliedAsSuccess = false,
+  } = options;
+  const inspection = await inspectPatchBase({ workspaceRoot, patch, allowedFiles });
+  const blockingMismatches = treatAlreadyAppliedAsSuccess
+    ? inspection.mismatches.filter(item => !item.alreadyApplied)
+    : inspection.mismatches;
+  if (blockingMismatches.length) {
+    const err = new Error(`Patch base mismatch for ${blockingMismatches[0].path}.`);
     err.code = 'PATCH_BASE_MISMATCH';
-    err.path = mismatches[0].path;
-    err.mismatches = mismatches;
+    err.path = blockingMismatches[0].path;
+    err.mismatches = blockingMismatches;
     throw err;
   }
 
   const applied = [];
-  for (const { change, target } of prepared) {
+  for (const { change, target } of inspection.prepared) {
     if (change.afterExists === false) {
       await fsp.rm(target);
     } else {
@@ -266,6 +290,11 @@ async function applyPatchArtifact(options = {}) {
       await fsp.writeFile(target, change.afterContent || '', 'utf8');
     }
     applied.push({ path: change.path, appliedAt: now });
+  }
+  if (treatAlreadyAppliedAsSuccess) {
+    for (const { change } of inspection.alreadyApplied) {
+      applied.push({ path: change.path, appliedAt: now, alreadyApplied: true });
+    }
   }
   return { applied };
 }
@@ -284,13 +313,41 @@ async function registerPatchArtifact(runRoot, options = {}) {
   });
 }
 
+async function loadRunPatchArtifact(runRoot, patchArtifact) {
+  if (!runRoot) throw new Error('runRoot is required.');
+  await assertRegisteredArtifactFilesUnchanged(runRoot);
+  const safePath = await assertNoSymlinkInRunPath(runRoot, patchArtifact);
+  const events = await readMachineEvents(runRoot);
+  const registered = events.find(event => (
+    event?.eventType === 'artifact.registered'
+    && event?.payload?.file?.path === safePath
+    && event?.payload?.file?.schemaVersion === 'orpad.patchArtifact.v1'
+  ));
+  if (!registered) {
+    const err = new Error(`Patch artifact is not registered for this run: ${patchArtifact}`);
+    err.code = 'MACHINE_PATCH_ARTIFACT_UNREGISTERED';
+    err.patchArtifact = safePath;
+    throw err;
+  }
+  const filePath = path.join(path.resolve(runRoot), ...safePath.split('/'));
+  const patch = JSON.parse(await fsp.readFile(filePath, 'utf8'));
+  if (patch?.schemaVersion !== 'orpad.patchArtifact.v1') {
+    const err = new Error('Patch artifact schema is not recognized.');
+    err.code = 'MACHINE_PATCH_SCHEMA_INVALID';
+    throw err;
+  }
+  return patch;
+}
+
 module.exports = {
   applyPatchArtifact,
   assertNoSymlinkInWorkspacePath,
   assertPatchWithinWriteSet,
   collectOverlayPatch,
   copyAllowedFilesToOverlay,
+  inspectPatchBase,
   isPathAllowedByWriteSet,
+  loadRunPatchArtifact,
   readTextIfExists,
   registerPatchArtifact,
   resolveWorkspacePath,

@@ -1,4 +1,5 @@
 const { appendMachineEvent, projectRunStateFromEvents, readMachineEvents } = require('./events');
+const { shouldRequestPatchReview } = require('./patch-review-classifier');
 const { repairRunStateFromEvents, readRunState } = require('./run-store');
 const { findQueueItem, projectQueueStateFromEvents, readQueueItems, writeQueueItem } = require('./queue-store');
 
@@ -16,6 +17,21 @@ const RUN_LIFECYCLE_STATES = new Set([
 ]);
 const RUN_SUMMARY_STATUSES = new Set(['pending', 'done', 'partial', 'blocked']);
 const TERMINAL_RUN_LIFECYCLE_STATES = new Set(['completed', 'cancelled', 'failed']);
+const PATCH_REVIEW_RESOLUTION_EVENT_TYPES = new Set(['patch.applied', 'patch.review_skipped']);
+const PATCH_REVIEW_DECISION_EVENT_TYPES = new Set([
+  ...PATCH_REVIEW_RESOLUTION_EVENT_TYPES,
+  'patch.approved',
+  'patch.apply_conflict',
+  'patch.apply_failed',
+]);
+const PATCH_REVIEW_REQUEST_EVENT_TYPE = 'patch.review_required';
+const PATCH_REVIEW_STATUS_BY_EVENT = new Map([
+  ['patch.applied', 'applied'],
+  ['patch.review_skipped', 'skipped'],
+  ['patch.approved', 'approved'],
+  ['patch.apply_conflict', 'conflict'],
+  ['patch.apply_failed', 'failed'],
+]);
 
 async function readAuthoritativeRunState(runRoot) {
   return await readRunState(runRoot) || projectRunStateFromEvents(await readMachineEvents(runRoot));
@@ -151,6 +167,122 @@ function summaryStatusFromInventory(inventory) {
   return 'partial';
 }
 
+function patchReviewResumeStateFromEvents(events = []) {
+  const patchArtifacts = [];
+  const seen = new Set();
+  for (const event of events) {
+    if (event?.eventType !== 'worker.result') continue;
+    const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+    const changedFiles = Array.isArray(event?.payload?.changedFiles)
+      ? event.payload.changedFiles.filter(Boolean)
+      : [];
+    if (!patchArtifact || seen.has(patchArtifact)) continue;
+    seen.add(patchArtifact);
+    patchArtifacts.push({
+      patchArtifact,
+      changedFiles,
+      lockTargetFiles: Array.isArray(event?.payload?.lockTargetFiles) ? event.payload.lockTargetFiles : [],
+      sourceEvent: event,
+    });
+  }
+
+  const decisions = new Map();
+  const appliedFiles = [];
+  let historicalConflictCount = 0;
+  let historicalFailedCount = 0;
+  for (const event of events) {
+    const type = String(event?.eventType || '');
+    if (!PATCH_REVIEW_DECISION_EVENT_TYPES.has(type)) continue;
+    const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+    if (!patchArtifact) continue;
+    decisions.set(patchArtifact, {
+      eventType: type,
+      code: event?.payload?.code || '',
+    });
+    if (type === 'patch.apply_conflict') historicalConflictCount += 1;
+    if (type === 'patch.apply_failed') historicalFailedCount += 1;
+    if (type === 'patch.applied') {
+      const payload = event.payload || {};
+      const applied = Array.isArray(payload.applied)
+        ? payload.applied.map(item => (typeof item === 'string' ? item : item?.path || item?.file || ''))
+        : [];
+      const selected = Array.isArray(payload.selectedFiles) ? payload.selectedFiles : [];
+      appliedFiles.push(...(applied.length ? applied : selected).filter(Boolean));
+    }
+  }
+
+  const reviewRequests = new Map();
+  for (const event of events) {
+    if (event?.eventType !== PATCH_REVIEW_REQUEST_EVENT_TYPE) continue;
+    const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+    if (!patchArtifact) continue;
+    reviewRequests.set(patchArtifact, {
+      eventType: PATCH_REVIEW_REQUEST_EVENT_TYPE,
+      sequence: event.sequence ?? null,
+      reason: event?.payload?.reason || '',
+      reasons: Array.isArray(event?.payload?.reasons) ? event.payload.reasons : [],
+      changedFiles: Array.isArray(event?.payload?.changedFiles) ? event.payload.changedFiles : [],
+      declaredTargetFiles: Array.isArray(event?.payload?.declaredTargetFiles) ? event.payload.declaredTargetFiles : [],
+      outsideTargetFiles: Array.isArray(event?.payload?.outsideTargetFiles) ? event.payload.outsideTargetFiles : [],
+    });
+  }
+
+  const reviews = patchArtifacts.map(entry => {
+    const decision = decisions.get(entry.patchArtifact) || null;
+    const reviewRequest = reviewRequests.get(entry.patchArtifact) || null;
+    const decisionType = decision?.eventType || '';
+    const classification = shouldRequestPatchReview(entry.sourceEvent, {
+      decision,
+      reviewRequest,
+      lockTargetFiles: entry.lockTargetFiles,
+    });
+    return {
+      patchArtifact: entry.patchArtifact,
+      status: PATCH_REVIEW_STATUS_BY_EVENT.get(decisionType) || 'pending',
+      resolved: PATCH_REVIEW_RESOLUTION_EVENT_TYPES.has(decisionType),
+      reviewRequired: classification.requestReview,
+      reviewReason: classification.reason,
+      reviewReasons: classification.reasons,
+    };
+  });
+  const pendingPatchArtifacts = reviews
+    .filter(review => review.reviewRequired && !review.resolved)
+    .map(review => review.patchArtifact);
+  return {
+    required: pendingPatchArtifacts.length > 0,
+    resolved: pendingPatchArtifacts.length === 0,
+    patchCount: patchArtifacts.length,
+    pendingCount: pendingPatchArtifacts.length,
+    appliedCount: reviews.filter(review => review.status === 'applied').length,
+    skippedCount: reviews.filter(review => review.status === 'skipped').length,
+    approvedCount: reviews.filter(review => review.status === 'approved').length,
+    conflictCount: reviews.filter(review => review.status === 'conflict').length,
+    failedCount: reviews.filter(review => review.status === 'failed').length,
+    historicalConflictCount,
+    historicalFailedCount,
+    appliedFiles: [...new Set(appliedFiles)],
+    pendingPatchArtifacts,
+  };
+}
+
+function hasBlockedPatchReviewNode(events = []) {
+  const latestByPath = new Map();
+  for (const event of events) {
+    if (!String(event?.eventType || '').startsWith('node.')) continue;
+    if (event?.payload?.nodeType !== 'orpad.patchReview') continue;
+    const nodePath = String(event?.nodePath || '').trim();
+    if (!nodePath) continue;
+    latestByPath.set(nodePath, event);
+  }
+  return [...latestByPath.values()].some(event => event.eventType === 'node.blocked');
+}
+
+function summaryStatusFromInventoryAndEvents(inventory, events = []) {
+  const patchReview = patchReviewResumeStateFromEvents(events);
+  if (patchReview.required && !patchReview.resolved) return 'blocked';
+  return summaryStatusFromInventory(inventory);
+}
+
 async function assertNoActiveInventoryForDone(runRoot) {
   const inventory = await summarizeQueueInventory(runRoot);
   if (inventory.activeCount === 0) return inventory;
@@ -164,7 +296,9 @@ async function finalizeRunFromInventory(runRoot, options = {}) {
   const { runId, reason = 'lifecycle.inventory-finalize' } = options;
   if (!runId) throw new Error('runId is required.');
   const inventory = await summarizeQueueInventory(runRoot);
-  const summaryStatus = summaryStatusFromInventory(inventory);
+  const events = await readMachineEvents(runRoot);
+  const patchReview = patchReviewResumeStateFromEvents(events);
+  const summaryStatus = summaryStatusFromInventoryAndEvents(inventory, events);
   if (summaryStatus === 'done') {
     await assertNoActiveInventoryForDone(runRoot);
     await appendRunLifecycleStatus(runRoot, {
@@ -185,10 +319,11 @@ async function finalizeRunFromInventory(runRoot, options = {}) {
     runId,
     summaryStatus,
     reason,
-    payload: { inventory },
+    payload: { inventory, patchReview },
   });
   return {
     inventory,
+    patchReview,
     summaryStatus,
     runState,
   };
@@ -242,12 +377,15 @@ async function resumeMachineRun(runRoot, options = {}) {
     },
   });
   const inventory = await summarizeQueueInventory(runRoot);
+  const events = await readMachineEvents(runRoot);
+  const patchReview = patchReviewResumeStateFromEvents(events);
   const runState = await appendRunSummaryStatus(runRoot, {
     runId,
-    summaryStatus: summaryStatusFromInventory(inventory),
+    summaryStatus: summaryStatusFromInventoryAndEvents(inventory, events),
     reason: 'lifecycle.resume',
     payload: {
       inventory,
+      patchReview,
       queueRepair,
       staleClaimCount: staleClaims.length,
     },
@@ -256,6 +394,7 @@ async function resumeMachineRun(runRoot, options = {}) {
     queueRepair,
     staleClaims,
     inventory,
+    patchReview,
     runState,
   };
 }
@@ -274,8 +413,10 @@ module.exports = {
   assertRunLifecycleStatus,
   assertRunSummaryStatus,
   finalizeRunFromInventory,
+  patchReviewResumeStateFromEvents,
   repairDerivedQueueFilesFromEvents,
   resumeMachineRun,
   summarizeQueueInventory,
   summaryStatusFromInventory,
+  summaryStatusFromInventoryAndEvents,
 };

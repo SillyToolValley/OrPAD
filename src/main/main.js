@@ -8,6 +8,7 @@ const { registerAiKeyHandlers } = require('./ai-keys');
 const { registerAiConversationHandlers } = require('./ai-conversations');
 const { registerMcpHandlers } = require('./mcp/ipc');
 const { registerMachineHandlers } = require('./orchestration-machine/ipc');
+const { registerOrchestrationAuthoringHandlers } = require('./orchestration-authoring/ipc');
 const { registerRunbookHandlers } = require('./runbooks/ipc');
 const { registerTerminalHandlers } = require('./terminal/ipc');
 const { createAuthorityManager, isInsidePath } = require('./authority');
@@ -472,6 +473,7 @@ registerMachineHandlers({
   allowSessionEnable: !app.isPackaged,
   loadProviderKey: createMachineProviderKeyLoader({ app, safeStorage }),
 });
+registerOrchestrationAuthoringHandlers({ ipcMain, app, authority });
 registerRunbookHandlers({ ipcMain, app, authority });
 registerTerminalHandlers({ ipcMain, app, authority });
 

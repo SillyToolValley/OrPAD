@@ -66,6 +66,20 @@
         "minLength": 1
       }
     },
+    "sourceOfTruthTargets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "targetFiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "coverageEvidenceIds": {
       "type": "array",
       "items": {

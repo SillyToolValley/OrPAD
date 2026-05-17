@@ -194,6 +194,111 @@ test('dispatcher claims the highest priority queued item and owns claim/write-se
   assert.equal(journal.at(-1).actor, 'orpad.dispatcher');
 });
 
+test('dispatcher serializes concurrent claim selection so each queued item is claimed once', async () => {
+  const run = await makeRun('run_20260430_dispatcher_atomic_claims');
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'atomic-claim-a',
+    fingerprint: 'ux:atomic-claim-a',
+    sourceOfTruthTargets: ['src/atomic-a.md'],
+  }), 1);
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'atomic-claim-b',
+    fingerprint: 'ux:atomic-claim-b',
+    sourceOfTruthTargets: ['src/atomic-b.md'],
+  }), 2);
+
+  const results = await Promise.all([
+    claimNextQueuedItem(run.runRoot, {
+      runId: run.runId,
+      now: '2026-04-30T00:00:20.000Z',
+    }),
+    claimNextQueuedItem(run.runRoot, {
+      runId: run.runId,
+      now: '2026-04-30T00:00:20.000Z',
+    }),
+  ]);
+
+  assert.deepEqual(results.map(result => result.claimed), [true, true]);
+  assert.deepEqual(results.map(result => result.item.id).sort(), ['atomic-claim-a', 'atomic-claim-b']);
+  assert.equal(new Set(results.map(result => result.claim.claimId)).size, 2);
+  assert.deepEqual((await Promise.all([
+    findQueueItem(run.runRoot, 'atomic-claim-a'),
+    findQueueItem(run.runRoot, 'atomic-claim-b'),
+  ])).map(entry => entry.state), ['claimed', 'claimed']);
+  const claimEvents = (await readMachineEvents(run.runRoot))
+    .filter(event => event.eventType === 'queue.transition' && event.toState === 'claimed');
+  assert.equal(claimEvents.length, 2);
+  assert.equal(new Set(claimEvents.map(event => event.itemId)).size, 2);
+});
+
+test('dispatcher audit-only write-set mode lets overlapping worker claims reach the in-memory lock manager', async () => {
+  const run = await makeRun('run_20260430_dispatcher_audit_only_writesets');
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'audit-only-a',
+    fingerprint: 'ux:audit-only-a',
+    sourceOfTruthTargets: ['src/shared.md'],
+  }), 1);
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'audit-only-b',
+    fingerprint: 'ux:audit-only-b',
+    sourceOfTruthTargets: ['src/shared.md'],
+  }), 2);
+
+  const first = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    enforceWriteSetConflicts: false,
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const second = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    enforceWriteSetConflicts: false,
+    now: '2026-04-30T00:00:21.000Z',
+  });
+
+  assert.equal(first.claimed, true);
+  assert.equal(second.claimed, true);
+  assert.deepEqual([first.item.id, second.item.id], ['audit-only-a', 'audit-only-b']);
+  const activeWriteSets = await readActiveWriteSetLocks(run.runRoot);
+  assert.equal(activeWriteSets.length, 2);
+  assert.deepEqual(activeWriteSets.map(lock => lock.paths), [['src/shared.md'], ['src/shared.md']]);
+  const acquiredEvents = (await readMachineEvents(run.runRoot))
+    .filter(event => event.eventType === 'write-set.acquired');
+  assert.deepEqual(acquiredEvents.map(event => event.payload.conflictPolicy), ['audit-only', 'audit-only']);
+
+  await assert.rejects(
+    acquireWriteSetLock(run.runRoot, {
+      runId: run.runId,
+      claimId: 'claim-enforced-conflict',
+      itemId: 'enforced-conflict',
+      paths: ['src/shared.md'],
+    }),
+    error => error?.code === 'WRITE_SET_LOCK_CONFLICT',
+  );
+});
+
+test('dispatcher uses candidate targetFiles as the claim write set when present', async () => {
+  const run = await makeRun('run_20260430_dispatcher_target_files_writeset');
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'target-files-work',
+    fingerprint: 'ux:target-files-work',
+    sourceOfTruthTargets: ['src/source-only.md'],
+    targetFiles: ['src/source-only.md', 'tests/source-only.test.mjs'],
+  }));
+
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-target-files-work',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  assert.equal(claimed.claimed, true);
+  assert.deepEqual(claimed.writeSet.paths, ['src/source-only.md', 'tests/source-only.test.mjs']);
+  assert.deepEqual((await readClaimLease(run.runRoot, claimed.claim.claimId)).writeSetPaths, [
+    'src/source-only.md',
+    'tests/source-only.test.mjs',
+  ]);
+});
+
 test('dispatcher lock stores reject symlinked claim and write-set files', async t => {
   const run = await makeRun('run_20260430_dispatcher_lock_symlink');
   await queueProposal(run, proposal({
@@ -377,6 +482,57 @@ test('worker result closes a claimed item only after proof is accepted', async (
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
   assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'worker.result').length, 1);
   assert.deepEqual((await readJournal(run.runRoot)).map(entry => entry.action), ['ingest', 'triage', 'claim', 'close']);
+});
+
+test('approval-required worker result requeues claimed item and creates permission request', async () => {
+  const run = await makeRun('run_20260430_worker_llm_permission');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'llm-permission-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-llm-permission',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+  request.commandSpec = {
+    command: 'claude',
+    args: ['--print', 'work'],
+    cwd: 'overlay',
+  };
+  const result = workerResult(request, {
+    status: 'approval-required',
+    summary: 'Provider requested permission.',
+    artifacts: [],
+    verification: [{ command: 'claude', args: ['--print', 'work'], cwdKind: 'overlay' }],
+    changedFiles: [],
+    requestedCapabilities: ['llm-cli-tool-permission', 'workspace-overlay-write'],
+    approvalRequest: {
+      reason: 'llm-cli-permission-required',
+      commandSpec: request.commandSpec,
+    },
+  });
+
+  const applied = await applyWorkerResult(run.runRoot, {
+    runId: run.runId,
+    claimId: claimed.claim.claimId,
+    itemId,
+    request,
+    result,
+    now: '2026-04-30T00:00:30.000Z',
+  });
+  const queued = await findQueueItem(run.runRoot, itemId);
+  const events = await readMachineEvents(run.runRoot);
+
+  assert.equal(applied.toState, 'queued');
+  assert.equal(applied.approval.request.itemId, itemId);
+  assert.deepEqual(applied.approval.request.requestedCapabilities, ['llm-cli-tool-permission', 'workspace-overlay-write']);
+  assert.equal(queued.state, 'queued');
+  assert.equal(queued.item.approvalRequired, true);
+  assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'approval-required');
+  assert.equal(events.some(event => event.eventType === 'approval.requested'), true);
+  assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
 });
 
 test('worker result refuses terminal runs before closing claimed work', async () => {

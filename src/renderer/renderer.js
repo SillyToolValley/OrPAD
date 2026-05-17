@@ -373,11 +373,15 @@ function normalizeComparablePath(value) {
   return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
-function isPathInsideWorkspace(filePath) {
-  if (!workspacePath || !filePath) return false;
-  const root = normalizeComparablePath(workspacePath);
+function isPathInsideWorkspaceRoot(filePath, rootPath) {
+  if (!rootPath || !filePath) return false;
+  const root = normalizeComparablePath(rootPath);
   const full = normalizeComparablePath(filePath);
   return full === root || full.startsWith(root + '/');
+}
+
+function isPathInsideWorkspace(filePath) {
+  return isPathInsideWorkspaceRoot(filePath, workspacePath);
 }
 
 // Sidebar state
@@ -395,7 +399,11 @@ let lastRunRecord = null;
 let runbookScanRequestId = 0;
 const RUNBOOK_TASK_STORAGE_KEY = 'orpad-runbook-task';
 let runbookDraftTask = localStorage.getItem(RUNBOOK_TASK_STORAGE_KEY) || '';
+let pipelineGenerateState = null;
+let pipelineGenerateSequence = 0;
 const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(search|competing products|competitors?|market|benchmarks?|benchmarking|web research|external research|browse|internet|online)\b/i;
+const ORPAD_WORK_ITEM_SCHEMA_VERSION = 'orpad.workItem.v1';
+const ORPAD_WORK_ITEM_STATES = Object.freeze(['candidate', 'queued', 'claimed', 'done', 'blocked', 'rejected']);
 const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
@@ -414,6 +422,8 @@ const machineRunReplayStickDefault = true;
 //     renders truncate events to events[0..position] so the entire UI
 //     reflects the run state AT THAT POINT. null / unset = live view.
 const machineRunReplayPosition = new Map();
+const machineApprovalPromptSeen = new Set();
+const machineBlockedDecisionPromptSeen = new Set();
 // Breakpoints — Phase 3.7:
 //   per-pipeline (NOT per-run) Set<nodePath>. Persists across runs in
 //   localStorage so the user does not have to re-mark them each time.
@@ -484,6 +494,9 @@ const machineRunStartPendingPaths = new Set();
 const machineRunPendingActions = new Map();
 const machineRunProgressTimers = new Map();
 const machineRunExternalResearchDecisions = new Map();
+const pipelineHarnessImplementedAtCache = new Map();
+const pipelineHarnessImplementationStatusCache = new Map();
+const pipelineHarnessRequiredBeforeRunCache = new Set();
 const machinePatchReviewShown = new Set();
 let lastMachineRunRecord = null;
 let machineCapabilityToken = '';
@@ -2641,6 +2654,7 @@ function openOrchNodeTarget(path, doc = null, baseFilePath = getActiveTab()?.fil
 
 function pipelineContextForPath(filePath = getActiveTab()?.filePath) {
   const normalized = runbookNormalizePath(filePath);
+  if (workspacePath && !isPathInsideWorkspaceRoot(normalized, workspacePath)) return null;
   const marker = '/.orpad/pipelines/';
   const markerIndex = normalized.toLowerCase().indexOf(marker);
   if (markerIndex === -1) return null;
@@ -2856,6 +2870,140 @@ function graphNodeFieldDiagnostic(diagnostics, field, node) {
   return diagnostics.find(issue => graphDiagnosticField(issue, node) === field);
 }
 
+function machineQueueInventoryFromEvents(record) {
+  const itemStates = new Map();
+  for (const event of record?.events || []) {
+    if (event?.eventType !== 'queue.transition') continue;
+    const itemId = event.itemId || event.payload?.itemId || '';
+    const toState = event.toState || event.payload?.toState || '';
+    if (!itemId || !ORPAD_WORK_ITEM_STATES.includes(toState)) continue;
+    itemStates.set(itemId, toState);
+  }
+  if (!itemStates.size) return null;
+  const counts = Object.fromEntries(ORPAD_WORK_ITEM_STATES.map(state => [state, 0]));
+  for (const state of itemStates.values()) counts[state] = (counts[state] || 0) + 1;
+  const activeCount = ['candidate', 'queued', 'claimed'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
+  const terminalCount = ['done', 'blocked', 'rejected'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
+  return {
+    counts,
+    activeCount,
+    terminalCount,
+    blockedCount: Number(counts.blocked) || 0,
+    doneCount: Number(counts.done) || 0,
+  };
+}
+
+function machineLatestQueueInventory(record) {
+  if (!record) return null;
+  const summary = latestMachineEvent(record.events, 'run.summary', event => event?.payload?.inventory?.counts);
+  if (summary?.payload?.inventory?.counts) return summary.payload.inventory;
+  const status = latestMachineEvent(record.events, 'run.status', event => event?.payload?.inventory?.counts);
+  if (status?.payload?.inventory?.counts) return status.payload.inventory;
+  const direct = record.finalization?.inventory || record.resume?.inventory || record.inventory || null;
+  return direct?.counts ? direct : machineQueueInventoryFromEvents(record);
+}
+
+function machineQueueInventoryCounts(inventory) {
+  const counts = inventory?.counts || {};
+  const activeCount = Number(inventory?.activeCount)
+    || ['candidate', 'queued', 'claimed'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
+  const terminalCount = Number(inventory?.terminalCount)
+    || ['done', 'blocked', 'rejected'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
+  return {
+    counts,
+    activeCount,
+    terminalCount,
+    queuedCount: Number(counts.queued) || 0,
+    claimedCount: Number(counts.claimed) || 0,
+    blockedCount: Number(inventory?.blockedCount) || Number(counts.blocked) || 0,
+    doneCount: Number(inventory?.doneCount) || Number(counts.done) || 0,
+    rejectedCount: Number(counts.rejected) || 0,
+    totalCount: activeCount + terminalCount,
+  };
+}
+
+function machineQueueInventorySummary(inventory) {
+  const { counts } = machineQueueInventoryCounts(inventory);
+  const labels = [
+    ['candidate', 'candidate'],
+    ['queued', 'queued'],
+    ['claimed', 'in progress'],
+    ['blocked', 'blocked'],
+    ['done', 'done'],
+    ['rejected', 'rejected'],
+  ]
+    .map(([state, label]) => counts[state] ? `${counts[state]} ${label}` : '')
+    .filter(Boolean);
+  return labels.length ? labels.join(', ') : 'no work state';
+}
+
+function machineLatestBlockedWorkDetails(record) {
+  const workerEvent = latestMachineEvent(record?.events, 'worker.result', event => (
+    String(event?.payload?.status || '').toLowerCase() === 'blocked'
+  ));
+  const transitionEvent = latestMachineEvent(record?.events, 'queue.transition', event => (
+    String(event?.toState || event?.payload?.toState || '').toLowerCase() === 'blocked'
+  ));
+  if (!workerEvent && !transitionEvent) return null;
+  const event = workerEvent || transitionEvent;
+  const payload = event?.payload || {};
+  const missingExpectedChanges = [...new Set((payload.verification || [])
+    .flatMap(item => item?.missingExpectedChanges || [])
+    .filter(Boolean))];
+  const changedFiles = Array.isArray(payload.changedFiles) ? payload.changedFiles.filter(Boolean) : [];
+  const patchArtifact = payload.patchArtifact || '';
+  const patchReview = patchArtifact
+    ? machineWorkerReviewInfos(record).find(review => review.patchArtifact === patchArtifact)
+    : null;
+  const patchReviewStatus = patchReview?.patchReviewStatus || '';
+  const itemId = event.itemId || transitionEvent?.itemId || payload.itemId || '';
+  let reason = 'Worker stopped without an applicable workspace patch.';
+  if (patchArtifact && changedFiles.length) {
+    if (patchReviewStatus === 'approved') {
+      reason = `${machineCountLabel(changedFiles.length, 'changed file')} approved but not applied to the workspace yet.`;
+    } else if (patchReview?.patchReviewResolved) {
+      reason = `${machineCountLabel(changedFiles.length, 'changed file')} ${patchReviewStatus === 'applied' ? 'applied to the workspace' : 'kept as review-only evidence'}.`;
+    } else if (['conflict', 'failed'].includes(patchReviewStatus)) {
+      reason = `${machineCountLabel(changedFiles.length, 'changed file')} needs patch follow-up after ${patchReviewStatus}.`;
+    } else {
+      reason = `${machineCountLabel(changedFiles.length, 'changed file')} staged for patch review.`;
+    }
+  } else if (missingExpectedChanges.length) {
+    reason = `No patch was produced; expected changes were missing: ${missingExpectedChanges.slice(0, 3).join(', ')}${missingExpectedChanges.length > 3 ? `, +${missingExpectedChanges.length - 3} more` : ''}.`;
+  } else if (payload.code || payload.message) {
+    reason = payload.message || payload.code;
+  }
+  return {
+    itemId,
+    reason,
+    patchArtifact,
+    patchReviewStatus,
+    changedFiles,
+    missingExpectedChanges,
+    evidenceArtifacts: event.artifactRefs || [],
+    sequence: event.sequence || 0,
+  };
+}
+
+function machineBlockedWorkInlineText(record) {
+  const blocked = machineLatestBlockedWorkDetails(record);
+  if (!blocked) return '';
+  return `Blocked item: ${blocked.itemId || 'unknown'} - ${blocked.reason}`;
+}
+
+function machineSkipBlockReason(record, nodePath, nodeType = '') {
+  const queue = machineQueueInventoryCounts(machineLatestQueueInventory(record));
+  if (queue.activeCount <= 0) return '';
+  const np = String(nodePath || '').toLowerCase();
+  const nt = String(nodeType || '').toLowerCase();
+  const structuralQueueNode = nt === 'orpad.graph'
+    || nt === 'orpad.exit'
+    || np === 'main/worker-loop'
+    || np.startsWith('worker-loop/');
+  if (!structuralQueueNode) return '';
+  return `Skip disabled: ${machineQueueInventorySummary(machineLatestQueueInventory(record))}. Continue queued work or stop the run; skipping ${nodePath || 'this node'} leaves queued work stranded.`;
+}
+
 function renderOrchInspectorField(label, field, path, value, issue = null) {
   const hasIssue = !!issue;
   return `
@@ -2899,6 +3047,24 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
       return { state: 'warn', text: 'Run paused for approval.' };
     }
     if (lifecycle === 'waiting') {
+      if (machineLatestActiveLockWait(activeRecord)) {
+        return { state: 'warn', text: 'Waiting on file lock.' };
+      }
+      if (machinePendingPatchReviewRequiredEvents(activeRecord).length > 0) {
+        return { state: 'warn', text: 'Patch review required.' };
+      }
+      const inventory = machineLatestQueueInventory(activeRecord);
+      const queue = machineQueueInventoryCounts(inventory);
+      if (queue.totalCount > 0 && queue.activeCount > 0) {
+        const status = machineQueueInventorySummary(inventory);
+        const blockedText = queue.blockedCount > 0 ? ` ${machineBlockedWorkInlineText(activeRecord)}` : '';
+        return {
+          state: 'warn',
+          text: queue.blockedCount > 0
+            ? `Queue has blockers: ${status}. Continue runs the next queued item.${blockedText}`
+            : `Queue waiting: ${status}. Continue runs the next queued item.`,
+        };
+      }
       const gateBlocked = (sharedGateBlockedNodes(activeRecord) || []).length > 0;
       const failed = (sharedFailedAdapterCalls(activeRecord) || []).length > 0;
       if (gateBlocked) return { state: 'warn', text: 'Run paused at gate — provide evidence or skip.' };
@@ -2972,7 +3138,14 @@ function pipelinePreviewRunHeaderMetrics(record) {
   }
   let progressLabel = '';
   let progressTitle = '';
-  if (seenPaths.size > 0) {
+  const inventory = machineLatestQueueInventory(record);
+  const queue = machineQueueInventoryCounts(inventory);
+  if (queue.totalCount > 0 && (queue.activeCount > 0 || queue.blockedCount > 0)) {
+    const processed = queue.doneCount + queue.blockedCount + queue.rejectedCount;
+    progressLabel = `${processed}/${queue.totalCount}`;
+    const blockedText = queue.blockedCount > 0 ? ` ${machineBlockedWorkInlineText(record)}` : '';
+    progressTitle = `Work queue: ${machineQueueInventorySummary(inventory)}. ${queue.activeCount ? 'Continue processes the next queued item.' : 'No active queue items remain.'}${blockedText}`;
+  } else if (seenPaths.size > 0) {
     progressLabel = `${completedPaths.size}/${seenPaths.size}`;
     progressTitle = `${completedPaths.size} resolved (completed or skipped) out of ${seenPaths.size} nodes touched in this run.`;
   }
@@ -3035,11 +3208,129 @@ function renderMachineBudgetIndicatorHtml(pipelineDoc) {
   return `<span class="pipeline-runbar-status pipe-budget-chip" title="Pipeline budget config (estimate, not provider invoice). hardStop=true는 router가 perCall/perRun 초과 attempt를 즉시 거부.">Budget · ${escapeHtml(parts.join(' · '))}</span>`;
 }
 
+function renderMachineLifecycleEventNoticesHtml(record, runbookPathArg = '') {
+  if (!record) return '';
+  const runId = record?.runState?.runId || record?.runId || '';
+  const runRoot = record?.runRoot || record?.runState?.runRoot || '';
+  const runbookPath = runbookPathArg || record?.runbookPath || record?.pipelinePath || '';
+  const eventsAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/events.jsonl` : '';
+  const linkBtn = (label, abs) => abs
+    ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(abs)}" title="${escapeHtml(abs)}">${escapeHtml(label)}</button>`
+    : '';
+  const notices = [];
+
+  const lockWait = machineLatestActiveLockWait(record);
+  if (lockWait) {
+    const payload = lockWait.payload || {};
+    const files = Array.isArray(payload.targetFiles) ? payload.targetFiles : [];
+    notices.push({
+      kind: 'warn',
+      title: 'Waiting on file lock',
+      detail: [
+        payload.taskId ? `Task ${payload.taskId} is waiting for reserved files.` : 'A worker is waiting for reserved files.',
+        files.length ? `${machineCountLabel(files.length, 'file')}: ${files.slice(0, 4).join(', ')}${files.length > 4 ? `, +${files.length - 4} more` : ''}.` : '',
+      ].filter(Boolean).join(' '),
+      actions: [linkBtn('events.jsonl', eventsAbs)],
+      sequence: machineEventSequence(lockWait),
+    });
+  }
+
+  const patchRequests = machinePendingPatchReviewRequiredEvents(record);
+  if (patchRequests.length) {
+    const latest = patchRequests[patchRequests.length - 1];
+    const payload = latest.payload || {};
+    const files = Array.isArray(payload.changedFiles) ? payload.changedFiles : [];
+    const pendingPatchReviewCount = machinePendingPatchReviewInfos(record).length;
+    const approvedPatchReviewCount = machineApprovedPatchReviewInfos(record).length;
+    const reviewPatchesBtn = (runId && runbookPath && pendingPatchReviewCount > 0)
+      ? `<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-probe-action="review-patches" data-run-id="${escapeHtml(runId)}" data-runbook-path="${escapeHtml(runbookPath)}">Review patches</button>`
+      : '';
+    const applyApprovedPatchesBtn = (runId && runbookPath && !pendingPatchReviewCount && approvedPatchReviewCount > 0)
+      ? `<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-probe-action="apply-approved-patches" data-run-id="${escapeHtml(runId)}" data-runbook-path="${escapeHtml(runbookPath)}">Apply approved patches</button>`
+      : '';
+    notices.push({
+      kind: 'warn',
+      title: 'Patch review required',
+      detail: [
+        payload.patchArtifact ? `Patch artifact ${payload.patchArtifact} requires review.` : 'A patch artifact requires review.',
+        files.length ? `${machineCountLabel(files.length, 'changed file')} staged in run evidence.` : '',
+        payload.reason ? `Reason: ${payload.reason}.` : '',
+      ].filter(Boolean).join(' '),
+      actions: [reviewPatchesBtn, applyApprovedPatchesBtn, linkBtn('events.jsonl', eventsAbs)],
+      sequence: machineEventSequence(latest),
+    });
+  }
+
+  const recovered = latestMachineEvent(record?.events, 'scheduler.subGraphInnerFailure');
+  if (recovered) {
+    const payload = recovered.payload || {};
+    const partial = latestMachineEvent(record?.events, 'scheduler.subGraphPartial', event => (
+      machineEventSequence(event) >= machineEventSequence(recovered)
+      && (!payload.wrapperNodePath || event.payload?.wrapperNodePath === payload.wrapperNodePath)
+    ));
+    notices.push({
+      kind: partial ? 'warn' : 'neutral',
+      title: partial ? 'Inner failure recovered as partial' : 'Inner failure recovered',
+      detail: [
+        payload.failingNodePath ? `${payload.failingNodePath} failed inside ${payload.wrapperNodePath || 'a subgraph'}.` : 'A subgraph inner node failed and the wrapper recovered.',
+        payload.policy ? `Policy: ${payload.policy}.` : '',
+        partial ? 'The wrapper is marked partial for finalization.' : 'The run was restored to running after the recovery event.',
+      ].filter(Boolean).join(' '),
+      actions: [linkBtn('events.jsonl', eventsAbs)],
+      sequence: machineEventSequence(partial || recovered),
+    });
+  }
+
+  const conflict = latestMachineEvent(record?.events, 'scheduler.parallelArtifactConflict');
+  if (conflict) {
+    const conflicts = Array.isArray(conflict.payload?.conflicts) ? conflict.payload.conflicts : [];
+    notices.push({
+      kind: 'neutral',
+      title: 'Parallel work serialized',
+      detail: `${machineCountLabel(conflicts.length, 'artifact conflict')} detected; scheduler fell back to single-pick dispatch for this batch.`,
+      actions: [linkBtn('events.jsonl', eventsAbs)],
+      sequence: machineEventSequence(conflict),
+    });
+  }
+
+  const autoPatch = machineLatestAutoPatchAuditEvent(record);
+  if (autoPatch) {
+    notices.push({
+      kind: 'neutral',
+      title: 'Auto-apply audit recorded',
+      detail: 'Patch approval and apply events were emitted by the autonomous driver. Review events.jsonl for the audit chain.',
+      actions: [linkBtn('events.jsonl', eventsAbs)],
+      sequence: machineEventSequence(autoPatch),
+    });
+  }
+
+  return notices
+    .sort((a, b) => b.sequence - a.sequence)
+    .slice(0, 3)
+    .map(notice => `
+      <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(notice.kind)} pipe-lifecycle-banner--event">
+        <div class="pipe-lifecycle-banner-title">${escapeHtml(notice.title)}</div>
+        <div class="pipe-lifecycle-banner-detail">${escapeHtml(notice.detail)}</div>
+        ${notice.actions?.filter(Boolean).length ? `<div class="pipe-lifecycle-banner-actions">${notice.actions.filter(Boolean).join('')}</div>` : ''}
+      </div>
+    `).join('');
+}
+
 function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
   const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
   const summary = String(record?.runState?.summaryStatus || '').toLowerCase();
   const runId = record?.runState?.runId || record?.runId || '';
   const runRoot = record?.runRoot || record?.runState?.runRoot || '';
+  const runbookPath = runbookPathArg || record?.runbookPath || record?.pipelinePath || '';
+  const patchOutcome = machinePatchReviewOutcome(record);
+  const pendingPatchReviewCount = machinePendingPatchReviewInfos(record).length;
+  const approvedPatchReviewCount = machineApprovedPatchReviewInfos(record).length;
+  const patchReviewComplete = Boolean(patchOutcome?.patchCount)
+    && Number(patchOutcome?.pendingCount || 0) === 0
+    && Number(patchOutcome?.approvedCount || 0) === 0
+    && Number(patchOutcome?.conflictCount || 0) === 0
+    && Number(patchOutcome?.failedCount || 0) === 0;
+  const eventNotices = renderMachineLifecycleEventNoticesHtml(record, runbookPath);
 
   // Surface gate-style blocked nodes (exit / barrier / artifactContract /
   // patchReview / gate / workQueue) here even while the run is still
@@ -3054,10 +3345,37 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
   // user has no way to do so manually.
   const failedForGate = sharedFailedAdapterCalls(record) || [];
   let gateBanner = '';
+  // User report 2026-05-15: when ALL gates are evidence-incomplete exit
+  // gates, the title "Gate is blocked — needs decision" + remedy
+  // "Continue remaining queued work first" reads as "click Continue" —
+  // misleading because the user can't do that, no Continue button is
+  // surfaced for evidence-incomplete (it's a terminal block until the
+  // user either reruns upstream nodes or skips the exit gate).
+  const totalMissingArtifacts = gateBlocked.reduce((sum, g) => {
+    const missing = (g.artifactContracts || []).reduce((c, contract) =>
+      c + ((contract.missingArtifacts || []).length) + ((contract.missingQueue || []).length), 0);
+    return sum + missing;
+  }, 0);
+  const allExitEvidenceIncomplete = gateBlocked.length > 0
+    && gateBlocked.every(g => g.reason === 'exit.evidence-incomplete');
   if (gateBlocked.length) {
     const items = gateBlocked.map(g => {
-      const skipBtn = (runId && g.nodePath)
+      const skipBlockReason = runId && g.nodePath ? machineSkipBlockReason(record, g.nodePath, g.nodeType || '') : '';
+      const skipBtn = (runId && g.nodePath && !skipBlockReason)
         ? `<button class="pipe-lifecycle-banner-link" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(g.nodePath)}" data-node-type="${escapeHtml(g.nodeType || '')}" title="Append node.skipped to dismiss this gate. Use only when you are sure the gate's evidence is not required for this run.">Skip gate</button>`
+        : '';
+      const skipDisabledHint = skipBlockReason
+        ? `<div class="pipe-lifecycle-banner-remedy">${escapeHtml(skipBlockReason)}</div>`
+        : '';
+      const patchReviewGate = g.nodeType === 'orpad.patchReview' || g.reason === 'patch-review.required' || g.reason === 'exit.patch-review-required';
+      const reviewPatchesBtn = (runId && patchReviewGate && pendingPatchReviewCount > 0)
+        ? `<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-probe-action="review-patches" data-run-id="${escapeHtml(runId)}" data-runbook-path="${escapeHtml(runbookPath)}" title="Open the pending patch review modal for this run.">Review patches</button>`
+        : '';
+      const applyApprovedPatchesBtn = (runId && patchReviewGate && !pendingPatchReviewCount && approvedPatchReviewCount > 0)
+        ? `<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-probe-action="apply-approved-patches" data-run-id="${escapeHtml(runId)}" data-runbook-path="${escapeHtml(runbookPath)}" title="Apply approved patch selections to the workspace.">Apply approved patches</button>`
+        : '';
+      const continueAfterPatchReviewBtn = (runId && runbookPath && patchReviewGate && !pendingPatchReviewCount && !approvedPatchReviewCount && patchReviewComplete)
+        ? `<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" data-runbook-path="${escapeHtml(runbookPath)}" title="Patch review is already resolved. Continue this run to clear the review gate.">Continue</button>`
         : '';
       // Map the gate reason to plain-language guidance. The default
       // banner used to say "provide evidence or approval" which is
@@ -3067,9 +3385,35 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
       const reason = String(g.reason || '');
       let remedy = 'Retry the AI probe(s) below or skip the gate.';
       if (reason === 'exit.evidence-incomplete') {
-        remedy = 'Required artifact missing. The AI probe that should produce it failed or returned nothing. Click Retry probe on the failed adapter card below, or Skip gate if the artifact is not required for this run.';
-      } else if (reason === 'exit.patch-review-required') {
-        remedy = 'Patch review is pending. Approve patches in the patch review modal, or skip if the diff is not required.';
+        const missingArtifacts = (g.artifactContracts || [])
+          .flatMap(contract => contract.missingArtifacts || [])
+          .map(item => item.path || item.declared || '')
+          .filter(Boolean);
+        const missingQueue = (g.artifactContracts || [])
+          .flatMap(contract => contract.missingQueue || [])
+          .map(item => item.path || item.declared || '')
+          .filter(Boolean);
+        const missingItems = [...missingArtifacts, ...missingQueue];
+        const missingText = missingItems.slice(0, 6).join(', ');
+        const more = missingItems.length > 6 ? `, +${missingItems.length - 6} more` : '';
+        // User report 2026-05-15: previous wording said "Continue remaining
+        // queued work first" which users read as "click the Continue
+        // button." There is no Continue button for evidence-incomplete —
+        // the only ways out are (a) rerun upstream nodes to produce the
+        // missing artifacts, or (b) Skip exit gate to end the run.
+        remedy = missingText
+          ? `${missingItems.length} required artifact${missingItems.length === 1 ? '' : 's'} not produced (${missingText}${more}). Rerun the upstream nodes that should have produced them, or Skip exit gate to end the run as-is.`
+          : `${missingItems.length} required artifact${missingItems.length === 1 ? '' : 's'} not produced. Rerun the upstream nodes that should have produced them, or Skip exit gate to end the run as-is.`;
+      } else if (patchReviewGate) {
+        if (pendingPatchReviewCount > 0) {
+          remedy = 'Patch review is pending. Open Review patches, then approve or skip each proposed workspace patch.';
+        } else if (approvedPatchReviewCount > 0) {
+          remedy = 'Patch selections are approved but not applied yet. Apply approved patches to finish this review gate.';
+        } else if (patchReviewComplete) {
+          remedy = 'Patch review is already resolved. Continue the run to clear this stale review gate and process the next item.';
+        } else {
+          remedy = 'Patch review is blocked, but no reviewable patch payload is loaded. Refresh runs or open events.jsonl.';
+        }
       }
       return `
         <div class="pipe-lifecycle-banner-detail">
@@ -3078,7 +3422,11 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
           ${g.nodeType ? `<span class="pipe-failed-probe-adapter">${escapeHtml(g.nodeType)}</span>` : ''}
           ${g.reason ? `<div><code>${escapeHtml(g.reason)}</code></div>` : ''}
           <div class="pipe-lifecycle-banner-remedy">${escapeHtml(remedy)}</div>
+          ${skipDisabledHint}
           <div class="pipe-lifecycle-banner-actions">
+            ${reviewPatchesBtn}
+            ${applyApprovedPatchesBtn}
+            ${continueAfterPatchReviewBtn}
             ${runRoot ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${runRoot.replace(/[\\/]+$/, '')}/events.jsonl`)}">events.jsonl</button>` : ''}
             ${skipBtn}
           </div>
@@ -3088,22 +3436,24 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
     const retryAllHint = failedForGate.length
       ? `<div class="pipe-lifecycle-banner-remedy">${escapeHtml(`${failedForGate.length} failed probe${failedForGate.length === 1 ? '' : 's'} below — Retry probe on each card to re-run, or skip the gate to accept the missing evidence.`)}</div>`
       : '';
+    const gateTitle = allExitEvidenceIncomplete && totalMissingArtifacts > 0
+      ? `Run paused at exit gate — ${totalMissingArtifacts} artifact${totalMissingArtifacts === 1 ? '' : 's'} missing`
+      : 'Gate is blocked — needs decision';
     gateBanner = `
       <div class="pipe-lifecycle-banner pipe-lifecycle-banner--warn">
-        <div class="pipe-lifecycle-banner-title">Gate is blocked — needs decision</div>
+        <div class="pipe-lifecycle-banner-title">${escapeHtml(gateTitle)}</div>
         ${items}
         ${retryAllHint}
       </div>
     `;
   }
 
-  if (!lifecycle && !summary) return gateBanner;
+  if (!lifecycle && !summary) return `${gateBanner}${eventNotices}`;
   // 진행 중 / 초기 상태는 banner 없이 기존 status chip만.
-  if (['running', 'waiting', 'created', 'cancelling'].includes(lifecycle)) return gateBanner;
+  if (['running', 'waiting', 'created', 'cancelling'].includes(lifecycle)) return `${gateBanner}${eventNotices}`;
 
   const summaryAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/summary.md` : '';
   const eventsAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/events.jsonl` : '';
-  const runbookPath = runbookPathArg || record?.runbookPath || record?.pipelinePath || '';
   const linkBtn = (label, abs) => abs
     ? `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(abs)}" title="${escapeHtml(abs)}">${escapeHtml(label)}</button>`
     : '';
@@ -3117,38 +3467,51 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
     : '';
 
   let banner = null;
-  if (lifecycle === 'approval-required' || summary === 'pending') {
+  const effectivePendingApprovals = machinePendingApprovals(record);
+  // User report 2026-05-15 (P1 follow-up): the previous guard included
+  // `|| rawPendingApprovalCount === 0` so that lifecycle === 'approval-
+  // required' with zero pending approvals would still render the
+  // "Approval marker is set but no payload loaded yet" placeholder card.
+  // In practice that fallback fired permanently whenever every approval
+  // had already been decided but the lifecycleStatus event remained at
+  // 'approval-required' — leaving a ghost banner with no actionable
+  // content. The honest behavior is to suppress the banner when nothing
+  // is actually pending; the lifecycle projection (run.status events)
+  // is the source of truth for whether the run is paused.
+  const shouldShowApprovalBanner = lifecycle === 'approval-required'
+    ? effectivePendingApprovals.length > 0
+    : summary === 'pending';
+  if (shouldShowApprovalBanner) {
     // Phase 2.5: render pending approvals as inline cards with Allow /
-    // Decline buttons directly in the banner. No more 'approval modal
-    // will surface' lie — the user can act here.
-    const pending = (record?.approvals?.pending || []).filter(a => a?.approvalId);
-    const approvalCards = pending.length
-      ? pending.slice(0, 5).map(approval => {
-          const aid = approval.approvalId;
-          const itemId = approval.itemId || '';
-          const subjectLine = approval.title || approval.summary || itemId || aid;
-          const reasonLine = approval.reason || '';
-          return `
-            <div class="pipe-interrupt-card" data-approval-id="${escapeHtml(aid)}">
-              <div class="pipe-interrupt-card-head">
-                <strong>${escapeHtml(subjectLine)}</strong>
-                ${itemId ? `<code class="pipe-interrupt-card-item">${escapeHtml(itemId)}</code>` : ''}
-              </div>
-              ${reasonLine ? `<div class="pipe-interrupt-card-reason">${escapeHtml(reasonLine)}</div>` : ''}
-              <div class="pipe-interrupt-card-actions">
-                <button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(aid)}" title="Allow this request and unblock the run.">Allow</button>
-                <button class="pipe-lifecycle-banner-link" data-runbook-action="machine-deny-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(aid)}" title="Decline this request and leave the run blocked.">Decline</button>
-              </div>
-            </div>
-          `;
-        }).join('')
-      : '<div class="pipe-interrupt-card-empty">Approval marker is set but no pending approval payload is loaded yet.</div>';
+    // Decline buttons directly in the banner. shouldShowApprovalBanner
+    // now requires effectivePendingApprovals.length > 0, so the empty-
+    // payload placeholder branch has been removed (it was unreachable
+    // dead code that previously caused the ghost banner P1 fix).
+    const pending = effectivePendingApprovals;
+    const approvalCards = pending.slice(0, 5).map(approval => {
+      const aid = approval.approvalId;
+      const itemId = approval.itemId || '';
+      const subjectLine = approval.title || approval.summary || itemId || aid;
+      const reasonLine = approval.reason || '';
+      const needsLlmBypass = machineApprovalNeedsLlmBypass(approval);
+      return `
+        <div class="pipe-interrupt-card" data-approval-id="${escapeHtml(aid)}">
+          <div class="pipe-interrupt-card-head">
+            <strong>${escapeHtml(subjectLine)}</strong>
+            ${itemId ? `<code class="pipe-interrupt-card-item">${escapeHtml(itemId)}</code>` : ''}
+          </div>
+          ${reasonLine ? `<div class="pipe-interrupt-card-reason">${escapeHtml(reasonLine)}</div>` : ''}
+          <div class="pipe-interrupt-card-actions">
+            <button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(aid)}" data-llm-bypass="${needsLlmBypass ? 'true' : 'false'}" title="${escapeHtml(needsLlmBypass ? 'Allow this request and continue once with LLM CLI permission bypass.' : 'Allow this request and unblock the run.')}">${needsLlmBypass ? 'Allow Bypass' : 'Allow'}</button>
+            <button class="pipe-lifecycle-banner-link" data-runbook-action="machine-deny-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(aid)}" title="Decline this request and leave the run blocked.">Decline</button>
+          </div>
+        </div>
+      `;
+    }).join('');
     banner = {
       kind: 'warn',
-      title: pending.length === 1 ? 'Approval needed' : `${pending.length || 'Awaiting'} approval${pending.length === 1 ? '' : 's'}`,
-      detail: pending.length
-        ? 'Decide each request inline. After Allow/Decline, click Continue to resume the run.'
-        : 'Run paused for an approval marker. Refresh runs to load the pending request payload.',
+      title: pending.length === 1 ? 'Approval needed' : `${pending.length} approvals`,
+      detail: 'Decide each request inline. After Allow/Decline, click Continue to resume the run.',
       conclusion: 'This run is paused — decide approvals inline below, then Continue to resume.',
       extraHtml: `<div class="pipe-interrupt-card-list">${approvalCards}</div>`,
       actions: [linkBtn('events.jsonl', eventsAbs), cancelBtn],
@@ -3170,12 +3533,26 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
       actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs), startNewRunBtn],
     };
   } else if (lifecycle === 'completed') {
-    if (summary === 'done') {
+    if (patchOutcome && (!patchOutcome.changedWorkspace || patchOutcome.partial)) {
+      banner = {
+        kind: 'warn',
+        title: patchOutcome.changedWorkspace
+          ? 'Run complete - patches partially applied'
+          : 'Run complete - no workspace patch applied',
+        detail: machinePatchOutcomeText(patchOutcome),
+        conclusion: 'Files not listed under Workspace changed stayed only in run evidence, so they will look unchanged in the workspace.',
+        extraHtml: renderMachinePatchOutcomeHtml(patchOutcome),
+        actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs), startNewRunBtn],
+      };
+    } else if (summary === 'done') {
       banner = {
         kind: 'success',
         title: 'Run complete · all required evidence collected',
-        detail: 'No active or deferred work items remain. Summary file holds the final state.',
+        detail: patchOutcome
+          ? machinePatchOutcomeText(patchOutcome)
+          : 'No active or deferred work items remain. Summary file holds the final state.',
         conclusion: 'This run terminated normally. No further action required.',
+        extraHtml: patchOutcome ? renderMachinePatchOutcomeHtml(patchOutcome) : '',
         actions: [linkBtn('summary.md', summaryAbs), startNewRunBtn],
       };
     } else if (summary === 'partial') {
@@ -3204,13 +3581,13 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
       };
     }
   }
-  if (!banner) return gateBanner;
+  if (!banner) return `${gateBanner}${eventNotices}`;
 
   const conclusionHtml = banner.conclusion
     ? `<div class="pipe-lifecycle-banner-conclusion">${escapeHtml(banner.conclusion)}</div>`
     : '';
   const extraHtml = banner.extraHtml || '';
-  return `${gateBanner}
+  return `${gateBanner}${eventNotices}
     <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(banner.kind)}">
       <div class="pipe-lifecycle-banner-title">${escapeHtml(banner.title)}</div>
       <div class="pipe-lifecycle-banner-detail">${escapeHtml(banner.detail)}</div>
@@ -3223,7 +3600,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
   `;
 }
 
-function renderProbeActionButtons(f, runIdAttr, nodePathAttr) {
+function renderProbeActionButtons(f, runIdAttr, nodePathAttr, record = null) {
   const buttons = [];
   if (runIdAttr && nodePathAttr) {
     // The AI-driven fix path. Appends a fresh node.scheduled event for
@@ -3239,8 +3616,11 @@ function renderProbeActionButtons(f, runIdAttr, nodePathAttr) {
       if (t.includes('triage')) return 'triage';
       return 'node';
     })();
+    const skipBlockReason = machineSkipBlockReason(record, nodePathAttr, f?.nodeType || '');
     buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Re-run this ${nodeKindLabel} at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output, timeout) — Continue is dispatched automatically afterwards.">Retry ${nodeKindLabel}</button>`);
-    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this ${nodeKindLabel}. Use only when its work is genuinely not required for this run.">Skip ${nodeKindLabel}</button>`);
+    buttons.push(skipBlockReason
+      ? `<button class="pipe-failed-probe-link pipe-failed-probe-skip" disabled title="${escapeHtml(skipBlockReason)}">Skip ${nodeKindLabel}</button>`
+      : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this ${nodeKindLabel}. Use only when its work is genuinely not required for this run.">Skip ${nodeKindLabel}</button>`);
   }
   return buttons.join('');
 }
@@ -3288,7 +3668,7 @@ function renderMachineFailedAdaptersHtml(record) {
     if (eventsAbs) {
       links.push(`<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(eventsAbs)}" title="${escapeHtml(eventsAbs)}">events.jsonl</button>`);
     }
-    const actions = renderProbeActionButtons(f, runIdAttr, f.nodePath || '');
+    const actions = renderProbeActionButtons(f, runIdAttr, f.nodePath || '', record);
     const headerLabel = f.nodePath || f.label || (f.itemId ? `work-item: ${f.itemId}` : (f.adapterCallId ? `adapter call: ${f.adapterCallId}` : '(no node path)'));
     return `
       <div class="pipe-failed-probe">
@@ -3329,11 +3709,17 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const previewRunInProgress = isMachineRunInProgress(previewRunRecord, runbookPath);
   const previewRunId = previewRunRecord?.runState?.runId || previewRunRecord?.runId || '';
   const startPending = machineRunStartPendingPaths.has(runbookKey);
+  const externalResearchLimitation = pipelineDoc?.metadata?.externalResearch?.limitation || pipelineDoc?.run?.externalResearchLimitation || '';
+  const harnessImplementedAt = pipelineDocHarnessImplementedAt(pipelineDoc, runbookKey);
+  const harnessProgress = harnessImplementationProgressForPath(runbookPath);
+  const requiresHarnessBeforeRun = pipelineRequiresHarnessBeforeRun(runbookPath, pipelineDoc, harnessImplementedAt);
   const runtimeBlockReason = machineRuntimeBlockReason();
-  const machineReason = runtimeBlockReason || (checked
+  const machineReason = requiresHarnessBeforeRun
+    ? 'Start will implement the Machine harness first, then run autonomously to patch review.'
+    : runtimeBlockReason || (checked
     ? machineStartBlockReason(validation) || 'Start and track work state, progress, and evidence files.'
     : 'Check this pipeline, then start and track its work state, progress, and evidence files.');
-  const machineStartable = isMachineStartablePipeline(validation);
+  const machineStartable = isMachineStartablePipeline(validation) || requiresHarnessBeforeRun;
   const machineCompatible = isMachineCompatiblePipeline(validation);
   const machineDisabled = startPending || previewRunInProgress || (checked && !machineStartable);
   const defaultAction = machineCompatible && previewRunInProgress ? 'machine-cancel-run' : 'default';
@@ -3351,7 +3737,6 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
   const activePathTitle = runbookRelativePath(context.activePath || runbookPath);
-  const externalResearchLimitation = pipelineDoc?.metadata?.externalResearch?.limitation || pipelineDoc?.run?.externalResearchLimitation || '';
   if (isMachineApiAvailable() && !machineRuntimeStatus && !machineRuntimeStatusLoading) {
     void refreshMachineRuntimeStatus();
   }
@@ -3368,6 +3753,8 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         ${runHeaderMetrics.currentNode ? `<span class="pipeline-runbar-current" title="${escapeHtml(`Currently running: ${runHeaderMetrics.currentNode}`)}">${escapeHtml(runHeaderMetrics.currentNode)}</span>` : ''}
         ${runHeaderMetrics.progressLabel ? `<span class="pipeline-runbar-progress" title="${escapeHtml(runHeaderMetrics.progressTitle || '')}">progress <code>${escapeHtml(runHeaderMetrics.progressLabel)}</code></span>` : ''}
         ${runHeaderMetrics.elapsed ? `<span class="pipeline-runbar-elapsed" title="${escapeHtml(`Started ${runHeaderMetrics.startedAt}`)}">${escapeHtml(runHeaderMetrics.elapsed)}</span>` : ''}
+        ${harnessProgress ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(harnessProgress.title)}">${escapeHtml(harnessProgress.label)}</span>` : ''}
+        ${harnessImplementedAt ? `<span class="pipeline-runbar-status done" title="${escapeHtml(`Harness implemented at ${harnessImplementedAt}`)}">Harness ready</span>` : ''}
         ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
         ${renderMachineBudgetIndicatorHtml(pipelineDoc)}
       </div>
@@ -3381,7 +3768,10 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
           </summary>
           <div class="pipeline-run-menu" role="menu">
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.')}">Run locally</button>
-            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start and track work state, progress, and evidence files.'))}">Start Run</button>
+            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress ? '' : 'disabled'} title="Create or refresh the Machine harness scaffold for this pipeline.">Implement Harness</button>
+            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start autonomous Machine run and stop at patch review.'))}">Start Run</button>
+            <button data-pipeline-run-action="managed-ask" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="Debug mode: ask before LLM CLI permission bypass instead of auto-driving to patch review.">Start Run (Ask Permissions)</button>
+            <button data-pipeline-run-action="managed-auto-apply" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="Fully autonomous: auto-approve and apply every patch the worker produces. No human gate at patchReview. Use only for trusted pipelines.">Start Run (Auto-Apply Patches)</button>
             <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No handoff is required for this pipeline.' : 'Prepare instructions for running this pipeline with an external agent.')}">Prepare Handoff</button>
             <button data-pipeline-run-action="choose-adapter" data-path="${escapeHtml(runbookPath)}" title="Choose AI provider and model for this pipeline.">Choose AI Provider…</button>
             <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}">Check</button>
@@ -4294,35 +4684,110 @@ function resetOrchGraphLayout() {
   rerenderOrchPreview();
 }
 
-function defaultOrchTransitionPoint(source, target, style = 'curve') {
+// Loop-back arc amplitude: how far sideways (in px) the control point sits
+// from the source/target column. Scales with the number of intermediate
+// nodes the arc has to clear. Kept smaller than ORCH_NODE_WIDTH so the
+// graph viewport doesn't have to grow much when a loop-back exists.
+const ORCH_LOOPBACK_BASE_AMP = Math.round(ORCH_NODE_WIDTH * 0.55);
+const ORCH_LOOPBACK_STEP_AMP = 32;
+
+function orchLoopBackAmplitude(intermediateCount = 0, lateralLaneAbs = 0) {
+  return ORCH_LOOPBACK_BASE_AMP + Math.max(0, intermediateCount) * ORCH_LOOPBACK_STEP_AMP + lateralLaneAbs;
+}
+
+// Lane offset for an edge that is one of `total` siblings sharing a source.
+// Spreads edges symmetrically around 0 so a 1-edge source stays centered and a
+// 3-edge source gets [-1, 0, +1] * step. Used for fan-out (Pattern J) and
+// fan-in to prevent overlapping curves.
+function orchFanLaneOffset(index, total) {
+  if (!total || total < 2) return 0;
+  const step = 28;
+  return (index - (total - 1) / 2) * step;
+}
+
+function defaultOrchTransitionPoint(source, target, style = 'curve', edge = null) {
   const x1 = source.x + Math.round(ORCH_NODE_WIDTH / 2);
   const y1 = source.y + ORCH_NODE_HEIGHT;
   const x2 = target.x + Math.round(ORCH_NODE_WIDTH / 2);
   const y2 = target.y;
-  if (style === 'straight') return { x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) };
-  return { x: Math.round((x1 + x2) / 2), y: Math.round(y1 + Math.max(54, (y2 - y1) * 0.48)) };
+  const isLoopBack = Boolean(edge?.isLoopBack) || (Number.isFinite(edge?.sourceIndex) && Number.isFinite(edge?.targetIndex) && edge.targetIndex < edge.sourceIndex);
+  // Fan-out / fan-in lane: spread sibling edges sideways so they don't overlap.
+  // Parallel siblings (same source+target pair) get a stronger spread because
+  // they share both endpoints and would otherwise be drawn on top of each other.
+  const fanOut = orchFanLaneOffset(edge?.fanOutIndex || 0, edge?.fanOutTotal || 1);
+  const fanIn = orchFanLaneOffset(edge?.fanInIndex || 0, edge?.fanInTotal || 1);
+  const parallel = (edge?.parallelTotal || 1) > 1
+    ? orchFanLaneOffset(edge?.parallelIndex || 0, edge.parallelTotal) * 1.5
+    : 0;
+  if (style === 'straight') {
+    return {
+      x: Math.round(((x1 + x2) / 2) + (fanOut + fanIn) / 2 + parallel),
+      y: Math.round((y1 + y2) / 2),
+    };
+  }
+  if (isLoopBack) {
+    // Loop-back: route the curve to the SIDE of the source/target column so it
+    // arcs around any intermediate nodes instead of cutting through them.
+    // Amplitude grows with intermediate node count so a 5-row back-edge clears
+    // every box. Default side is right; if multiple loop-backs share a source
+    // they fan out left/right via fanOut index sign.
+    const sourceMidY = source.y + ORCH_NODE_HEIGHT / 2;
+    const targetMidY = target.y + ORCH_NODE_HEIGHT / 2;
+    const intermediateCount = edge?.intermediateNodeCount || 0;
+    const amplitude = orchLoopBackAmplitude(intermediateCount, Math.abs(fanOut));
+    // Sign: positive fanOut => right side, negative => left. Single back-edge
+    // defaults to the right (fanOut === 0).
+    const sign = fanOut >= 0 ? 1 : -1;
+    return {
+      x: Math.round(x1 + sign * amplitude),
+      y: Math.round((sourceMidY + targetMidY) / 2),
+    };
+  }
+  // Forward (typical): place control point slightly below source by 0.48 * span.
+  // Apply fanOut on x so sibling edges from the same source don't overlap; same
+  // for fanIn on the target side. Parallel (same source+target) gets a stronger
+  // offset on top of those so two patchReview→worker style pairs read apart.
+  const midX = (x1 + x2) / 2 + (fanOut + fanIn) / 2 + parallel;
+  return {
+    x: Math.round(midX),
+    y: Math.round(y1 + Math.max(54, (y2 - y1) * 0.48)),
+  };
 }
 
-function orchTransitionPoint(edgeId, source, target) {
+function orchTransitionPoint(edgeId, source, target, edge = null) {
   const transition = currentOrchMeta().transitions[edgeId];
   const style = transition?.style === 'straight' ? 'straight' : 'curve';
   const point = Array.isArray(transition?.points) ? transition.points[0] : null;
   if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) return { x: point.x, y: point.y };
-  return defaultOrchTransitionPoint(source, target, style);
+  return defaultOrchTransitionPoint(source, target, style, edge);
 }
 
-function orchEdgePath(source, target, edgeId) {
+function orchEdgePath(source, target, edgeId, edge = null) {
   const transition = currentOrchMeta().transitions[edgeId];
   const style = transition?.style === 'straight' ? 'straight' : 'curve';
-  const point = orchTransitionPoint(edgeId, source, target);
-  return orchEdgePathWithPoint(source, target, style, point);
+  const point = orchTransitionPoint(edgeId, source, target, edge);
+  return orchEdgePathWithPoint(source, target, style, point, edge);
 }
 
-function orchEdgePathWithPoint(source, target, style, point) {
-  const x1 = source.x + Math.round(ORCH_NODE_WIDTH / 2);
-  const y1 = source.y + ORCH_NODE_HEIGHT;
-  const x2 = target.x + Math.round(ORCH_NODE_WIDTH / 2);
-  const y2 = target.y;
+function orchEdgePathWithPoint(source, target, style, point, edge = null) {
+  const isLoopBack = Boolean(edge?.isLoopBack) || (Number.isFinite(edge?.sourceIndex) && Number.isFinite(edge?.targetIndex) && edge.targetIndex < edge.sourceIndex);
+  // For a loop-back, exit from the SIDE of the source (and enter the SIDE of
+  // the target) so the curve loops out and back in, not down-then-up-through
+  // the column. This keeps the back-edge clearly visible and stops it from
+  // being hidden behind intermediate nodes.
+  let x1; let y1; let x2; let y2;
+  if (isLoopBack) {
+    const side = point.x >= source.x + ORCH_NODE_WIDTH / 2 ? 'right' : 'left';
+    x1 = side === 'right' ? source.x + ORCH_NODE_WIDTH : source.x;
+    y1 = source.y + ORCH_NODE_HEIGHT / 2;
+    x2 = side === 'right' ? target.x + ORCH_NODE_WIDTH : target.x;
+    y2 = target.y + ORCH_NODE_HEIGHT / 2;
+  } else {
+    x1 = source.x + Math.round(ORCH_NODE_WIDTH / 2);
+    y1 = source.y + ORCH_NODE_HEIGHT;
+    x2 = target.x + Math.round(ORCH_NODE_WIDTH / 2);
+    y2 = target.y;
+  }
   if (style === 'straight') {
     return `M ${x1} ${y1} L ${x1} ${point.y} L ${x2} ${point.y} L ${x2} ${y2}`;
   }
@@ -4471,6 +4936,7 @@ function collectOrchStateGraph(doc) {
   });
 
   const nodePathById = new Map(nodes.map(item => [String(item.node?.id || ''), item.path]));
+  const nodeIndexById = new Map(nodes.map((item, i) => [String(item.node?.id || ''), i]));
   const edges = [];
   rawTransitions.forEach((transition) => {
     const from = String(transition?.from || '');
@@ -4478,11 +4944,97 @@ function collectOrchStateGraph(doc) {
     const source = nodePathById.get(from);
     const target = nodePathById.get(to);
     if (!source || !target) return;
-    edges.push({ id: `${source}->${target}`, source, target, from, to });
+    const fromIdx = nodeIndexById.get(from);
+    const toIdx = nodeIndexById.get(to);
+    const isLoopBack = typeof fromIdx === 'number' && typeof toIdx === 'number' && toIdx <= fromIdx;
+    const condition = typeof transition?.condition === 'string' ? transition.condition.trim() : '';
+    edges.push({
+      id: `${source}->${target}`,
+      source,
+      target,
+      from,
+      to,
+      condition,
+      isLoopBack,
+      sourceIndex: fromIdx,
+      targetIndex: toIdx,
+    });
   });
-  const minX = Math.min(0, ...nodes.map(item => item.x - ORCH_GRAPH_MARGIN));
+  // Annotate each edge with fan-out / fan-in / parallel-pair information,
+  // plus the count of nodes whose actual rectangle sits between source and
+  // target on the source/target column. The renderer uses these to
+  // (a) spread multiple edges from the same source so they don't overlap,
+  // (b) spread multiple edges sharing the exact same source-target pair
+  //     more aggressively (parallel index), and
+  // (c) widen the loop-back arc enough to clear intermediate node rectangles
+  //     (not just raw topological index).
+  const outgoingCounter = new Map();
+  const incomingCounter = new Map();
+  const pairCounter = new Map();
+  for (const edge of edges) {
+    outgoingCounter.set(edge.source, (outgoingCounter.get(edge.source) || 0) + 1);
+    incomingCounter.set(edge.target, (incomingCounter.get(edge.target) || 0) + 1);
+    const pairKey = `${edge.source}\u0000${edge.target}`;
+    pairCounter.set(pairKey, (pairCounter.get(pairKey) || 0) + 1);
+  }
+  const outgoingIdxSeen = new Map();
+  const incomingIdxSeen = new Map();
+  const pairIdxSeen = new Map();
+  const nodeIndexEntries = nodes;
+  for (const edge of edges) {
+    const outIdx = outgoingIdxSeen.get(edge.source) || 0;
+    edge.fanOutIndex = outIdx;
+    edge.fanOutTotal = outgoingCounter.get(edge.source) || 1;
+    outgoingIdxSeen.set(edge.source, outIdx + 1);
+    const inIdx = incomingIdxSeen.get(edge.target) || 0;
+    edge.fanInIndex = inIdx;
+    edge.fanInTotal = incomingCounter.get(edge.target) || 1;
+    incomingIdxSeen.set(edge.target, inIdx + 1);
+    const pairKey = `${edge.source}\u0000${edge.target}`;
+    const pIdx = pairIdxSeen.get(pairKey) || 0;
+    edge.parallelIndex = pIdx;
+    edge.parallelTotal = pairCounter.get(pairKey) || 1;
+    pairIdxSeen.set(pairKey, pIdx + 1);
+    // Count nodes whose vertical band overlaps the source/target band AND
+    // whose X column is within one node-width of the midpoint between source
+    // and target. This is the real number of node rectangles the edge would
+    // pass through if drawn straight — more accurate than the raw index gap.
+    const sourceNode = nodes.find(item => item.path === edge.source);
+    const targetNode = nodes.find(item => item.path === edge.target);
+    if (sourceNode && targetNode) {
+      const yLo = Math.min(sourceNode.y, targetNode.y);
+      const yHi = Math.max(sourceNode.y + ORCH_NODE_HEIGHT, targetNode.y + ORCH_NODE_HEIGHT);
+      const midX = (sourceNode.x + targetNode.x) / 2 + ORCH_NODE_WIDTH / 2;
+      let collisions = 0;
+      for (const candidate of nodeIndexEntries) {
+        if (candidate.path === edge.source || candidate.path === edge.target) continue;
+        const cy0 = candidate.y;
+        const cy1 = candidate.y + ORCH_NODE_HEIGHT;
+        if (cy1 < yLo || cy0 > yHi) continue;
+        const cMidX = candidate.x + ORCH_NODE_WIDTH / 2;
+        if (Math.abs(cMidX - midX) < ORCH_NODE_WIDTH) collisions += 1;
+      }
+      edge.intermediateNodeCount = collisions;
+    } else {
+      const lo = Math.min(edge.sourceIndex ?? 0, edge.targetIndex ?? 0);
+      const hi = Math.max(edge.sourceIndex ?? 0, edge.targetIndex ?? 0);
+      edge.intermediateNodeCount = Math.max(0, hi - lo - 1);
+    }
+  }
+  // Reserve horizontal head-room equal to the largest loop-back amplitude
+  // expected from any edge in this graph. Without this, the SVG viewport clips
+  // the side-arcs we draw to clear intermediate nodes.
+  const loopBackHeadroom = edges.reduce((max, edge) => {
+    if (!edge.isLoopBack) return max;
+    const fanAbs = Math.abs(orchFanLaneOffset(edge.fanOutIndex || 0, edge.fanOutTotal || 1));
+    return Math.max(max, orchLoopBackAmplitude(edge.intermediateNodeCount || 0, fanAbs));
+  }, 0);
+  const minX = Math.min(0, ...nodes.map(item => item.x - ORCH_GRAPH_MARGIN - loopBackHeadroom));
   const minY = Math.min(0, ...nodes.map(item => item.y - ORCH_GRAPH_MARGIN));
-  const maxX = Math.max(...nodes.map(item => item.x + ORCH_NODE_WIDTH + ORCH_GRAPH_MARGIN), 760);
+  const maxX = Math.max(
+    ...nodes.map(item => item.x + ORCH_NODE_WIDTH + ORCH_GRAPH_MARGIN + loopBackHeadroom),
+    760,
+  );
   const maxY = Math.max(...nodes.map(item => item.y + ORCH_NODE_HEIGHT + ORCH_GRAPH_MARGIN), 520);
   return {
     tree: { id: graphDoc.id || '', label: graphDoc.label || 'Main flow' },
@@ -4704,6 +5256,9 @@ function showOrchContextMenu({ x, y, path = '', edgeId = '', readwrite = false, 
   const isGraphView = getActiveTab()?.viewType === 'orch-graph';
   const canOpenTree = canOpenOrchSubtree(path, doc);
   const canOpenFile = !!orchNodeFileTarget(path, doc, baseFilePath);
+  const machineNodePath = targetPath ? machineNodePathForOrchNode(targetPath, doc, baseFilePath) : '';
+  const nodeRuntimeStatus = machineNodePath ? machineStatusForNodePath(machineNodePath, baseFilePath) : null;
+  const hasMachineFailure = machineNodePath ? machineFailureForNodePath(machineNodePath, baseFilePath).length > 0 : false;
   const items = [];
   if (edgeId) {
     if (readwrite) {
@@ -4723,6 +5278,13 @@ function showOrchContextMenu({ x, y, path = '', edgeId = '', readwrite = false, 
     items.push(['add-context', 'Add Context']);
     items.push(['add-skill', 'Add Skill']);
     items.push(['insert-subtree', 'Insert subtree']);
+  }
+  if (targetPath && isGraphView) {
+    items.push(['improve-node-prompt', 'Improve node prompt']);
+    items.push(['choose-node-model', 'Choose node model']);
+    if (['failed', 'blocked'].includes(nodeRuntimeStatus?.state) || hasMachineFailure) {
+      items.push(['failure-details', 'Failure details']);
+    }
   }
   if (readwrite && isGraphView && path && selectedOrchNodePath && selectedOrchNodePath !== path) {
     items.push(['connect-selected', 'Connect selected']);
@@ -4883,6 +5445,145 @@ function deleteOrchTransition(draft, edgeId) {
   selectedOrchEdgeId = '';
 }
 
+function openNodePromptImprovementModal(path, doc = null, baseFilePath = getActiveTab()?.filePath) {
+  const root = orchDocForContextAction(doc);
+  const node = root ? orchValueAtPath(root, path) : null;
+  if (!node || typeof node !== 'object') return;
+  const nodeTitle = node.label || node.id || 'Node';
+  const currentPrompt = node.config?.improvementPrompt || node.config?.promptOverride || '';
+  const body = document.createElement('div');
+  body.className = 'runbook-modal-body';
+  body.innerHTML = `
+    <p>Add a focused instruction for this node. It is stored in <code>node.config.improvementPrompt</code>, so the Machine adapter receives it as part of nodeConfig on the next run.</p>
+    <label class="runbook-modal-field">
+      <span>Node</span>
+      <input value="${escapeHtml(nodeTitle)}" readonly>
+    </label>
+    <label class="runbook-modal-field">
+      <span>Prompt improvement</span>
+      <textarea data-node-improvement-prompt rows="7" placeholder="Example: Tighten this probe to collect only current UI evidence and return at most three actionable findings.">${escapeHtml(currentPrompt)}</textarea>
+    </label>
+    <div class="runbook-diagnostic warning">This updates the graph in the editor. Save the file to persist it.</div>
+  `;
+  openFmtModal({
+    title: 'Improve Node Prompt',
+    body,
+    footer: [
+      { label: 'Cancel', onClick: closeFmtModal },
+      {
+        label: 'Save Prompt',
+        primary: true,
+        onClick: () => {
+          const prompt = body.querySelector('[data-node-improvement-prompt]')?.value?.trim() || '';
+          if (!prompt) return;
+          applyOrchTreeMutation((draft) => {
+            const target = orchValueAtPath(draft, path);
+            if (!target || typeof target !== 'object') return;
+            if (!target.config || typeof target.config !== 'object' || Array.isArray(target.config)) target.config = {};
+            target.config.improvementPrompt = prompt;
+            target.config.improvementPromptUpdatedAt = new Date().toISOString();
+          });
+          closeFmtModal();
+          rerenderPipelinePreviewIfActive(pipelineContextForPath(baseFilePath)?.pipelinePath || selectedRunbookPath || '');
+        },
+      },
+    ],
+  });
+  setTimeout(() => body.querySelector('[data-node-improvement-prompt]')?.focus(), 30);
+}
+
+async function chooseNodeModelOverrideForPath(path, doc = null, baseFilePath = getActiveTab()?.filePath) {
+  const runbookPath = pipelineContextForPath(baseFilePath)?.pipelinePath || selectedRunbookPath || '';
+  const nodePath = machineNodePathForOrchNode(path, doc, baseFilePath);
+  if (!runbookPath || !nodePath) {
+    notifyFormatError('Node model', new Error('Missing pipeline path or node path.'));
+    return;
+  }
+  const token = await requestMachineCapabilityToken();
+  if (!token) return;
+  await openNodeAdapterPickerDialog(runbookPath, nodePath);
+}
+
+function openNodeFailureDetailsModal(path, doc = null, baseFilePath = getActiveTab()?.filePath) {
+  const root = orchDocForContextAction(doc);
+  const node = root ? orchValueAtPath(root, path) : null;
+  const runbookPath = pipelineContextForPath(baseFilePath)?.pipelinePath || selectedRunbookPath || '';
+  const nodePath = machineNodePathForOrchNode(path, root, baseFilePath);
+  const record = getActiveMachineRunRecord(runbookPath) || machineRunRecordForPipelinePath(runbookPath);
+  const runId = record?.runState?.runId || record?.runId || '';
+  const status = machineStatusForNodePath(nodePath, baseFilePath);
+  const failures = machineFailureForNodePath(nodePath, baseFilePath);
+  const events = (record?.events || []).filter(event => event?.nodePath === nodePath);
+  const lastFailure = failures[0] || {};
+  const reason = lastFailure.reason
+    || lastFailure.summary
+    || events.slice().reverse().find(event => event?.payload?.message || event?.payload?.error)?.payload?.message
+    || events.slice().reverse().find(event => event?.payload?.message || event?.payload?.error)?.payload?.error
+    || status?.title
+    || 'No detailed failure payload was found for this node yet.';
+  const artifactRefs = [...new Set(failures.flatMap(failure => failure.allRefs || []))];
+  const runRoot = record?.runRoot || record?.runState?.runRoot || '';
+  const solutionItems = [
+    'Retry node after a transient adapter/format failure.',
+    'Choose a stronger or different model for this node only.',
+    'Save a node prompt improvement if the failure is caused by vague instructions.',
+    'Skip node only when this node is genuinely non-essential for the current run.',
+  ];
+  const body = document.createElement('div');
+  body.className = 'runbook-modal-body';
+  body.innerHTML = `
+    <div class="runbook-modal-kv">
+      <div><strong>Node</strong><span>${escapeHtml(node?.label || node?.id || nodePath || 'Node')}</span></div>
+      <div><strong>Path</strong><code>${escapeHtml(nodePath || '(unknown)')}</code></div>
+      <div><strong>Status</strong><span>${escapeHtml(status?.label || lastFailure.status || 'failed')}</span></div>
+    </div>
+    <section class="runbook-modal-section">
+      <h4>Failure reason</h4>
+      <p>${escapeHtml(reason)}</p>
+    </section>
+    <section class="runbook-modal-section">
+      <h4>Solution choices</h4>
+      <ul>${solutionItems.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+    </section>
+    ${artifactRefs.length && runRoot ? `<section class="runbook-modal-section"><h4>Evidence</h4>${artifactRefs.map(ref => `<button class="pipe-failed-probe-link" data-node-failure-artifact="${escapeHtml(`${String(runRoot).replace(/[\\/]+$/, '')}/${String(ref).replace(/^[\\/]+/, '')}`)}">${escapeHtml(ref.split('/').pop() || ref)}</button>`).join('')}</section>` : ''}
+  `;
+  body.querySelectorAll('[data-node-failure-artifact]').forEach(button => {
+    button.addEventListener('click', () => {
+      const artifactPath = button.dataset.nodeFailureArtifact || '';
+      if (artifactPath) openFileInTab(artifactPath).catch(err => notifyFormatError('Failure artifact', err));
+    });
+  });
+  openFmtModal({
+    title: 'Failure Details',
+    body,
+    footer: [
+      { label: 'Close', onClick: closeFmtModal },
+      {
+        label: 'Improve Prompt',
+        onClick: () => {
+          closeFmtModal();
+          openNodePromptImprovementModal(path, root, baseFilePath);
+        },
+      },
+      {
+        label: 'Choose Model',
+        onClick: () => {
+          closeFmtModal();
+          chooseNodeModelOverrideForPath(path, root, baseFilePath).catch(err => notifyFormatError('Node model', err));
+        },
+      },
+      ...(runId ? [{
+        label: 'Retry Node',
+        primary: true,
+        onClick: async () => {
+          closeFmtModal();
+          await retrySelectedMachineNode(runbookPath, runId, nodePath, node?.type || '');
+        },
+      }] : []),
+    ],
+  });
+}
+
 function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, doc = null, baseFilePath = getActiveTab()?.filePath) {
   if (action === 'open-subtree') {
     openOrchGraphLayer(path);
@@ -4894,6 +5595,18 @@ function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, 
   }
   if (action === 'fit') {
     fitOrchGraphToFrame(frame || contentEl.querySelector('[data-orch-frame]'));
+    return;
+  }
+  if (action === 'improve-node-prompt') {
+    openNodePromptImprovementModal(path, doc, baseFilePath);
+    return;
+  }
+  if (action === 'choose-node-model') {
+    chooseNodeModelOverrideForPath(path, doc, baseFilePath).catch(err => notifyFormatError('Node model', err));
+    return;
+  }
+  if (action === 'failure-details') {
+    openNodeFailureDetailsModal(path, doc, baseFilePath);
     return;
   }
   if (action === 'transition-curve' || action === 'transition-straight') {
@@ -5039,6 +5752,27 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
   const breakpointMarker = hasBreakpoint
     ? `<span class="orch-graph-node-breakpoint" title="Breakpoint set on ${escapeHtml(machineNodePathForBp)} — Continue will warn before dispatching past this node.">●</span>`
     : '';
+  // Codex 2026-05-15 cross-review (Top 5 fix #5): blocked/failed nodes
+  // need always-visible actions rather than burying them behind a
+  // right-click context menu. See scripts/visualization-samples/
+  // node-state-user-actions.md for the per-state recommendation.
+  const isActionableState = displayRuntime && ['failed', 'blocked'].includes(displayRuntime.state);
+  let actionFooter = '';
+  if (isActionableState) {
+    const record = runProjection?.record;
+    const runIdForActions = record?.runState?.runId || record?.runId || '';
+    const skipReasonForActions = (record && machineNodePathForBp)
+      ? machineSkipBlockReason(record, machineNodePathForBp, node?.type || '')
+      : '';
+    actionFooter = renderOrchGraphNodeActions({
+      path,
+      machineNodePath: machineNodePathForBp,
+      runId: runIdForActions,
+      nodeType: node?.type || '',
+      runtimeState: displayRuntime.state,
+      skipReason: skipReasonForActions,
+    });
+  }
   return `
     <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}${hasBreakpoint ? ' has-breakpoint' : ''}"
       data-orch-path="${escapeHtml(path)}"
@@ -5059,11 +5793,146 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
       ${displayRuntime ? `<div class="orch-runtime-status" title="${escapeHtml(displayRuntime.title)}"><span class="orch-runtime-dot"></span><span>${escapeHtml(displayRuntime.label)}</span></div>` : ''}
       ${renderMachineNodeProgressBar(progress)}
       ${isOrchSkillType(node?.type) && (node?.file || node?.config?.skillRef) ? `<small>${escapeHtml(node.file || node.config.skillRef)}</small>` : ''}
+      ${actionFooter}
     </div>
   `;
 }
 
-function renderOrchEdge(edge, byPath, runProjection = null) {
+// Compact action row rendered inside a graph node when its runtime
+// state is failed or blocked. The buttons mirror the right-click menu
+// (Details / Prompt / Model) and add the machine-side Retry / Skip
+// pair that used to live only in the run inspector. Always-visible so
+// the user does not have to guess that those operations are hidden
+// behind a context menu. Event delegation: `data-orch-action` buttons
+// reuse the existing handler at the bottom of the graph rerender,
+// `data-probe-action` buttons go through the global probe-action
+// listener — both already know how to look up the node path / run id.
+function renderOrchGraphNodeActions({ path, machineNodePath, runId, nodeType, runtimeState, skipReason }) {
+  const buttons = [];
+  const stateNoun = runtimeState === 'failed' ? 'failure' : 'blocker';
+  const orchPathAttr = `data-orch-path="${escapeHtml(path)}"`;
+  buttons.push(
+    `<button class="orch-graph-node-action primary" data-orch-action="failure-details" ${orchPathAttr} title="Inspect the ${escapeHtml(stateNoun)} for this node (events, error code, transcripts).">Details</button>`
+  );
+  if (runId && machineNodePath) {
+    buttons.push(
+      `<button class="orch-graph-node-action retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(nodeType)}" title="Re-run this node at attempt N+1.">Retry</button>`
+    );
+    if (skipReason) {
+      buttons.push(
+        `<button class="orch-graph-node-action skip" disabled title="${escapeHtml(skipReason)}">Skip</button>`
+      );
+    } else {
+      buttons.push(
+        `<button class="orch-graph-node-action skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(nodeType)}" title="Mark this node as skipped (terminal) and let the dispatcher continue.">Skip</button>`
+      );
+    }
+  }
+  buttons.push(
+    `<button class="orch-graph-node-action" data-orch-action="improve-node-prompt" ${orchPathAttr} title="Open the prompt-improvement modal for this node.">Prompt</button>`
+  );
+  buttons.push(
+    `<button class="orch-graph-node-action" data-orch-action="choose-node-model" ${orchPathAttr} title="Pick a model override for this node.">Model</button>`
+  );
+  return `<div class="orch-graph-node-actions" data-runtime-state="${escapeHtml(runtimeState)}">${buttons.join('')}</div>`;
+}
+
+// Bucket a transition into a visual category so the user can read the graph
+// at a glance: forward / loop-back / pass / fail / accepted / rejected /
+// queue-not-empty / queue-empty / selector-branch / etc. Each category gets a
+// distinct stroke colour + label colour via the .category-* CSS classes below.
+// The legend in renderOrchGraphCanvas mirrors these categories so users can
+// match colour → meaning without reading the JSON.
+function classifyOrchEdge(edge) {
+  const cond = (edge.condition || '').toLowerCase();
+  if (edge.isLoopBack) {
+    if (cond.includes('reject')) return 'loop-reject';
+    if (cond.includes('fail')) return 'loop-fail';
+    if (cond.includes('revise') || cond.includes('retry')) return 'loop-revise';
+    return 'loop-back';
+  }
+  if (!cond) return 'forward';
+  if (cond.includes('reject')) return 'reject';
+  if (cond.includes('approve') || cond === 'pass' || cond === 'accepted' || cond.includes('success') || cond.includes('check-pass')) return 'accept';
+  if (cond.includes('queue-empty')) return 'queue-empty';
+  if (cond.includes('queue-not-empty')) return 'queue-not-empty';
+  return 'branch';
+}
+
+const ORCH_EDGE_CATEGORY_LABELS = Object.freeze({
+  forward: { color: 'var(--orch-edge-forward, #6cb6ff)', label: 'forward' },
+  branch: { color: 'var(--orch-edge-branch, #b48ead)', label: 'branch' },
+  accept: { color: 'var(--orch-edge-accept, #9ece6a)', label: 'accept / pass' },
+  reject: { color: 'var(--orch-edge-reject, #f7768e)', label: 'reject' },
+  'queue-empty': { color: 'var(--orch-edge-queue-empty, #56c2c5)', label: 'queue empty' },
+  'queue-not-empty': { color: 'var(--orch-edge-queue-loop, #e0af68)', label: 'queue drain ↺' },
+  'loop-back': { color: 'var(--orch-edge-loopback, #e0af68)', label: 'loop-back ↺' },
+  'loop-revise': { color: 'var(--orch-edge-loop-revise, #e0af68)', label: 'gate revise ↺' },
+  'loop-reject': { color: 'var(--orch-edge-loop-reject, #f7768e)', label: 'patch reject ↺' },
+  'loop-fail': { color: 'var(--orch-edge-loop-fail, #e88787)', label: 'check fail ↺' },
+});
+
+// Codex 2026-05-15 cross-review (Top 5 fix #3): edge label placement
+// pass. Previously labels were always pinned to the right of the control
+// point with a fixed 10/14 px offset, which would happily sit on top of
+// the next node in a tight column or overlap a sibling label on a
+// parallel edge. We now try a small set of candidate offsets around the
+// control point and pick the first that does not collide with any node
+// rect or any label already placed in this render. Falls back to the
+// original "right of control point" position when every candidate
+// collides — better to draw a slightly overlapped label than to hide it.
+const ORCH_LABEL_COLLISION_PAD = 4;
+
+function rectsOverlap(a, b, pad = 0) {
+  return !(
+    a.x + a.w + pad <= b.x
+    || b.x + b.w + pad <= a.x
+    || a.y + a.h + pad <= b.y
+    || b.y + b.h + pad <= a.y
+  );
+}
+
+function placeOrchEdgeLabel(cx, cy, boxW, boxH, isLoopBack, nodeRects, placedLabels) {
+  const baseOffset = isLoopBack ? 14 : 10;
+  // Candidates are tried in order: each ring widens the search radius.
+  // Ring 0 (4 positions) covers the common case — clean graphs settle
+  // on "right of midpoint" without ever advancing. Ring 1 / Ring 2
+  // unlock progressively further-out slots so dense graphs (kitchen
+  // sink, multi-worker fan-in) still find a free spot before falling
+  // back to overlap.
+  const buildCandidates = (mag) => [
+    { x: cx + mag, y: cy - boxH / 2 },
+    { x: cx - mag - boxW, y: cy - boxH / 2 },
+    { x: cx - boxW / 2, y: cy - mag - boxH },
+    { x: cx - boxW / 2, y: cy + mag },
+    { x: cx + mag, y: cy - mag - boxH },
+    { x: cx + mag, y: cy + mag },
+    { x: cx - mag - boxW, y: cy - mag - boxH },
+    { x: cx - mag - boxW, y: cy + mag },
+  ];
+  const candidates = [
+    ...buildCandidates(baseOffset),
+    ...buildCandidates(baseOffset + 18),
+    ...buildCandidates(baseOffset + 40),
+  ];
+  for (const candidate of candidates) {
+    const rect = { x: candidate.x, y: candidate.y, w: boxW, h: boxH };
+    let collides = false;
+    for (const node of nodeRects) {
+      if (rectsOverlap(rect, node, ORCH_LABEL_COLLISION_PAD)) { collides = true; break; }
+    }
+    if (collides) continue;
+    for (const placed of placedLabels) {
+      if (rectsOverlap(rect, placed, ORCH_LABEL_COLLISION_PAD)) { collides = true; break; }
+    }
+    if (!collides) return rect;
+  }
+  // Every candidate collides — use the original default position. This
+  // lets the user still read the label even if it lands on a node.
+  return { x: cx + baseOffset, y: cy - boxH / 2, w: boxW, h: boxH };
+}
+
+function renderOrchEdge(edge, byPath, runProjection = null, layoutCtx = null) {
   const source = byPath.get(edge.source);
   const target = byPath.get(edge.target);
   if (!source || !target) return '';
@@ -5072,36 +5941,114 @@ function renderOrchEdge(edge, byPath, runProjection = null) {
   const selected = selectedOrchEdgeId === edge.id;
   const runtime = machineRuntimeStatusForGraphEdge(edge, source, target, runProjection);
   const runtimeClass = runtime ? ` runtime-${runtime.state}` : '';
-  const point = orchTransitionPoint(edge.id, source, target);
-  const edgePath = orchEdgePath(source, target, edge.id);
+  const loopBackClass = edge.isLoopBack ? ' loop-back' : '';
+  const category = classifyOrchEdge(edge);
+  const categoryClass = ` category-${category}`;
+  const point = orchTransitionPoint(edge.id, source, target, edge);
+  const edgePath = orchEdgePath(source, target, edge.id, edge);
   const edgeDomId = `orch-edge-${hash32(`${edge.id}:${edgePath}`)}`;
+  // Only emit the moving-arrow animation when the runtime is actively traversing
+  // this edge. Single ">" glyph (not "> > >") so a busy graph doesn't read as
+  // multiple simultaneous traversals. Slower 2.2s cycle to reduce visual noise.
+  // CSS @media (prefers-reduced-motion: reduce) hides this animate element and
+  // falls back to a static glow on .runtime-active edges.
   const activeFlow = runtime?.state === 'active'
     ? `
     <text class="orch-transition-flow-arrows" dy="-5" aria-hidden="true">
-      <textPath href="#${escapeHtml(edgeDomId)}" startOffset="8%"><animate attributeName="startOffset" values="8%;72%" dur="1.35s" repeatCount="indefinite" />&gt; &gt; &gt; &gt;</textPath>
-    </text>
-    <text class="orch-transition-flow-arrows secondary" dy="-5" aria-hidden="true">
-      <textPath href="#${escapeHtml(edgeDomId)}" startOffset="-24%"><animate attributeName="startOffset" values="-24%;42%" dur="1.35s" repeatCount="indefinite" />&gt; &gt; &gt; &gt;</textPath>
+      <textPath href="#${escapeHtml(edgeDomId)}" startOffset="6%"><animate attributeName="startOffset" values="6%;82%" dur="2.2s" repeatCount="indefinite" />&gt;</textPath>
     </text>`
+    : '';
+  // Label: condition string ("rejected", "self-check-fail", "revise"...) with a
+  // ↺ prefix for loop-backs so it reads as a back-edge at a glance.
+  // Layout: small rounded background rect plus collision-aware placement
+  // against the node rects and previously placed labels (see
+  // placeOrchEdgeLabel above).
+  const conditionText = edge.condition
+    ? (edge.isLoopBack ? `↺ ${edge.condition}` : edge.condition)
+    : (edge.isLoopBack ? '↺ loop-back' : '');
+  const labelEl = conditionText
+    ? (() => {
+      const charPx = 7.2;
+      const padX = 8;
+      const padY = 4;
+      const textWidth = Math.max(36, Math.round(conditionText.length * charPx));
+      const boxW = textWidth + padX * 2;
+      const boxH = 18;
+      const cx = Math.round(point.x);
+      const cy = Math.round(point.y);
+      const nodeRects = layoutCtx?.nodeRects || [];
+      const placedLabels = layoutCtx?.placedLabels || [];
+      const rect = placeOrchEdgeLabel(cx, cy, boxW, boxH, !!edge.isLoopBack, nodeRects, placedLabels);
+      placedLabels.push(rect);
+      const boxX = rect.x;
+      const boxY = rect.y;
+      return `
+        <g class="orch-transition-label-group${edge.isLoopBack ? ' loop-back' : ''}" data-orch-edge="${escapeHtml(edge.id)}">
+          <rect class="orch-transition-label-bg" x="${boxX}" y="${boxY}" width="${boxW}" height="${boxH}" rx="6" ry="6" />
+          <text class="orch-transition-label${edge.isLoopBack ? ' loop-back' : ''}" x="${boxX + boxW / 2}" y="${boxY + boxH / 2 + padY}" text-anchor="middle">${escapeHtml(conditionText)}</text>
+        </g>`;
+    })()
     : '';
   return `
     <path class="orch-transition-hit"
       data-orch-edge="${escapeHtml(edge.id)}"
       d="${edgePath}" />
     <path id="${escapeHtml(edgeDomId)}"
-      class="orch-transition${runtimeClass} ${selected ? 'selected' : ''} style-${style}"
+      class="orch-transition${runtimeClass}${loopBackClass}${categoryClass} ${selected ? 'selected' : ''} style-${style}"
       data-orch-edge="${escapeHtml(edge.id)}"
       data-source="${escapeHtml(edge.source)}"
       data-target="${escapeHtml(edge.target)}"
+      data-edge-category="${escapeHtml(category)}"
+      ${edge.isLoopBack ? 'data-loop-back="true"' : ''}
       ${runtime ? `data-machine-edge-state="${escapeHtml(runtime.state)}"` : ''}
+      marker-end="url(#${edge.isLoopBack ? 'orch-arrow-loopback' : 'orch-arrow-forward'})"
       d="${edgePath}" />
     ${activeFlow}
+    ${labelEl}
     ${selected ? `<circle class="orch-transition-handle" data-orch-edge="${escapeHtml(edge.id)}" cx="${Math.round(point.x)}" cy="${Math.round(point.y)}" r="6" />` : ''}
   `;
 }
 
+function renderOrchGraphLegend(edges) {
+  const present = new Set();
+  for (const edge of edges || []) present.add(classifyOrchEdge(edge));
+  // Always show forward + the most common loop categories so the legend is
+  // discoverable on a "happy path" graph too.
+  const order = ['forward', 'branch', 'accept', 'reject', 'queue-not-empty', 'queue-empty', 'loop-revise', 'loop-reject', 'loop-fail', 'loop-back'];
+  const items = order
+    .filter(category => present.has(category))
+    .map(category => {
+      const entry = ORCH_EDGE_CATEGORY_LABELS[category];
+      if (!entry) return '';
+      return `<li class="orch-graph-legend-item" data-edge-category="${escapeHtml(category)}">
+        <span class="orch-graph-legend-swatch category-${escapeHtml(category)}"></span>
+        <span class="orch-graph-legend-text">${escapeHtml(entry.label)}</span>
+      </li>`;
+    })
+    .filter(Boolean)
+    .join('');
+  if (!items) return '';
+  return `<aside class="orch-graph-legend" aria-label="Edge legend">
+    <div class="orch-graph-legend-title">Edges</div>
+    <ul class="orch-graph-legend-list">${items}</ul>
+  </aside>`;
+}
+
 function renderOrchGraphCanvas(graph, readwrite, tools = true, runProjection = null) {
   const byPath = new Map(graph.nodes.map(node => [node.path, node]));
+  // Codex 2026-05-15 (Top 5 fix #3): build a node-rect index once per
+  // render so the edge-label placement pass can avoid them. The width /
+  // height match the layout constants used in collectOrchStateGraph;
+  // exact runtime height varies with content but the layout constant
+  // is the value the engine used to decide spacing, so collision
+  // checks based on it line up with the visual gutters.
+  const nodeRects = graph.nodes.map(node => ({
+    x: node.x,
+    y: node.y,
+    w: ORCH_NODE_WIDTH,
+    h: ORCH_NODE_HEIGHT,
+  }));
+  const layoutCtx = { nodeRects, placedLabels: [] };
   const gx = Math.round(graph.minX);
   const gy = Math.round(graph.minY);
   const gw = Math.round(graph.width);
@@ -5127,11 +6074,23 @@ function renderOrchGraphCanvas(graph, readwrite, tools = true, runProjection = n
         <div class="orch-graph-viewport" data-orch-viewport style="width:${gw}px;height:${gh}px;transform:${orchViewportTransform()}">
           <div class="orch-graph-canvas" style="width:${gw}px;height:${gh}px">
             <svg class="orch-graph-edges" style="left:${gx}px;top:${gy}px;width:${gw}px;height:${gh}px" viewBox="${gx} ${gy} ${gw} ${gh}">
-              ${graph.edges.map(edge => renderOrchEdge(edge, byPath, runProjection)).join('')}
+              <defs>
+                <!-- Shared arrow markers. Each category references one of these
+                     via marker-end so the head colour matches the stroke. -->
+                <marker id="orch-arrow-forward" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="strokeWidth" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M0,0 L10,5 L0,10 Z" fill="context-stroke" />
+                </marker>
+                <marker id="orch-arrow-loopback" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="strokeWidth" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <!-- Slightly larger / hollow head so back-edges read distinctly even at small zoom. -->
+                  <path d="M0,0 L10,5 L0,10 L3,5 Z" fill="context-stroke" />
+                </marker>
+              </defs>
+              ${graph.edges.map(edge => renderOrchEdge(edge, byPath, runProjection, layoutCtx)).join('')}
             </svg>
             ${graph.nodes.map(node => renderOrchGraphNode(node, readwrite, runProjection)).join('')}
           </div>
         </div>
+        ${renderOrchGraphLegend(graph.edges)}
       </div>
     </section>
   `;
@@ -5565,7 +6524,14 @@ function renderOrchTreePreview(content) {
   });
   contentEl.querySelectorAll('.orch-graph-node').forEach(nodeEl => {
     let drag = null;
+    // The blocked/failed action footer lives inside the node element, so
+    // pointer/click events on its buttons bubble to the node listeners.
+    // We treat clicks that originated inside the footer as belonging to
+    // the buttons and skip the node-selection / drag / context-menu
+    // handlers — the button's own listener takes it from here.
+    const isFooterEvent = (event) => !!event.target?.closest?.('.orch-graph-node-actions');
     nodeEl.addEventListener('pointerdown', (event) => {
+      if (isFooterEvent(event)) return;
       if (event.button !== 0) return;
       if (orchGraphTool === 'hand') return;
       if (event.detail >= 2 && hasOrchNodeOpenTarget(nodeEl.dataset.orchPath)) {
@@ -5590,6 +6556,7 @@ function renderOrchTreePreview(content) {
       if (readwrite) nodeEl.classList.add('dragging');
     });
     nodeEl.addEventListener('pointermove', (event) => {
+      if (isFooterEvent(event)) return;
       if (!drag || drag.pointerId !== event.pointerId || !readwrite) return;
       const dx = (event.clientX - drag.startX) / orchGraphViewport.scale;
       const dy = (event.clientY - drag.startY) / orchGraphViewport.scale;
@@ -5603,6 +6570,7 @@ function renderOrchTreePreview(content) {
       if (frame) updateOrchGraphEdges(frame);
     });
     nodeEl.addEventListener('pointerup', (event) => {
+      if (isFooterEvent(event)) return;
       if (!drag || drag.pointerId !== event.pointerId) return;
       releaseOrchPointerCapture(nodeEl, event.pointerId);
       nodeEl.classList.remove('dragging');
@@ -5638,6 +6606,7 @@ function renderOrchTreePreview(content) {
       }
     });
     nodeEl.addEventListener('pointercancel', (event) => {
+      if (isFooterEvent(event)) return;
       if (!drag || drag.pointerId !== event.pointerId) return;
       releaseOrchPointerCapture(nodeEl, event.pointerId);
       nodeEl.classList.remove('dragging');
@@ -5645,12 +6614,14 @@ function renderOrchTreePreview(content) {
       setTempSnap(false);
     });
     nodeEl.addEventListener('keydown', (event) => {
+      if (isFooterEvent(event)) return;
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       setOrchSelection(nodeEl.dataset.orchPath);
       rerenderOrchTree();
     });
     nodeEl.addEventListener('click', (event) => {
+      if (isFooterEvent(event)) return;
       if (orchGraphTool === 'hand') return;
       event.preventDefault();
       event.stopPropagation();
@@ -5677,6 +6648,7 @@ function renderOrchTreePreview(content) {
       rerenderOrchTree();
     });
     nodeEl.addEventListener('dblclick', (event) => {
+      if (isFooterEvent(event)) return;
       if (orchGraphTool === 'hand') return;
       const path = nodeEl.dataset.orchPath;
       if (!hasOrchNodeOpenTarget(path)) return;
@@ -5687,6 +6659,7 @@ function renderOrchTreePreview(content) {
       openOrchNodeTarget(path);
     });
     nodeEl.addEventListener('contextmenu', (event) => {
+      if (isFooterEvent(event)) return;
       if (shouldSuppressOrchContextMenu(event)) return;
       event.preventDefault();
       const path = nodeEl.dataset.orchPath;
@@ -5702,10 +6675,17 @@ function renderOrchTreePreview(content) {
     });
   });
   contentEl.querySelectorAll('[data-orch-action]').forEach(button => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
       const action = button.dataset.orchAction;
       const path = button.dataset.orchPath;
       const edgeId = button.dataset.orchEdge || selectedOrchEdgeId;
+      // Buttons rendered inside `.orch-graph-node-actions` sit on top
+      // of the node's own pointer handlers; stop propagation so the
+      // click does not also trigger node-selection / drag / context.
+      if (button.closest('.orch-graph-node-actions')) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
       if (action === 'fit') {
         fitOrchGraphToFrame();
         return;
@@ -5726,6 +6706,12 @@ function renderOrchTreePreview(content) {
       }
       if (action === 'auto-layout') {
         resetOrchGraphLayout();
+        return;
+      }
+      // Node footer actions surfaced on blocked/failed cards — same
+      // handlers as the right-click menu.
+      if (action === 'failure-details' || action === 'improve-node-prompt' || action === 'choose-node-model') {
+        runOrchContextAction(action, path, contentEl.querySelector('[data-orch-frame]'), edgeId);
         return;
       }
       applyOrchTreeMutation((draft) => {
@@ -7725,6 +8711,53 @@ function getOpenWorkspaceFileTabs() {
   return tabs.filter(tab => tab.filePath && isPathInsideWorkspace(tab.filePath));
 }
 
+function clearWorkspacePipelineState() {
+  selectedRunbookPath = null;
+  selectedRunbookValidation = null;
+  lastRunRecord = null;
+  lastMachineRunRecord = null;
+  clearMachineRunProgressState();
+  runbookValidationCache.clear();
+  runbookRecordCache.clear();
+  machineRunRecordCache.clear();
+  machineRunListCache.clear();
+  machineHistoryInspectionCache.clear();
+  machineHistoryRecoverPending.clear();
+  machineRunStartPendingPaths.clear();
+  machineRunPendingActions.clear();
+  machineRunExternalResearchDecisions.clear();
+  machineApprovalPromptSeen.clear();
+  machineBlockedDecisionPromptSeen.clear();
+  pipelineHarnessImplementedAtCache.clear();
+  pipelineHarnessImplementationStatusCache.clear();
+  pipelineHarnessRequiredBeforeRunCache.clear();
+  machinePatchReviewShown.clear();
+}
+
+function pruneOpenTabsOutsideWorkspace(rootPath) {
+  if (!rootPath) return;
+  syncActiveTabSnapshot();
+  for (let i = tabs.length - 1; i >= 0; i -= 1) {
+    const tab = tabs[i];
+    if (!tab.filePath || isPathInsideWorkspaceRoot(tab.filePath, rootPath) || tab.isModified) continue;
+    tabs.splice(i, 1);
+  }
+
+  const active = getActiveTab();
+  const activeOutsideWorkspace = !!active?.filePath && !isPathInsideWorkspaceRoot(active.filePath, rootPath);
+  if (!active || activeOutsideWorkspace) {
+    const replacement = tabs.find(tab => !tab.filePath || isPathInsideWorkspaceRoot(tab.filePath, rootPath));
+    if (replacement) {
+      switchToTab(replacement.id);
+      return;
+    }
+    activeTabId = null;
+    createTab(null, null, '');
+    return;
+  }
+  renderTabBar();
+}
+
 async function reloadOpenWorkspaceTabsAfterCheckout(previousBranch) {
   const workspaceTabs = getOpenWorkspaceFileTabs();
   for (const tab of workspaceTabs) {
@@ -7967,6 +9000,140 @@ function runbookCompactText(text, maxLength = 120) {
   return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}...`;
 }
 
+function newPipelineGenerateRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `generate-${crypto.randomUUID()}`;
+  }
+  pipelineGenerateSequence += 1;
+  return `generate-${Date.now()}-${pipelineGenerateSequence}`;
+}
+
+function isPipelineGenerationRunning(state = pipelineGenerateState) {
+  return ['queued', 'running', 'cancelling'].includes(String(state?.status || ''));
+}
+
+function pipelineGenerateStageLabel(stage, status) {
+  const labels = {
+    queued: 'Queued',
+    validating: 'Validating',
+    started: 'Started',
+    snapshot: 'Collecting context',
+    prepare: 'Preparing request',
+    'agent-started': 'Starting LLM agent',
+    'agent-running': 'LLM authoring graph',
+    materialize: 'Reading CLI result',
+    completed: 'Generated',
+    failed: 'Failed',
+    cancelling: 'Cancelling',
+    cancelled: 'Cancelled',
+  };
+  if (status === 'succeeded') return labels.completed;
+  if (status === 'failed') return labels.failed;
+  if (status === 'cancelled') return labels.cancelled;
+  return labels[stage] || labels[status] || 'Generating';
+}
+
+function pipelineGenerateStatusClass(state) {
+  const status = String(state?.status || '');
+  if (status === 'succeeded') return 'good';
+  if (status === 'failed') return 'danger';
+  if (status === 'cancelled') return 'warn';
+  return 'running';
+}
+
+function pipelineGenerateStartedLabel(state) {
+  const date = state?.startedAt ? new Date(state.startedAt) : null;
+  if (!date || Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function compactPipelineGenerateEvents(events = []) {
+  const normalized = [];
+  for (const event of events) {
+    const message = String(event?.message || '').trim();
+    if (!message) continue;
+    const previous = normalized[normalized.length - 1];
+    if (previous?.message === message && previous?.stage === event.stage) continue;
+    normalized.push({
+      stage: String(event.stage || ''),
+      message,
+      at: event.at || event.updatedAt || new Date().toISOString(),
+    });
+  }
+  return normalized.slice(-6);
+}
+
+function updatePipelineGenerateState(patch = {}, options = {}) {
+  const current = pipelineGenerateState || {};
+  const events = compactPipelineGenerateEvents([
+    ...(current.events || []),
+    ...(patch.message ? [{ stage: patch.stage || current.stage, message: patch.message, at: patch.updatedAt || new Date().toISOString() }] : []),
+  ]);
+  pipelineGenerateState = {
+    ...current,
+    ...patch,
+    events,
+    updatedAt: patch.updatedAt || new Date().toISOString(),
+  };
+  if (options.renderPanel) renderRunbooksPanel();
+  else refreshPipelineGenerateStatusView();
+}
+
+function clearPipelineGenerateState() {
+  pipelineGenerateState = null;
+  refreshPipelineGenerateStatusView();
+}
+
+function renderPipelineGenerateStatus() {
+  const state = pipelineGenerateState;
+  if (!state) return '';
+  const running = isPipelineGenerationRunning(state);
+  const statusClass = pipelineGenerateStatusClass(state);
+  const stageLabel = pipelineGenerateStageLabel(state.stage, state.status);
+  const startedLabel = pipelineGenerateStartedLabel(state);
+  const workspaceLabel = runbookBaseName(state.workspacePath, 'Workspace');
+  const workspaceChanged = state.workspacePath && workspacePath
+    && normalizeComparablePath(state.workspacePath) !== normalizeComparablePath(workspacePath);
+  const requestText = runbookCompactText(state.taskText, 180);
+  const message = state.error || state.message || '';
+  const events = compactPipelineGenerateEvents(state.events || []);
+  return `
+    <div class="runbook-generate-status ${escapeHtml(statusClass)}" data-runbook-generate-status data-request-id="${escapeHtml(state.requestId || '')}" role="${running ? 'status' : 'alert'}" aria-live="polite">
+      <div class="runbook-generate-status-head">
+        <strong>${running ? '<span class="runbook-spinner" aria-hidden="true"></span>' : ''}${escapeHtml(stageLabel)}</strong>
+        <span>${escapeHtml([workspaceLabel, startedLabel ? `started ${startedLabel}` : ''].filter(Boolean).join(' - '))}</span>
+      </div>
+      ${message ? `<div class="runbook-generate-message">${escapeHtml(message)}</div>` : ''}
+      ${requestText ? `<div class="runbook-generate-request" title="${escapeHtml(state.taskText || '')}">${escapeHtml(requestText)}</div>` : ''}
+      ${workspaceChanged ? `<div class="runbook-diagnostic warning">Workspace changed while Generate was running. The result will stay in ${escapeHtml(workspaceLabel)} and will not be opened here automatically.</div>` : ''}
+      ${events.length ? `<div class="runbook-generate-events">${events.map(event => `<span>${escapeHtml(pipelineGenerateStageLabel(event.stage))}: ${escapeHtml(event.message)}</span>`).join('')}</div>` : ''}
+      <div class="runbook-action-row">
+        ${running
+          ? `<button data-runbook-action="cancel-generate" data-request-id="${escapeHtml(state.requestId || '')}" ${state.status === 'cancelling' ? 'disabled' : ''}>Cancel Generate</button>`
+          : `<button data-runbook-action="dismiss-generate-status">Dismiss</button>`}
+      </div>
+    </div>
+  `;
+}
+
+function refreshPipelineGenerateControls() {
+  const running = isPipelineGenerationRunning();
+  const button = runbooksContentEl?.querySelector('button[data-runbook-action="starter"]');
+  if (button) {
+    button.disabled = running;
+    button.title = running ? 'Generate is already running for this window.' : 'Generate an OrPAD pipeline with the LLM authoring agent.';
+    button.innerHTML = running
+      ? '<span class="runbook-spinner" aria-hidden="true"></span>Generating...'
+      : 'Generate Pipeline';
+  }
+}
+
+function refreshPipelineGenerateStatusView() {
+  const slot = runbooksContentEl?.querySelector('[data-runbook-generate-status-slot]');
+  if (slot) slot.innerHTML = renderPipelineGenerateStatus();
+  refreshPipelineGenerateControls();
+}
+
 function runbookListItemSubtitle(item) {
   if (item.format === 'or-pipeline') {
     return runbookCompactText(item.description, 112) || (item.template ? 'Template pipeline' : 'OrPAD pipeline');
@@ -8170,6 +9337,7 @@ function chooseSelectedRunbook(summary) {
     selectedRunbookPath = null;
     selectedRunbookValidation = null;
     lastRunRecord = null;
+    lastMachineRunRecord = null;
   }
 }
 
@@ -8913,14 +10081,61 @@ function machineEventLabel(event) {
       const state = payload.toState || event?.toState;
       return machineQueueTransitionEventLabel(state);
     }
+    case 'scheduler.edgeEvaluation': {
+      const fired = Number(payload.firedCount) || 0;
+      const dropped = Number(payload.droppedCount) || 0;
+      return fired || dropped ? `Routes evaluated (${fired} fired, ${dropped} dropped)` : 'Routes evaluated';
+    }
+    case 'scheduler.loopBackReset': {
+      const target = payload.targetNodePath || event?.nodePath || '';
+      return target ? `Loop-back reset: ${target}` : 'Loop-back reset';
+    }
+    case 'scheduler.parallelArtifactConflict': {
+      const count = Array.isArray(payload.conflicts) ? payload.conflicts.length : 0;
+      return count ? `Parallel artifact conflict (${count})` : 'Parallel artifact conflict';
+    }
+    case 'scheduler.subGraphInnerFailure': {
+      const failed = payload.failingNodePath || '';
+      const policy = payload.policy || '';
+      return failed ? `Inner failure recovered: ${failed}${policy ? ` (${policy})` : ''}` : 'Inner failure recovered';
+    }
+    case 'scheduler.subGraphPartial':
+      return payload.failingNodePath ? `Subgraph marked partial: ${payload.failingNodePath}` : 'Subgraph marked partial';
+    case 'lock.waiting': {
+      const files = Array.isArray(payload.targetFiles) ? payload.targetFiles.length : 0;
+      return files ? `Waiting on file lock (${files} files)` : 'Waiting on file lock';
+    }
+    case 'lock.granted': {
+      const files = Array.isArray(payload.targetFiles) ? payload.targetFiles.length : 0;
+      const waited = payload.waited ? ' after waiting' : '';
+      return files ? `File lock granted${waited} (${files} files)` : `File lock granted${waited}`;
+    }
+    case 'lock.released':
+      return 'File lock released';
     case 'artifact.registered':
       return 'Evidence file saved';
+    case 'patch.review_required':
+      return 'Patch review required';
+    case 'patch.approved':
+      return event?.reason === 'machine-autonomous.patch-review.auto-apply'
+        ? 'Patch auto-approved'
+        : 'Patch approved';
     case 'patch.applied':
       return 'Patch applied';
     case 'patch.review_skipped':
       return 'Patch kept as evidence';
     case 'patch.apply_failed':
       return 'Patch apply blocked';
+    case 'patch.apply_conflict':
+      return 'Patch apply conflict';
+    case 'patches.apply_started':
+      return event?.reason === 'machine-autonomous.patch-review.auto-apply'
+        ? 'Auto-apply started'
+        : 'Patch apply started';
+    case 'patches.apply_finished':
+      return event?.reason === 'machine-autonomous.patch-review.auto-apply'
+        ? 'Auto-apply finished'
+        : 'Patch apply finished';
     case 'approval.requested':
       return 'Permission requested';
     case 'approval.decided': {
@@ -9073,6 +10288,17 @@ function machinePatchBatchInFlight(record) {
 }
 
 function machineHasBlockedPatchReviewNode(record) {
+  const hasBlockedPatchReview = machineHasRawBlockedPatchReviewNode(record);
+  if (!hasBlockedPatchReview) return false;
+  const outcome = machinePatchReviewOutcome(record);
+  if (!outcome?.patchCount) return true;
+  return Number(outcome.pendingCount || 0) > 0
+    || Number(outcome.approvedCount || 0) > 0
+    || Number(outcome.conflictCount || 0) > 0
+    || Number(outcome.failedCount || 0) > 0;
+}
+
+function machineHasRawBlockedPatchReviewNode(record) {
   const latestByPath = new Map();
   for (const event of record?.events || []) {
     if (!String(event?.eventType || '').startsWith('node.')) continue;
@@ -9122,11 +10348,223 @@ function machineWorkerReviewInfos(record) {
     .filter(Boolean);
 }
 
+function machineUniqueNonEmptyStrings(values = []) {
+  return [...new Set(values.map(value => String(value || '').trim()).filter(Boolean))];
+}
+
+function machineAppliedPatchFilesFromEvent(event) {
+  const payload = event?.payload || {};
+  const applied = Array.isArray(payload.applied)
+    ? payload.applied.map(item => (typeof item === 'string' ? item : item?.path || item?.file || ''))
+    : [];
+  const selected = Array.isArray(payload.selectedFiles) ? payload.selectedFiles : [];
+  return machineUniqueNonEmptyStrings(applied.length ? applied : selected);
+}
+
+function machinePatchReviewOutcome(record) {
+  const reviews = [];
+  const seenPatchArtifacts = new Set();
+  for (const review of machineWorkerReviewInfos(record)) {
+    const patchArtifact = String(review?.patchArtifact || '').trim();
+    if (!patchArtifact || seenPatchArtifacts.has(patchArtifact)) continue;
+    seenPatchArtifacts.add(patchArtifact);
+    reviews.push(review);
+  }
+  if (!reviews.length) return null;
+  const events = record?.events || [];
+  const statusCounts = reviews.reduce((counts, review) => {
+    const status = review.patchReviewStatus || 'pending';
+    counts[status] = (counts[status] || 0) + 1;
+    return counts;
+  }, {});
+  const appliedFiles = machineUniqueNonEmptyStrings(events
+    .filter(event => event?.eventType === 'patch.applied')
+    .flatMap(event => machineAppliedPatchFilesFromEvent(event)));
+  const evidenceChangedFiles = machineUniqueNonEmptyStrings(reviews.flatMap(review => review.changedFiles || []));
+  const skippedArtifacts = machineUniqueNonEmptyStrings(reviews
+    .filter(review => review.patchReviewStatus === 'skipped')
+    .map(review => review.patchArtifact));
+  const unresolved = reviews.filter(review => !review.patchReviewResolved);
+  const historicalConflictCount = events.filter(event => event?.eventType === 'patch.apply_conflict').length;
+  const historicalFailedCount = events.filter(event => event?.eventType === 'patch.apply_failed').length;
+  const outcome = {
+    patchCount: reviews.length,
+    appliedCount: statusCounts.applied || 0,
+    skippedCount: statusCounts.skipped || 0,
+    approvedCount: statusCounts.approved || 0,
+    conflictCount: statusCounts.conflict || 0,
+    failedCount: statusCounts.failed || 0,
+    pendingCount: unresolved.length,
+    historicalConflictCount,
+    historicalFailedCount,
+    appliedFiles,
+    evidenceChangedFiles,
+    skippedArtifacts,
+  };
+  outcome.partial = outcome.skippedCount > 0
+    || outcome.pendingCount > 0
+    || outcome.conflictCount > 0
+    || outcome.failedCount > 0
+    || outcome.historicalConflictCount > 0
+    || outcome.historicalFailedCount > 0;
+  outcome.changedWorkspace = outcome.appliedFiles.length > 0;
+  return outcome;
+}
+
+function machinePatchOutcomeText(outcome) {
+  if (!outcome) return '';
+  const parts = [`${outcome.appliedCount}/${outcome.patchCount} patches applied`];
+  if (outcome.skippedCount) parts.push(`${outcome.skippedCount} skipped/kept as evidence`);
+  if (outcome.pendingCount) parts.push(`${outcome.pendingCount} still pending review`);
+  if (outcome.conflictCount) parts.push(`${outcome.conflictCount} still in conflict`);
+  if (outcome.failedCount) parts.push(`${outcome.failedCount} apply failed`);
+  if (outcome.historicalConflictCount) parts.push(`${outcome.historicalConflictCount} conflict${outcome.historicalConflictCount === 1 ? '' : 's'} encountered`);
+  if (outcome.historicalFailedCount) parts.push(`${outcome.historicalFailedCount} apply failure${outcome.historicalFailedCount === 1 ? '' : 's'} encountered`);
+  const files = outcome.appliedFiles.slice(0, 6);
+  const fileText = outcome.appliedFiles.length
+    ? `Changed workspace files: ${files.join(', ')}${outcome.appliedFiles.length > files.length ? `, +${outcome.appliedFiles.length - files.length} more` : ''}.`
+    : 'No workspace files were changed by patch application.';
+  return `${parts.join('; ')}. ${fileText}`;
+}
+
+function renderMachinePatchOutcomeHtml(outcome) {
+  if (!outcome) return '';
+  const countItems = [
+    ['Total patches', outcome.patchCount],
+    ['Applied', outcome.appliedCount],
+    ['Kept as evidence', outcome.skippedCount],
+    ['Pending', outcome.pendingCount],
+    ['Conflict events', outcome.historicalConflictCount],
+  ].filter(([label, count]) => label === 'Total patches' || Number(count) > 0);
+  const changedFiles = outcome.appliedFiles.slice(0, 8);
+  const evidenceFiles = outcome.evidenceChangedFiles
+    .filter(file => !outcome.appliedFiles.includes(file))
+    .slice(0, 6);
+  const skippedArtifacts = outcome.skippedArtifacts.slice(0, 5);
+  return `
+    <div class="pipe-patch-outcome">
+      <div class="pipe-patch-outcome-counts">
+        ${countItems.map(([label, count]) => `<span><strong>${escapeHtml(String(count))}</strong> ${escapeHtml(label)}</span>`).join('')}
+      </div>
+      ${changedFiles.length ? `
+        <div class="pipe-patch-outcome-row">
+          <span>Workspace changed</span>
+          <div class="pipe-patch-outcome-files">
+            ${changedFiles.map(file => `<code title="${escapeHtml(file)}">${escapeHtml(file)}</code>`).join('')}
+            ${outcome.appliedFiles.length > changedFiles.length ? `<span>+${escapeHtml(String(outcome.appliedFiles.length - changedFiles.length))} more</span>` : ''}
+          </div>
+        </div>
+      ` : `
+        <div class="pipe-patch-outcome-row pipe-patch-outcome-row--empty">
+          <span>Workspace changed</span>
+          <strong>None</strong>
+        </div>
+      `}
+      ${evidenceFiles.length ? `
+        <div class="pipe-patch-outcome-row">
+          <span>Evidence only</span>
+          <div class="pipe-patch-outcome-files">
+            ${evidenceFiles.map(file => `<code title="${escapeHtml(file)}">${escapeHtml(file)}</code>`).join('')}
+          </div>
+        </div>
+      ` : ''}
+      ${skippedArtifacts.length ? `
+        <div class="pipe-patch-outcome-row">
+          <span>Skipped patches</span>
+          <div class="pipe-patch-outcome-files">
+            ${skippedArtifacts.map(file => `<code title="${escapeHtml(file)}">${escapeHtml(file.split(/[\\/]/).pop() || file)}</code>`).join('')}
+            ${outcome.skippedArtifacts.length > skippedArtifacts.length ? `<span>+${escapeHtml(String(outcome.skippedArtifacts.length - skippedArtifacts.length))} more</span>` : ''}
+          </div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
 function machineRunAttentionDetails(record) {
   if (!record) return '';
   const notices = [];
   const workerReview = machineWorkerReviewInfo(record);
   const workerStatus = String(workerReview?.status || '').toLowerCase();
+  const queueInventory = machineLatestQueueInventory(record);
+  const queue = machineQueueInventoryCounts(queueInventory);
+  const lifecycleStatus = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+  const lockWait = machineLatestActiveLockWait(record);
+  if (lockWait) {
+    const files = Array.isArray(lockWait.payload?.targetFiles) ? lockWait.payload.targetFiles : [];
+    notices.push({
+      state: 'warning',
+      title: 'Waiting on lock',
+      text: [
+        lockWait.payload?.taskId ? `Task ${lockWait.payload.taskId} is waiting for file access.` : 'A worker is waiting for file access.',
+        files.length ? `${machineCountLabel(files.length, 'reserved file')}: ${files.slice(0, 3).join(', ')}${files.length > 3 ? `, +${files.length - 3} more` : ''}.` : '',
+      ].filter(Boolean).join(' '),
+    });
+  }
+  const patchRequests = machinePendingPatchReviewRequiredEvents(record);
+  if (patchRequests.length) {
+    const latest = patchRequests[patchRequests.length - 1];
+    const files = Array.isArray(latest.payload?.changedFiles) ? latest.payload.changedFiles : [];
+    notices.push({
+      state: 'warning',
+      title: 'Patch review required',
+      text: [
+        latest.payload?.patchArtifact ? `Patch evidence: ${latest.payload.patchArtifact}.` : 'A patch artifact requires review.',
+        files.length ? `${machineCountLabel(files.length, 'changed file')} staged in run evidence.` : '',
+        latest.payload?.reason ? `Reason: ${latest.payload.reason}.` : '',
+      ].filter(Boolean).join(' '),
+    });
+  }
+  const recovered = latestMachineEvent(record?.events, 'scheduler.subGraphInnerFailure');
+  if (recovered) {
+    const payload = recovered.payload || {};
+    const partial = latestMachineEvent(record?.events, 'scheduler.subGraphPartial', event => (
+      machineEventSequence(event) >= machineEventSequence(recovered)
+      && (!payload.wrapperNodePath || event.payload?.wrapperNodePath === payload.wrapperNodePath)
+    ));
+    notices.push({
+      state: partial ? 'warning' : 'good',
+      title: partial ? 'Inner failure recovered as partial' : 'Inner failure recovered',
+      text: [
+        payload.failingNodePath ? `${payload.failingNodePath} failed inside ${payload.wrapperNodePath || 'a subgraph'}.` : 'A subgraph inner node failed and the wrapper recovered.',
+        payload.policy ? `Policy: ${payload.policy}.` : '',
+      ].filter(Boolean).join(' '),
+    });
+  }
+  const conflict = latestMachineEvent(record?.events, 'scheduler.parallelArtifactConflict');
+  if (conflict) {
+    const conflicts = Array.isArray(conflict.payload?.conflicts) ? conflict.payload.conflicts : [];
+    notices.push({
+      state: 'warning',
+      title: 'Parallel work serialized',
+      text: `${machineCountLabel(conflicts.length, 'artifact conflict')} detected; scheduler serialized the batch instead of running conflicting branches together.`,
+    });
+  }
+  if (machineLatestAutoPatchAuditEvent(record)) {
+    notices.push({
+      state: 'good',
+      title: 'Auto-apply audit',
+      text: 'Autonomous patch approval and apply events are recorded in events.jsonl.',
+    });
+  }
+  if (lifecycleStatus === 'waiting' && queue.totalCount > 0 && (queue.activeCount > 0 || queue.blockedCount > 0)) {
+    const blockedText = machineBlockedWorkInlineText(record);
+    const runId = record?.runState?.runId || record?.runId || '';
+    notices.push({
+      state: queue.blockedCount > 0 ? 'warning' : 'good',
+      title: queue.blockedCount > 0 ? 'Queue has blocked work' : 'Work queue still active',
+      text: [
+        machineQueueInventorySummary(queueInventory),
+        queue.activeCount > 0
+          ? 'Continue will claim the next queued item; it will not automatically fix the blocked item.'
+          : 'No queued work remains; review blocked items or start a follow-up run.',
+        blockedText || '',
+      ].filter(Boolean).join(' '),
+      actionHtml: runId
+        ? `<div class="runbook-action-row runbook-attention-actions"><button class="primary" data-runbook-action="machine-open-blocked-decision" data-run-id="${escapeHtml(runId)}" title="Open blocker details, review evidence, or continue queued work when available.">Resolve Blocker</button></div>`
+        : '',
+    });
+  }
   if (workerReview?.patchArtifact && !workerReview.patchReviewResolved && workerReview.changedFiles.length && workerStatus !== 'blocked') {
     notices.push({
       state: 'warning',
@@ -9149,6 +10587,14 @@ function machineRunAttentionDetails(record) {
       ].filter(Boolean).join(' '),
     });
   }
+  const patchOutcome = machinePatchReviewOutcome(record);
+  if (patchOutcome && lifecycleStatus === 'completed') {
+    notices.push({
+      state: patchOutcome.partial || !patchOutcome.changedWorkspace ? 'warning' : 'good',
+      title: patchOutcome.partial ? 'Patch outcome is partial' : 'Patch outcome',
+      text: machinePatchOutcomeText(patchOutcome),
+    });
+  }
   const contract = machineLatestPartialArtifactContract(record)?.payload || null;
   if (contract) {
     const missingArtifacts = Number(contract.missingArtifactCount) || 0;
@@ -9166,6 +10612,7 @@ function machineRunAttentionDetails(record) {
   return notices.map(notice => `
     <div class="runbook-diagnostic ${escapeHtml(notice.state)}">
       <strong>${escapeHtml(notice.title)}</strong> ${escapeHtml(notice.text)}
+      ${notice.actionHtml || ''}
     </div>
   `).join('');
 }
@@ -9266,6 +10713,8 @@ function machineDisplayStatus(record, runInProgress) {
   const incompleteEvidence = !!machineLatestPartialArtifactContract(record);
   const lifecycleValue = String(runState.lifecycleStatus || '').toLowerCase();
   const summaryValue = String(runState.summaryStatus || '').toLowerCase();
+  const inventory = machineLatestQueueInventory(record);
+  const queue = machineQueueInventoryCounts(inventory);
   const needsReview = (!!workerReview?.patchArtifact && !workerReview.patchReviewResolved)
     || workerStatus === 'blocked'
     || summaryValue === 'blocked'
@@ -9282,6 +10731,16 @@ function machineDisplayStatus(record, runInProgress) {
   }
   if (!runInProgress && lifecycleValue === 'waiting') {
     const lifecycleStatus = runState.lifecycleStatus || 'waiting';
+    if (queue.totalCount > 0 && queue.activeCount > 0) {
+      return {
+        lifecycleLabel: queue.blockedCount > 0 ? 'Queue has blockers' : 'Queue waiting',
+        lifecycleClass: 'warn',
+        lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
+        summaryLabel: machineQueueInventorySummary(inventory),
+        summaryClass: 'warn',
+        summaryTitle: `Work queue: ${machineQueueInventorySummary(inventory)}`,
+      };
+    }
     if (needsReview || incompleteEvidence || ['partial', 'blocked'].includes(summaryValue)) {
       return {
         lifecycleLabel: needsReview ? 'Review needed' : (incompleteEvidence ? 'Evidence incomplete' : 'Ready to continue'),
@@ -9355,6 +10814,56 @@ function latestMachineEvent(events, eventType, predicate = () => true) {
   )) || null;
 }
 
+function latestMachineEventMatching(record, predicate = () => true) {
+  return [...(record?.events || [])].reverse().find(event => event && predicate(event)) || null;
+}
+
+function machineEventSequence(event) {
+  return Number(event?.sequence) || 0;
+}
+
+function machineLatestActiveLockWait(record) {
+  const events = record?.events || [];
+  const waits = events
+    .filter(event => event?.eventType === 'lock.waiting')
+    .sort((a, b) => machineEventSequence(b) - machineEventSequence(a));
+  for (const waiting of waits) {
+    const taskId = String(waiting.payload?.taskId || '').trim();
+    const waitingSequence = machineEventSequence(waiting);
+    const resolved = events.some(event => {
+      if (!['lock.granted', 'lock.released'].includes(event?.eventType)) return false;
+      if (machineEventSequence(event) <= waitingSequence) return false;
+      const candidateTaskId = String(event.payload?.taskId || '').trim();
+      return !taskId || !candidateTaskId || candidateTaskId === taskId;
+    });
+    if (!resolved) return waiting;
+  }
+  return null;
+}
+
+function machinePendingPatchReviewRequiredEvents(record) {
+  const events = record?.events || [];
+  const terminalByArtifact = new Map();
+  for (const event of events) {
+    if (!['patch.applied', 'patch.review_skipped'].includes(event?.eventType)) continue;
+    const artifact = String(event.payload?.patchArtifact || '').trim();
+    if (artifact) terminalByArtifact.set(artifact, machineEventSequence(event));
+  }
+  return events.filter(event => {
+    if (event?.eventType !== 'patch.review_required') return false;
+    const artifact = String(event.payload?.patchArtifact || '').trim();
+    if (!artifact) return true;
+    return (terminalByArtifact.get(artifact) || 0) <= machineEventSequence(event);
+  });
+}
+
+function machineLatestAutoPatchAuditEvent(record) {
+  return latestMachineEventMatching(record, event => (
+    ['patch.approved', 'patches.apply_started', 'patches.apply_finished', 'patch.applied', 'patch.apply_conflict', 'patch.apply_failed'].includes(event?.eventType)
+    && event?.reason === 'machine-autonomous.patch-review.auto-apply'
+  ));
+}
+
 function machineCandidateInventoryDetails(record) {
   const inventory = record?.candidateInventory || null;
   if (inventory) {
@@ -9406,7 +10915,7 @@ function machineNodeCompletionDetails(record) {
 
 function machineApprovalDetails(record) {
   const approvals = record?.approvals || {};
-  const pending = approvals.pending || [];
+  const pending = machinePendingApprovals(record);
   if (pending.length) {
     const names = pending
       .map(item => item.itemId || item.approvalId || '')
@@ -9420,6 +10929,49 @@ function machineApprovalDetails(record) {
     return `${machineCountLabel(decisions.length, 'permission decision')}: ${decisions.map(item => machinePermissionDecisionLabel(item.status)).join(', ')}`;
   }
   return 'No permission needed';
+}
+
+function machineApprovalNeedsLlmBypass(approval) {
+  const capabilities = approval?.requestedCapabilities || [];
+  return capabilities.some(item => String(item || '').toLowerCase() === 'llm-cli-tool-permission');
+}
+
+function machineApprovalShadowedByPatchReview(record, approval) {
+  if (!machineApprovalNeedsLlmBypass(approval)) return false;
+  const itemId = String(approval?.itemId || '').trim();
+  const approvalSequence = Number(approval?.requestedSequence) || 0;
+  return machineWorkerReviewInfos(record).some(review => {
+    if (String(review?.status || '').toLowerCase() !== 'approval-required') return false;
+    if (!review?.patchArtifact || !(review.changedFiles || []).length) return false;
+    if (itemId && review.itemId !== itemId) return false;
+    const workerSequence = Number(review.event?.sequence) || 0;
+    return !approvalSequence || workerSequence <= approvalSequence;
+  });
+}
+
+function machinePendingApprovals(record) {
+  return (record?.approvals?.pending || [])
+    .filter(approval => approval?.approvalId)
+    .filter(approval => !machineApprovalShadowedByPatchReview(record, approval));
+}
+
+function machineLlmApprovalPromptKey(record, approval) {
+  const runId = record?.runState?.runId || record?.runId || approval?.runId || '';
+  return [
+    runId,
+    approval?.approvalId || '',
+    approval?.requestedSequence ?? approval?.requestedAt ?? '',
+  ].join(':');
+}
+
+function firstPendingLlmApproval(record) {
+  const pending = machinePendingApprovals(record);
+  return pending.find(machineApprovalNeedsLlmBypass) || null;
+}
+
+function firstPendingMachineApproval(record) {
+  const pending = machinePendingApprovals(record);
+  return pending.find(approval => approval?.approvalId) || null;
 }
 
 function machineActiveClaimDetails(record) {
@@ -9494,14 +11046,6 @@ function machineArtifactSummary(record) {
     .join(', ');
   const more = files.length > 3 ? `, +${files.length - 3} more` : '';
   return `${machineCountLabel(files.length, 'file')} from ${machineArtifactManifestSource(record)}${preview ? `: ${preview}${more}` : ''}`;
-}
-
-function machineQueueInventorySummary(inventory) {
-  const counts = inventory?.counts || {};
-  const labels = ['queued', 'claimed', 'blocked', 'done']
-    .map(state => counts[state] ? `${counts[state]} ${machineWorkStateLabel(state)}` : '')
-    .filter(Boolean);
-  return labels.length ? labels.join(', ') : 'no work state';
 }
 
 function machineRunStatusLabel(runState) {
@@ -9748,6 +11292,199 @@ function machineRuntimeGraphKeyCandidates(context, graphDoc) {
   return keys;
 }
 
+function harnessImplementationKey(runbookPath) {
+  return runbookNormalizePath(runbookPath || '').toLowerCase();
+}
+
+function pipelineDocHarnessImplementedAt(pipelineDoc, runbookKey = '') {
+  return pipelineDoc?.metadata?.harnessImplementation?.implementedAt
+    || pipelineDoc?.harness?.implementedAt
+    || (runbookKey ? pipelineHarnessImplementedAtCache.get(runbookKey) : '')
+    || '';
+}
+
+function pipelineDocIsGeneratedOrchestration(pipelineDoc) {
+  return !!pipelineDoc?.metadata?.orchestrationAuthoring;
+}
+
+function pipelineRequiresHarnessBeforeRun(runbookPath, pipelineDoc = null, harnessImplementedAt = '') {
+  const key = harnessImplementationKey(runbookPath);
+  if (!key) return false;
+  if (pipelineDocIsGeneratedOrchestration(pipelineDoc)) {
+    pipelineHarnessRequiredBeforeRunCache.add(key);
+  } else if (pipelineDoc && !pipelineDocIsGeneratedOrchestration(pipelineDoc)) {
+    pipelineHarnessRequiredBeforeRunCache.delete(key);
+  }
+  return pipelineHarnessRequiredBeforeRunCache.has(key) && !harnessImplementedAt;
+}
+
+async function generatedPipelineNeedsHarnessBeforeRun(runbookPath) {
+  try {
+    const doc = await readRendererJson(runbookPath);
+    const key = harnessImplementationKey(runbookPath);
+    const harnessImplementedAt = pipelineDocHarnessImplementedAt(doc, key);
+    return pipelineRequiresHarnessBeforeRun(runbookPath, doc, harnessImplementedAt);
+  } catch {
+    return pipelineRequiresHarnessBeforeRun(runbookPath, null, pipelineHarnessImplementedAtCache.get(harnessImplementationKey(runbookPath)) || '');
+  }
+}
+
+function getHarnessImplementationState(runbookPath) {
+  const key = harnessImplementationKey(runbookPath);
+  return key ? pipelineHarnessImplementationStatusCache.get(key) || null : null;
+}
+
+function setHarnessImplementationState(runbookPath, state) {
+  const key = harnessImplementationKey(runbookPath);
+  if (!key) return;
+  pipelineHarnessImplementationStatusCache.set(key, state);
+}
+
+function harnessImplementationProgressForPath(runbookPath) {
+  const state = getHarnessImplementationState(runbookPath);
+  if (state?.status !== 'running') return null;
+  const nodes = Array.isArray(state.nodes) ? state.nodes : [];
+  const total = nodes.length;
+  const done = nodes.filter(node => ['succeeded', 'ready', 'failed'].includes(String(node?.status || '').toLowerCase())).length;
+  const running = nodes.find(node => String(node?.status || '').toLowerCase() === 'running');
+  return {
+    label: `Implementing harness ${done}/${total}`,
+    title: running?.nodePath ? `Currently implementing ${running.nodePath}` : 'Implementing pipeline harness',
+  };
+}
+
+function harnessRuntimeStatusFromNode(node) {
+  const nodePath = node?.nodePath || '';
+  const status = String(node?.status || '').toLowerCase();
+  if (status === 'running') {
+    return {
+      state: 'running',
+      label: 'Harnessing',
+      nodePath,
+      title: `Implementing harness for ${nodePath}`,
+      source: 'harness',
+      reason: node?.message || '',
+    };
+  }
+  if (status === 'succeeded' || status === 'ready') {
+    return {
+      state: 'completed',
+      label: 'Harness ready',
+      nodePath,
+      title: `Harness implemented for ${nodePath}`,
+      source: 'harness',
+      artifact: node?.artifact || '',
+    };
+  }
+  if (status === 'failed') {
+    return {
+      state: 'failed',
+      label: 'Harness failed',
+      nodePath,
+      title: node?.error || `Harness failed for ${nodePath}`,
+      source: 'harness',
+      reason: node?.error || '',
+      artifact: node?.artifact || '',
+    };
+  }
+  return {
+    state: 'queued',
+    label: 'Harness pending',
+    nodePath,
+    title: `Waiting to implement harness for ${nodePath}`,
+    source: 'harness',
+  };
+}
+
+function harnessImplementationProjectionForGraph(context, graphDoc) {
+  if (!context?.pipelinePath) return null;
+  const state = getHarnessImplementationState(context.pipelinePath);
+  const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
+  if (!nodes.length) return null;
+  const statuses = new Map();
+  for (const node of nodes) {
+    const nodePath = String(node?.nodePath || '').trim();
+    if (!nodePath) continue;
+    statuses.set(nodePath, harnessRuntimeStatusFromNode(node));
+  }
+  if (!statuses.size) return null;
+  return {
+    graphKeys: machineRuntimeGraphKeyCandidates(context, graphDoc),
+    runInProgress: state.status === 'running',
+    statuses,
+    record: null,
+    source: 'harness',
+  };
+}
+
+function harnessStatusForNodePath(nodePath, baseFilePath = getActiveTab()?.filePath) {
+  if (!nodePath) return null;
+  const runbookPath = pipelineContextForPath(baseFilePath)?.pipelinePath || selectedRunbookPath || '';
+  const state = getHarnessImplementationState(runbookPath);
+  const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
+  const suffix = `/${nodePath.split('/').pop() || nodePath}`;
+  const match = nodes.find(node => node?.nodePath === nodePath || String(node?.nodePath || '').endsWith(suffix));
+  return match ? harnessRuntimeStatusFromNode(match) : null;
+}
+
+function harnessFailureForNodePath(nodePath, baseFilePath = getActiveTab()?.filePath) {
+  const status = harnessStatusForNodePath(nodePath, baseFilePath);
+  if (status?.state !== 'failed') return [];
+  return [{
+    nodePath: status.nodePath,
+    status: 'failed',
+    reason: status.reason || status.title || 'Harness implementation failed for this node.',
+    summary: status.title || '',
+    allRefs: status.artifact ? [status.artifact] : [],
+    source: 'harness',
+  }];
+}
+
+function orchDocForContextAction(doc = null) {
+  if (doc) return doc;
+  try {
+    return JSON.parse(editor.state.doc.toString());
+  } catch {
+    return null;
+  }
+}
+
+function machineNodePathForOrchNode(path, doc = null, baseFilePath = getActiveTab()?.filePath) {
+  const root = orchDocForContextAction(doc);
+  if (!root || !path) return '';
+  const node = orchValueAtPath(root, path);
+  const nodeId = String(node?.id || '').trim();
+  if (!nodeId) return '';
+  const context = pipelineContextForPath(baseFilePath);
+  const projection = machineRuntimeProjectionForGraph(context, root);
+  const runtime = projection ? machineRuntimeStatusForGraphNode({ node, path }, projection) : null;
+  if (runtime?.nodePath) return runtime.nodePath;
+  const graphKey = machineRuntimeGraphKeyCandidates(context, root)[0] || 'main';
+  return `${graphKey}/${nodeId}`;
+}
+
+function machineStatusForNodePath(nodePath, baseFilePath = getActiveTab()?.filePath) {
+  if (!nodePath) return null;
+  const runbookPath = pipelineContextForPath(baseFilePath)?.pipelinePath || selectedRunbookPath || '';
+  const record = getActiveMachineRunRecord(runbookPath) || machineRunRecordForPipelinePath(runbookPath);
+  const statuses = machineRuntimeNodeProjection(record);
+  if (statuses.has(nodePath)) return statuses.get(nodePath);
+  const suffix = `/${nodePath.split('/').pop() || nodePath}`;
+  const matches = [...statuses.entries()].filter(([candidate]) => candidate.endsWith(suffix)).map(([, status]) => status);
+  if (matches.length === 1) return matches[0];
+  return harnessStatusForNodePath(nodePath, baseFilePath);
+}
+
+function machineFailureForNodePath(nodePath, baseFilePath = getActiveTab()?.filePath) {
+  if (!nodePath) return [];
+  const runbookPath = pipelineContextForPath(baseFilePath)?.pipelinePath || selectedRunbookPath || '';
+  const record = getActiveMachineRunRecord(runbookPath) || machineRunRecordForPipelinePath(runbookPath);
+  const suffix = `/${nodePath.split('/').pop() || nodePath}`;
+  const runtimeFailures = sharedFailedAdapterCalls(record)
+    .filter(failure => failure?.nodePath === nodePath || String(failure?.nodePath || '').endsWith(suffix));
+  return [...runtimeFailures, ...harnessFailureForNodePath(nodePath, baseFilePath)];
+}
+
 function machineRuntimeGraphRefKeyCandidates(graphRef) {
   const normalized = runbookNormalizePath(graphRef || '');
   const fileName = normalized.split('/').pop() || '';
@@ -9949,9 +11686,11 @@ function isPipelineMachineRunInProgress(runbookPath) {
 
 function machineRuntimeProjectionForGraph(context, graphDoc) {
   if (!context?.pipelinePath) return null;
+  const harnessProjection = harnessImplementationProjectionForGraph(context, graphDoc);
+  if (harnessProjection?.runInProgress) return harnessProjection;
   const record = machineRunRecordForPipelinePath(context.pipelinePath);
   const statuses = machineRuntimeNodeProjection(record);
-  if (!statuses.size) return null;
+  if (!statuses.size) return harnessProjection;
   return {
     graphKeys: machineRuntimeGraphKeyCandidates(context, graphDoc),
     runInProgress: isMachineRunInProgress(record, context.pipelinePath),
@@ -9995,7 +11734,18 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
   const events = (record.events || []).filter(e => (e?.nodePath || '') === machineNodePath);
   const lifecycleEvents = events.filter(e => String(e?.eventType || '').startsWith('node.'));
   const adapterEvents = events.filter(e => ['adapter.requested', 'adapter.result', 'worker.result', 'probe.result'].includes(e?.eventType || ''));
-  if (!lifecycleEvents.length && !adapterEvents.length) {
+  const diagnosticEvents = events.filter(e => [
+    'scheduler.edgeEvaluation',
+    'scheduler.loopBackReset',
+    'scheduler.parallelArtifactConflict',
+    'scheduler.subGraphInnerFailure',
+    'scheduler.subGraphPartial',
+    'lock.waiting',
+    'lock.granted',
+    'lock.released',
+    'patch.review_required',
+  ].includes(e?.eventType || ''));
+  if (!lifecycleEvents.length && !adapterEvents.length && !diagnosticEvents.length) {
     return `
       <details class="orch-inspector-runtime" open>
         <summary>Run state</summary>
@@ -10008,7 +11758,7 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
   const runId = record.runState?.runId || record.runId || '';
   // Group events by attempt so each retry shows as a distinct block.
   const attempts = new Map();
-  for (const event of [...lifecycleEvents, ...adapterEvents].sort((a, b) => (a.sequence || 0) - (b.sequence || 0))) {
+  for (const event of [...lifecycleEvents, ...adapterEvents, ...diagnosticEvents].sort((a, b) => (a.sequence || 0) - (b.sequence || 0))) {
     const attempt = Number(event.payload?.attempt) || 1;
     if (!attempts.has(attempt)) attempts.set(attempt, []);
     attempts.get(attempt).push(event);
@@ -10049,6 +11799,10 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
         const lcLabel = (e.eventType || '').replace(/^node\./, '');
         return `<span class="orch-inspector-runtime-step state-${escapeHtml(lcLabel)}" title="${escapeHtml(`seq ${e.sequence || ''} · ${e.timestamp || ''}`)}">${escapeHtml(lcLabel)}</span>`;
       }).join('');
+    const diagnosticChips = evts
+      .filter(e => !String(e.eventType || '').startsWith('node.'))
+      .map(e => `<span class="orch-inspector-runtime-step state-diagnostic" title="${escapeHtml(`seq ${e.sequence || ''} · ${e.eventType || ''}`)}">${escapeHtml(machineEventLabel(e))}</span>`)
+      .join('');
     const transcriptLinks = transcripts.length && cleanRoot
       ? `<div class="orch-inspector-runtime-links">
           ${transcripts.map(ref => `<button class="pipe-failed-probe-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(`${cleanRoot}/${String(ref).replace(/^[\\/]+/, '')}`)}" title="${escapeHtml(ref)}">${escapeHtml(ref.split('/').pop() || ref)}</button>`).join('')}
@@ -10063,7 +11817,7 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
           <strong>Attempt ${attempt}</strong>
           ${adapterChip}
         </div>
-        <div class="orch-inspector-runtime-steps">${lifecycleChips}</div>
+        <div class="orch-inspector-runtime-steps">${lifecycleChips}${diagnosticChips}</div>
         ${summaryLine ? `<div class="orch-inspector-runtime-summary">${escapeHtml(summaryLine)}</div>` : ''}
         ${errorBlock}
         ${transcriptLinks}
@@ -10077,12 +11831,15 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
   const runbookPathForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
   const hasBreakpoint = runbookPathForBp ? getMachineBreakpoints(runbookPathForBp).has(machineNodePath) : false;
   const retryDisabled = !runId;
+  const skipBlockReason = machineSkipBlockReason(record, machineNodePath, node.type || '');
   const nodeActions = (retryDisabled && !runbookPathForBp)
     ? ''
     : `
       <div class="orch-inspector-runtime-actions">
         ${retryDisabled ? '' : `<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Re-run this node at attempt N+1. Appends a fresh node.scheduled event so the dispatcher re-runs it on the next Continue.">Retry node</button>`}
-        ${retryDisabled ? '' : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Mark this node as skipped (terminal). Use only when its work is genuinely not required.">Skip node</button>`}
+        ${retryDisabled ? '' : (skipBlockReason
+          ? `<button class="pipe-failed-probe-link pipe-failed-probe-skip" disabled title="${escapeHtml(skipBlockReason)}">Skip node</button>`
+          : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Mark this node as skipped (terminal). Use only when its work is genuinely not required.">Skip node</button>`)}
         ${runbookPathForBp ? `<button class="pipe-failed-probe-link ${hasBreakpoint ? 'pipe-breakpoint-active' : 'pipe-breakpoint-inactive'}" data-probe-action="toggle-breakpoint" data-node-path="${escapeHtml(machineNodePath)}" title="${hasBreakpoint ? 'Breakpoint set. Click to clear. Continue will warn before dispatching past this node.' : 'Set a breakpoint. Continue will warn before dispatching past this node. Cleared by clicking again.'}">${hasBreakpoint ? 'Clear breakpoint' : 'Set breakpoint'}</button>` : ''}
       </div>
     `;
@@ -10204,6 +11961,316 @@ function machineNotifyNewFailures(record) {
   }
 }
 
+async function maybeOpenMachineLlmApprovalModal(runbookPath, record) {
+  const approval = firstPendingLlmApproval(record) || firstPendingMachineApproval(record);
+  if (!runbookPath || !approval?.approvalId) return false;
+  if (!fmtModalEl || !fmtModalEl.classList.contains('hidden')) return false;
+  const key = machineLlmApprovalPromptKey(record, approval);
+  if (machineApprovalPromptSeen.has(key)) return false;
+  machineApprovalPromptSeen.add(key);
+
+  const runId = record?.runState?.runId || record?.runId || approval.runId || '';
+  const command = approval.commandSpec || {};
+  const needsLlmBypass = machineApprovalNeedsLlmBypass(approval);
+  const body = document.createElement('div');
+  body.className = 'runbook-modal-body';
+  const commandLine = [
+    command.command,
+    ...(Array.isArray(command.args) ? command.args : []),
+  ].filter(Boolean).join(' ');
+  body.innerHTML = `
+    <section class="runbook-modal-section">
+      <h4>${needsLlmBypass ? 'LLM CLI permission request' : 'Run approval request'}</h4>
+      <p>${needsLlmBypass
+        ? 'The provider paused because a tool or file operation needs permission. Allowing this will retry the queued work item once with the run bypass option inside a Machine-owned temp overlay.'
+        : 'The run paused because this work item needs a decision before the dispatcher can continue.'}</p>
+    </section>
+    <div class="runbook-modal-kv">
+      <div><strong>Run</strong><code>${escapeHtml(runId)}</code></div>
+      <div><strong>Work item</strong><code>${escapeHtml(approval.itemId || '')}</code></div>
+      <div><strong>Reason</strong><span>${escapeHtml(approval.reason || 'worker-result.approval-required')}</span></div>
+      ${commandLine ? `<div><strong>Command</strong><code>${escapeHtml(commandLine.slice(0, 500))}</code></div>` : ''}
+      ${(approval.writeSetPaths || []).length ? `<div><strong>Write set</strong><span>${escapeHtml((approval.writeSetPaths || []).slice(0, 6).join(', '))}</span></div>` : ''}
+    </div>
+  `;
+  let closedByAction = false;
+  openFmtModal({
+    title: needsLlmBypass ? 'LLM Permission Required' : 'Run Approval Required',
+    body,
+    onClose: () => {
+      if (!closedByAction) machineApprovalPromptSeen.add(key);
+    },
+    footer: [
+      {
+        label: 'Later',
+        onClick: () => {
+          closedByAction = true;
+          closeFmtModal();
+        },
+      },
+      {
+        label: 'Decline',
+        onClick: async () => {
+          await runFmtModalLocked(async () => {
+            closedByAction = true;
+            await decideSelectedMachineApproval(runbookPath, runId, approval.approvalId, 'denied');
+            closeFmtModal({ force: true });
+          }, 'Declining permission request...');
+        },
+      },
+      {
+        label: needsLlmBypass ? 'Allow and Continue' : 'Approve and Continue',
+        primary: true,
+        onClick: async () => {
+          await runFmtModalLocked(async () => {
+            closedByAction = true;
+            await decideSelectedMachineApproval(runbookPath, runId, approval.approvalId, 'approved', {
+              continueAfterApproval: true,
+              llmApprovalMode: needsLlmBypass ? 'bypass' : '',
+            });
+            closeFmtModal({ force: true });
+          }, needsLlmBypass ? 'Allowing and continuing with bypass...' : 'Approving and continuing...');
+        },
+      },
+    ],
+  });
+  return true;
+}
+
+function machinePendingPatchReviewInfos(record) {
+  return machineWorkerReviewInfos(record).filter(review => (
+    review?.patchArtifact
+    && !review.patchReviewResolved
+    && review.patchReviewStatus !== 'approved'
+  ));
+}
+
+function machineApprovedPatchReviewInfos(record) {
+  return machineWorkerReviewInfos(record).filter(review => (
+    review?.patchArtifact
+    && review.patchReviewStatus === 'approved'
+  ));
+}
+
+function machineHasPendingPatchDecision(record) {
+  return machinePendingPatchReviewInfos(record).length > 0;
+}
+
+function machineBlockedDecisionPromptKey(record, gate, blockedWork, queue) {
+  const runId = record?.runState?.runId || record?.runId || '';
+  const pendingPatchCount = machinePendingPatchReviewInfos(record).length;
+  const approvedPatchCount = machineApprovedPatchReviewInfos(record).length;
+  return [
+    runId,
+    gate?.nodePath || '',
+    gate?.sequence || '',
+    blockedWork?.itemId || '',
+    blockedWork?.sequence || '',
+    blockedWork?.patchReviewStatus || '',
+    pendingPatchCount,
+    approvedPatchCount,
+    queue?.activeCount || 0,
+    queue?.blockedCount || 0,
+  ].join(':');
+}
+
+function machineBlockedDecisionContext(record, options = {}) {
+  const runId = record?.runState?.runId || record?.runId || '';
+  if (!runId) return null;
+  const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+  if (!['waiting', 'approval-required'].includes(lifecycle)) return null;
+  if (machinePendingApprovals(record).length) return null;
+  const pendingPatchReviews = machinePendingPatchReviewInfos(record);
+  const approvedPatchReviews = machineApprovedPatchReviewInfos(record);
+  const blockedPatchReviewNode = machineHasBlockedPatchReviewNode(record);
+  if (!options.force && (pendingPatchReviews.length || blockedPatchReviewNode)) return null;
+  const queue = machineQueueInventoryCounts(machineLatestQueueInventory(record));
+  const gate = (sharedGateBlockedNodes(record) || [])[0] || null;
+  const blockedWorkFromEvents = machineLatestBlockedWorkDetails(record);
+  const queueNeedsDecision = queue.totalCount > 0 && (queue.activeCount > 0 || queue.blockedCount > 0);
+  const blockedWork = blockedWorkFromEvents || (queue.blockedCount > 0
+    ? {
+      itemId: '',
+      reason: `${machineCountLabel(queue.blockedCount, 'blocked work item')} recorded in the work queue.`,
+      sequence: 0,
+    }
+    : null);
+  if (!gate && !blockedWork && !queueNeedsDecision) return null;
+  const queueExhausted = queue.totalCount > 0 && queue.activeCount <= 0;
+  const hasPatchAction = pendingPatchReviews.length || approvedPatchReviews.length || blockedPatchReviewNode;
+  if (!options.force && queueExhausted && !gate && !hasPatchAction) return null;
+  return {
+    runId,
+    queue,
+    gate,
+    blockedWork,
+    pendingPatchReviews,
+    approvedPatchReviews,
+    blockedPatchReviewNode,
+    key: machineBlockedDecisionPromptKey(record, gate, blockedWork, queue),
+  };
+}
+
+async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options = {}) {
+  if (!runbookPath || !record) return false;
+  if (!fmtModalEl || !fmtModalEl.classList.contains('hidden')) return false;
+  const context = machineBlockedDecisionContext(record, options);
+  if (!context?.key) return false;
+  if (!options.force && machineBlockedDecisionPromptSeen.has(context.key)) return false;
+  if (!options.force) machineBlockedDecisionPromptSeen.add(context.key);
+
+  const { runId, queue, gate, blockedWork, pendingPatchReviews, approvedPatchReviews } = context;
+  let decisionInFlight = false;
+  const body = document.createElement('div');
+  body.className = 'runbook-modal-body';
+  const queueText = machineQueueInventorySummary(machineLatestQueueInventory(record));
+  const gateTitle = gate ? `${gate.nodePath}${gate.reason ? ` (${gate.reason})` : ''}` : '';
+  const gateSkipBlockReason = gate?.nodePath ? machineSkipBlockReason(record, gate.nodePath, gate.nodeType || '') : '';
+  const canContinueQueue = queue.activeCount > 0;
+  const queueExhausted = queue.totalCount > 0 && queue.activeCount <= 0;
+  const canCancelRemaining = canContinueQueue || isMachineRunInProgress(record, runbookPath);
+  const changedFiles = machineUniqueNonEmptyStrings([
+    ...(blockedWork?.changedFiles || []),
+    ...pendingPatchReviews.flatMap(review => review.changedFiles || []),
+    ...approvedPatchReviews.flatMap(review => review.changedFiles || []),
+  ]);
+  const patchArtifact = blockedWork?.patchArtifact
+    || pendingPatchReviews[0]?.patchArtifact
+    || approvedPatchReviews[0]?.patchArtifact
+    || '';
+  const hasPatchReview = pendingPatchReviews.length > 0 || Boolean(blockedWork?.patchArtifact && !blockedWork?.patchReviewStatus);
+  const hasApprovedPatch = approvedPatchReviews.length > 0;
+  const heading = hasPatchReview
+    ? 'Patch review required'
+    : (hasApprovedPatch
+      ? 'Approved patch waiting to apply'
+      : (canContinueQueue ? 'Run blocked - decision required' : 'Blocked work recorded'));
+  const intro = hasPatchReview
+    ? 'The worker produced a patch artifact. Review the changed files and choose whether to apply or skip the patch before treating the run as reflected in the workspace.'
+    : (hasApprovedPatch
+      ? 'One or more patch selections were approved but have not been written to the workspace yet.'
+      : (canContinueQueue
+        ? 'The Machine run reached a blocker and can still dispatch queued work.'
+        : 'The queue has no runnable items left. This run is partial evidence until you review it or start a follow-up run.'));
+  const changedFileText = changedFiles.length
+    ? `${changedFiles.slice(0, 6).join(', ')}${changedFiles.length > 6 ? `, +${changedFiles.length - 6} more` : ''}`
+    : '';
+  body.innerHTML = `
+    <section class="runbook-modal-section">
+      <h4>${escapeHtml(heading)}</h4>
+      <p>${escapeHtml(intro)}</p>
+    </section>
+    <div class="runbook-modal-kv">
+      <div><strong>Run</strong><code>${escapeHtml(runId)}</code></div>
+      ${queue.totalCount ? `<div><strong>Queue</strong><span>${escapeHtml(queueText)}</span></div>` : ''}
+      ${blockedWork?.itemId ? `<div><strong>Blocked item</strong><code>${escapeHtml(blockedWork.itemId)}</code></div>` : ''}
+      ${blockedWork?.reason ? `<div><strong>Item reason</strong><span>${escapeHtml(blockedWork.reason)}</span></div>` : ''}
+      ${changedFileText ? `<div><strong>Changed files</strong><span>${escapeHtml(changedFileText)}</span></div>` : ''}
+      ${patchArtifact ? `<div><strong>Patch artifact</strong><code>${escapeHtml(patchArtifact)}</code></div>` : ''}
+      ${gateTitle ? `<div><strong>Blocked gate</strong><span>${escapeHtml(gateTitle)}</span></div>` : ''}
+    </div>
+    ${hasPatchReview ? '<div class="runbook-diagnostic warning"><strong>Review Patch</strong> opens the patch modal with the changed files, base checks, and apply/skip decisions.</div>' : ''}
+    ${hasApprovedPatch ? '<div class="runbook-diagnostic warning"><strong>Apply Approved Patches</strong> writes the approved file selections after fresh base SHA checks.</div>' : ''}
+    ${canContinueQueue ? '<div class="runbook-diagnostic warning"><strong>Continue Queue</strong> keeps the run alive and dispatches the next queued item. Existing blocked items remain recorded for follow-up.</div>' : ''}
+    ${gate && !gateSkipBlockReason ? '<div class="runbook-diagnostic warning"><strong>Skip gate</strong> records an explicit skip decision for the blocked node and then resumes the run. Use it only when the missing evidence is intentionally not required.</div>' : ''}
+    ${gateSkipBlockReason ? `<div class="runbook-diagnostic warning"><strong>Skip unavailable</strong> ${escapeHtml(gateSkipBlockReason)}</div>` : ''}
+    ${queueExhausted && !hasPatchReview && !hasApprovedPatch && !gate ? '<div class="runbook-diagnostic"><strong>No queued work remains</strong> This is a review/follow-up state, not an async pause. Cancel is hidden because there is no remaining work to cancel.</div>' : ''}
+    ${canCancelRemaining ? '<div class="runbook-diagnostic"><strong>Cancel Remaining Work</strong> cancels only the unresolved run work instead of leaving it paused.</div>' : ''}
+  `;
+  const runBlockedDecisionAction = async (action, busyText = 'Working...') => {
+    if (decisionInFlight) return;
+    decisionInFlight = true;
+    try {
+      await runFmtModalLocked(action, busyText);
+    } catch (err) {
+      notifyFormatError('Run blocker', err);
+    } finally {
+      if (!fmtModalEl.classList.contains('hidden')) decisionInFlight = false;
+    }
+  };
+
+  const footer = [
+    { label: canContinueQueue ? 'Decide Later' : 'Close', onClick: closeFmtModal },
+  ];
+  if (hasPatchReview) {
+    footer.push({
+      label: 'Review Patch',
+      primary: !canContinueQueue,
+      onClick: async () => {
+        await runBlockedDecisionAction(async () => {
+          closeFmtModal({ force: true });
+          const opened = await maybeOpenMachinePatchReviewModal(runbookPath, record, { force: true });
+          if (!opened) await openMachineArtifactViewer(runbookPath, runId);
+        }, 'Opening patch review...');
+      },
+    });
+  }
+  if (hasApprovedPatch) {
+    footer.push({
+      label: 'Apply Approved Patches',
+      primary: !hasPatchReview && !canContinueQueue,
+      onClick: async () => {
+        await runBlockedDecisionAction(async () => {
+          await finalizePatchReviewQueue(runbookPath, runId, record);
+          closeFmtModal({ force: true });
+        }, 'Applying approved patches...');
+      },
+    });
+  }
+  footer.push(
+    {
+      label: 'Review Evidence',
+      onClick: async () => {
+        await runBlockedDecisionAction(async () => {
+          closeFmtModal({ force: true });
+          await openMachineArtifactViewer(runbookPath, runId);
+        }, 'Opening evidence...');
+      },
+    },
+  );
+  if (canCancelRemaining) {
+    footer.push({
+      label: 'Cancel Remaining Work',
+      onClick: async () => {
+        await runBlockedDecisionAction(async () => {
+          await cancelSelectedMachineRun(runbookPath, runId);
+          closeFmtModal({ force: true });
+        }, 'Cancelling remaining work...');
+      },
+    });
+  }
+  if (gate?.nodePath && !gateSkipBlockReason) {
+    footer.push({
+      label: 'Skip Gate',
+      onClick: async () => {
+        await runBlockedDecisionAction(async () => {
+          await skipSelectedMachineNodeAndContinue(runbookPath, runId, gate.nodePath, gate.nodeType || '', 'user-skipped-from-block-modal');
+          closeFmtModal({ force: true });
+        }, 'Skipping gate and continuing...');
+      },
+    });
+  }
+  if (canContinueQueue) {
+    footer.push({
+      label: 'Continue Queue',
+      primary: !hasPatchReview && !hasApprovedPatch,
+      onClick: async () => {
+        await runBlockedDecisionAction(async () => {
+          closeFmtModal({ force: true });
+          await executeSelectedMachineRunStep(runbookPath, runId);
+        }, 'Continuing queued work...');
+      },
+    });
+  }
+
+  openFmtModal({
+    title: hasPatchReview ? 'Patch Review Needed' : 'Run Blocked',
+    body,
+    footer,
+  });
+  return true;
+}
+
 async function refreshMachineRunPanelSnapshot(runbookPath, runId) {
   const snapshot = await loadMachineRunRecord(runbookPath, runId);
   if (!snapshot) return null;
@@ -10211,6 +12278,11 @@ async function refreshMachineRunPanelSnapshot(runbookPath, runId) {
   machineNotifyNewFailures(record);
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
+  const openedApproval = await maybeOpenMachineLlmApprovalModal(runbookPath, record);
+  if (!openedApproval) {
+    const openedPatch = await maybeOpenMachinePatchReviewModal(runbookPath, record);
+    if (!openedPatch) await maybeOpenMachineBlockedDecisionModal(runbookPath, record);
+  }
   return record;
 }
 
@@ -10220,6 +12292,23 @@ async function refreshVisibleMachineRunSnapshot() {
   const runId = record?.runState?.runId || record?.runId || '';
   if (!runId) return;
   await refreshMachineRunPanelSnapshot(selectedRunbookPath, runId);
+}
+
+function scheduleMachineRunDecisionPrompts(runbookPath, record) {
+  const runId = record?.runState?.runId || record?.runId || '';
+  if (!runbookPath || !runId) return;
+  setTimeout(async () => {
+    try {
+      const latest = getRunbookCache(machineRunRecordCache, runbookPath) || record;
+      const openedApproval = await maybeOpenMachineLlmApprovalModal(runbookPath, latest);
+      if (!openedApproval) {
+        const openedPatch = await maybeOpenMachinePatchReviewModal(runbookPath, latest);
+        if (!openedPatch) await maybeOpenMachineBlockedDecisionModal(runbookPath, latest);
+      }
+    } catch (err) {
+      notifyFormatError('Run decision', err);
+    }
+  }, 0);
 }
 
 function startMachineRunProgressPolling(runbookPath, runId) {
@@ -10240,7 +12329,8 @@ function startMachineRunProgressPolling(runbookPath, runId) {
         setMachineRunActionPending(runbookPath, runId, false);
       }
       if (record && !isMachineRunInProgress(record, runbookPath)) {
-        await maybeOpenMachinePatchReviewModal(runbookPath, record);
+        const openedPatch = await maybeOpenMachinePatchReviewModal(runbookPath, record);
+        if (!openedPatch) await maybeOpenMachineBlockedDecisionModal(runbookPath, record);
       }
     } catch {
       // Keep the optimistic running state visible; the execute response will surface failures.
@@ -10304,21 +12394,27 @@ document.addEventListener('visibilitychange', () => {
 function machineExecuteControlDetails(record, validation = null, runbookPath = selectedRunbookPath) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
-  const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
+  const pendingApprovals = machinePendingApprovals(record).length;
   const activeClaims = record?.activeClaims || [];
+  const inventory = machineLatestQueueInventory(record);
+  const queue = machineQueueInventoryCounts(inventory);
   if (!runId) return 'Continue unavailable: no run selected';
   if (validation && !isMachineStartablePipeline(validation)) return machineStartBlockReason(validation);
   if (isMachineRunTerminal(runState)) return `Continue unavailable: ${machineRunStatusLabel(runState) || 'run'} is finished`;
   if (isMachineRunInProgress(record, runbookPath)) return 'Continue paused: OrPAD is already working on this run.';
   if (pendingApprovals > 0) return `Continue blocked: decide ${machineCountLabel(pendingApprovals, 'permission request')} first`;
   if (activeClaims.length) return `Continue paused: ${machineWorkInProgressLabel(activeClaims.length)}; cancel or wait before continuing`;
+  if (queue.activeCount > 0) {
+    const blockedText = queue.blockedCount > 0 ? ` ${machineBlockedWorkInlineText(record)}` : '';
+    return `Continue: process the next queued item (${machineQueueInventorySummary(inventory)}).${blockedText}`;
+  }
   return 'Continue this run.';
 }
 
 function machineResumeControlDetails(record, runbookPath = selectedRunbookPath) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
-  const pendingApprovals = Number(record?.approvals?.pendingCount) || (record?.approvals?.pending || []).length;
+  const pendingApprovals = machinePendingApprovals(record).length;
   const activeClaims = record?.activeClaims || [];
   const resume = record?.resume || null;
   if (!runId) {
@@ -10518,8 +12614,8 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
   const exported = record.exported || null;
   const runTerminal = isMachineRunTerminal(runState);
-  const pendingApprovals = record.approvals?.pending || [];
-  const approvalPending = (record.approvals?.pendingCount || 0) > 0;
+  const pendingApprovals = machinePendingApprovals(record);
+  const approvalPending = pendingApprovals.length > 0;
   const activeClaims = record.activeClaims || [];
   const firstActiveClaim = activeClaims[0] || null;
   const candidateDetails = machineCandidateInventoryDetails(record);
@@ -10530,6 +12626,12 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const activeWriteSetDetails = machineActiveWriteSetDetails(record);
   const auditDetails = machineAuditDetails(record);
   const artifactDetails = machineArtifactSummary(record);
+  const queueInventory = machineLatestQueueInventory(record);
+  const queueCounts = machineQueueInventoryCounts(queueInventory);
+  const queueInventoryDetails = queueCounts.totalCount > 0
+    ? machineQueueInventorySummary(queueInventory)
+    : '';
+  const blockedWorkDetails = queueCounts.blockedCount > 0 ? machineBlockedWorkInlineText(record) : '';
   const taskText = normalizeRunbookTask(runState.metadata?.taskText || record.metadata?.taskText || '');
   const validation = selectedPipelineValidation(runbookPath);
   const machineStepUnavailable = !!validation && !isMachineStartablePipeline(validation);
@@ -10554,10 +12656,16 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const cancelDisabled = runTerminal || (!window.orpad?.machine?.cancelRun && !window.orpad?.machine?.cancelClaim);
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
-          ${pendingApprovals.slice(0, 3).map(approval => `
-            <button data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Permission request')}">Allow</button>
+          ${pendingApprovals.slice(0, 3).map(approval => {
+            const needsLlmBypass = machineApprovalNeedsLlmBypass(approval);
+            const title = needsLlmBypass
+              ? 'Allow this LLM CLI permission request and continue once with bypass.'
+              : (approval.title || approval.itemId || approval.approvalId || 'Permission request');
+            return `
+            <button data-runbook-action="machine-approve-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" data-llm-bypass="${needsLlmBypass ? 'true' : 'false'}" title="${escapeHtml(title)}">${needsLlmBypass ? 'Allow Bypass' : 'Allow'}</button>
             <button data-runbook-action="machine-deny-approval" data-run-id="${escapeHtml(runId)}" data-approval-id="${escapeHtml(approval.approvalId || '')}" title="${escapeHtml(approval.title || approval.itemId || approval.approvalId || 'Permission request')}">Decline</button>
-          `).join('')}
+          `;
+          }).join('')}
         </div>
       ` : '';
   return `
@@ -10606,9 +12714,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <strong>Step progress</strong>
           <span>${escapeHtml(nodeCompletionDetails)}</span>
         </div>
-        <div class="runbook-guide">
+        <div class="runbook-guide ${queueCounts.activeCount || queueCounts.blockedCount ? 'warn' : ''}">
           <strong>Work status</strong>
-          <span>${escapeHtml([queueEvents.length ? machineCountLabel(queueEvents.length, 'work update') : 'No work updates yet', activeClaimDetails, activeWriteSetDetails].join('; '))}</span>
+          <span>${escapeHtml([queueInventoryDetails || (queueEvents.length ? machineCountLabel(queueEvents.length, 'work update') : 'No work updates yet'), blockedWorkDetails, activeClaimDetails, activeWriteSetDetails].filter(Boolean).join('; '))}</span>
         </div>
         <div class="runbook-guide ${escapeHtml(resumeDetails.state)}">
           <strong>Recovery</strong>
@@ -10715,6 +12823,7 @@ function renderRunbooksPanel() {
   const selectedMachineRunRecord = selected ? getActiveMachineRunRecord(selected) : null;
   const inspectedHistoryRecord = selected ? getHistoryInspectionRecord(selected) : null;
   const selectedKey = runbookNormalizePath(selected).toLowerCase();
+  const generationRunning = isPipelineGenerationRunning();
   const workspaceMeta = [
     machineCountLabel(pipelineCount, 'pipeline'),
     legacyCount ? machineCountLabel(legacyCount, 'legacy flow') : '',
@@ -10726,9 +12835,10 @@ function renderRunbooksPanel() {
       <textarea class="runbook-task-input" data-runbook-task rows="4" placeholder="Example: improve the OrPAD Pipes panel so I can type a task, generate a pipeline, validate it, and run it.">${escapeHtml(runbookDraftTask)}</textarea>
       ${renderRunbookExternalResearchWarning(runbookDraftTask)}
       <div class="runbook-action-row">
-        <button class="primary" data-runbook-action="starter">Generate Pipeline</button>
+        <button class="primary" data-runbook-action="starter" ${generationRunning ? 'disabled' : ''} title="${escapeHtml(generationRunning ? 'Generate is already running for this window.' : 'Generate an OrPAD pipeline with the LLM authoring agent.')}">${generationRunning ? '<span class="runbook-spinner" aria-hidden="true"></span>Generating...' : 'Generate Pipeline'}</button>
         <button data-runbook-action="refresh">Refresh</button>
       </div>
+      <div data-runbook-generate-status-slot>${renderPipelineGenerateStatus()}</div>
       <div class="runbook-workspace-meta" data-runbook-workspace-meta title="${escapeHtml(runbookNormalizePath(workspacePath))}">
         <strong>${escapeHtml(runbookBaseName(workspacePath))}</strong>
         <span class="runbook-chip-row">
@@ -10747,17 +12857,6 @@ function renderRunbooksPanel() {
         </div>
       ` : '<div class="runbook-empty">No OrPAD pipelines found yet. Describe the work, then generate one.</div>'}
     </section>
-    ${templateItems.length ? `
-      <section class="runbook-panel-section" data-runbook-section="templates">
-        <div class="runbook-section-heading">
-          <h3>Templates</h3>
-          <span class="runbook-chip">${escapeHtml(machineCountLabel(templateCount, 'template'))}</span>
-        </div>
-        <div class="runbook-list">
-          ${renderRunbookListItems(templateItems, selectedKey)}
-        </div>
-      </section>
-    ` : ''}
     ${legacyItems.length ? `
       <section class="runbook-panel-section" data-runbook-section="legacy">
         <div class="runbook-section-heading">
@@ -10771,6 +12870,17 @@ function renderRunbooksPanel() {
     ` : ''}
     ${renderRunRecordPanel(selected ? selectedRunRecord : null)}
     ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null, selected)}
+    ${templateItems.length ? `
+      <section class="runbook-panel-section" data-runbook-section="templates">
+        <div class="runbook-section-heading">
+          <h3>Templates</h3>
+          <span class="runbook-chip">${escapeHtml(machineCountLabel(templateCount, 'template'))}</span>
+        </div>
+        <div class="runbook-list">
+          ${renderRunbookListItems(templateItems, selectedKey)}
+        </div>
+      </section>
+    ` : ''}
     ${selected && inspectedHistoryRecord ? renderMachineHistoryInspectionPanel(inspectedHistoryRecord, selected) : ''}
   `;
   // Phase 1.2: stick the live event log to the bottom (auto-scroll on)
@@ -10796,6 +12906,7 @@ async function validateSelectedRunbook(runbookPath) {
       setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
       renderRunbooksPanel();
       rerenderPipelinePreviewIfActive(runbookPath);
+      scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
     }
   }
 }
@@ -10871,90 +12982,373 @@ function buildAdapterPickerBridge() {
   };
 }
 
-async function openAdapterPickerDialog(runbookPath) {
+async function openAdapterPickerDialog(runbookPath, options = {}) {
   const machine = window?.orpad?.machine;
   if (!machine) {
     notifyFormatError('AI Provider', new Error('Machine IPC is not available.'));
-    return;
+    return false;
   }
   try { await refreshMachineRuntimeStatus(); } catch { /* picker surfaces the error */ }
 
-  const overlay = document.createElement('div');
-  overlay.className = 'orpad-adapter-picker-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9000;';
+  const scope = options.scope === 'node' ? 'node' : 'pipeline';
+  const target = String(options.target || '').trim();
+  const confirmLabel = String(options.confirmLabel || '').trim();
+  const titleText = options.title || (scope === 'node' ? 'Node LLM Override' : 'AI Provider 선택');
+  const subtitleText = options.subtitle || (scope === 'node' ? `${target || '(node)'} · ${runbookPath}` : runbookPath);
+  const helpLines = Array.isArray(options.helpLines)
+    ? options.helpLines
+    : [
+      '<div><strong>저장 위치:</strong> 같은 폴더의 <code>&lt;pipeline-stem&gt;.adapter-overrides.json</code> (사용자의 pipeline.or-pipeline은 수정되지 않음)</div>',
+      '<div><strong>적용 시점:</strong> 다음 Machine run부터 events.jsonl의 providerId가 새 값으로 기록됨</div>',
+      '<div><strong>현 단계:</strong> codex-cli/claude-code는 실제 CLI를 실행. anthropic/openai/ollama는 plugin 있으나 invoke 일부 stub (메뉴에 표시).</div>',
+    ];
 
-  const panel = document.createElement('div');
-  panel.style.cssText = [
-    'width:min(640px, 92vw)',
-    'max-height:88vh',
-    'overflow:auto',
-    'padding:18px 20px',
-    'border-radius:10px',
-    'background:#1d1f23',
-    'color:#e6e6e6',
-    'box-shadow:0 12px 32px rgba(0,0,0,0.5)',
-    'font-family:inherit',
-  ].join(';');
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(Boolean(value));
+    };
 
-  const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;';
-  const title = document.createElement('div');
-  title.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
-  const titleMain = document.createElement('div');
-  titleMain.textContent = 'AI Provider 선택';
-  titleMain.style.cssText = 'font-size:15px;font-weight:600;';
-  const titleSub = document.createElement('div');
-  titleSub.textContent = runbookPath;
-  titleSub.style.cssText = 'font-size:11px;opacity:0.65;word-break:break-all;';
-  title.appendChild(titleMain);
-  title.appendChild(titleSub);
-  const closeButton = document.createElement('button');
-  closeButton.type = 'button';
-  closeButton.textContent = '✕';
-  closeButton.style.cssText = 'background:none;border:0;color:#e6e6e6;font-size:18px;cursor:pointer;padding:0 6px;';
-  closeButton.addEventListener('click', () => overlay.remove());
-  header.appendChild(title);
-  header.appendChild(closeButton);
-  panel.appendChild(header);
+    const overlay = document.createElement('div');
+    overlay.className = 'orpad-adapter-picker-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9000;';
 
-  const helpBox = document.createElement('div');
-  helpBox.style.cssText = 'margin-bottom:12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:6px;background:rgba(255,255,255,0.03);font-size:11.5px;line-height:1.5;opacity:0.85;';
-  helpBox.innerHTML = [
-    '<div><strong>저장 위치:</strong> 같은 폴더의 <code>&lt;pipeline-stem&gt;.adapter-overrides.json</code> (사용자의 pipeline.or-pipeline은 수정되지 않음)</div>',
-    '<div><strong>적용 시점:</strong> 다음 Machine run부터 events.jsonl의 providerId가 새 값으로 기록됨</div>',
-    '<div><strong>현 단계:</strong> codex-cli/claude-code는 실제 CLI를 실행. anthropic/openai/ollama는 plugin 있으나 invoke 일부 stub (메뉴에 표시).</div>',
-  ].join('');
-  panel.appendChild(helpBox);
+    const panel = document.createElement('div');
+    panel.style.cssText = [
+      'width:min(640px, 92vw)',
+      'max-height:88vh',
+      'overflow:auto',
+      'padding:18px 20px',
+      'border-radius:10px',
+      'background:#1d1f23',
+      'color:#e6e6e6',
+      'box-shadow:0 12px 32px rgba(0,0,0,0.5)',
+      'font-family:inherit',
+    ].join(';');
 
-  let picker;
-  try {
-    picker = createAdapterPicker({
-      bridge: buildAdapterPickerBridge(),
-      scope: 'pipeline',
-      pipelinePath: runbookPath,
-      onCommit: async (response) => {
-        if (response?.persistedTo) {
-          try { notifyFormatError('AI Provider', new Error(`Saved → ${response.persistedTo}`)); } catch {}
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;';
+    const title = document.createElement('div');
+    title.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const titleMain = document.createElement('div');
+    titleMain.textContent = titleText;
+    titleMain.style.cssText = 'font-size:15px;font-weight:600;';
+    const titleSub = document.createElement('div');
+    titleSub.textContent = subtitleText;
+    titleSub.style.cssText = 'font-size:11px;opacity:0.65;word-break:break-all;';
+    title.appendChild(titleMain);
+    title.appendChild(titleSub);
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.textContent = '✕';
+    closeButton.style.cssText = 'background:none;border:0;color:#e6e6e6;font-size:18px;cursor:pointer;padding:0 6px;';
+    closeButton.addEventListener('click', () => finish(false));
+    header.appendChild(title);
+    header.appendChild(closeButton);
+    panel.appendChild(header);
+
+    const helpBox = document.createElement('div');
+    helpBox.style.cssText = 'margin-bottom:12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:6px;background:rgba(255,255,255,0.03);font-size:11.5px;line-height:1.5;opacity:0.85;';
+    helpBox.innerHTML = helpLines.join('');
+    panel.appendChild(helpBox);
+
+    let picker;
+    try {
+      picker = createAdapterPicker({
+        bridge: buildAdapterPickerBridge(),
+        scope,
+        target,
+        pipelinePath: runbookPath,
+        onCommit: async (response) => {
+          if (response?.persistedTo) {
+            try { notifyFormatError('AI Provider', new Error(`Saved → ${response.persistedTo}`)); } catch {}
+          }
+          if (!confirmLabel) finish(true);
+        },
+        onError: err => notifyFormatError('AI Provider', err),
+      });
+      panel.appendChild(picker.root);
+    } catch (err) {
+      const fail = document.createElement('div');
+      fail.style.cssText = 'color:#ffb4b4;font-size:12px;padding:10px;border:1px solid rgba(220,38,38,0.4);border-radius:6px;background:rgba(220,38,38,0.1);';
+      fail.textContent = `Picker mount 실패: ${err.message}`;
+      panel.appendChild(fail);
+    }
+
+    if (confirmLabel) {
+      const actionRow = document.createElement('div');
+      actionRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:14px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;';
+      const cancelButton = document.createElement('button');
+      cancelButton.type = 'button';
+      cancelButton.textContent = 'Cancel';
+      cancelButton.style.cssText = 'padding:7px 12px;background:transparent;color:#e6e6e6;border:1px solid rgba(255,255,255,0.16);border-radius:5px;cursor:pointer;';
+      cancelButton.addEventListener('click', () => finish(false));
+      const confirmButton = document.createElement('button');
+      confirmButton.type = 'button';
+      confirmButton.textContent = confirmLabel;
+      confirmButton.dataset.adapterPickerConfirm = 'true';
+      confirmButton.style.cssText = 'padding:7px 14px;background:#3b82f6;color:#fff;border:0;border-radius:5px;cursor:pointer;font-weight:600;';
+      confirmButton.addEventListener('click', async () => {
+        if (!picker?.commit) return;
+        confirmButton.disabled = true;
+        confirmButton.textContent = 'Saving…';
+        const response = await picker.commit();
+        if (response?.success === false || response?.ok === false || !response) {
+          confirmButton.disabled = false;
+          confirmButton.textContent = confirmLabel;
+          return;
         }
-      },
-      onError: err => notifyFormatError('AI Provider', err),
-    });
-    panel.appendChild(picker.root);
-  } catch (err) {
-    const fail = document.createElement('div');
-    fail.style.cssText = 'color:#ffb4b4;font-size:12px;padding:10px;border:1px solid rgba(220,38,38,0.4);border-radius:6px;background:rgba(220,38,38,0.1);';
-    fail.textContent = `Picker mount 실패: ${err.message}`;
-    panel.appendChild(fail);
-  }
+        if (typeof options.onConfirm === 'function') await options.onConfirm(response);
+        finish(true);
+      });
+      actionRow.appendChild(cancelButton);
+      actionRow.appendChild(confirmButton);
+      panel.appendChild(actionRow);
+    }
 
-  overlay.appendChild(panel);
-  overlay.addEventListener('click', (event) => {
-    if (event.target === overlay) overlay.remove();
+    overlay.appendChild(panel);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    document.body.appendChild(overlay);
+    if (picker && typeof picker.refresh === 'function') {
+      picker.refresh().catch(() => {});
+    }
   });
-  document.body.appendChild(overlay);
-  if (picker && typeof picker.refresh === 'function') {
-    picker.refresh().catch(() => {});
+}
+
+async function confirmMachineRunProviderSelection(runbookPath) {
+  return openAdapterPickerDialog(runbookPath, {
+    title: 'Run Machine 선택',
+    subtitle: '이 run을 실행할 provider와 model을 선택한 뒤 시작합니다.',
+    confirmLabel: 'Start Run',
+    helpLines: [
+      '<div><strong>Run 시작 전 확인:</strong> 선택한 provider/model은 이번 Machine run의 pipeline default로 저장됩니다.</div>',
+      '<div><strong>노드별 override:</strong> graph 노드를 우클릭해 특정 노드만 다른 model로 실행할 수 있습니다.</div>',
+      '<div><strong>권장:</strong> orchestration/probe에는 빠른 모델, 구현 worker에는 더 강한 모델을 선택해 비용과 품질을 분리하세요.</div>',
+    ],
+  });
+}
+
+async function openNodeAdapterPickerDialog(runbookPath, nodePath) {
+  if (!runbookPath || !nodePath) return false;
+  return openAdapterPickerDialog(runbookPath, {
+    scope: 'node',
+    target: nodePath,
+    title: 'Node Model Override',
+    subtitle: nodePath,
+    helpLines: [
+      '<div><strong>저장 위치:</strong> pipeline 옆 <code>&lt;pipeline-stem&gt;.adapter-overrides.json</code>의 nodeOverrides에 저장됩니다.</div>',
+      '<div><strong>적용 시점:</strong> 다음 Machine run에서 이 nodePath에만 선택한 provider/model이 적용됩니다.</div>',
+    ],
+  });
+}
+
+function graphNodePathsByType(graphDoc, type) {
+  const nodes = Array.isArray(graphDoc?.graph?.nodes) ? graphDoc.graph.nodes : [];
+  return nodes
+    .filter(node => node?.type === type && node?.id)
+    .map(node => `main/${node.id}`);
+}
+
+function firstGraphNodePathByType(graphDoc, type, fallbackId) {
+  return graphNodePathsByType(graphDoc, type)[0] || `main/${fallbackId}`;
+}
+
+function defaultMachineAdapterForGraph(graphDoc) {
+  return {
+    type: 'codex-cli',
+    enabled: true,
+    mode: 'live-mvp',
+    command: 'codex',
+    sandbox: 'read-only',
+    proposalSandbox: 'read-only',
+    workerSandbox: 'workspace-write',
+    approvalPolicy: 'never',
+    ephemeral: true,
+    candidateLimit: 5,
+    proposalTimeoutMs: 600000,
+    workerTimeoutMs: 900000,
+    claimLeaseMs: 1800000,
+    probeNodePaths: graphNodePathsByType(graphDoc, 'orpad.probe'),
+    triageNodePath: firstGraphNodePathByType(graphDoc, 'orpad.triage', 'triage'),
+    dispatcherNodePath: firstGraphNodePathByType(graphDoc, 'orpad.dispatcher', 'dispatch'),
+    workerNodePath: firstGraphNodePathByType(graphDoc, 'orpad.workerLoop', 'worker'),
+    supportNodePolicy: 'record-gate-warnings-and-mark-artifact-partial',
+    description: 'Implemented from the OrPAD UI harness action. OrPAD owns work state, run status, and evidence files; the selected adapter executes node work through Machine contracts.',
+  };
+}
+
+function harnessImplementationDelay(ms = 35) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function harnessNodePathForGraphNode(node, index, graphKey = 'main') {
+  return `${graphKey}/${node?.id || `node-${index + 1}`}`;
+}
+
+function harnessNodeArtifactFileName(node, index) {
+  const stem = runbookSlug(node?.id || node?.label || node?.type || `node-${index + 1}`, `node-${index + 1}`);
+  return `${String(index + 1).padStart(2, '0')}-${stem}.harness.json`;
+}
+
+function renderHarnessImplementationViews(runbookPath) {
+  renderRunbooksPanel();
+  rerenderPipelinePreviewIfActive(runbookPath);
+}
+
+async function saveHarnessImplementationState(statePath, state) {
+  await window.orpad.createFile(statePath).catch(() => {});
+  const saved = await window.orpad.saveFile(statePath, JSON.stringify(state, null, 2));
+  if (!saved) throw new Error('Failed to save harness implementation state.');
+}
+
+function harnessNodeImplementationContract(node, stateNode, pipelineDoc) {
+  return {
+    schemaVersion: 'orpad.harnessNodeImplementation.v1',
+    pipelineId: pipelineDoc.id || '',
+    nodePath: stateNode.nodePath,
+    node: {
+      id: node?.id || '',
+      type: node?.type || '',
+      label: node?.label || node?.id || node?.type || '',
+      config: node?.config || {},
+    },
+    adapterContract: {
+      input: ['node config', 'pipeline context', 'queue state', 'artifact references'],
+      output: ['node lifecycle events', 'evidence artifacts', 'queue transitions', 'summary status'],
+      failureSurface: 'Expose failure reason, evidence references, retry, prompt improvement, and node model override in the graph context menu.',
+    },
+    prompts: {
+      improvementPrompt: node?.config?.improvementPrompt || '',
+      modelOverrideKey: stateNode.nodePath,
+    },
+    status: 'succeeded',
+    implementedAt: stateNode.completedAt,
+  };
+}
+
+async function implementSelectedMachineHarness(runbookPath) {
+  if (!workspacePath || !runbookPath) return;
+  const pipelineRead = await window.orpad.readFile(runbookPath);
+  if (pipelineRead?.error) throw new Error(pipelineRead.error);
+  const pipelineDoc = JSON.parse(pipelineRead.content || '{}');
+  const context = pipelineContextForPath(runbookPath);
+  const pipelineDir = context?.pipelineDir || runbookDirPath(runbookPath);
+  const entryGraph = pipelineDoc.entryGraph || pipelineDoc.graph?.file || pipelineDoc.graphs?.[0]?.file || 'graphs/main.or-graph';
+  const graphPath = normalizeRunbookFilePath(`${pipelineDir}/${entryGraph}`);
+  const graphRead = await window.orpad.readFile(graphPath);
+  if (graphRead?.error) throw new Error(graphRead.error);
+  const graphDoc = JSON.parse(graphRead.content || '{}');
+  const now = new Date().toISOString();
+  const nodes = Array.isArray(graphDoc?.graph?.nodes) ? graphDoc.graph.nodes : [];
+  const harnessRoot = pipelineDoc.harness?.path || 'harness/generated';
+  const harnessRootPath = normalizeRunbookFilePath(`${pipelineDir}/${harnessRoot}`);
+  const harnessNodesPath = normalizeRunbookFilePath(`${harnessRootPath}/nodes`);
+  const statePath = normalizeRunbookFilePath(`${harnessRootPath}/implementation-state.json`);
+  const notesPath = normalizeRunbookFilePath(`${harnessRootPath}/README.md`);
+  await window.orpad.createFolder(normalizeRunbookFilePath(`${pipelineDir}/harness`)).catch(() => {});
+  await window.orpad.createFolder(harnessRootPath).catch(() => {});
+  await window.orpad.createFolder(harnessNodesPath).catch(() => {});
+
+  const state = {
+    schemaVersion: 'orpad.harnessImplementation.v1',
+    pipelineId: pipelineDoc.id || context?.pipelineName || '',
+    startedAt: now,
+    implementedAt: '',
+    source: 'electron-ui',
+    status: 'running',
+    nodeCount: nodes.length,
+    nodes: nodes.map((node, index) => ({
+      nodePath: harnessNodePathForGraphNode(node, index),
+      id: node.id || '',
+      type: node.type || '',
+      label: node.label || node.id || node.type || '',
+      status: 'pending',
+      artifact: `nodes/${harnessNodeArtifactFileName(node, index)}`,
+    })),
+  };
+  setHarnessImplementationState(runbookPath, state);
+  await saveHarnessImplementationState(statePath, state);
+  renderHarnessImplementationViews(runbookPath);
+
+  pipelineDoc.harness = {
+    ...(pipelineDoc.harness || {}),
+    path: harnessRoot,
+    implementedAt: now,
+    implementationState: `${harnessRoot.replace(/\/+$/, '')}/implementation-state.json`,
+  };
+  if (!pipelineDoc.run || typeof pipelineDoc.run !== 'object' || Array.isArray(pipelineDoc.run)) pipelineDoc.run = {};
+  if (!pipelineDoc.run.machineAdapter && !pipelineDoc.run.machineHarness) {
+    pipelineDoc.run.machineAdapter = defaultMachineAdapterForGraph(graphDoc);
   }
+  pipelineDoc.metadata = {
+    ...(pipelineDoc.metadata || {}),
+    harnessImplementation: {
+      implementedAt: now,
+      statePath: pipelineDoc.harness.implementationState,
+      nodeCount: nodes.length,
+    },
+  };
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    const stateNode = state.nodes[index];
+    stateNode.status = 'running';
+    stateNode.startedAt = new Date().toISOString();
+    stateNode.message = 'Implementing node harness contract';
+    setHarnessImplementationState(runbookPath, state);
+    await saveHarnessImplementationState(statePath, state);
+    renderHarnessImplementationViews(runbookPath);
+    await harnessImplementationDelay();
+    try {
+      stateNode.completedAt = new Date().toISOString();
+      stateNode.status = 'succeeded';
+      stateNode.message = 'Harness contract ready';
+      const artifactPath = normalizeRunbookFilePath(`${harnessRootPath}/${stateNode.artifact}`);
+      await window.orpad.createFile(artifactPath).catch(() => {});
+      const artifactSaved = await window.orpad.saveFile(
+        artifactPath,
+        JSON.stringify(harnessNodeImplementationContract(node, stateNode, pipelineDoc), null, 2),
+      );
+      if (!artifactSaved) throw new Error(`Failed to save harness artifact for ${stateNode.nodePath}.`);
+    } catch (err) {
+      stateNode.status = 'failed';
+      stateNode.error = `Harness implementation failed: ${err?.message || String(err)}`;
+      state.status = 'failed';
+      state.failedAt = new Date().toISOString();
+      setHarnessImplementationState(runbookPath, state);
+      await saveHarnessImplementationState(statePath, state);
+      renderHarnessImplementationViews(runbookPath);
+      throw err;
+    }
+  }
+  state.status = 'succeeded';
+  state.implementedAt = new Date().toISOString();
+  setHarnessImplementationState(runbookPath, state);
+  await saveHarnessImplementationState(statePath, state);
+  await window.orpad.saveFile(notesPath, [
+    '# Harness Implementation',
+    '',
+    `Implemented at: ${state.implementedAt}`,
+    '',
+    'This folder stores generated Machine harness state and per-node harness contracts for the selected pipeline.',
+    'Run evidence is still written under latest-run/ and durable runs/.',
+    '',
+  ].join('\n'));
+  const saved = await window.orpad.saveFile(runbookPath, JSON.stringify(pipelineDoc, null, 2));
+  if (!saved) throw new Error('Failed to save pipeline harness implementation.');
+  pipelineHarnessImplementedAtCache.set(runbookNormalizePath(runbookPath).toLowerCase(), state.implementedAt);
+
+  if (getActiveTab()?.filePath && runbookNormalizePath(getActiveTab().filePath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase()) {
+    replaceEditorDoc(JSON.stringify(pipelineDoc, null, 2));
+  }
+  await validateSelectedRunbook(runbookPath);
+  renderRunbooksPanel();
+  rerenderPipelinePreviewIfActive(runbookPath);
 }
 
 async function runPipelinePreviewAction(action, runbookPath) {
@@ -10963,8 +13357,20 @@ async function runPipelinePreviewAction(action, runbookPath) {
     await validateSelectedRunbook(runbookPath);
     return;
   }
+  if (action === 'implement-harness') {
+    await implementSelectedMachineHarness(runbookPath);
+    return;
+  }
   if (action === 'managed') {
     await startSelectedMachineRun(runbookPath);
+    return;
+  }
+  if (action === 'managed-ask') {
+    await startSelectedMachineRun(runbookPath, { llmApprovalMode: 'ask', runUntil: 'step' });
+    return;
+  }
+  if (action === 'managed-auto-apply') {
+    await startSelectedMachineRun(runbookPath, { patchReviewMode: 'auto-apply' });
     return;
   }
   if (action === 'choose-adapter') {
@@ -11039,7 +13445,9 @@ async function hydrateLatestMachineRunForSelection(runbookPath) {
     const record = await loadLatestMachineRunRecord(runbookPath);
     if (!record || selectedRunbookPath !== runbookPath) return;
     lastMachineRunRecord = record;
+    setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
     renderRunbooksPanel();
+    scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
   } catch {
     // Latest run hydration is best-effort; failures stay silent so panel rendering proceeds.
   }
@@ -11392,12 +13800,15 @@ async function requestMachineCapabilityToken() {
   });
 }
 
-async function startSelectedMachineRun(runbookPath) {
+async function startSelectedMachineRun(runbookPath, runOptions = {}) {
   if (!workspacePath || !runbookPath) return;
   if (!window.orpad?.machine) {
     alert('Managed runs are unavailable in this build.');
     return;
   }
+  const llmApprovalMode = runOptions.llmApprovalMode === 'ask' ? 'ask' : 'bypass';
+  const runUntil = runOptions.runUntil === 'step' ? 'step' : 'human-decision';
+  const patchReviewMode = runOptions.patchReviewMode === 'auto-apply' ? 'auto-apply' : 'manual';
   const cachedRecord = getRunbookCache(machineRunRecordCache, runbookPath);
   const runbookKey = runbookNormalizePath(runbookPath).toLowerCase();
   if (machineRunStartPendingPaths.has(runbookKey) || isMachineRunInProgress(cachedRecord, runbookPath)) return;
@@ -11412,7 +13823,7 @@ async function startSelectedMachineRun(runbookPath) {
   // reflects the in-flight start before the first await resolves.
   setMachineRunStartPending(runbookPath, true);
   try {
-    return await startSelectedMachineRunInner(runbookPath, cachedRecord);
+    return await startSelectedMachineRunInner(runbookPath, cachedRecord, { llmApprovalMode, runUntil, patchReviewMode });
   } finally {
     // Always clear start-pending on exit. Inner may have already
     // cleared it once the run was created and handed off to the action
@@ -11422,11 +13833,17 @@ async function startSelectedMachineRun(runbookPath) {
   }
 }
 
-async function startSelectedMachineRunInner(runbookPath, cachedRecord) {
-  if (!await ensureMachineRuntimeReady()) return;
+async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOptions = {}) {
   if (!selectedRunbookValidation || selectedRunbookPath !== runbookPath) {
     await validateSelectedRunbook(runbookPath);
   }
+  if (await generatedPipelineNeedsHarnessBeforeRun(runbookPath)) {
+    await implementSelectedMachineHarness(runbookPath);
+  }
+  if (!selectedRunbookValidation || selectedRunbookPath !== runbookPath) {
+    await validateSelectedRunbook(runbookPath);
+  }
+  if (!await ensureMachineRuntimeReady()) return;
   const validation = selectedRunbookValidation || getRunbookCache(runbookValidationCache, runbookPath);
   if (!isMachineCompatiblePipeline(validation)) {
     alert('Pipeline must be ready before starting.');
@@ -11438,6 +13855,8 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord) {
   }
   const token = await requestMachineCapabilityToken();
   if (!token) return;
+  const providerConfirmed = await confirmMachineRunProviderSelection(runbookPath);
+  if (!providerConfirmed) return;
   const taskText = currentRunbookTaskText();
   const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText);
   if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
@@ -11451,6 +13870,7 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord) {
         trustLevel: 'local-authored',
         ...(taskText ? { taskText } : {}),
         ...(externalResearch ? { externalResearch } : {}),
+        llmApprovalMode: runOptions.llmApprovalMode === 'ask' ? 'ask' : 'bypass',
       },
     });
   } catch (err) {
@@ -11491,10 +13911,14 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord) {
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
   void refreshWorkspaceRunbookSummary();
-  await executeSelectedMachineRunStep(runbookPath, created.runId, externalResearch);
+  await executeSelectedMachineRunStep(runbookPath, created.runId, externalResearch, {
+    llmApprovalMode: runOptions.llmApprovalMode === 'ask' ? 'ask' : 'bypass',
+    runUntil: runOptions.runUntil === 'step' ? 'step' : 'human-decision',
+    patchReviewMode: runOptions.patchReviewMode === 'auto-apply' ? 'auto-apply' : 'manual',
+  });
 }
 
-async function executeSelectedMachineRunStep(runbookPath, runId, providedExternalResearch = null) {
+async function executeSelectedMachineRunStep(runbookPath, runId, providedExternalResearch = null, runOptions = {}) {
   console.log('[execute-run-step] click', { runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep), workspacePath });
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) {
     console.warn('[execute-run-step] preconditions missing — silent return', { workspacePath, runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep) });
@@ -11534,13 +13958,13 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
     return;
   }
   try {
-    return await executeSelectedMachineRunStepInner(runbookPath, runId, providedExternalResearch);
+    return await executeSelectedMachineRunStepInner(runbookPath, runId, providedExternalResearch, runOptions);
   } finally {
     releaseMachineRunMutationLock(mutationLock);
   }
 }
 
-async function executeSelectedMachineRunStepInner(runbookPath, runId, providedExternalResearch) {
+async function executeSelectedMachineRunStepInner(runbookPath, runId, providedExternalResearch, runOptions = {}) {
   if (!await ensureMachineRuntimeReady()) {
     console.warn('[execute-run-step] ensureMachineRuntimeReady returned false');
     return;
@@ -11569,6 +13993,9 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
       options: {
         ...(taskText ? { taskText } : {}),
         ...(externalResearch ? { externalResearch } : {}),
+        llmApprovalMode: runOptions.llmApprovalMode === 'ask' ? 'ask' : 'bypass',
+        runUntil: runOptions.runUntil === 'step' ? 'step' : 'human-decision',
+        patchReviewMode: runOptions.patchReviewMode === 'auto-apply' ? 'auto-apply' : 'manual',
       },
     });
     console.log('[execute-run-step] IPC result', { success: executed?.success, code: executed?.code, error: executed?.error || executed?.message, lifecycle: executed?.runState?.lifecycleStatus, summary: executed?.runState?.summaryStatus });
@@ -11603,7 +14030,7 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
-  await maybeOpenMachinePatchReviewModal(runbookPath, lastMachineRunRecord);
+  scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
 }
 
 async function resumeSelectedMachineRun(runbookPath, runId) {
@@ -11658,6 +14085,7 @@ async function resumeSelectedMachineRunInner(runbookPath, runId) {
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
+  scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
 }
 
 // Adopt the inspected History snapshot as the active run. The user's
@@ -11724,6 +14152,7 @@ async function recoverInspectedMachineRun(runbookPath, runId) {
     renderRunbooksPanel();
     rerenderPipelinePreviewIfActive(runbookPath);
     void refreshWorkspaceRunbookSummary();
+    scheduleMachineRunDecisionPrompts(runbookPath, adopted);
   } catch (err) {
     alert(err?.message || 'Recovery failed.');
   } finally {
@@ -11867,6 +14296,36 @@ async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType =
   }
 }
 
+async function skipSelectedMachineNodeAndContinue(runbookPath, runId, nodePath, nodeType = '', reason = 'user-skipped-from-failed-card') {
+  if (!workspacePath || !runbookPath || !runId || !nodePath || !window.orpad?.machine?.skipNode) return false;
+  const record = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || null;
+  const skipBlockReason = machineSkipBlockReason(record, nodePath, nodeType);
+  if (skipBlockReason) {
+    notifyFormatError('Skip node', new Error(skipBlockReason));
+    return false;
+  }
+  if (!await ensureMachineRuntimeReady()) return false;
+  const token = await requestMachineCapabilityToken();
+  if (!token) return false;
+  const response = await window.orpad.machine.skipNode({
+    capabilityToken: token,
+    workspacePath,
+    pipelinePath: runbookPath,
+    runId,
+    nodePath,
+    nodeType,
+    reason,
+  });
+  if (!response?.success) {
+    if (response?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+    notifyFormatError('Skip node', new Error(response?.error || 'skip-node IPC rejected.'));
+    return false;
+  }
+  await refreshVisibleMachineRunSnapshot().catch(() => {});
+  await executeSelectedMachineRunStep(runbookPath, runId);
+  return true;
+}
+
 async function exportSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine) return;
   if (!await ensureMachineRuntimeReady()) return;
@@ -11896,7 +14355,7 @@ async function exportSelectedMachineRun(runbookPath, runId) {
   renderRunbooksPanel();
 }
 
-async function decideSelectedMachineApproval(runbookPath, runId, approvalId, decision) {
+async function decideSelectedMachineApproval(runbookPath, runId, approvalId, decision, options = {}) {
   if (!workspacePath || !runbookPath || !runId || !approvalId || !window.orpad?.machine?.decideApproval) return;
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
@@ -11928,6 +14387,11 @@ async function decideSelectedMachineApproval(runbookPath, runId, approvalId, dec
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
+  if (decision === 'approved' && options.continueAfterApproval === true) {
+    await executeSelectedMachineRunStep(runbookPath, runId, null, {
+      llmApprovalMode: options.llmApprovalMode === 'bypass' ? 'bypass' : '',
+    });
+  }
 }
 
 function machineMarkdownCell(value) {
@@ -11990,12 +14454,15 @@ function machinePatchChangeStats(change) {
 
 async function machinePatchChangeSummary(change) {
   const expectedSha = change?.beforeExists === false ? '' : String(change?.beforeSha256 || '');
+  const afterSha = change?.afterExists === false ? '' : String(change?.afterSha256 || '');
   const summary = {
     path: change.path,
     ...machinePatchChangeStats(change),
     baseMatches: null,
+    alreadyApplied: false,
     currentSha: '',
     expectedSha: expectedSha.slice(0, 12),
+    afterSha: afterSha.slice(0, 12),
     baseMessage: '',
   };
   const filePath = machineWorkspacePatchPath(change.path);
@@ -12005,10 +14472,13 @@ async function machinePatchChangeSummary(change) {
     const currentText = result?.error ? null : String(result?.content ?? '');
     const currentSha = currentText === null ? '' : await machineSha256Text(currentText);
     summary.currentSha = currentSha.slice(0, 12);
-    summary.baseMatches = currentSha === expectedSha;
-    summary.baseMessage = summary.baseMatches
+    summary.alreadyApplied = currentSha === afterSha && currentSha !== expectedSha;
+    summary.baseMatches = currentSha === expectedSha || summary.alreadyApplied;
+    summary.baseMessage = currentSha === expectedSha
       ? 'Workspace matches this patch base.'
-      : 'Workspace already differs from this patch base.';
+      : (summary.alreadyApplied
+        ? 'Workspace already contains this patch result.'
+        : 'Workspace already differs from this patch base.');
   } catch (err) {
     summary.baseMessage = `Workspace base could not be checked: ${err?.message || err}`;
   }
@@ -12065,9 +14535,9 @@ function machinePatchArtifactMarkdown(summary) {
     '- Review the changed files below before applying anything manually.',
     '',
     'Next actions:',
-    '- Save Evidence keeps a reviewable snapshot of this run.',
-    '- Review Evidence shows what the worker proposed.',
-    '- Continue runs the next machine step; it does not apply this patch to the workspace.',
+    '- Review Patch opens the changed files with apply/skip controls.',
+    '- Apply Approved Patches writes selected files only after a fresh base SHA check.',
+    '- Continue Queue dispatches the next queued item; it does not apply this patch to the workspace.',
   ].filter(Boolean);
   if (summary.changes.length) {
     lines.push(
@@ -12089,6 +14559,30 @@ function machinePatchReviewKey(runbookPath, runId, patchArtifact) {
   return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId}::${patchArtifact}`;
 }
 
+function machinePatchReviewDisplayKey(runbookPath, runId, workerReview) {
+  const baseKey = machinePatchReviewKey(runbookPath, runId, workerReview?.patchArtifact || '');
+  const status = workerReview?.patchReviewStatus || 'pending';
+  const sequence = workerReview?.patchReviewDecision?.sequence ?? 'none';
+  return `${baseKey}::${status}::${sequence}`;
+}
+
+function machineApprovedPatchSelectedFileOwners(record, excludePatchArtifact = '') {
+  const owners = new Map();
+  for (const review of machineWorkerReviewInfos(record)) {
+    const patchArtifact = String(review?.patchArtifact || '');
+    if (!patchArtifact || patchArtifact === excludePatchArtifact) continue;
+    if (review.patchReviewStatus !== 'approved') continue;
+    const selected = Array.isArray(review.patchReviewSelectedFiles) && review.patchReviewSelectedFiles.length
+      ? review.patchReviewSelectedFiles
+      : review.changedFiles || [];
+    for (const file of selected) {
+      if (!file || owners.has(file)) continue;
+      owners.set(file, patchArtifact);
+    }
+  }
+  return owners;
+}
+
 async function approveMachinePatchSelection(runbookPath, runId, workerReview, selectedFiles) {
   if (!workspacePath || !runbookPath || !runId || !workerReview?.patchArtifact || !window.orpad?.machine?.approvePatch) return null;
   const token = await requestMachineCapabilityToken();
@@ -12104,8 +14598,11 @@ async function approveMachinePatchSelection(runbookPath, runId, workerReview, se
   });
   if (!approved?.success) {
     if (approved?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
-    alert(approved?.error || 'Patch approval could not be recorded.');
-    return null;
+    return approved || {
+      success: false,
+      ok: false,
+      error: 'Patch approval could not be recorded.',
+    };
   }
   selectedRunbookPath = runbookPath;
   lastMachineRunRecord = machineUpdateRunRecord(runbookPath, approved);
@@ -12113,6 +14610,27 @@ async function approveMachinePatchSelection(runbookPath, runId, workerReview, se
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
   return approved;
+}
+
+function machinePatchApprovalFailureMessage(result) {
+  if (!result) return 'Patch approval could not be recorded.';
+  if (result.code === 'MACHINE_PATCH_APPROVAL_OVERLAP') {
+    const files = (result.conflicts || [])
+      .map(item => item?.path)
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(', ');
+    return files
+      ? `These files are already selected by another approved patch: ${files}. Skip this patch or use Continue with Prompt for a follow-up.`
+      : (result.error || 'Selected files are already approved by another patch. Skip this patch or use Continue with Prompt for a follow-up.');
+  }
+  if (result.code === 'PATCH_BASE_MISMATCH') {
+    const path = result.path || result.mismatches?.[0]?.path || '';
+    return path
+      ? `Patch base no longer matches the workspace for ${path}. Skip this patch or use Continue with Prompt for a rebased follow-up.`
+      : (result.error || 'Patch base no longer matches the workspace. Skip this patch or use Continue with Prompt for a rebased follow-up.');
+  }
+  return result.error || 'Patch approval could not be recorded.';
 }
 
 async function applyAllApprovedMachinePatches(runbookPath, runId) {
@@ -12157,7 +14675,7 @@ async function applyAllApprovedMachinePatches(runbookPath, runId) {
         return `${item.patchArtifact}: ${item.message || item.code || 'apply failed'}${paths ? `\n${paths}` : ''}`;
       })
       .join('\n\n');
-    alert(`${applied.appliedCount} patch${applied.appliedCount === 1 ? '' : 'es'} applied; ${applied.conflictCount} could not be applied because the workspace already moved.\n\n${conflictDetails}`);
+    notifyFormatError('Patch apply', new Error(`${applied.appliedCount} patch${applied.appliedCount === 1 ? '' : 'es'} applied; ${applied.conflictCount} need follow-up because their base no longer matches the workspace.${conflictDetails ? `\n\n${conflictDetails}` : ''}`));
   }
   return applied;
 }
@@ -12165,7 +14683,7 @@ async function applyAllApprovedMachinePatches(runbookPath, runId) {
 async function finalizePatchReviewQueue(runbookPath, runId, record) {
   const apply = await applyAllApprovedMachinePatches(runbookPath, runId);
   const latest = lastMachineRunRecord || record;
-  if (machineHasBlockedPatchReviewNode(latest)) {
+  if (machineHasRawBlockedPatchReviewNode(latest) || machineHasRawBlockedPatchReviewNode(record)) {
     await executeSelectedMachineRunStep(runbookPath, runId);
   }
   return apply;
@@ -12227,8 +14745,40 @@ async function machineWorkerItemDetails(record, workerReview) {
 
 function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails = null, options = {}) {
   if (!workerReview?.patchArtifact || !patchSummary || patchSummary.error || !patchSummary.changes?.length) return;
+  const reviewKey = machinePatchReviewDisplayKey(runbookPath, runId, workerReview);
+  let decisionCommitted = false;
+  let decisionInFlight = false;
   const body = document.createElement('div');
   body.className = 'runbook-modal-body';
+  const setPatchReviewStatus = (message, state = 'warning') => {
+    const el = body.querySelector('[data-machine-patch-status]');
+    if (!el) return;
+    const text = String(message || '').trim();
+    el.hidden = !text;
+    el.className = `runbook-diagnostic ${state || ''}`.trim();
+    el.textContent = text;
+  };
+  const setPatchReviewBusy = (busy) => {
+    setFmtModalBusy(busy, busy ? 'Working on this patch decision...' : '');
+  };
+  const runPatchReviewDecision = async (action, busyText = 'Working on this patch decision...') => {
+    if (decisionInFlight) return;
+    decisionInFlight = true;
+    setFmtModalBusy(true, busyText);
+    setPatchReviewStatus(busyText, '');
+    try {
+      await action();
+    } catch (err) {
+      const message = err?.message || 'Patch review action failed.';
+      setPatchReviewStatus(message, 'error');
+      notifyFormatError('Patch review', err);
+    } finally {
+      if (!fmtModalEl.classList.contains('hidden')) {
+        decisionInFlight = false;
+        setPatchReviewBusy(false);
+      }
+    }
+  };
   const title = itemDetails?.title || itemDetails?.itemId || 'Machine patch';
   const reviewIndex = Number(options.reviewIndex) || 1;
   const reviewCount = Number(options.reviewCount) || 1;
@@ -12240,21 +14790,58 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   // were skipped or already applied in a prior batch.
   const hasNextReview = pendingCount > 1;
   const criteria = (itemDetails?.acceptanceCriteria || []).slice(0, 3);
+  const approvedFileOwners = machineApprovedPatchSelectedFileOwners(record, workerReview.patchArtifact);
   const conflictCount = patchSummary.changes.filter(change => change.baseMatches === false).length;
-  const applicableCount = patchSummary.changes.filter(change => change.baseMatches !== false).length;
-  const changeRows = patchSummary.changes.map((change, index) => `
-    <label class="runbook-diagnostic ${change.baseMatches === false ? 'warning' : ''}" style="display:block; margin:8px 0;">
-      <input type="checkbox" data-machine-patch-file value="${escapeHtml(change.path)}" ${change.baseMatches === false ? 'disabled' : ''} ${change.baseMatches !== false && index < 20 ? 'checked' : ''}>
+  const overlapCount = patchSummary.changes.filter(change => approvedFileOwners.has(change.path)).length;
+  const applicableCount = patchSummary.changes.filter(change => change.baseMatches !== false && !approvedFileOwners.has(change.path)).length;
+  const noSelectableFiles = applicableCount === 0;
+  const onlyOverlappingFiles = noSelectableFiles && overlapCount > 0 && conflictCount === 0;
+  const skipApplyLabel = onlyOverlappingFiles
+    ? 'Skip This Patch & Apply Approved'
+    : 'Skip & Apply';
+  const totalFiles = patchSummary.changes.length;
+  const noSelectableReason = noSelectableFiles
+    ? (overlapCount
+      ? `이번 패치가 변경하려는 모든 파일이 이미 다른 승인 패치에 의해 선점되어 있습니다. 한 batch에 같은 파일을 두 패치가 동시에 쓸 수 없어 충돌이 보장되므로, 이 패치는 "review-only evidence"로 두고 Skip 하세요. 필요하면 승인 batch가 적용된 뒤 follow-up run으로 재시도합니다. (No files are selectable in this patch because every changed file is already owned by another approved patch in this run.)`
+      : '이번 패치의 base SHA가 현재 워크스페이스와 일치하지 않습니다 (다른 편집이 먼저 들어옴). 그대로 적용하면 손상 위험이 있어 OrPAD가 막습니다. "review-only evidence"로 Skip 하거나, Continue with Prompt로 follow-up run을 띄워 재계산하세요. (No files are selectable in this patch because its file base no longer matches the workspace.)')
+    : '';
+  const summaryClassification = totalFiles
+    ? `<div class="runbook-diagnostic" style="background:rgba(59,130,246,0.10);border:1px solid rgba(59,130,246,0.35);">`
+      + `<strong>이 패치의 파일 분류 (총 ${totalFiles}개):</strong> `
+      + `<span title="현재 base SHA와 일치하고 다른 승인 패치와 충돌하지 않는 파일">적용 가능 <strong>${applicableCount}</strong></span>`
+      + (overlapCount ? `, <span title="이번 run에서 이미 다른 패치가 승인한 파일 — 같은 batch에서 동시 적용 불가">다른 승인 패치 선점 <strong>${overlapCount}</strong></span>` : '')
+      + (conflictCount ? `, <span title="base SHA가 워크스페이스와 어긋남 — 안전하게 적용 불가">base SHA 불일치 <strong>${conflictCount}</strong></span>` : '')
+      + (applicableCount === 0 ? ` — 이 패치에서 선택 가능한 파일이 0개이므로 Skip 또는 follow-up run 으로 처리하세요.` : '')
+      + `</div>`
+    : '';
+  const changeRows = patchSummary.changes.map((change, index) => {
+    const approvedOwner = approvedFileOwners.get(change.path) || '';
+    const blocked = change.baseMatches === false || Boolean(approvedOwner);
+    const warning = blocked && !change.alreadyApplied;
+    return `
+    <label class="runbook-diagnostic ${warning ? 'warning' : ''}" style="display:block; margin:8px 0;">
+      <input type="checkbox" data-machine-patch-file value="${escapeHtml(change.path)}" ${blocked ? 'disabled' : ''} ${!blocked && index < 20 ? 'checked' : ''}>
       <strong>${escapeHtml(change.path)}</strong><br>
       <span>${escapeHtml(String(change.action))}; ${escapeHtml(String(change.beforeLines))} -> ${escapeHtml(String(change.afterLines))} lines (${escapeHtml(String(change.deltaLabel))}); SHA ${escapeHtml(change.beforeSha || 'none')} -> ${escapeHtml(change.afterSha || 'none')}</span>
       ${change.baseMessage ? `<br><span>${escapeHtml(change.baseMessage)}${change.baseMatches === false ? ` Expected ${escapeHtml(change.expectedSha || 'none')}, current ${escapeHtml(change.currentSha || 'none')}.` : ''}</span>` : ''}
+      ${approvedOwner ? `<br><span>Disabled: this file is already selected by another approved patch (${escapeHtml(approvedOwner.split(/[\\/]/).pop() || approvedOwner)}). Apply the approved batch first, then run a follow-up if this patch's change is still needed.</span>` : ''}
     </label>
-  `).join('');
+  `;
+  }).join('');
   const openNextReview = () => {
     setTimeout(() => {
       maybeOpenMachinePatchReviewModal(runbookPath, lastMachineRunRecord || record)
         .catch(err => notifyFormatError('Pipes', err));
     }, 0);
+  };
+  const skipPatchAndAdvance = async () => {
+    const reviewed = await recordMachinePatchReviewDecision(runbookPath, runId, workerReview, 'skipped');
+    if (reviewed) {
+      decisionCommitted = true;
+      closeFmtModal({ force: true });
+      if (hasNextReview) openNextReview();
+      else await finalizePatchReviewQueue(runbookPath, runId, record);
+    }
   };
   body.innerHTML = `
     <p>The run produced a patch for <strong>${escapeHtml(title)}</strong>. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.</p>
@@ -12265,7 +14852,10 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     <div class="runbook-diagnostic warning"><strong>Workspace not changed yet.</strong> ${reviewCount > 1
       ? 'Approving queues the selection. Files are written together after every patch in this run is reviewed.'
       : 'Approving applies the selected files immediately after a fresh base SHA check.'}</div>
-    ${conflictCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(conflictCount, 'conflicting file'))}</strong> already changed in the workspace, likely by an earlier approved patch. Conflicting files are unchecked and cannot be applied from this patch without a follow-up run.</div>` : ''}
+    ${summaryClassification}
+    <div class="runbook-diagnostic warning" data-machine-patch-status ${noSelectableReason ? '' : 'hidden'}>${escapeHtml(noSelectableReason)}</div>
+    ${conflictCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(conflictCount, 'conflicting file'))}</strong> 워크스페이스가 이미 바뀐 파일 — base SHA가 패치가 기대한 값과 다릅니다 (대개 이전 승인 패치가 먼저 적용되었기 때문). 강제로 적용하면 손상 위험이 있어 OrPAD가 unchecked로 막습니다. 이 줄을 적용하려면 follow-up run을 띄우세요. (already changed in the workspace, likely by an earlier approved patch)</div>` : ''}
+    ${overlapCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(overlapCount, 'overlapping file'))}</strong> 이번 run의 다른 승인 패치가 이미 선택한 파일 — 한 batch 안에서 같은 파일을 두 패치가 동시에 쓰면 두 번째 패치의 base SHA가 자동 불일치가 되므로 disabled 처리됩니다. 이번 패치를 적용하려면 승인된 batch를 먼저 apply한 뒤 follow-up run으로 재시도하세요. (already selected by another approved patch in this run)</div>` : ''}
     <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
     <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
     <div style="max-height:280px; overflow:auto; margin-top:8px;">${changeRows}</div>
@@ -12280,21 +14870,23 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   openFmtModal({
     title: reviewTitle,
     body,
+    onClose: () => {
+      if (!decisionCommitted) machinePatchReviewShown.delete(reviewKey);
+    },
     footer: [
       {
-        label: reviewCount > 1 ? 'Skip Patch' : 'Cancel',
-        onClick: async () => {
-          const reviewed = await recordMachinePatchReviewDecision(runbookPath, runId, workerReview, 'skipped');
-          if (reviewed) {
-            closeFmtModal();
-            if (hasNextReview) openNextReview();
-            else await finalizePatchReviewQueue(runbookPath, runId, record);
+        label: noSelectableFiles ? 'Cancel' : (reviewCount > 1 ? 'Skip Patch' : 'Cancel'),
+        onClick: () => runPatchReviewDecision(async () => {
+          if (noSelectableFiles) {
+            closeFmtModal({ force: true });
+            return;
           }
-        },
+          await skipPatchAndAdvance();
+        }, noSelectableFiles ? '' : 'Skipping this patch...'),
       },
       {
         label: 'Continue with Prompt',
-        onClick: async () => {
+        onClick: () => runPatchReviewDecision(async () => {
           const prompt = body.querySelector('[data-machine-patch-prompt]')?.value || '';
           if (prompt.trim()) {
             runbookDraftTask = prompt;
@@ -12302,55 +14894,76 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
           }
           const reviewed = await recordMachinePatchReviewDecision(runbookPath, runId, workerReview, 'follow-up');
           if (reviewed) {
-            closeFmtModal();
+            decisionCommitted = true;
+            closeFmtModal({ force: true });
             await applyAllApprovedMachinePatches(runbookPath, runId);
             await executeSelectedMachineRunStep(runbookPath, runId);
           }
-        },
+        }),
       },
       {
-        label: hasNextReview ? 'Approve & Next' : 'Approve & Apply',
+        label: noSelectableFiles
+          ? (hasNextReview ? 'Skip This Patch & Next' : skipApplyLabel)
+          : (hasNextReview ? 'Approve & Next' : 'Approve & Apply'),
         primary: true,
-        disabled: applicableCount === 0,
-        onClick: async () => {
+        disabled: false,
+        onClick: () => {
+          if (noSelectableFiles) {
+            return runPatchReviewDecision(skipPatchAndAdvance, hasNextReview ? 'Skipping this patch and opening the next review...' : 'Skipping this patch and applying approved patches...');
+          }
           const files = selectedFiles();
           if (!files.length) {
-            alert('Select at least one file to approve.');
+            setPatchReviewStatus('Select at least one file to approve, or use Skip Patch to keep this patch as review-only evidence.', 'warning');
             return;
           }
-          const approved = await approveMachinePatchSelection(runbookPath, runId, workerReview, files);
-          if (approved) {
-            closeFmtModal();
-            if (hasNextReview) openNextReview();
-            else await finalizePatchReviewQueue(runbookPath, runId, record);
-          }
+          return runPatchReviewDecision(async () => {
+            const approved = await approveMachinePatchSelection(runbookPath, runId, workerReview, files);
+            if (approved?.success) {
+              decisionCommitted = true;
+              closeFmtModal({ force: true });
+              if (hasNextReview) openNextReview();
+              else await finalizePatchReviewQueue(runbookPath, runId, record);
+            } else {
+              setPatchReviewStatus(machinePatchApprovalFailureMessage(approved), 'error');
+            }
+          }, hasNextReview ? 'Approving selected files and opening the next review...' : 'Approving selected files and applying approved patches...');
         },
       },
     ],
   });
 }
 
-async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
+async function maybeOpenMachinePatchReviewModal(runbookPath, record, options = {}) {
   const runId = record?.runState?.runId || record?.runId || '';
-  if (!runbookPath || !runId) return;
-  if (isMachineRunInProgress(record, runbookPath)) return;
-  if (machinePatchBatchInFlight(record)) return;
+  if (!runbookPath || !runId) return false;
+  if (isMachineRunInProgress(record, runbookPath)) return false;
+  if (machinePatchBatchInFlight(record)) return false;
   // Never replace a modal the user is currently looking at — openFmtModal would silently
   // overwrite their pending decision. The next polling tick (or the modal's onClick chain)
   // will pick the next patch up after the current modal closes.
-  if (fmtModalEl && !fmtModalEl.classList.contains('hidden')) return;
+  if (fmtModalEl && !fmtModalEl.classList.contains('hidden')) return false;
   const allReviews = machineWorkerReviewInfos(record)
     .filter(review => review?.patchArtifact);
-  const pendingReviews = allReviews.filter(review => review.patchReviewStatus === 'pending');
-  const workerReview = pendingReviews.find(review => (
-    !machinePatchReviewShown.has(machinePatchReviewKey(runbookPath, runId, review.patchArtifact))
+  const decisionRequiredReviews = allReviews.filter(review => (
+    !review.patchReviewResolved
+    && review.patchReviewStatus !== 'approved'
   ));
-  if (!workerReview?.patchArtifact) return;
-  const key = machinePatchReviewKey(runbookPath, runId, workerReview.patchArtifact);
+  if (!decisionRequiredReviews.length && machineHasBlockedPatchReviewNode(record)) {
+    const approvedReviews = allReviews.filter(review => review.patchReviewStatus === 'approved');
+    if (approvedReviews.length) {
+      await finalizePatchReviewQueue(runbookPath, runId, record);
+    }
+    return false;
+  }
+  const workerReview = decisionRequiredReviews.find(review => (
+    options.force || !machinePatchReviewShown.has(machinePatchReviewDisplayKey(runbookPath, runId, review))
+  ));
+  if (!workerReview?.patchArtifact) return false;
+  const key = machinePatchReviewDisplayKey(runbookPath, runId, workerReview);
   let patchSummary = await machinePatchArtifactSummary(record, workerReview);
   if (!patchSummary || patchSummary.error || !patchSummary.changes?.length) {
     const changedFiles = workerReview.changedFiles || [];
-    if (!changedFiles.length) return;
+    if (!changedFiles.length) return false;
     patchSummary = {
       changeCount: changedFiles.length,
       violationCount: 0,
@@ -12372,8 +14985,9 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record) {
   openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails, {
     reviewIndex: allReviews.findIndex(review => review.patchArtifact === workerReview.patchArtifact) + 1,
     reviewCount: allReviews.length,
-    pendingCount: pendingReviews.length,
+    pendingCount: decisionRequiredReviews.length,
   });
+  return true;
 }
 
 async function openMachineArtifactViewer(runbookPath, runId) {
@@ -12651,6 +15265,57 @@ function syncRunbookExternalResearchWarning(taskText) {
   warning.textContent = visible ? externalResearchLimitationText() : '';
 }
 
+function handlePipelineGenerateEvent(event = {}) {
+  const requestId = String(event.requestId || '');
+  if (!requestId || pipelineGenerateState?.requestId !== requestId) return;
+  const eventType = String(event.type || '');
+  const next = {
+    stage: event.stage || pipelineGenerateState.stage,
+    message: event.message || pipelineGenerateState.message,
+    updatedAt: event.updatedAt || new Date().toISOString(),
+  };
+  if (event.authoringRoot) next.authoringRoot = event.authoringRoot;
+  if (event.pipelinePath) next.pipelinePath = event.pipelinePath;
+  if (event.graphPath) next.graphPath = event.graphPath;
+  if (event.error) next.error = event.error;
+  if (eventType === 'completed') {
+    next.status = 'succeeded';
+    next.completedAt = next.updatedAt;
+  } else if (eventType === 'error') {
+    next.status = 'failed';
+    next.completedAt = next.updatedAt;
+  } else if (eventType === 'cancelled') {
+    next.status = 'cancelled';
+    next.completedAt = next.updatedAt;
+  } else if (eventType === 'cancelling') {
+    next.status = 'cancelling';
+  } else {
+    next.status = pipelineGenerateState.status === 'queued' ? 'running' : pipelineGenerateState.status;
+  }
+  updatePipelineGenerateState(next);
+}
+
+async function cancelPipelineGeneration(requestId) {
+  const state = pipelineGenerateState;
+  if (!state || state.requestId !== requestId || !isPipelineGenerationRunning(state)) return;
+  updatePipelineGenerateState({
+    status: 'cancelling',
+    stage: 'cancelling',
+    message: 'Cancelling Generate...',
+  });
+  const response = await window.orpad?.orchestration?.cancelGeneratePipeline?.(requestId);
+  if (!response?.success) {
+    updatePipelineGenerateState({
+      status: 'running',
+      stage: state.stage || 'agent-running',
+      message: state.message || 'Generate is still running.',
+    });
+    throw new Error(response?.error || 'Generate cancel was rejected.');
+  }
+}
+
+window.orpad?.orchestration?.onGenerateEvent?.(handlePipelineGenerateEvent);
+
 function extractMarkdownFence(text) {
   const match = String(text || '').match(/```(?:markdown|md)?\s*([\s\S]*?)```/i);
   return (match?.[1] || text || '').trim();
@@ -12736,13 +15401,336 @@ async function buildOrpadRunbookSkill(taskText) {
   return addExternalResearchSkillGuard(defaultOrpadRunbookSkill(taskText), taskText);
 }
 
-async function createOrpadRunbookStarter() {
-  if (!workspacePath) {
+const GENERATE_PROVIDER_SELECTION_KEY = 'orpad-generate-provider-selection';
+// Keep this in sync with GENERATE_AUTHORING_SUPPORTED_PROVIDERS in
+// src/main/orchestration-authoring/ipc.js. Adding a provider here without
+// wiring its backend will surface a friendly error from the main process.
+const GENERATE_PROVIDER_READY_IDS = new Set(['codex-cli', 'claude-code']);
+
+function loadGenerateProviderSelection() {
+  try {
+    const raw = localStorage.getItem(GENERATE_PROVIDER_SELECTION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && typeof parsed.providerId === 'string') return parsed;
+  } catch {}
+  return null;
+}
+
+function saveGenerateProviderSelection(selection) {
+  if (!selection || typeof selection !== 'object') return;
+  try {
+    localStorage.setItem(GENERATE_PROVIDER_SELECTION_KEY, JSON.stringify({
+      providerId: String(selection.providerId || '').trim(),
+      model: String(selection.model || '').trim(),
+      family: String(selection.family || 'api'),
+      qualityTier: String(selection.qualityTier || 'standard'),
+    }));
+  } catch {}
+}
+
+function generateProviderCatalogForUi() {
+  // Mirrors src/shared/ai/provider-catalog.js so the modal works even before any
+  // Machine IPC is available. Keep these entries in sync with that catalog.
+  return [
+    { id: 'codex-cli', displayName: 'OpenAI Codex CLI', family: 'cli', needsKey: false, defaultModel: 'codex', implementationStatus: 'ready', statusNote: 'codex CLI를 spawn. Windows shim 자동 탐지.', models: ['codex'] },
+    { id: 'claude-code', displayName: 'Anthropic Claude Code CLI', family: 'cli', needsKey: false, defaultModel: 'claude-code', implementationStatus: 'ready', statusNote: 'claude CLI를 spawn. PATH에 claude 바이너리 필요.', models: ['claude-code'] },
+    { id: 'anthropic', displayName: 'Anthropic API', family: 'api', needsKey: true, defaultModel: 'claude-3-5-sonnet-latest', implementationStatus: 'stub', statusNote: 'Generate authoring 경로 미구현 — follow-up PR. 현재는 CLI 옵션 사용.', models: ['claude-3-5-haiku-latest', 'claude-3-5-sonnet-latest', 'claude-3-opus-latest'] },
+    { id: 'openai', displayName: 'OpenAI API', family: 'api', needsKey: true, defaultModel: 'gpt-4o-mini', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현 — 이번 PR 범위 밖.', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] },
+    { id: 'openrouter', displayName: 'OpenRouter', family: 'api', needsKey: true, defaultModel: 'openrouter/auto', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현.', models: ['openrouter/auto'] },
+    { id: 'openai-compatible', displayName: 'OpenAI-compatible (custom endpoint)', family: 'api', needsKey: false, defaultModel: 'gpt-4o-mini', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현.', models: [] },
+    { id: 'ollama', displayName: 'Ollama (local)', family: 'api', needsKey: false, defaultModel: 'llama3', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현.', models: ['llama3', 'llama3.1'] },
+  ];
+}
+
+function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg } = {}) {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined') {
+      resolve(null);
+      return;
+    }
+    const providers = generateProviderCatalogForUi();
+    const saved = loadGenerateProviderSelection();
+    const initialProviderId = saved?.providerId && providers.some(p => p.id === saved.providerId)
+      ? saved.providerId
+      : 'codex-cli';
+    const initialProvider = providers.find(p => p.id === initialProviderId) || providers[0];
+    const initialModel = saved?.model && initialProvider.models.includes(saved.model)
+      ? saved.model
+      : initialProvider.defaultModel;
+    const state = {
+      providerId: initialProvider.id,
+      model: initialModel,
+      family: initialProvider.family,
+      qualityTier: saved?.qualityTier || 'standard',
+    };
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(value);
+    };
+
+    const overlay = document.createElement('div');
+    overlay.className = 'orpad-generate-picker-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:9100;';
+
+    const panel = document.createElement('div');
+    panel.style.cssText = 'width:min(680px,92vw);max-height:88vh;overflow:auto;padding:20px 22px;border-radius:10px;background:#1d1f23;color:#e6e6e6;box-shadow:0 14px 36px rgba(0,0,0,0.55);font-family:inherit;';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;';
+    const titleWrap = document.createElement('div');
+    titleWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const titleEl = document.createElement('div');
+    titleEl.textContent = 'AI 도구 선택 — Generate Pipeline';
+    titleEl.style.cssText = 'font-size:15px;font-weight:600;';
+    const subEl = document.createElement('div');
+    subEl.style.cssText = 'font-size:11.5px;opacity:0.7;line-height:1.45;word-break:break-word;';
+    subEl.textContent = (taskText && String(taskText).trim().slice(0, 240)) || '(no task text)';
+    titleWrap.appendChild(titleEl);
+    titleWrap.appendChild(subEl);
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'background:none;border:0;color:#e6e6e6;font-size:18px;cursor:pointer;padding:0 6px;';
+    closeBtn.addEventListener('click', () => finish(null));
+    header.appendChild(titleWrap);
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    const helpBox = document.createElement('div');
+    helpBox.style.cssText = 'margin-bottom:12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:6px;background:rgba(255,255,255,0.03);font-size:11.5px;line-height:1.5;opacity:0.85;';
+    helpBox.innerHTML = [
+      '<div><strong>역할:</strong> 이 도구가 OrPAD authoring agent가 되어 그래프 spec을 작성하고 OrPAD CLI를 통해 pipeline을 materialize 합니다.</div>',
+      '<div><strong>고급 패턴:</strong> 강화된 시스템 프롬프트가 Ralph loop / Fork-Join / Cross-Validation / Sub-graph / RAG / Ontology / Multi-Agent 패턴 중 적합한 것을 선택하도록 안내합니다.</div>',
+      '<div><strong>저장:</strong> 마지막 선택은 이 워크스페이스에 한정되지 않고 다음 Generate 호출의 기본값으로 로컬에 보존됩니다.</div>',
+      `<div><strong>Workspace:</strong> ${escapeHtml(String(workspaceArg || ''))}</div>`,
+    ].join('');
+    panel.appendChild(helpBox);
+
+    const providerHeading = document.createElement('div');
+    providerHeading.textContent = 'Provider';
+    providerHeading.style.cssText = 'font-size:12px;font-weight:600;opacity:0.85;margin-bottom:6px;';
+    panel.appendChild(providerHeading);
+
+    const providerGrid = document.createElement('div');
+    providerGrid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:12px;';
+    panel.appendChild(providerGrid);
+
+    const modelRow = document.createElement('div');
+    modelRow.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:12px;';
+    const modelLabel = document.createElement('div');
+    modelLabel.textContent = 'Model';
+    modelLabel.style.cssText = 'font-size:12px;font-weight:600;opacity:0.85;';
+    const modelSelect = document.createElement('select');
+    modelSelect.style.cssText = 'padding:7px 10px;background:#2a2d33;color:#e6e6e6;border:1px solid rgba(255,255,255,0.18);border-radius:5px;font-size:13px;cursor:pointer;';
+    modelRow.appendChild(modelLabel);
+    modelRow.appendChild(modelSelect);
+    panel.appendChild(modelRow);
+
+    const tierRow = document.createElement('div');
+    tierRow.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:12px;';
+    const tierLabel = document.createElement('div');
+    tierLabel.textContent = 'Quality tier (참고용)';
+    tierLabel.style.cssText = 'font-size:12px;font-weight:600;opacity:0.85;';
+    const tierSelect = document.createElement('select');
+    tierSelect.style.cssText = 'padding:7px 10px;background:#2a2d33;color:#e6e6e6;border:1px solid rgba(255,255,255,0.18);border-radius:5px;font-size:13px;cursor:pointer;';
+    for (const tier of ['fast', 'standard', 'deep']) {
+      const opt = document.createElement('option');
+      opt.value = tier;
+      opt.textContent = tier;
+      if (tier === state.qualityTier) opt.selected = true;
+      tierSelect.appendChild(opt);
+    }
+    tierSelect.addEventListener('change', () => { state.qualityTier = tierSelect.value; });
+    tierRow.appendChild(tierLabel);
+    tierRow.appendChild(tierSelect);
+    panel.appendChild(tierRow);
+
+    const statusBanner = document.createElement('div');
+    statusBanner.style.cssText = 'display:none;margin-bottom:12px;padding:8px 10px;border-radius:6px;font-size:11.5px;line-height:1.4;';
+    panel.appendChild(statusBanner);
+    const setBanner = (message, kind = 'info') => {
+      if (!message) {
+        statusBanner.style.display = 'none';
+        statusBanner.textContent = '';
+        return;
+      }
+      statusBanner.style.display = 'block';
+      statusBanner.textContent = message;
+      if (kind === 'warn') {
+        statusBanner.style.background = 'rgba(202,138,4,0.18)';
+        statusBanner.style.border = '1px solid rgba(202,138,4,0.5)';
+        statusBanner.style.color = '#ffd58a';
+      } else {
+        statusBanner.style.background = 'rgba(59,130,246,0.14)';
+        statusBanner.style.border = '1px solid rgba(59,130,246,0.45)';
+        statusBanner.style.color = '#9cc1ff';
+      }
+    };
+
+    const actionRow = document.createElement('div');
+    actionRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'padding:7px 14px;background:transparent;color:#e6e6e6;border:1px solid rgba(255,255,255,0.18);border-radius:5px;cursor:pointer;font-size:13px;';
+    cancelBtn.addEventListener('click', () => finish(null));
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.textContent = 'Generate with this tool';
+    confirmBtn.style.cssText = 'padding:7px 16px;background:#3b82f6;color:#fff;border:0;border-radius:5px;cursor:pointer;font-size:13px;font-weight:600;';
+    actionRow.appendChild(cancelBtn);
+    actionRow.appendChild(confirmBtn);
+    panel.appendChild(actionRow);
+
+    const renderProviderCards = () => {
+      providerGrid.innerHTML = '';
+      for (const provider of providers) {
+        const isReady = GENERATE_PROVIDER_READY_IDS.has(provider.id);
+        const isActive = state.providerId === provider.id;
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.dataset.providerId = provider.id;
+        card.title = provider.statusNote || '';
+        card.disabled = !isReady;
+        card.style.cssText = [
+          'display:flex',
+          'flex-direction:column',
+          'gap:6px',
+          'padding:10px 12px',
+          'border:1px solid ' + (isActive ? '#3b82f6' : 'rgba(255,255,255,0.12)'),
+          'border-radius:6px',
+          'background:' + (isActive ? 'rgba(59,130,246,0.14)' : 'rgba(255,255,255,0.03)'),
+          'color:inherit',
+          'cursor:' + (isReady ? 'pointer' : 'not-allowed'),
+          'opacity:' + (isReady ? '1' : '0.55'),
+          'text-align:left',
+          'font-family:inherit',
+        ].join(';');
+        const titleEl = document.createElement('div');
+        titleEl.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
+        const name = document.createElement('div');
+        name.textContent = provider.displayName;
+        name.style.cssText = 'font-size:13px;font-weight:600;';
+        const badge = document.createElement('span');
+        badge.textContent = isReady ? 'ready' : 'stub';
+        badge.style.cssText = isReady
+          ? 'font-size:10px;padding:2px 6px;border-radius:10px;background:rgba(34,197,94,0.16);color:#9be0a3;border:1px solid rgba(34,197,94,0.5);'
+          : 'font-size:10px;padding:2px 6px;border-radius:10px;background:rgba(202,138,4,0.18);color:#ffd58a;border:1px solid rgba(202,138,4,0.5);';
+        titleEl.appendChild(name);
+        titleEl.appendChild(badge);
+        card.appendChild(titleEl);
+        const meta = document.createElement('div');
+        meta.style.cssText = 'font-size:11px;opacity:0.75;';
+        meta.textContent = `${(provider.family || 'api').toUpperCase()} · ${provider.needsKey ? 'API key 필요' : 'Keyless'}`;
+        card.appendChild(meta);
+        if (provider.statusNote) {
+          const note = document.createElement('div');
+          note.style.cssText = 'font-size:10.5px;opacity:0.7;line-height:1.4;';
+          note.textContent = provider.statusNote;
+          card.appendChild(note);
+        }
+        if (isReady) {
+          card.addEventListener('click', () => {
+            state.providerId = provider.id;
+            state.family = provider.family;
+            const nextModel = provider.models.includes(state.model) ? state.model : provider.defaultModel;
+            state.model = nextModel;
+            renderProviderCards();
+            renderModelOptions();
+          });
+        }
+        providerGrid.appendChild(card);
+      }
+    };
+
+    const renderModelOptions = () => {
+      const provider = providers.find(p => p.id === state.providerId) || providers[0];
+      modelSelect.innerHTML = '';
+      const modelIds = provider.models.length ? provider.models : [provider.defaultModel].filter(Boolean);
+      for (const modelId of modelIds) {
+        const opt = document.createElement('option');
+        opt.value = modelId;
+        opt.textContent = modelId;
+        if (modelId === state.model) opt.selected = true;
+        modelSelect.appendChild(opt);
+      }
+      if (!modelIds.includes(state.model) && modelIds.length) state.model = modelIds[0];
+      modelSelect.value = state.model;
+      if (provider.needsKey) {
+        setBanner(`${provider.displayName}는 API key가 ai-keys safeStorage에 저장되어 있어야 합니다. 실패하면 generate가 에러로 종료됩니다.`, 'warn');
+      } else {
+        setBanner('', 'info');
+      }
+    };
+
+    modelSelect.addEventListener('change', () => { state.model = modelSelect.value; });
+
+    confirmBtn.addEventListener('click', () => {
+      if (!GENERATE_PROVIDER_READY_IDS.has(state.providerId)) {
+        setBanner('이 provider는 Generate에서 아직 지원되지 않습니다. ready 표시된 도구를 선택하세요.', 'warn');
+        return;
+      }
+      const selection = {
+        providerId: state.providerId,
+        model: state.model,
+        family: state.family,
+        qualityTier: state.qualityTier,
+      };
+      saveGenerateProviderSelection(selection);
+      finish(selection);
+    });
+
+    overlay.appendChild(panel);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) finish(null);
+    });
+    document.body.appendChild(overlay);
+    renderProviderCards();
+    renderModelOptions();
+  });
+}
+
+async function createOrpadRunbookStarter(options = {}) {
+  const requestedWorkspacePath = options.workspacePath || workspacePath;
+  if (!requestedWorkspacePath) {
     ensureSidebar('runbooks');
     return;
   }
-  const taskText = normalizeRunbookTask(runbookDraftTask)
+  const taskText = normalizeRunbookTask(options.taskText || runbookDraftTask)
     || 'Improve this OrPAD workspace from the current user request, generate evidence, and keep changes reviewable.';
+  if (typeof window.orpad?.orchestration?.generatePipeline === 'function') {
+    const generated = await window.orpad.orchestration.generatePipeline({
+      requestId: options.requestId || '',
+      workspacePath: requestedWorkspacePath,
+      prompt: taskText,
+      providerSelection: options.providerSelection || null,
+    });
+    if (!generated?.success) {
+      throw new Error(generated?.error || 'OrPAD CLI could not generate a pipeline.');
+    }
+    const stillCurrentWorkspace = normalizeComparablePath(workspacePath) === normalizeComparablePath(requestedWorkspacePath);
+    const stillCurrentRequest = !options.requestId || pipelineGenerateState?.requestId === options.requestId;
+    if (!stillCurrentWorkspace || !stillCurrentRequest) return generated;
+    selectedRunbookPath = runbookNormalizePath(generated.pipelinePath || '');
+    if (!selectedRunbookPath) throw new Error('OrPAD CLI did not return a pipeline path.');
+    pipelineHarnessRequiredBeforeRunCache.add(harnessImplementationKey(selectedRunbookPath));
+    selectedRunbookValidation = null;
+    lastRunRecord = null;
+    await loadFileTree();
+    workspaceRunbookSummary = buildWorkspaceRunbookSummary();
+    chooseSelectedRunbook(workspaceRunbookSummary);
+    renderRunbooksPanel();
+    await openFileInTab(runbookNormalizePath(generated.graphPath || selectedRunbookPath));
+    await validateSelectedRunbook(selectedRunbookPath);
+    ensureSidebar('runbooks');
+    return generated;
+  }
+  throw new Error('OrPAD Generate requires the orchestration authoring IPC bridge.');
   const externalResearchIntent = hasExternalResearchIntent(taskText);
   const externalResearchLimitation = externalResearchIntent ? externalResearchLimitationText() : '';
   const stamp = runbookTimestamp();
@@ -12799,7 +15787,7 @@ async function createOrpadRunbookStarter() {
         ...(externalResearchIntent ? { externalResearchLimitation } : {}),
       },
     },
-    { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+    { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state', config: { queueRoot: 'harness/generated/latest-run/queue', schema: ORPAD_WORK_ITEM_SCHEMA_VERSION } },
     { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work', config: { queueRef: 'queue' } },
     { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
     { id: 'worker', type: 'orpad.workerLoop', label: 'Implement claimed work in overlay', config: { queueRef: 'queue' } },
@@ -12907,7 +15895,8 @@ async function createOrpadRunbookStarter() {
         description: 'Generated managed-run adapter. OrPAD owns work state, run status, and evidence files; Codex CLI submits candidate/result/proof through adapter contracts.',
       },
       queueProtocol: {
-        schema: 'orpad.workItem.v1',
+        schema: ORPAD_WORK_ITEM_SCHEMA_VERSION,
+        states: [...ORPAD_WORK_ITEM_STATES],
         claimPolicy: {
           concurrency: 1,
           defaultAction: 'continue-claiming',
@@ -12966,6 +15955,69 @@ async function createOrpadRunbookStarter() {
   await openFileInTab(graphPath);
   await validateSelectedRunbook(pipelinePath);
   ensureSidebar('runbooks');
+}
+
+async function startPipelineGenerationFromPanel() {
+  if (!workspacePath) {
+    ensureSidebar('runbooks');
+    return;
+  }
+  if (isPipelineGenerationRunning()) {
+    notifyFormatError('Generate Pipeline', new Error('A Generate request is already running.'));
+    refreshPipelineGenerateStatusView();
+    return;
+  }
+  const requestedWorkspacePath = workspacePath;
+  const taskText = normalizeRunbookTask(runbookDraftTask)
+    || 'Improve this OrPAD workspace from the current user request, generate evidence, and keep changes reviewable.';
+  const providerSelection = await pickGenerateProviderSelection({ taskText, workspacePath: requestedWorkspacePath });
+  if (!providerSelection) {
+    // User cancelled the provider modal. Leave the panel in its previous state.
+    return;
+  }
+  const requestId = newPipelineGenerateRequestId();
+  pipelineGenerateState = {
+    requestId,
+    workspacePath: requestedWorkspacePath,
+    taskText,
+    providerSelection,
+    status: 'queued',
+    stage: 'queued',
+    message: `Starting Generate with ${providerSelection.providerId}…`,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    events: [],
+  };
+  renderRunbooksPanel();
+  try {
+    const generated = await createOrpadRunbookStarter({
+      requestId,
+      workspacePath: requestedWorkspacePath,
+      taskText,
+      providerSelection,
+    });
+    const currentWorkspace = normalizeComparablePath(workspacePath) === normalizeComparablePath(requestedWorkspacePath);
+    updatePipelineGenerateState({
+      status: 'succeeded',
+      stage: 'completed',
+      message: currentWorkspace
+        ? 'Pipeline generated and opened.'
+        : 'Pipeline generated in the original workspace.',
+      completedAt: new Date().toISOString(),
+      pipelinePath: generated?.pipelinePath || pipelineGenerateState?.pipelinePath || '',
+      graphPath: generated?.graphPath || pipelineGenerateState?.graphPath || '',
+    });
+  } catch (err) {
+    const cancelled = pipelineGenerateState?.status === 'cancelling' || /cancel/i.test(err?.message || '');
+    updatePipelineGenerateState({
+      status: cancelled ? 'cancelled' : 'failed',
+      stage: cancelled ? 'cancelled' : 'failed',
+      message: cancelled ? 'Generate was cancelled.' : 'Generate failed.',
+      error: cancelled ? '' : (err?.message || String(err)),
+      completedAt: new Date().toISOString(),
+    });
+    if (!cancelled) notifyFormatError('Generate Pipeline', err);
+  }
 }
 
 function openObsidianImportReview() {
@@ -13030,6 +16082,92 @@ contentEl?.addEventListener('click', async (event) => {
           notifyFormatError('Probe artifact', err);
         }
       }
+    } else if (probeAction === 'review-patches') {
+      const runId = probeButton.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const runbookPath = probeButton.dataset.runbookPath || probeButton.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      if (!runId || !runbookPath) {
+        notifyFormatError('Review patches', new Error('Missing runId / pipelinePath.'));
+        return;
+      }
+      const previousLabel = probeButton.textContent;
+      probeButton.disabled = true;
+      probeButton.textContent = 'Opening...';
+      try {
+        const modalWasHidden = !fmtModalEl || fmtModalEl.classList.contains('hidden');
+        const record = await refreshMachineRunPanelSnapshot(runbookPath, runId) || lastMachineRunRecord;
+        const openedByRefresh = modalWasHidden && fmtModalEl && !fmtModalEl.classList.contains('hidden');
+        const opened = openedByRefresh || await maybeOpenMachinePatchReviewModal(runbookPath, record, { force: true });
+        if (!opened) {
+          const latestRecord = (() => {
+            const latest = lastMachineRunRecord || record;
+            const latestRunId = latest?.runState?.runId || latest?.runId || '';
+            return latestRunId === runId ? latest : record;
+          })();
+          if (fmtModalEl && !fmtModalEl.classList.contains('hidden')) {
+            notifyFormatError('Review patches', new Error('Another modal is already open. Close it first, then try Review patches again.'));
+          } else if (machineApprovedPatchReviewInfos(latestRecord).length > 0) {
+            probeButton.textContent = 'Applying...';
+            await finalizePatchReviewQueue(runbookPath, runId, latestRecord);
+          } else {
+            const outcome = machinePatchReviewOutcome(latestRecord);
+            const patchReviewResolved = Boolean(outcome?.patchCount)
+              && Number(outcome?.pendingCount || 0) === 0
+              && Number(outcome?.approvedCount || 0) === 0
+              && Number(outcome?.conflictCount || 0) === 0
+              && Number(outcome?.failedCount || 0) === 0;
+            if (patchReviewResolved && machineHasBlockedPatchReviewNode(latestRecord) && !isMachineRunInProgress(latestRecord, runbookPath)) {
+              probeButton.textContent = 'Continuing...';
+              await executeSelectedMachineRunStep(runbookPath, runId);
+            } else {
+              notifyFormatError('Review patches', new Error('No pending patch review is available for this run. Refresh the run state or open events.jsonl for details.'));
+            }
+          }
+        }
+      } catch (err) {
+        notifyFormatError('Review patches', err);
+      } finally {
+        probeButton.disabled = false;
+        probeButton.textContent = previousLabel;
+      }
+    } else if (probeAction === 'apply-approved-patches') {
+      const runId = probeButton.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const runbookPath = probeButton.dataset.runbookPath || probeButton.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      if (!runId || !runbookPath) {
+        notifyFormatError('Apply approved patches', new Error('Missing runId / pipelinePath.'));
+        return;
+      }
+      const previousLabel = probeButton.textContent;
+      probeButton.disabled = true;
+      probeButton.textContent = 'Applying...';
+      try {
+        const record = await refreshMachineRunPanelSnapshot(runbookPath, runId) || lastMachineRunRecord;
+        const latestRecord = (() => {
+          const latest = lastMachineRunRecord || record;
+          const latestRunId = latest?.runState?.runId || latest?.runId || '';
+          return latestRunId === runId ? latest : record;
+        })();
+        if (machineApprovedPatchReviewInfos(latestRecord).length > 0) {
+          await finalizePatchReviewQueue(runbookPath, runId, latestRecord);
+        } else {
+          const outcome = machinePatchReviewOutcome(latestRecord);
+          const patchReviewResolved = Boolean(outcome?.patchCount)
+            && Number(outcome?.pendingCount || 0) === 0
+            && Number(outcome?.approvedCount || 0) === 0
+            && Number(outcome?.conflictCount || 0) === 0
+            && Number(outcome?.failedCount || 0) === 0;
+          if (patchReviewResolved && machineHasBlockedPatchReviewNode(latestRecord) && !isMachineRunInProgress(latestRecord, runbookPath)) {
+            probeButton.textContent = 'Continuing...';
+            await executeSelectedMachineRunStep(runbookPath, runId);
+          } else {
+            notifyFormatError('Apply approved patches', new Error('No approved patch selections are waiting to be applied for this run.'));
+          }
+        }
+      } catch (err) {
+        notifyFormatError('Apply approved patches', err);
+      } finally {
+        probeButton.disabled = false;
+        probeButton.textContent = previousLabel;
+      }
     } else if (probeAction === 'toggle-breakpoint') {
       // Phase 3.7: renderer-only breakpoint marker. Click toggles the
       // node's breakpoint membership in localStorage; Continue button
@@ -13077,32 +16215,7 @@ contentEl?.addEventListener('click', async (event) => {
       probeButton.disabled = true;
       probeButton.textContent = 'Skipping…';
       try {
-        const response = await window.orpad.machine.skipNode({
-          capabilityToken: machineCapabilityToken,
-          workspacePath,
-          pipelinePath: runbookPath,
-          runId,
-          nodePath,
-          nodeType,
-          reason: 'user-skipped-from-failed-card',
-        });
-        if (!response?.success) {
-          notifyFormatError('Skip node', new Error(response?.error || 'skip-node IPC rejected.'));
-          probeButton.disabled = false;
-          probeButton.textContent = 'Skip node';
-          return;
-        }
-        notifyFormatError('Skip node', new Error(`${nodePath} marked skipped — resuming run`));
-        // Force a polling refresh so the skip event reflects in the UI immediately.
-        await refreshVisibleMachineRunSnapshot().catch(() => {});
-        // Re-enter executeRunStep so the dispatcher walks past the skipped
-        // probe and continues the run lifecycle. Without this the run sits
-        // idle even though the skip event is committed.
-        try {
-          await executeSelectedMachineRunStep(runbookPath, runId);
-        } catch (err) {
-          notifyFormatError('Resume after skip', err);
-        }
+        await skipSelectedMachineNodeAndContinue(runbookPath, runId, nodePath, nodeType, 'user-skipped-from-failed-card');
       } catch (err) {
         notifyFormatError('Skip node', err);
         probeButton.disabled = false;
@@ -13126,13 +16239,38 @@ contentEl?.addEventListener('click', async (event) => {
       const runId = inlineRunbookButton.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
       const approvalId = inlineRunbookButton.dataset.approvalId || '';
       const targetPath = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      const needsLlmBypass = inlineRunbookButton.dataset.llmBypass === 'true';
       const card = inlineRunbookButton.closest('.pipe-interrupt-card');
       if (card) card.classList.add('pipe-interrupt-card--deciding');
       try {
-        await decideSelectedMachineApproval(targetPath, runId, approvalId, decision);
+        await decideSelectedMachineApproval(targetPath, runId, approvalId, decision, {
+          continueAfterApproval: needsLlmBypass && decision === 'approved',
+          llmApprovalMode: needsLlmBypass ? 'bypass' : '',
+        });
       } catch (err) {
         if (card) card.classList.remove('pipe-interrupt-card--deciding');
         notifyFormatError('Decide approval', err);
+      }
+      return;
+    }
+    if (action === 'machine-execute-step') {
+      event.preventDefault();
+      event.stopPropagation();
+      const runId = inlineRunbookButton.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const targetPath = inlineRunbookButton.dataset.runbookPath || inlineRunbookButton.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+      if (!runId || !targetPath) {
+        notifyFormatError('Continue run', new Error('Missing runId / pipelinePath.'));
+        return;
+      }
+      const previousLabel = inlineRunbookButton.textContent;
+      inlineRunbookButton.disabled = true;
+      inlineRunbookButton.textContent = 'Continuing...';
+      try {
+        await executeSelectedMachineRunStep(targetPath, runId);
+      } catch (err) {
+        notifyFormatError('Continue run', err);
+        inlineRunbookButton.disabled = false;
+        inlineRunbookButton.textContent = previousLabel;
       }
       return;
     }
@@ -13189,15 +16327,13 @@ runbooksContentEl?.addEventListener('click', async (event) => {
       }
     }
     else if (action === 'starter') {
-      const previousLabel = button.textContent;
-      button.disabled = true;
-      button.textContent = 'Generating...';
-      try {
-        await createOrpadRunbookStarter();
-      } finally {
-        button.disabled = false;
-        button.textContent = previousLabel;
-      }
+      await startPipelineGenerationFromPanel();
+    }
+    else if (action === 'cancel-generate') {
+      await cancelPipelineGeneration(button.dataset.requestId || pipelineGenerateState?.requestId || '');
+    }
+    else if (action === 'dismiss-generate-status') {
+      if (!isPipelineGenerationRunning()) clearPipelineGenerateState();
     }
     else if (action === 'import-review') openObsidianImportReview();
     else if (action === 'open-dashboard') openWorkspaceDashboardNote();
@@ -13216,7 +16352,23 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-resume-run') await resumeSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-cancel-run') await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-cancel-claim') await cancelSelectedMachineClaim(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.claimId || '', button.dataset.itemId || '');
-    else if (action === 'machine-approve-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved');
+    else if (action === 'machine-open-blocked-decision') {
+      const runId = button.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const modalWasHidden = !fmtModalEl || fmtModalEl.classList.contains('hidden');
+      const record = runId ? (await refreshMachineRunPanelSnapshot(targetPath, runId) || lastMachineRunRecord) : lastMachineRunRecord;
+      const openedByRefresh = modalWasHidden && fmtModalEl && !fmtModalEl.classList.contains('hidden');
+      const opened = openedByRefresh || await maybeOpenMachineBlockedDecisionModal(targetPath, record, { force: true });
+      if (!opened) {
+        notifyFormatError('Resolve blocker', new Error('No blocked-run decision could be opened. If another modal is open, close it first, then try Resolve Blocker again.'));
+      }
+    }
+    else if (action === 'machine-approve-approval') {
+      const needsLlmBypass = button.dataset.llmBypass === 'true';
+      await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'approved', {
+        continueAfterApproval: needsLlmBypass,
+        llmApprovalMode: needsLlmBypass ? 'bypass' : '',
+      });
+    }
     else if (action === 'machine-deny-approval') await decideSelectedMachineApproval(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.approvalId || '', 'denied');
     else if (action === 'machine-export') await exportSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-view-artifacts') await openMachineArtifactViewer(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
@@ -13257,6 +16409,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
           setRunbookCache(machineRunRecordCache, targetPath, lastMachineRunRecord);
         }
         renderRunbooksPanel();
+        if (latest) scheduleMachineRunDecisionPrompts(targetPath, lastMachineRunRecord);
       }
     }
     else if (action === 'refresh-run-list') {
@@ -13312,6 +16465,9 @@ runbooksContentEl?.addEventListener('click', async (event) => {
         notifyFormatError('Runbooks', e);
       }
       renderRunbooksPanel();
+      if (lastMachineRunRecord?.runState?.runId || lastMachineRunRecord?.runId) {
+        scheduleMachineRunDecisionPrompts(targetPath, lastMachineRunRecord);
+      }
     }
   } catch (err) {
     notifyFormatError('Runbooks', err);
@@ -13371,7 +16527,7 @@ runbooksContentEl?.addEventListener('keydown', (event) => {
     if (targetPath) {
       runPipelinePreviewAction('default', targetPath).catch(err => notifyFormatError('Pipes', err));
     } else {
-      createOrpadRunbookStarter().catch(err => notifyFormatError('Pipes', err));
+      startPipelineGenerationFromPanel().catch(err => notifyFormatError('Pipes', err));
     }
     return;
   }
@@ -13387,15 +16543,8 @@ async function openFolder() {
   if (folderPath) {
     workspacePath = folderPath;
     expandedPaths.clear();
-    selectedRunbookPath = null;
-    selectedRunbookValidation = null;
-    lastRunRecord = null;
-    lastMachineRunRecord = null;
-    clearMachineRunProgressState();
-    runbookValidationCache.clear();
-    runbookRecordCache.clear();
-    machineRunRecordCache.clear();
-    machineRunListCache.clear();
+    clearWorkspacePipelineState();
+    pruneOpenTabsOutsideWorkspace(workspacePath);
     localStorage.setItem('orpad-workspace-path', workspacePath);
     await loadFileTree();
     window.orpad.watchDirectory(folderPath);
@@ -14973,8 +18122,58 @@ const fmtModalTitleEl = document.getElementById('fmt-modal-title');
 const fmtModalBodyEl = document.getElementById('fmt-modal-body');
 const fmtModalFooterEl = document.getElementById('fmt-modal-footer');
 let fmtModalOnClose = null;
+let fmtModalBusy = false;
+
+function setFmtModalBusy(busy, message = '') {
+  if (!fmtModalEl) return;
+  fmtModalBusy = Boolean(busy);
+  fmtModalEl.classList.toggle('busy', fmtModalBusy);
+  fmtModalEl.classList.toggle('locked', fmtModalBusy);
+  if (fmtModalBusy) fmtModalEl.setAttribute('aria-busy', 'true');
+  else fmtModalEl.removeAttribute('aria-busy');
+
+  let statusEl = fmtModalFooterEl.querySelector('[data-fmt-modal-busy-status]');
+  if (fmtModalBusy) {
+    if (!statusEl) {
+      statusEl = document.createElement('span');
+      statusEl.className = 'fmt-modal-busy-status';
+      statusEl.setAttribute('data-fmt-modal-busy-status', 'true');
+      fmtModalFooterEl.prepend(statusEl);
+    }
+    statusEl.textContent = message || 'Working...';
+  } else {
+    statusEl?.remove();
+  }
+
+  for (const control of fmtModalEl.querySelectorAll('button, input, textarea, select')) {
+    if (fmtModalBusy) {
+      if (!control.dataset.fmtModalPrevDisabled) {
+        control.dataset.fmtModalPrevDisabled = control.disabled ? 'true' : 'false';
+      }
+      control.disabled = true;
+    } else if (control.dataset.fmtModalPrevDisabled) {
+      control.disabled = control.dataset.fmtModalPrevDisabled === 'true';
+      delete control.dataset.fmtModalPrevDisabled;
+    }
+  }
+}
+
+async function runFmtModalLocked(action, busyText = 'Working...') {
+  if (fmtModalBusy) return false;
+  setFmtModalBusy(true, busyText);
+  try {
+    await action();
+    return true;
+  } catch (err) {
+    if (!fmtModalEl.classList.contains('hidden')) setFmtModalBusy(false);
+    throw err;
+  } finally {
+    if (!fmtModalEl.classList.contains('hidden')) setFmtModalBusy(false);
+  }
+}
 
 function openFmtModal({ title, body, footer, onClose }) {
+  if (fmtModalBusy) setFmtModalBusy(false);
   if (!fmtModalEl.classList.contains('hidden')) {
     const previousOnClose = fmtModalOnClose;
     fmtModalOnClose = null;
@@ -14991,14 +18190,30 @@ function openFmtModal({ title, body, footer, onClose }) {
     b.textContent = btn.label;
     if (btn.primary) b.classList.add('primary');
     if (btn.disabled) b.disabled = true;
-    b.addEventListener('click', btn.onClick);
+    b.addEventListener('click', (event) => {
+      if (fmtModalBusy) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      try {
+        const result = btn.onClick?.(event);
+        if (result && typeof result.catch === 'function') {
+          result.catch(err => notifyFormatError('Modal action', err));
+        }
+      } catch (err) {
+        notifyFormatError('Modal action', err);
+      }
+    });
     fmtModalFooterEl.appendChild(b);
   }
   fmtModalEl.classList.remove('hidden');
 }
-function closeFmtModal() {
-  if (fmtModalEl.classList.contains('locked')) return;
+function closeFmtModal(options = {}) {
+  const force = options?.force === true;
+  if (!force && fmtModalEl.classList.contains('locked')) return;
   if (fmtModalEl.classList.contains('hidden')) return;
+  if (fmtModalBusy) setFmtModalBusy(false);
   fmtModalEl.classList.add('hidden');
   const onClose = fmtModalOnClose;
   fmtModalOnClose = null;
@@ -16097,9 +19312,16 @@ window.addEventListener('resize', () => {
   const savedRatio = parseFloat(localStorage.getItem('orpad-divider-ratio'));
   if (savedRatio > 0 && savedRatio < 1) applyDividerRatio(savedRatio);
 
+  const storedWorkspacePath = workspacePath;
   const approvedWorkspace = await window.orpad.getApprovedWorkspace?.().catch(() => null);
   if (approvedWorkspace) {
+    const workspaceChanged = storedWorkspacePath && normalizeComparablePath(storedWorkspacePath) !== normalizeComparablePath(approvedWorkspace);
     workspacePath = approvedWorkspace;
+    if (workspaceChanged) {
+      expandedPaths.clear();
+      clearWorkspacePipelineState();
+      pruneOpenTabsOutsideWorkspace(workspacePath);
+    }
     localStorage.setItem('orpad-workspace-path', workspacePath);
   } else if (workspacePath) {
     workspacePath = null;

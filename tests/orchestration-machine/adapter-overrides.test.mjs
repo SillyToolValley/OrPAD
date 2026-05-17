@@ -168,6 +168,10 @@ test('applyAdapterOverridesToPipelineAdapter carries pipeline orchestration fiel
     proposalTimeoutMs: 600000,
     workerTimeoutMs: 900000,
     claimLeaseMs: 1800000,
+    claimPolicy: { concurrency: 1, maxClaims: 2 },
+    workerConcurrency: 1,
+    maxParallelWorkers: 3,
+    parallelWorkers: false,
     continueAfterReviewableBlockedPatch: true,
     supportNodePolicy: 'record-gate-warnings-and-mark-artifact-partial',
   };
@@ -192,6 +196,10 @@ test('applyAdapterOverridesToPipelineAdapter carries pipeline orchestration fiel
   assert.equal(lifted.candidateLimit, 5);
   assert.equal(lifted.workerTimeoutMs, 900000);
   assert.equal(lifted.claimLeaseMs, 1800000);
+  assert.deepEqual(lifted.claimPolicy, { concurrency: 1, maxClaims: 2 });
+  assert.equal(lifted.workerConcurrency, 1);
+  assert.equal(lifted.maxParallelWorkers, 3);
+  assert.equal(lifted.parallelWorkers, false);
   assert.equal(lifted.continueAfterReviewableBlockedPatch, true);
   // Provider-specific fields must NOT carry over (claude-code uses its own).
   assert.equal(lifted.workerSandbox, undefined);

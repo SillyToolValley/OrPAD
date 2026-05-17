@@ -20,7 +20,9 @@ const {
   findQueueItem,
   ingestCandidateProposal,
   prepareCliOverlayWorkspace,
+  processLooksApprovalRequired,
   redactCommandArgs,
+  resultStatusForProcess,
   readMachineEvents,
   runMachineProcess,
   sanitizeEnvironment,
@@ -413,6 +415,64 @@ test('CLI overlay adapter blocks successful no-op when expected changed files ar
   assert.deepEqual(result.changedFiles, []);
   assert.deepEqual(result.verification[0].expectedChangedFiles, ['src/allowed.txt']);
   assert.deepEqual(result.verification[0].missingExpectedChanges, ['src/allowed.txt']);
+});
+
+test('CLI overlay adapter classifies provider permission prompts as approval-required', () => {
+  const processResult = {
+    code: 0,
+    timedOut: false,
+    stdout: 'Claude requested a tool, but you have not granted permission yet.',
+    stderr: '',
+  };
+  assert.equal(processLooksApprovalRequired(processResult), true);
+  assert.equal(resultStatusForProcess(processResult, { changes: [], violations: [] }, {
+    expectedChangedFiles: ['src/allowed.txt'],
+  }), 'approval-required');
+});
+
+test('CLI overlay adapter treats sandbox edit denials as approval-required before missing patch checks', () => {
+  const processResult = {
+    code: 0,
+    timedOut: false,
+    stdout: JSON.stringify({
+      type: 'result',
+      result: 'Sandbox denied write to the overlay copy; repeated Edit calls returned permission errors.',
+      permission_denials: [{ tool_name: 'Edit' }],
+    }),
+    stderr: '',
+  };
+  assert.equal(processLooksApprovalRequired(processResult), true);
+  assert.equal(resultStatusForProcess(processResult, { changes: [], violations: [] }, {
+    expectedChangedFiles: ['src/allowed.txt'],
+  }), 'approval-required');
+});
+
+test('CLI overlay adapter ignores empty provider permission-denial metadata on successful output', () => {
+  const processResult = {
+    code: 0,
+    timedOut: false,
+    stdout: JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: JSON.stringify({
+        schemaVersion: 'orpad.workerResult.v1',
+        status: 'done',
+        summary: 'updated overlay file',
+      }),
+      permission_denials: [],
+      terminal_reason: 'completed',
+    }),
+    stderr: '',
+  };
+  const patch = {
+    changes: [{ path: 'src/allowed.txt' }],
+    violations: [],
+  };
+  assert.equal(processLooksApprovalRequired(processResult), false);
+  assert.equal(resultStatusForProcess(processResult, patch, {
+    expectedChangedFiles: ['src/allowed.txt'],
+  }), 'done');
 });
 
 test('CLI overlay adapter blocks Codex dangerous sandbox bypass without explicit approval', async () => {
