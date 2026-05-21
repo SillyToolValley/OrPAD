@@ -269,6 +269,35 @@ const searchStatusEl = document.getElementById('search-status');
 const tocNav = document.getElementById('toc');
 const backlinksContentEl = document.getElementById('backlinks-content');
 const runbooksContentEl = document.getElementById('runbooks-content');
+const btnOrchestrationEl = document.getElementById('btn-orchestration');
+const orchestrationRunbarSlotEl = document.getElementById('orchestration-runbar-slot');
+const APP_SEARCH_PARAMS = new URLSearchParams(window.location.search || '');
+const IS_ORCHESTRATION_WINDOW = APP_SEARCH_PARAMS.get('mode') === 'orchestration';
+if (IS_ORCHESTRATION_WINDOW) {
+  document.body.classList.add('orchestration-window');
+  btnOrchestrationEl?.classList.add('active');
+  btnOrchestrationEl?.setAttribute('aria-pressed', 'true');
+}
+
+function setOrchestrationRunbarHtml(html = '') {
+  if (!IS_ORCHESTRATION_WINDOW || !orchestrationRunbarSlotEl) return;
+  orchestrationRunbarSlotEl.innerHTML = html;
+}
+
+function renderOrchestrationRunbarPlaceholderHtml() {
+  return `
+    <div class="pipeline-runbar pipeline-runbar-empty" data-orchestration-runbar-placeholder>
+      <div class="pipeline-runbar-meta">
+        <strong>Select a pipeline</strong>
+      </div>
+      <div class="pipeline-runbar-actions">
+        <button class="pipeline-run-primary" disabled title="Select a pipeline to run." aria-label="Run selected pipeline">
+          ${orchToolIcon('M5 3l7 5-7 5V3z')}
+        </button>
+      </div>
+    </div>
+  `;
+}
 
 // ==================== Platform gating ====================
 // Detect the browser build so workspace features can fall back gracefully.
@@ -2063,6 +2092,8 @@ let orchGraphTool = 'select'; // 'select' | 'hand'
 let orchGraphTemporaryTool = '';
 let orchGraphViewport = { x: 0, y: 0, scale: 1 };
 let orchGraphFitAfterRender = true;
+let orchGraphResizeObserver = null;
+let orchGraphResizeFitRaf = 0;
 let orchGridSnapEnabled = false;
 let orchTempSnap = false;
 let orchHistoryBatchDepth = 0;
@@ -2119,6 +2150,8 @@ function renderPreview(content) {
   // the markdown view and drop it for structured views (JSON tree, CSV grid, etc.)
   // where those rules would interfere.
   contentEl.className = 'view-' + viewType + (viewType === 'markdown' ? ' markdown-body' : '');
+  refreshOrchestrationRunbarFromSelection();
+  if (!isOrchViewType(viewType)) disconnectOrchGraphFrames();
 
   if (viewType === 'html')    { renderHTMLPreview(content); return; }
   if (viewType === 'mermaid') { renderMermaidPreview(content); return; }
@@ -3754,7 +3787,10 @@ function renderMachineFailedAdaptersHtml(record) {
 }
 
 function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelineDoc = null) {
-  if (!context?.pipelinePath) return '';
+  if (!context?.pipelinePath) {
+    setOrchestrationRunbarHtml(renderOrchestrationRunbarPlaceholderHtml());
+    return '';
+  }
   const runbookPath = context.pipelinePath;
   const runbookKey = runbookNormalizePath(runbookPath).toLowerCase();
   const validation = selectedPipelineValidation(runbookPath);
@@ -3810,7 +3846,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   // X/N completed, elapsed since run.created. All derive from the
   // active record's events; no new IPC.
   const runHeaderMetrics = pipelinePreviewRunHeaderMetrics(previewRunRecord);
-  return `
+  const runbarHtml = `
     <div class="pipeline-runbar" data-pipeline-preview-runbar data-pipeline-path="${escapeHtml(runbookPath)}">
       <div class="pipeline-runbar-meta">
         <strong>${escapeHtml(displayTitle)}</strong>
@@ -3847,9 +3883,26 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         </details>
       </div>
     </div>
+  `;
+  const runDetailsHtml = `
     ${renderMachineLifecycleBannerHtml(previewRunRecord, runbookPath)}
     ${renderMachineFailedAdaptersHtml(previewRunRecord)}
   `;
+  if (IS_ORCHESTRATION_WINDOW) {
+    setOrchestrationRunbarHtml(runbarHtml);
+    return runDetailsHtml;
+  }
+  return `${runbarHtml}${runDetailsHtml}`;
+}
+
+function refreshOrchestrationRunbarFromSelection() {
+  if (!IS_ORCHESTRATION_WINDOW) return;
+  const selectedContext = selectedRunbookPath ? pipelineContextForPath(selectedRunbookPath) : null;
+  if (selectedContext?.pipelinePath) {
+    renderPipelinePreviewRunBar(selectedContext);
+    return;
+  }
+  setOrchestrationRunbarHtml(renderOrchestrationRunbarPlaceholderHtml());
 }
 
 function bindPipelineEditorTabs() {
@@ -5316,6 +5369,42 @@ function fitOrchGraphToFrame(frame = contentEl.querySelector('[data-orch-frame]'
     x: fitRect.left + (fitWidth - width * scale) / 2 - minX * scale,
     y: fitRect.top + (fitHeight - height * scale) / 2 - minY * scale,
   }, { minScale: ORCH_FIT_ZOOM_MIN });
+}
+
+function scheduleOrchGraphResponsiveFit(frame = contentEl.querySelector('[data-orch-frame]')) {
+  if (!frame || !contentEl.querySelector('.orch-preview')) return;
+  if (orchGraphResizeFitRaf) cancelAnimationFrame(orchGraphResizeFitRaf);
+  orchGraphResizeFitRaf = requestAnimationFrame(() => {
+    orchGraphResizeFitRaf = 0;
+    const activeFrame = frame.isConnected ? frame : contentEl.querySelector('[data-orch-frame]');
+    if (!activeFrame) return;
+    fitOrchGraphToFrame(activeFrame);
+  });
+}
+
+function watchOrchGraphFrames() {
+  if (orchGraphResizeObserver) {
+    orchGraphResizeObserver.disconnect();
+    orchGraphResizeObserver = null;
+  }
+  const frames = [...contentEl.querySelectorAll('[data-orch-frame]')];
+  if (!frames.length || typeof ResizeObserver !== 'function') return;
+  orchGraphResizeObserver = new ResizeObserver((entries) => {
+    const frame = entries.find(entry => entry.target?.matches?.('[data-orch-frame]'))?.target || frames[0];
+    scheduleOrchGraphResponsiveFit(frame);
+  });
+  frames.forEach(frame => orchGraphResizeObserver.observe(frame));
+}
+
+function disconnectOrchGraphFrames() {
+  if (orchGraphResizeObserver) {
+    orchGraphResizeObserver.disconnect();
+    orchGraphResizeObserver = null;
+  }
+  if (orchGraphResizeFitRaf) {
+    cancelAnimationFrame(orchGraphResizeFitRaf);
+    orchGraphResizeFitRaf = 0;
+  }
 }
 
 function orchFramePoint(frame, event) {
@@ -7288,6 +7377,7 @@ function renderOrchTreePreview(content) {
   });
   document.addEventListener('click', closeOrchContextMenu, { once: true, capture: true });
   updateOrchViewportDom();
+  watchOrchGraphFrames();
   if (orchGraphFitAfterRender) {
     orchGraphFitAfterRender = false;
     requestAnimationFrame(() => fitOrchGraphToFrame());
@@ -7667,6 +7757,7 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
   });
   document.addEventListener('click', closeOrchContextMenu, { once: true, capture: true });
   updateOrchViewportDom();
+  watchOrchGraphFrames();
   if (orchGraphFitAfterRender) {
     orchGraphFitAfterRender = false;
     requestAnimationFrame(() => fitOrchGraphToFrame());
@@ -11532,6 +11623,68 @@ function machineNodeCompletionDetails(record) {
   return completed.length ? `${machineCountLabel(completed.length, 'step')} completed` : 'No steps completed yet';
 }
 
+function machineLatestRunSummary(record, {
+  runInProgress = false,
+  displayStatus = {},
+  candidateDetails = '',
+  workerProofDetails = '',
+  nodeCompletionDetails = '',
+  queueInventoryDetails = '',
+  queueCounts = {},
+  approvalPending = false,
+  approvalDetails = '',
+  exported = null,
+  auditDetails = null,
+  runLabel = '',
+} = {}) {
+  const workerEvent = machineLatestWorkerEvent(record);
+  const runState = record?.runState || {};
+  const lifecycleValue = String(runState.lifecycleStatus || '').toLowerCase();
+  let state = displayStatus.lifecycleClass || '';
+  let headline = displayStatus.lifecycleLabel || machineLifecycleStatusLabel(runInProgress ? 'running' : (lifecycleValue || 'created'));
+  if (record?.success === false) {
+    headline = 'Run failed';
+    state = 'danger';
+  } else if (approvalPending) {
+    headline = 'Permission needed';
+    state = 'warn';
+  } else if (workerEvent) {
+    headline = machineEventLabel(workerEvent);
+    state = machineWorkerResultState(record);
+  } else if ((Number(queueCounts.claimedCount) || 0) > 0) {
+    headline = machineWorkInProgressLabel(queueCounts.claimedCount);
+    state = 'warn';
+  } else if ((Number(queueCounts.queuedCount) || 0) > 0) {
+    headline = 'Work is ready';
+    state = 'warn';
+  } else if (runInProgress) {
+    headline = 'Running';
+    state = 'warn';
+  }
+
+  const detailParts = [
+    candidateDetails && candidateDetails !== 'No work discovery yet' ? candidateDetails : '',
+    workerProofDetails && workerProofDetails !== 'No work result yet' ? workerProofDetails : '',
+  ].filter(Boolean);
+  if (!detailParts.length && queueInventoryDetails) detailParts.push(queueInventoryDetails);
+  if (!detailParts.length) detailParts.push(displayStatus.summaryLabel || machineSummaryStatusLabel(runState.summaryStatus || 'pending'));
+
+  const metaParts = [
+    runLabel,
+    (runInProgress || record?.success === false || ['running', 'waiting'].includes(lifecycleValue)) ? nodeCompletionDetails : '',
+    approvalPending ? approvalDetails : '',
+    exported ? 'Snapshot saved' : '',
+    ['warn', 'danger'].includes(auditDetails?.state) ? auditDetails.text : '',
+  ].filter(Boolean);
+
+  return {
+    headline,
+    state: state || 'warn',
+    details: detailParts.join(' - '),
+    meta: metaParts.join(' - '),
+  };
+}
+
 function machineApprovalDetails(record) {
   const approvals = record?.approvals || {};
   const pending = machinePendingApprovals(record);
@@ -13360,6 +13513,20 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const lifecycleStatus = runInProgress ? 'running' : (runState.lifecycleStatus || 'created');
   const summaryStatus = runState.summaryStatus || 'pending';
   const displayStatus = machineDisplayStatus(record, runInProgress);
+  const latestRunSummary = machineLatestRunSummary(record, {
+    runInProgress,
+    displayStatus,
+    candidateDetails,
+    workerProofDetails,
+    nodeCompletionDetails,
+    queueInventoryDetails,
+    queueCounts,
+    approvalPending,
+    approvalDetails,
+    exported,
+    auditDetails,
+    runLabel,
+  });
   const hasActiveClaims = activeClaims.length > 0;
   const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
   const continueBlockedByExhaustedQueue = Boolean(machineBlockedQueueExhaustedDetails(record));
@@ -13380,18 +13547,30 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           }).join('')}
         </div>
       ` : '';
+  const approvalPrompt = approvalPending ? `
+      <div class="runbook-diagnostic warning">
+        <strong>Permission needed</strong> ${escapeHtml(approvalDetails)}
+        ${approvalActions}
+      </div>
+    ` : '';
   return `
     <section class="runbook-panel-section">
       <h3>Latest Run</h3>
       <div class="runbook-chip-row">
         <span class="runbook-chip ${escapeHtml(displayStatus.lifecycleClass)}" title="${escapeHtml(displayStatus.lifecycleTitle)}">${escapeHtml(displayStatus.lifecycleLabel)}</span>
         <span class="runbook-chip ${escapeHtml(displayStatus.summaryClass)}" title="${escapeHtml(displayStatus.summaryTitle)}">${escapeHtml(displayStatus.summaryLabel)}</span>
-        <span class="runbook-chip">${escapeHtml(runLabel)}</span>
+      </div>
+      <div class="runbook-latest-run-summary ${escapeHtml(latestRunSummary.state)}">
+        <div class="runbook-latest-run-main">
+          <strong>${escapeHtml(latestRunSummary.headline)}</strong>
+          <span>${escapeHtml(latestRunSummary.details)}</span>
+        </div>
+        ${latestRunSummary.meta ? `<div class="runbook-latest-run-meta">${escapeHtml(latestRunSummary.meta)}</div>` : ''}
       </div>
       ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
-      ${renderMachineRunHistory(runbookPath, runId)}
       ${machineFailureDetails(record)}
       ${attentionDetails}
+      ${approvalPrompt}
       <div class="runbook-action-row">
         ${runInProgress ? '' : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} class="${executeDisabled ? '' : 'cta-ready'}" title="${escapeHtml(executeDetails)}">Continue</button>`}
         <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
@@ -13399,63 +13578,71 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
-      ${renderReplayTimelineHtml(record, runId, events)}
-      <div class="runbook-replay-events-bar">
-        <span>Recent events (${events.length})</span>
-        <button class="runbook-replay-stick-toggle ${isReplayStickEnabled(runId) ? 'active' : ''}" data-runbook-action="toggle-replay-stick" data-run-id="${escapeHtml(runId)}" title="${isReplayStickEnabled(runId) ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.'}">${isReplayStickEnabled(runId) ? 'Auto-scroll' : 'Manual scroll'}</button>
-      </div>
-      <div class="runbook-replay-events" data-runbook-replay-events data-run-id="${escapeHtml(runId)}">
-        ${(events.length ? events : []).slice(-100).map(event => {
-          const timeLabel = machineEventTimeLabel(event);
-          const seq = event?.sequence != null ? Number(event.sequence) : -1;
-          const lastSeq = lastReplayRenderedSequence.get(runId) || 0;
-          const fresh = seq > lastSeq && lastSeq > 0;
-          return `<div class="runbook-event${fresh ? ' runbook-event-fresh' : ''}" data-event-seq="${escapeHtml(String(seq))}">${timeLabel ? `${escapeHtml(timeLabel)} ` : ''}${escapeHtml(machineEventLabel(event))}</div>`;
-        }).join('') || '<div class="runbook-event">No run events recorded.</div>'}
-      </div>
-      <div class="runbook-machine-grid">
-        <div class="runbook-guide ${record.candidateInventory ? 'good' : 'warn'}">
-          <strong>Work found</strong>
-          <span>${escapeHtml(candidateDetails)}</span>
+      ${renderMachineRunHistory(runbookPath, runId)}
+      <details class="runbook-run-details" data-runbook-run-details>
+        <summary>
+          <span>Run details</span>
+          <span>${escapeHtml(machineCountLabel(events.length, 'event'))}</span>
+        </summary>
+        <div class="runbook-run-details-body">
+          ${renderReplayTimelineHtml(record, runId, events)}
+          <div class="runbook-replay-events-bar">
+            <span>Recent events (${events.length})</span>
+            <button class="runbook-replay-stick-toggle ${isReplayStickEnabled(runId) ? 'active' : ''}" data-runbook-action="toggle-replay-stick" data-run-id="${escapeHtml(runId)}" title="${isReplayStickEnabled(runId) ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.'}">${isReplayStickEnabled(runId) ? 'Auto-scroll' : 'Manual scroll'}</button>
+          </div>
+          <div class="runbook-replay-events" data-runbook-replay-events data-run-id="${escapeHtml(runId)}">
+            ${(events.length ? events : []).slice(-100).map(event => {
+              const timeLabel = machineEventTimeLabel(event);
+              const seq = event?.sequence != null ? Number(event.sequence) : -1;
+              const lastSeq = lastReplayRenderedSequence.get(runId) || 0;
+              const fresh = seq > lastSeq && lastSeq > 0;
+              return `<div class="runbook-event${fresh ? ' runbook-event-fresh' : ''}" data-event-seq="${escapeHtml(String(seq))}">${timeLabel ? `${escapeHtml(timeLabel)} ` : ''}${escapeHtml(machineEventLabel(event))}</div>`;
+            }).join('') || '<div class="runbook-event">No run events recorded.</div>'}
+          </div>
+          <div class="runbook-machine-grid">
+            <div class="runbook-guide ${record.candidateInventory ? 'good' : 'warn'}">
+              <strong>Work found</strong>
+              <span>${escapeHtml(candidateDetails)}</span>
+            </div>
+            <div class="runbook-guide ${escapeHtml(machineWorkerResultState(record))}">
+              <strong>Work result</strong>
+              <span>${escapeHtml(workerProofDetails)}</span>
+            </div>
+            <div class="runbook-guide">
+              <strong>Step progress</strong>
+              <span>${escapeHtml(nodeCompletionDetails)}</span>
+            </div>
+            <div class="runbook-guide ${queueCounts.activeCount || queueCounts.blockedCount ? 'warn' : ''}">
+              <strong>Work status</strong>
+              <span>${escapeHtml([queueInventoryDetails || (queueEvents.length ? machineCountLabel(queueEvents.length, 'work update') : 'No work updates yet'), blockedWorkDetails, activeClaimDetails, activeWriteSetDetails].filter(Boolean).join('; '))}</span>
+            </div>
+            <div class="runbook-guide ${escapeHtml(resumeDetails.state)}">
+              <strong>Recovery</strong>
+              <span>${escapeHtml(resumeDetails.text)}</span>
+            </div>
+            <div class="runbook-guide ${escapeHtml(cancellationDetails.state)}">
+              <strong>Stop work</strong>
+              <span>${escapeHtml(cancellationDetails.text)}</span>
+            </div>
+            <div class="runbook-guide">
+              <strong>Evidence files</strong>
+              <span>${escapeHtml(artifactDetails)}</span>
+            </div>
+            <div class="runbook-guide ${exported ? 'good' : 'warn'}">
+              <strong>Evidence snapshot</strong>
+              <span>${escapeHtml(exported ? 'Snapshot saved' : 'No snapshot saved yet')}</span>
+            </div>
+            <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
+              <strong>Evidence check</strong>
+              <span>${escapeHtml(auditDetails.text)}</span>
+            </div>
+            <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
+              <strong>Permission</strong>
+              <span>${escapeHtml(approvalDetails)}</span>
+            </div>
+          </div>
         </div>
-        <div class="runbook-guide ${escapeHtml(machineWorkerResultState(record))}">
-          <strong>Work result</strong>
-          <span>${escapeHtml(workerProofDetails)}</span>
-        </div>
-        <div class="runbook-guide">
-          <strong>Step progress</strong>
-          <span>${escapeHtml(nodeCompletionDetails)}</span>
-        </div>
-        <div class="runbook-guide ${queueCounts.activeCount || queueCounts.blockedCount ? 'warn' : ''}">
-          <strong>Work status</strong>
-          <span>${escapeHtml([queueInventoryDetails || (queueEvents.length ? machineCountLabel(queueEvents.length, 'work update') : 'No work updates yet'), blockedWorkDetails, activeClaimDetails, activeWriteSetDetails].filter(Boolean).join('; '))}</span>
-        </div>
-        <div class="runbook-guide ${escapeHtml(resumeDetails.state)}">
-          <strong>Recovery</strong>
-          <span>${escapeHtml(resumeDetails.text)}</span>
-        </div>
-        <div class="runbook-guide ${escapeHtml(cancellationDetails.state)}">
-          <strong>Stop work</strong>
-          <span>${escapeHtml(cancellationDetails.text)}</span>
-        </div>
-        <div class="runbook-guide">
-          <strong>Evidence files</strong>
-          <span>${escapeHtml(artifactDetails)}</span>
-        </div>
-        <div class="runbook-guide ${exported ? 'good' : 'warn'}">
-          <strong>Evidence snapshot</strong>
-          <span>${escapeHtml(exported ? 'Snapshot saved' : 'No snapshot saved yet')}</span>
-        </div>
-        <div class="runbook-guide ${escapeHtml(auditDetails.state)}">
-          <strong>Evidence check</strong>
-          <span>${escapeHtml(auditDetails.text)}</span>
-        </div>
-        <div class="runbook-guide ${approvalPending ? 'warn' : 'good'}">
-          <strong>Permission</strong>
-          <span>${escapeHtml(approvalDetails)}</span>
-          ${approvalActions}
-        </div>
-      </div>
+      </details>
     </section>
   `;
 }
@@ -13599,6 +13786,7 @@ function renderRunbooksPanel() {
   // and snapshot the highest rendered sequence so the next render flags
   // only genuinely new events as fresh.
   applyReplayStickAfterRender();
+  refreshOrchestrationRunbarFromSelection();
 }
 
 async function validateSelectedRunbook(runbookPath) {
@@ -17650,6 +17838,26 @@ function openObsidianImportReview() {
   });
 }
 
+async function handlePipelineRunButton(button) {
+  if (!button) return;
+  button.closest('details')?.removeAttribute('open');
+  const action = button.dataset.pipelineRunAction || '';
+  const runbarPath = button.closest('[data-pipeline-preview-runbar]')?.dataset.pipelinePath || '';
+  const targetPath = runbarPath || button.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+  try {
+    if (action === 'machine-cancel-run') {
+      await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    } else if (action === 'machine-start-run') {
+      const startPath = button.dataset.runbookPath || targetPath;
+      if (startPath) await startSelectedMachineRun(startPath);
+    } else {
+      await runPipelinePreviewAction(action, targetPath);
+    }
+  } catch (err) {
+    notifyFormatError('Pipeline', err);
+  }
+}
+
 contentEl?.addEventListener('click', async (event) => {
   const probeButton = event.target.closest?.('[data-probe-action]');
   if (probeButton && contentEl.contains(probeButton)) {
@@ -17874,23 +18082,15 @@ contentEl?.addEventListener('click', async (event) => {
   if (!button || !contentEl.contains(button)) return;
   event.preventDefault();
   event.stopPropagation();
-  button.closest('details')?.removeAttribute('open');
-  const action = button.dataset.pipelineRunAction || '';
-  const runbarPath = button.closest('[data-pipeline-preview-runbar]')?.dataset.pipelinePath || '';
-  const targetPath = runbarPath || button.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
-  try {
-    if (action === 'machine-cancel-run') {
-      await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
-    } else if (action === 'machine-start-run') {
-      // Lifecycle banner's "Start new run" CTA on terminal runs.
-      const startPath = button.dataset.runbookPath || targetPath;
-      if (startPath) await startSelectedMachineRun(startPath);
-    } else {
-      await runPipelinePreviewAction(action, targetPath);
-    }
-  } catch (err) {
-    notifyFormatError('Pipeline', err);
-  }
+  await handlePipelineRunButton(button);
+});
+
+orchestrationRunbarSlotEl?.addEventListener('click', async (event) => {
+  const button = event.target.closest?.('[data-pipeline-run-action]');
+  if (!button || !orchestrationRunbarSlotEl.contains(button)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  await handlePipelineRunButton(button);
 });
 
 runbooksContentEl?.addEventListener('click', async (event) => {
@@ -18133,7 +18333,7 @@ runbooksContentEl?.addEventListener('keydown', (event) => {
 });
 
 // ==================== File Tree ====================
-async function openFolder() {
+async function openFolder({ revealSidebar = true } = {}) {
   const folderPath = await window.orpad.openFolderDialog();
   if (folderPath) {
     workspacePath = folderPath;
@@ -18146,8 +18346,9 @@ async function openFolder() {
     window.orpad.buildLinkIndex(folderPath).then(() => refreshFileNameCache());
     scheduleGitRefresh(0);
     scheduleSnippetRefresh(0);
-    if (!sidebarVisible) showSidebar('files');
+    if (revealSidebar && !sidebarVisible) showSidebar('files');
   }
+  return folderPath || null;
 }
 
 async function loadFileTree() {
@@ -18898,6 +19099,7 @@ function setupCommandRegistry() {
     { id: 'view.files', title: 'Toggle File Explorer', category: 'View', keybinding: 'Ctrl Shift E', run: () => showSidebar('files') },
     { id: 'view.search', title: 'Search in Files', category: 'View', keybinding: 'Ctrl Shift F', run: () => showSidebar('search') },
     { id: 'view.backlinks', title: 'Toggle Backlinks', category: 'View', keybinding: 'Ctrl Shift B', run: () => showSidebar('backlinks') },
+    { id: 'view.orchestration', title: 'Open Orchestration', category: 'View', run: openOrchestrationWindow },
     { id: 'view.runbooks', title: 'Open Pipes', category: 'View', run: () => showSidebar('runbooks') },
     { id: 'runbook.validateActive', title: 'Check Active Pipeline', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); } },
     { id: 'runbook.createRunRecord', title: 'Save Evidence', category: 'Pipeline', enabled: ({ activeTab, workspacePath }) => !!workspacePath && !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await createSelectedRunRecord(activeTab.filePath); } },
@@ -19093,6 +19295,7 @@ document.getElementById('btn-open').addEventListener('click', () => {
 document.getElementById('btn-save').addEventListener('click', saveFile);
 document.getElementById('btn-files').addEventListener('click', () => showSidebar('files'));
 document.getElementById('btn-toc').addEventListener('click', () => showSidebar('toc'));
+btnOrchestrationEl?.addEventListener('click', openOrchestrationWindow);
 document.getElementById('btn-set-default').addEventListener('click', () => window.orpad.openDefaultAppsSettings());
 
 // ==================== Language Selector ====================
@@ -20822,6 +21025,49 @@ window.orpad.onLoadMarkdown((data) => {
 });
 window.orpad.onNewFromTemplate?.(() => openNewFromTemplate());
 
+async function openOrchestrationWindow() {
+  if (IS_ORCHESTRATION_WINDOW) {
+    toggleOrchestrationRail();
+    return;
+  }
+  if (!workspacePath) {
+    await openFolder({ revealSidebar: false });
+    if (!workspacePath) return;
+  }
+  const api = window.orpad?.orchestrationWindow;
+  if (!api?.open) {
+    ensureSidebar('runbooks');
+    return;
+  }
+  try {
+    const response = await api.open({ workspacePath });
+    if (response?.success === false) {
+      throw new Error(response.error || 'Orchestration window could not be opened.');
+    }
+  } catch (err) {
+    notifyFormatError('Orchestration', err);
+  }
+}
+
+function setOrchestrationRailCollapsed(collapsed) {
+  if (!IS_ORCHESTRATION_WINDOW) return;
+  document.body.classList.toggle('orchestration-rail-collapsed', !!collapsed);
+  localStorage.setItem('orpad-orchestration-rail-collapsed', collapsed ? 'true' : 'false');
+  if (btnOrchestrationEl) {
+    btnOrchestrationEl.classList.toggle('rail-collapsed', !!collapsed);
+    btnOrchestrationEl.title = collapsed ? 'Show Orchestration Panel' : 'Hide Orchestration Panel';
+    btnOrchestrationEl.setAttribute('aria-label', btnOrchestrationEl.title);
+    btnOrchestrationEl.setAttribute('aria-expanded', String(!collapsed));
+  }
+  requestAnimationFrame(() => {
+    if (contentEl.querySelector('.orch-graph-node')) fitOrchGraphToFrame();
+  });
+}
+
+function toggleOrchestrationRail() {
+  setOrchestrationRailCollapsed(!document.body.classList.contains('orchestration-rail-collapsed'));
+}
+
 // ==================== Init ====================
 function applyLocaleToDOM() {
   document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
@@ -20862,6 +21108,7 @@ window.addEventListener('resize', () => {
       editorPaneEl.style.width = '';
       previewPaneEl.style.flex = '1';
     }
+    scheduleOrchGraphResponsiveFit();
   });
 });
 
@@ -20885,7 +21132,7 @@ window.addEventListener('resize', () => {
   const savedSidebarVisible = localStorage.getItem('orpad-sidebar-visible');
   const savedSidebarPanel = localStorage.getItem('orpad-sidebar-panel') || 'files';
 
-  if (savedSidebarVisible === 'true' || (savedSidebarVisible === null && legacyTocVisible === 'true')) {
+  if (!IS_ORCHESTRATION_WINDOW && (savedSidebarVisible === 'true' || (savedSidebarVisible === null && legacyTocVisible === 'true'))) {
     sidebarActivePanel = legacyTocVisible === 'true' && savedSidebarVisible === null ? 'toc' : savedSidebarPanel;
     sidebarEl.style.transition = 'none';
     showSidebar(sidebarActivePanel);
@@ -20930,6 +21177,16 @@ window.addEventListener('resize', () => {
     window.orpad.buildLinkIndex(workspacePath).then(() => refreshFileNameCache());
     scheduleGitRefresh(0);
     scheduleSnippetRefresh(0);
+  }
+  if (IS_ORCHESTRATION_WINDOW) {
+    sidebarVisible = true;
+    sidebarActivePanel = 'runbooks';
+    sidebarEl?.classList.remove('hidden');
+    document.getElementById('sidebar-runbooks')?.classList.add('active');
+    window.orpad?.setTitle?.('OrPAD Orchestration');
+    setOrchestrationRailCollapsed(localStorage.getItem('orpad-orchestration-rail-collapsed') === 'true');
+    renderRunbooksPanel();
+    void refreshWorkspaceRunbookSummary();
   }
   await refreshUserSnippets();
   window.orpad.userSnippets?.watch?.();

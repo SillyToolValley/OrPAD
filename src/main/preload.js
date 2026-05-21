@@ -125,6 +125,11 @@ contextBridge.exposeInMainWorld('orpad', {
       return () => ipcRenderer.removeListener('orchestration-generate-pipeline-event', listener);
     },
   },
+  orchestrationWindow: {
+    open: (request = {}) => ipcRenderer.invoke('orchestration-window-open', request),
+    focus: () => ipcRenderer.invoke('orchestration-window-focus'),
+    status: () => ipcRenderer.invoke('orchestration-window-status'),
+  },
   machine: {
     status: () => ipcRenderer.invoke('machine-status'),
     enableSession: () => ipcRenderer.invoke('machine-enable-session'),

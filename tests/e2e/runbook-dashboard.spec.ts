@@ -310,6 +310,104 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('toolbar opens Orchestration in a dedicated workspace window', async () => {
+  const workspace = writeFixtureWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await expect(win.locator('#btn-orchestration')).toBeVisible();
+  await expect(win.locator('.sidebar-tab[data-panel="runbooks"]')).toBeHidden();
+
+  const orchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const orchestrationWin = await orchestrationWindowPromise;
+  await orchestrationWin.waitForLoadState('domcontentloaded');
+  await orchestrationWin.waitForSelector('body.orchestration-window');
+  await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await expect(orchestrationWin.locator('#btn-orchestration')).toHaveClass(/active/);
+  await expect(orchestrationWin.locator('#sidebar-header')).toBeHidden();
+  await expect(orchestrationWin.locator('#editor-pane')).toBeHidden();
+  await expect(orchestrationWin.locator('#preview-pane')).toBeVisible();
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Describe the work');
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Generate Pipeline');
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Agent Workstream');
+  await expect(orchestrationWin.locator('#toolbar #orchestration-runbar-slot [data-orchestration-runbar-placeholder]')).toBeVisible();
+  await expect(orchestrationWin.locator('#toolbar #orchestration-runbar-slot')).toContainText('Select a pipeline');
+  await orchestrationWin.locator('.runbook-item[data-runbook-format="or-pipeline"]')
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })
+    .click();
+  const toolbarRunbar = orchestrationWin.locator('#toolbar #orchestration-runbar-slot [data-pipeline-preview-runbar]');
+  await expect(toolbarRunbar).toBeVisible();
+  await expect(toolbarRunbar.locator('strong')).toContainText('Agent Workstream');
+  await expect(toolbarRunbar.locator('.pipeline-runbar-status').first()).toBeHidden();
+  await expect(orchestrationWin.locator('#content [data-pipeline-preview-runbar]')).toHaveCount(0);
+  await expect(orchestrationWin.locator('.orch-graph-node')).toHaveCount(6);
+  const graphFrame = orchestrationWin.locator('[data-orch-frame]').first();
+  await expect(graphFrame).toBeVisible();
+  await orchestrationWin.setViewportSize({ width: 1120, height: 620 });
+  const compactGraphBox = await graphFrame.boundingBox();
+  await orchestrationWin.setViewportSize({ width: 1120, height: 840 });
+  await expect.poll(async () => (await graphFrame.boundingBox())?.height || 0).toBeGreaterThan((compactGraphBox?.height || 0) + 90);
+  const runbarBox = await toolbarRunbar.boundingBox();
+  const viewportWidth = await orchestrationWin.evaluate(() => window.innerWidth);
+  expect(runbarBox?.y ?? 999).toBeLessThan(40);
+  expect(Math.abs(((runbarBox?.x || 0) + (runbarBox?.width || 0) / 2) - (viewportWidth / 2))).toBeLessThan(36);
+
+  await orchestrationWin.locator('#btn-orchestration').click();
+  await expect(orchestrationWin.locator('body')).toHaveClass(/orchestration-rail-collapsed/);
+  await expect(orchestrationWin.locator('#runbooks-content')).toBeHidden();
+  await expect(orchestrationWin.locator('.orch-graph-node')).toHaveCount(6);
+
+  await orchestrationWin.locator('#btn-orchestration').click();
+  await expect(orchestrationWin.locator('body')).not.toHaveClass(/orchestration-rail-collapsed/);
+  await expect(orchestrationWin.locator('#runbooks-content')).toBeVisible();
+
+  const status = await win.evaluate(async () => {
+    return await (window as any).orpad.orchestrationWindow.status();
+  });
+  expect(status.open).toBe(true);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Orchestration button asks for a project folder before opening', async () => {
+  const workspace = writeFixtureWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+
+  const patchedDialog = await app.evaluate(({ dialog }, nextWorkspace) => {
+    if (!dialog?.showOpenDialog) return false;
+    dialog.showOpenDialog = async () => ({
+      canceled: false,
+      filePaths: [nextWorkspace],
+    });
+    return true;
+  }, workspace);
+  expect(patchedDialog).toBe(true);
+
+  const orchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const orchestrationWin = await orchestrationWindowPromise;
+  await orchestrationWin.waitForLoadState('domcontentloaded');
+  await orchestrationWin.waitForSelector('body.orchestration-window');
+  await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText(path.basename(workspace));
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Agent Workstream');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('workspace switch clears stale selected pipeline and graph preview', async () => {
   const firstWorkspace = writeFixtureWorkspace();
   const emptyWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-runbook-empty-'));

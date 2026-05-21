@@ -15,6 +15,7 @@ const { createAuthorityManager, isInsidePath } = require('./authority');
 
 const windows = new Set();
 const terminalWindows = new Set();
+const orchestrationWindows = new Set();
 const terminalWindowContexts = new Map();
 const watchers = new Map();
 const snippetWatchers = new Map();
@@ -330,6 +331,21 @@ function closeTerminalWindows() {
   }
 }
 
+function activeOrchestrationWindow() {
+  for (const win of orchestrationWindows) {
+    if (win && !win.isDestroyed()) return win;
+  }
+  return null;
+}
+
+function focusOrchestrationWindow(win = activeOrchestrationWindow()) {
+  if (!win || win.isDestroyed()) return false;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  return true;
+}
+
 function mainWindowForTerminalContext(context = {}) {
   const openerId = Number(context.openerWebContentsId || 0);
   for (const win of windows) {
@@ -384,6 +400,56 @@ function createTerminalWindow({ openerWebContents, workspaceRoot = '', cwd = '',
   win.on('closed', () => {
     terminalWindows.delete(win);
     terminalWindowContexts.delete(webContentsId);
+    authority.forget({ id: webContentsId });
+  });
+  return win;
+}
+
+function createOrchestrationWindow({ openerWebContents, workspaceRoot = '' } = {}) {
+  const openerWindow = openerWebContents ? BrowserWindow.fromWebContents(openerWebContents) : null;
+  const openerBounds = openerWindow?.getBounds?.() || null;
+  const display = screen.getDisplayNearestPoint(openerBounds
+    ? { x: openerBounds.x + Math.round(openerBounds.width / 2), y: openerBounds.y + Math.round(openerBounds.height / 2) }
+    : screen.getCursorScreenPoint());
+  const area = display.workArea;
+  const width = Math.min(1180, area.width);
+  const height = Math.min(850, area.height);
+  const win = new BrowserWindow({
+    width,
+    height,
+    minWidth: 840,
+    minHeight: 620,
+    x: area.x + Math.max(0, Math.round((area.width - width) / 2)),
+    y: area.y + Math.max(0, Math.round((area.height - height) / 2)),
+    icon: path.join(__dirname, '../../assets/icon.ico'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+    show: false,
+    backgroundColor: '#1a1b26',
+    title: 'OrPAD Orchestration',
+  });
+
+  win.setMenuBarVisibility(false);
+  const webContentsId = win.webContents.id;
+  if (workspaceRoot) authority.grantWorkspace(win.webContents, workspaceRoot);
+  orchestrationWindows.add(win);
+  win.loadFile(path.join(__dirname, '../renderer/index.html'), { query: { mode: 'orchestration' } });
+  win.webContents.setVisualZoomLevelLimits(1, 1);
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) win.show();
+  });
+  win.on('closed', () => {
+    orchestrationWindows.delete(win);
     authority.forget({ id: webContentsId });
   });
   return win;
@@ -522,6 +588,30 @@ ipcMain.handle('terminal-window-status', async () => {
 
 ipcMain.handle('terminal-window-focus', async () => {
   return focusTerminalWindow();
+});
+
+ipcMain.handle('orchestration-window-open', async (event) => {
+  const existing = activeOrchestrationWindow();
+  if (existing) {
+    focusOrchestrationWindow(existing);
+    return { id: existing.id, success: true, reused: true };
+  }
+  const openerWorkspace = authority.getWorkspaceRoot(event.sender) || await readApprovedWorkspace();
+  const workspaceRoot = openerWorkspace ? path.resolve(String(openerWorkspace)) : '';
+  const win = createOrchestrationWindow({
+    openerWebContents: event.sender,
+    workspaceRoot,
+  });
+  return { id: win.id, success: true };
+});
+
+ipcMain.handle('orchestration-window-status', async () => {
+  const win = activeOrchestrationWindow();
+  return win ? { open: true, id: win.id } : { open: false };
+});
+
+ipcMain.handle('orchestration-window-focus', async () => {
+  return focusOrchestrationWindow();
 });
 
 ipcMain.handle('terminal-window-dock-main', async (event) => {
