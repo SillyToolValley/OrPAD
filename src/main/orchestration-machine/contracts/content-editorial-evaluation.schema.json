@@ -1,0 +1,224 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.contentEditorialEvaluation.v1",
+  "title": "OrPAD Content Editorial Evaluation",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "evaluationKind",
+    "createdAt",
+    "evaluator",
+    "worker",
+    "policy",
+    "inputs",
+    "ruleResult",
+    "judge",
+    "overall"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["orpad.contentEditorialEvaluation.v1"]
+    },
+    "evaluationKind": {
+      "enum": ["content-editorial-quality"]
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evaluator": {
+      "type": "object",
+      "required": ["id", "version", "ownership"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "ownership": { "enum": ["orpad-machine"] }
+      },
+      "additionalProperties": true
+    },
+    "worker": {
+      "type": "object",
+      "required": ["eventSequence", "nodePath", "changedFiles"],
+      "properties": {
+        "eventSequence": { "type": ["integer", "null"] },
+        "nodePath": { "type": "string" },
+        "itemId": { "type": "string" },
+        "adapterCallId": { "type": "string" },
+        "attemptId": { "type": "string" },
+        "patchArtifact": { "type": "string" },
+        "changedFiles": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "policy": {
+      "type": "object",
+      "required": ["evaluationMode", "judgePolicy"],
+      "properties": {
+        "evaluationMode": { "enum": ["content-editorial-quality"] },
+        "judgePolicy": { "enum": ["rule-only", "rule-then-llm", "llm-required"] }
+      },
+      "additionalProperties": true
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["changedFiles", "contentFiles", "contentChangeCount", "diagnostics", "styleSample", "nodePackRubric"],
+      "properties": {
+        "patchArtifact": { "type": "string" },
+        "changedFiles": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "contentFiles": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "contentChangeCount": { "type": "integer", "minimum": 0 },
+        "diagnostics": { "type": "array" },
+        "styleSample": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "nodePackRubric": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "ruleResult": {
+      "type": "object",
+      "required": ["passed", "scores", "metrics", "checks", "findings", "evidenceRefs", "requiredFixes", "changedHunks"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "scores": { "$ref": "#/definitions/scores" },
+        "metrics": { "type": "object" },
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/check" }
+        },
+        "findings": { "type": "array" },
+        "evidenceRefs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/evidenceRef" }
+        },
+        "requiredFixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "changedHunks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/changedHunk" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "judge": {
+      "type": "object",
+      "required": ["status", "passed", "scores", "findings", "evidenceRefs", "requiredFixes", "weakEvidence"],
+      "properties": {
+        "status": { "enum": ["skipped", "blocked", "completed"] },
+        "passed": { "type": "boolean" },
+        "skipped": { "type": "boolean" },
+        "blockedReason": { "type": "string" },
+        "skippedReason": { "type": "string" },
+        "source": { "type": "string" },
+        "scores": { "$ref": "#/definitions/scores" },
+        "findings": { "type": "array" },
+        "evidenceRefs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requiredFixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "weakEvidence": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "overall": {
+      "type": "object",
+      "required": ["passed", "residualRisks", "requiredFixes"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "residualRisks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requiredFixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "definitions": {
+    "scores": {
+      "type": "object",
+      "required": ["voiceTone", "density", "roleSeparation", "beforeAfter"],
+      "properties": {
+        "voiceTone": { "type": "number", "minimum": 0, "maximum": 3 },
+        "density": { "type": "number", "minimum": 0, "maximum": 3 },
+        "roleSeparation": { "type": "number", "minimum": 0, "maximum": 3 },
+        "beforeAfter": { "type": "number", "minimum": 0, "maximum": 3 }
+      },
+      "additionalProperties": true
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "label", "passed", "severity", "reason", "evidenceRefs", "requiredFixes"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "passed": { "type": "boolean" },
+        "severity": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string" },
+        "evidenceRefs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/evidenceRef" }
+        },
+        "requiredFixes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "evidenceRef": {
+      "type": "object",
+      "required": ["id", "type", "path", "excerpt"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "path": { "type": "string" },
+        "hunkId": { "type": "string" },
+        "lineStart": { "type": ["integer", "null"] },
+        "lineEnd": { "type": ["integer", "null"] },
+        "excerpt": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "changedHunk": {
+      "type": "object",
+      "required": ["id", "path", "addedLineCount", "removedLineCount", "preview"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "path": { "type": "string" },
+        "beforeStart": { "type": ["integer", "null"] },
+        "beforeEnd": { "type": ["integer", "null"] },
+        "afterStart": { "type": ["integer", "null"] },
+        "afterEnd": { "type": ["integer", "null"] },
+        "addedLineCount": { "type": "integer", "minimum": 0 },
+        "removedLineCount": { "type": "integer", "minimum": 0 },
+        "presentationContent": { "type": "boolean" },
+        "preview": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

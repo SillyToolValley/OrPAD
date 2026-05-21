@@ -1,0 +1,62 @@
+{
+  "$schema": "https://orpad.dev/schemas/or-graph/v1.json",
+  "kind": "orpad.graph",
+  "version": "1.0",
+  "graph": {
+    "id": "security-review-workstream",
+    "label": "Security Review Workstream",
+    "start": "entry",
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Entry"
+      },
+      {
+        "id": "map-security-boundaries",
+        "type": "orpad.context",
+        "label": "Map security boundaries",
+        "config": {
+          "ruleRef": "security-review-scope",
+          "skillRef": "security-review-audit",
+          "summary": "Collect authority, credential, IPC, HTML rendering, command execution, and sandbox boundaries before proposing work."
+        }
+      },
+      {
+        "id": "probe-security-review",
+        "type": "orpad.probe",
+        "label": "Probe security review findings",
+        "config": {
+          "lens": "security-review",
+          "skillRef": "security-review-audit",
+          "maxCandidates": 8,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "approval-gate",
+        "type": "orpad.gate",
+        "label": "Gate high-risk capability",
+        "config": {
+          "criteria": [
+            "High-risk capabilities are approval-gated",
+            "Secrets and credentials are never emitted into run artifacts",
+            "Security-sensitive claims cite current local evidence"
+          ],
+          "onFail": "warn"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Exit"
+      }
+    ],
+    "transitions": [
+      { "from": "entry", "to": "map-security-boundaries" },
+      { "from": "map-security-boundaries", "to": "probe-security-review" },
+      { "from": "probe-security-review", "to": "approval-gate" },
+      { "from": "approval-gate", "to": "exit", "condition": "pass" }
+    ]
+  }
+}

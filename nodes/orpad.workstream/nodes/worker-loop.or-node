@@ -35,6 +35,12 @@
       "queueRef": {
         "type": "string"
       },
+      "targetFiles": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
       "implementationTreeRef": {
         "type": "string"
       },
@@ -59,6 +65,15 @@
       },
       "statusPolicy": {
         "type": "object"
+      },
+      "sourceNodePack": {
+        "type": "string"
+      },
+      "supportingNodePacks": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "inputs": {
         "type": "array"

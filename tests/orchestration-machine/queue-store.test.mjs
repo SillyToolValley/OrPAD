@@ -193,6 +193,63 @@ test('queue transitions are Machine-owned and replayable from events', async () 
   assert.deepEqual(journal.map(event => event.action), ['ingest', 'triage']);
 });
 
+test('done queue items can be explicitly retried back to queued', async () => {
+  const run = await makeRun();
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:item:queued',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'claimed',
+    transitionId: 'claim:item',
+    itemPatch: {
+      claimId: 'claim-fixture',
+      claimedBy: 'test-worker',
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'done',
+    transitionId: 'close:item:done',
+    itemPatch: {
+      closedByClaimId: 'claim-fixture',
+      workerResultStatus: 'done',
+    },
+  });
+
+  const retry = await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    expectedFromState: 'done',
+    toState: 'queued',
+    transitionId: 'retry:item:queued',
+    itemPatch: {
+      claimId: undefined,
+      claimedBy: undefined,
+      closedByClaimId: undefined,
+      workerResultStatus: undefined,
+    },
+  });
+
+  assert.equal(retry.item.state, 'queued');
+  assert.equal(retry.item.claimId, undefined);
+  assert.equal(retry.item.closedByClaimId, undefined);
+  assert.equal(retry.item.workerResultStatus, undefined);
+  assert.equal((await findQueueItem(run.runRoot, retry.item.id)).state, 'queued');
+
+  const journal = await readJournal(run.runRoot);
+  assert.deepEqual(journal.map(event => event.action), ['ingest', 'triage', 'claim', 'close', 'retry']);
+});
+
 test('invalid queue transitions fail before mutating state', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {

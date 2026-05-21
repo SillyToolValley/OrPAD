@@ -1,0 +1,20 @@
+{
+  "kind": "orpad.rule",
+  "version": "1.0",
+  "id": "release-readiness-scope",
+  "include": [
+    "package.json",
+    "package-lock.json",
+    "RELEASE_NOTES.md",
+    "electron-builder.yml",
+    "scripts/**",
+    "assets/**"
+  ],
+  "exclude": [
+    "dist/**",
+    "out/**",
+    "release/**",
+    ".env",
+    "**/*secret*"
+  ]
+}

@@ -22,7 +22,25 @@
       "skillRef": {
         "type": "string"
       },
+      "ruleRef": {
+        "type": "string"
+      },
       "ruleRefs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "sourceNodePack": {
+        "type": "string"
+      },
+      "sourceNodePackGraph": {
+        "type": "string"
+      },
+      "sourceNodePackSkill": {
+        "type": "string"
+      },
+      "supportingNodePacks": {
         "type": "array",
         "items": {
           "type": "string"

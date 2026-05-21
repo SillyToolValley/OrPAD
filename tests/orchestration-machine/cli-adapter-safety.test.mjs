@@ -417,6 +417,114 @@ test('CLI overlay adapter blocks successful no-op when expected changed files ar
   assert.deepEqual(result.verification[0].missingExpectedChanges, ['src/allowed.txt']);
 });
 
+test('CLI overlay adapter copies source-of-truth files as read-only context', async () => {
+  const run = await makeRun('run_20260430_cli_readonly_context');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/input.md'), 'source material\n', 'utf8');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['dist/generated.txt'],
+    readOnlyFiles: ['src/input.md'],
+    adapterCallId: 'cli-readonly-context-call',
+    attemptId: 'cli-readonly-context-attempt-1',
+    idempotencyKey: 'cli-readonly-context-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.expectedChangedFiles = ['dist/generated.txt'];
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const script = [
+    'const fs=require("fs");',
+    'const path=require("path");',
+    'const input=fs.readFileSync("src/input.md","utf8");',
+    'fs.mkdirSync("dist",{recursive:true});',
+    'fs.writeFileSync("dist/generated.txt",input.toUpperCase(),"utf8");',
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-readonly-context',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.deepEqual(result.changedFiles, ['dist/generated.txt']);
+  assert.equal(result.verification[0].writeSetViolationCount, 0);
+  assert.deepEqual(result.verification[0].missingExpectedChanges, []);
+  assert.equal(await fs.readFile(path.join(run.workspaceRoot, 'src/input.md'), 'utf8'), 'source material\n');
+});
+
+test('CLI overlay patch collection and apply preserve binary files byte-for-byte', async () => {
+  const run = await makeRun('run_20260430_cli_binary_patch');
+  await fs.mkdir(path.join(run.workspaceRoot, 'bin'), { recursive: true });
+  const before = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x10, 0x80]);
+  const after = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x01, 0xfe, 0x11, 0x81, 0x00]);
+  await fs.writeFile(path.join(run.workspaceRoot, 'bin/out.pdf'), before);
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['bin/out.pdf'],
+    adapterCallId: 'cli-binary-patch-call',
+    attemptId: 'cli-binary-patch-attempt-1',
+    idempotencyKey: 'cli-binary-patch-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.expectedChangedFiles = ['bin/out.pdf'];
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("bin",{recursive:true});',
+    `fs.writeFileSync("bin/out.pdf",Buffer.from(${JSON.stringify([...after])}));`,
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-binary-patch',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  const patch = JSON.parse(await fs.readFile(path.join(run.runRoot, result.patchArtifact), 'utf8'));
+  assert.equal(patch.changes[0].contentEncoding, 'base64');
+  assert.equal(Buffer.from(patch.changes[0].afterContentBase64, 'base64').equals(after), true);
+  await applyPatchArtifact({
+    workspaceRoot: run.workspaceRoot,
+    patch,
+    allowedFiles: patch.allowedFiles,
+  });
+  assert.equal((await fs.readFile(path.join(run.workspaceRoot, 'bin/out.pdf'))).equals(after), true);
+});
+
 test('CLI overlay adapter classifies provider permission prompts as approval-required', () => {
   const processResult = {
     code: 0,

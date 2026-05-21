@@ -158,6 +158,8 @@ test('applyAdapterOverridesToPipelineAdapter carries pipeline orchestration fiel
   const v1Adapter = {
     type: 'codex-cli',
     enabled: true,
+    command: process.execPath,
+    commandPrefixArgs: ['fake-codex.js'],
     sandbox: 'read-only',
     workerSandbox: 'workspace-write',
     approvalPolicy: 'never',
@@ -204,6 +206,31 @@ test('applyAdapterOverridesToPipelineAdapter carries pipeline orchestration fiel
   // Provider-specific fields must NOT carry over (claude-code uses its own).
   assert.equal(lifted.workerSandbox, undefined);
   assert.equal(lifted.command, undefined);
+});
+
+test('applyAdapterOverridesToPipelineAdapter preserves custom command when provider stays the same', async () => {
+  const { applyAdapterOverridesToPipelineAdapter } = orchestration;
+  const v1Adapter = {
+    type: 'codex-cli',
+    enabled: true,
+    command: process.execPath,
+    commandPrefixArgs: ['fake-codex.js'],
+    probeNodePaths: ['main/probe'],
+    workerNodePath: 'main/worker',
+  };
+  const overrides = {
+    schemaVersion: 'orpad.adapterOverrides.v1',
+    pipelineDefault: {
+      providerId: 'codex-cli',
+      model: 'codex',
+      family: 'cli',
+    },
+    nodeOverrides: {},
+  };
+  const lifted = applyAdapterOverridesToPipelineAdapter(v1Adapter, overrides);
+  assert.equal(lifted.default.providerId, 'codex-cli');
+  assert.equal(lifted.command, process.execPath);
+  assert.deepEqual(lifted.commandPrefixArgs, ['fake-codex.js']);
 });
 
 test('executeMachineRunStep refuses to dispatch when the override picks a stub API provider', async () => {

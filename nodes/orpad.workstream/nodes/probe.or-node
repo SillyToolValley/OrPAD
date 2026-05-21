@@ -22,6 +22,12 @@
       "skillRef": {
         "type": "string"
       },
+      "userTask": {
+        "type": "string"
+      },
+      "maxCandidates": {
+        "type": "number"
+      },
       "treeRef": {
         "type": "string"
       },
@@ -49,6 +55,21 @@
       },
       "coverage": {
         "type": "object"
+      },
+      "sourceNodePack": {
+        "type": "string"
+      },
+      "sourceNodePackGraph": {
+        "type": "string"
+      },
+      "sourceNodePackSkill": {
+        "type": "string"
+      },
+      "supportingNodePacks": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "inputs": {
         "type": "array"

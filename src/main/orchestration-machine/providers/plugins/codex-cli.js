@@ -87,7 +87,10 @@ function nodeInvocationForScript(scriptPath) {
 }
 
 function codexCliInvocation(command = codexCliCommand(), prefixArgs = []) {
-  const configured = String(command || '').trim() || codexCliCommand();
+  const rawConfigured = String(command || '').trim();
+  const configured = (!rawConfigured || rawConfigured === 'codex')
+    ? codexCliCommand()
+    : rawConfigured;
   const configuredPrefixArgs = Array.isArray(prefixArgs) ? prefixArgs.map(arg => String(arg)) : [];
   if (configuredPrefixArgs.length) {
     return { command: configured, prefixArgs: configuredPrefixArgs };
@@ -138,7 +141,7 @@ function codexCliExecArgs(options = {}) {
   if (options.ephemeral !== false) args.push('--ephemeral');
   if (options.json === true) args.push('--json');
   if (options.cd) args.push('-C', options.cd);
-  args.push(String(options.prompt || ''));
+  args.push(options.promptViaStdin === true ? '-' : String(options.prompt || ''));
   return args;
 }
 
@@ -243,19 +246,21 @@ function createProposalAdapter(options = {}) {
           approvalPolicy: options.approvalPolicy || 'never',
           dangerouslyBypassApprovalsAndSandbox: options.dangerouslyBypassApprovalsAndSandbox === true,
           outputLastMessagePath,
-          prompt,
+          promptViaStdin: true,
           ephemeral: options.ephemeral,
           json: options.json,
         }),
+        stdin: prompt,
         cwd: workspaceRoot,
       };
       let processResult;
       try {
-        processResult = await runMachineProcess({
-          command: commandSpec.command,
-          args: commandSpec.args,
-          cwd: commandSpec.cwd,
-          runId,
+          processResult = await runMachineProcess({
+            command: commandSpec.command,
+            args: commandSpec.args,
+            stdin: commandSpec.stdin,
+            cwd: commandSpec.cwd,
+            runId,
           adapterCallId: request.adapterCallId,
           env: options.env,
           extraEnv: options.extraEnv,
@@ -379,9 +384,10 @@ function buildWorkerCommandSpec(input = {}) {
       sandbox: adapter.workerSandbox || adapter.sandbox || 'workspace-write',
       approvalPolicy: adapter.approvalPolicy || 'never',
       dangerouslyBypassApprovalsAndSandbox: adapter.bypassLlmApprovals === true,
-      prompt,
+      promptViaStdin: true,
       ephemeral: adapter.ephemeral,
     }),
+    stdin: String(prompt || ''),
     cwd: overlayRoot,
   };
 }

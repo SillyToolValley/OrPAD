@@ -270,29 +270,36 @@ function auditAdapterNodeLifecycle(events) {
   for (const event of events) {
     if (!adapterEventTypes.has(event.eventType)) continue;
     if (!event.nodePath) continue;
-    const priorStarted = [...events].reverse().find(candidate => (
-      candidate.sequence < event.sequence
-      && candidate.eventType === 'node.started'
+    const adapterAttempt = inferAdapterNodeAttempt(events, event);
+    const sameLifecycleAttempt = candidate => (
+      adapterAttempt == null
+      || eventAttempt(candidate) === adapterAttempt
+    );
+    const priorStarted = findLatestPriorEvent(events, event.sequence, candidate => (
+      candidate.eventType === 'node.started'
       && candidate.nodePath === event.nodePath
+      && sameLifecycleAttempt(candidate)
     ));
     if (!priorStarted) {
       diagnostics.push(diagnostic('MACHINE_ADAPTER_EVENT_WITHOUT_NODE_START', 'Adapter events with a nodePath must occur after the owning node starts.', {
         sequence: event.sequence,
         eventType: event.eventType,
         nodePath: event.nodePath,
+        attempt: adapterAttempt ?? undefined,
       }));
       continue;
     }
-    const priorTerminal = [...events].reverse().find(candidate => (
-      candidate.sequence < event.sequence
-      && terminalEventTypes.has(candidate.eventType)
+    const priorTerminal = findLatestPriorEvent(events, event.sequence, candidate => (
+      terminalEventTypes.has(candidate.eventType)
       && candidate.nodePath === event.nodePath
+      && sameLifecycleAttempt(candidate)
     ));
     if (priorTerminal && priorTerminal.sequence > priorStarted.sequence) {
       diagnostics.push(diagnostic('MACHINE_ADAPTER_EVENT_AFTER_NODE_TERMINAL', 'Adapter events with a nodePath must not occur after the owning node has reached a terminal lifecycle event.', {
         sequence: event.sequence,
         eventType: event.eventType,
         nodePath: event.nodePath,
+        attempt: adapterAttempt ?? undefined,
         startedSequence: priorStarted.sequence,
         terminalSequence: priorTerminal.sequence,
         terminalEventType: priorTerminal.eventType,
@@ -329,8 +336,55 @@ function workerResultArtifactRefs(event) {
   ].filter(Boolean).map(ref => String(ref).replace(/\\/g, '/'))));
 }
 
+function eventAttempt(event) {
+  const direct = Number(event?.payload?.attempt);
+  if (Number.isInteger(direct) && direct > 0) return direct;
+  const match = String(event?.payload?.nodeExecutionId || '').match(/:attempt-(\d+)$/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function claimIdCandidatesForAdapterEvent(event) {
+  return [
+    event?.payload?.claimId,
+    event?.payload?.adapterCallId,
+    event?.payload?.attemptId,
+    event?.payload?.idempotencyKey,
+  ].filter(value => typeof value === 'string' && value.trim());
+}
+
+function adapterEventMatchesClaimTask(event, taskId) {
+  if (typeof taskId !== 'string' || !taskId.trim()) return false;
+  return claimIdCandidatesForAdapterEvent(event).some(value => (
+    value === taskId
+    || value.startsWith(`${taskId}-`)
+    || value.startsWith(`${taskId}:`)
+  ));
+}
+
+function inferAdapterNodeAttempt(events, event) {
+  const direct = eventAttempt(event);
+  if (direct != null) return direct;
+  const lockEvent = findLatestPriorEvent(events, event.sequence, candidate => (
+    candidate.nodePath === event.nodePath
+    && ['lock.granted', 'lock.waiting', 'lock.released'].includes(candidate.eventType)
+    && adapterEventMatchesClaimTask(event, candidate.payload?.taskId)
+  ));
+  const lockAttempt = eventAttempt(lockEvent);
+  return lockAttempt != null ? lockAttempt : null;
+}
+
 function findPriorEvent(events, sequence, predicate) {
   return events.find(event => event.sequence < sequence && predicate(event)) || null;
+}
+
+function findLatestPriorEvent(events, sequence, predicate) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.sequence < sequence && predicate(event)) return event;
+  }
+  return null;
 }
 
 function findLaterEvent(events, sequence, predicate) {
@@ -373,26 +427,33 @@ function auditQueueTransitionCausality(events) {
 
     if (event.fromState === 'claimed' && event.toState === 'done') {
       const claimId = event.payload?.claimId || '';
-      const workerResult = findPriorEvent(events, event.sequence, candidate => (
+      const workerResultForClaim = findLatestPriorEvent(events, event.sequence, candidate => (
+        candidate.eventType === 'worker.result'
+        && candidate.itemId === event.itemId
+        && candidate.payload?.status === 'done'
+        && candidate.payload?.toState === 'done'
+        && (!claimId || candidate.payload?.claimId === claimId)
+      ));
+      const latestWorkerResult = workerResultForClaim || findLatestPriorEvent(events, event.sequence, candidate => (
         candidate.eventType === 'worker.result'
         && candidate.itemId === event.itemId
         && candidate.payload?.status === 'done'
         && candidate.payload?.toState === 'done'
       ));
-      if (!workerResult) {
+      if (!latestWorkerResult) {
         diagnostics.push(diagnostic('MACHINE_QUEUE_DONE_WITHOUT_WORKER_RESULT', 'Queue done transitions require a prior accepted done worker result.', {
           sequence: event.sequence,
           itemId: event.itemId,
           claimId,
           transitionId: event.payload?.transitionId || '',
         }));
-      } else if (claimId && workerResult.payload?.claimId !== claimId) {
+      } else if (claimId && latestWorkerResult.payload?.claimId !== claimId) {
         diagnostics.push(diagnostic('MACHINE_QUEUE_DONE_WORKER_CLAIM_MISMATCH', 'Queue done transition claimId must match the accepted worker result claimId.', {
           sequence: event.sequence,
           itemId: event.itemId,
-          expected: workerResult.payload?.claimId || '',
+          expected: latestWorkerResult.payload?.claimId || '',
           actual: claimId,
-          workerResultSequence: workerResult.sequence,
+          workerResultSequence: latestWorkerResult.sequence,
         }));
       }
     }
@@ -846,7 +907,7 @@ async function auditCandidateInventory(runRoot, manifest, events) {
       }
     }
 
-    const registrationEvent = events.find(event => (
+    const registrationEvent = findLatestPriorEvent(events, Number.POSITIVE_INFINITY, event => (
       event.eventType === 'artifact.registered'
       && event.payload?.file?.path === file.path
     ));

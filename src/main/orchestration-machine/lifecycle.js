@@ -167,11 +167,20 @@ function summaryStatusFromInventory(inventory) {
   return 'partial';
 }
 
+function workerResultIsPatchReviewEligible(payload = {}) {
+  const status = String(payload.status || '').trim().toLowerCase();
+  const toState = String(payload.toState || '').trim().toLowerCase();
+  if (status && status !== 'done') return false;
+  if (toState && toState !== 'done') return false;
+  return true;
+}
+
 function patchReviewResumeStateFromEvents(events = []) {
   const patchArtifacts = [];
   const seen = new Set();
   for (const event of events) {
     if (event?.eventType !== 'worker.result') continue;
+    if (!workerResultIsPatchReviewEligible(event.payload || {})) continue;
     const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
     const changedFiles = Array.isArray(event?.payload?.changedFiles)
       ? event.payload.changedFiles.filter(Boolean)

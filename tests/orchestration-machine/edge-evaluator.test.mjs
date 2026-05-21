@@ -67,7 +67,7 @@ test('selector edges fire only when condition matches selected route', () => {
   assert.equal(none[0].reason, 'selector-no-selection');
 });
 
-test('gate pass family fires only when valid=true; revise family fires only when valid=false', () => {
+test('gate pass family fires only when valid=true; revise family fires only for blocking failures', () => {
   const node = { nodeType: 'orpad.gate' };
   const edges = [
     { from: 'gate', to: 'next', condition: 'pass' },
@@ -81,10 +81,40 @@ test('gate pass family fires only when valid=true; revise family fires only when
   assert.equal(passed.find(e => e.condition === 'revise').fired, false);
   assert.equal(passed.find(e => e.condition === 'continue').fired, true);
 
-  const failed = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { valid: false, onFail: 'warn' }));
+  const failed = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { valid: false, onFail: 'block' }));
   assert.equal(failed.find(e => e.condition === 'pass').fired, false);
   assert.equal(failed.find(e => e.condition === 'revise').fired, true);
   assert.equal(failed.find(e => e.condition === 'continue').fired, false);
+});
+
+test('gate onFail=warn routes through pass family while preserving warning reason', () => {
+  const node = { nodeType: 'orpad.gate' };
+  const edges = [
+    { from: 'gate', to: 'queue', condition: 'pass' },
+    { from: 'gate', to: 'revise', condition: 'revise' },
+  ];
+  const warned = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { valid: false, onFail: 'warn' }));
+  assert.equal(warned.find(e => e.condition === 'pass').fired, true);
+  assert.equal(warned.find(e => e.condition === 'pass').reason, 'gate-warning-pass');
+  assert.equal(warned.find(e => e.condition === 'revise').fired, false);
+  assert.equal(warned.find(e => e.condition === 'revise').reason, 'gate-warning-skip-revise');
+});
+
+test('strict gate failures do not pass through onFail=warn', () => {
+  const node = { nodeType: 'orpad.gate' };
+  const edges = [
+    { from: 'content-gate', to: 'verify', condition: 'pass' },
+    { from: 'content-gate', to: 'worker', condition: 'revise' },
+  ];
+  const strict = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, {
+    valid: false,
+    onFail: 'warn',
+    strictFailure: true,
+  }));
+  assert.equal(strict.find(e => e.condition === 'pass').fired, false);
+  assert.equal(strict.find(e => e.condition === 'pass').reason, 'gate-strict-failed');
+  assert.equal(strict.find(e => e.condition === 'revise').fired, true);
+  assert.equal(strict.find(e => e.condition === 'revise').reason, 'gate-strict-revise');
 });
 
 test('gate queue-state conditions (Pattern I) consult the real summarizeQueueInventory shape', () => {

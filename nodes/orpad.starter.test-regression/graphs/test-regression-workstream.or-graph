@@ -1,0 +1,62 @@
+{
+  "$schema": "https://orpad.dev/schemas/or-graph/v1.json",
+  "kind": "orpad.graph",
+  "version": "1.0",
+  "graph": {
+    "id": "test-regression-workstream",
+    "label": "Test Regression Workstream",
+    "start": "entry",
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Entry"
+      },
+      {
+        "id": "map-test-regression-surface",
+        "type": "orpad.context",
+        "label": "Map test regression surface",
+        "config": {
+          "ruleRef": "test-regression-scope",
+          "skillRef": "test-regression-audit",
+          "summary": "Identify the failing behavior, existing tests, validation commands, source under test, and missing regression coverage."
+        }
+      },
+      {
+        "id": "probe-test-regression",
+        "type": "orpad.probe",
+        "label": "Probe regression candidates",
+        "config": {
+          "lens": "test-regression",
+          "skillRef": "test-regression-audit",
+          "maxCandidates": 8,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "verify-test-regression",
+        "type": "orpad.gate",
+        "label": "Verify regression evidence",
+        "config": {
+          "criteria": [
+            "The reported failure is reproduced or the reproduction blocker is explicit",
+            "A focused validation command covers the changed behavior",
+            "Regression risk is reduced with targeted tests or documented residual risk"
+          ],
+          "onFail": "warn"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Exit"
+      }
+    ],
+    "transitions": [
+      { "from": "entry", "to": "map-test-regression-surface" },
+      { "from": "map-test-regression-surface", "to": "probe-test-regression" },
+      { "from": "probe-test-regression", "to": "verify-test-regression" },
+      { "from": "verify-test-regression", "to": "exit", "condition": "pass" }
+    ]
+  }
+}

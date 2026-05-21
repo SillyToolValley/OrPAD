@@ -182,13 +182,23 @@ function isSupportedFile(filePath) {
 }
 
 // --- Arg parsing ---
+function isLaunchEntrypointArg(arg) {
+  const resolved = path.resolve(String(arg || ''));
+  const appRoot = path.resolve(__dirname, '../..');
+  const mainEntry = path.resolve(__dirname, 'main.js');
+  return resolved === appRoot || resolved === mainEntry;
+}
+
 function getFilePathFromArgs(argv) {
-  const args = app.isPackaged ? argv.slice(1) : argv.slice(2);
+  const args = Array.isArray(argv) ? argv.slice(1) : [];
   for (const arg of args) {
-    if (arg.startsWith('-')) continue;
-    if (!isSupportedFile(arg)) continue;
+    if (typeof arg !== 'string' || arg.startsWith('-')) continue;
     const resolved = path.resolve(arg);
-    if (fs.existsSync(resolved)) return resolved;
+    if (isLaunchEntrypointArg(resolved)) continue;
+    if (!isSupportedFile(resolved)) continue;
+    try {
+      if (fs.statSync(resolved).isFile()) return resolved;
+    } catch {}
   }
   return null;
 }
@@ -224,6 +234,10 @@ function createWindow(filePath) {
   win.once('ready-to-show', () => {
     if (win.isDestroyed()) return;
     win.show();
+  });
+
+  webContents.once('did-finish-load', () => {
+    if (win.isDestroyed()) return;
     if (filePath) loadMarkdownFile(win, filePath);
   });
 

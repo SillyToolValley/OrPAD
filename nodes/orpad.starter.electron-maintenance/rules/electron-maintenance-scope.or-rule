@@ -1,0 +1,20 @@
+{
+  "kind": "orpad.rule",
+  "version": "1.0",
+  "id": "electron-maintenance-scope",
+  "include": [
+    "src/main/**",
+    "src/renderer/**",
+    "electron-builder.yml",
+    "package.json",
+    "tests/e2e/**"
+  ],
+  "exclude": [
+    "dist/**",
+    "release/**",
+    "out/**",
+    ".env",
+    "**/*secret*",
+    "**/*token*"
+  ]
+}

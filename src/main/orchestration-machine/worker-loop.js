@@ -23,7 +23,7 @@ const {
   transitionQueueItem,
 } = require('./queue-store');
 const { normalizeLockPath } = require('./file-lock-manager');
-const { releaseWriteSetLock } = require('./write-sets');
+const { normalizeWriteSetPath, releaseWriteSetLock } = require('./write-sets');
 
 const validator = createContractValidator();
 
@@ -32,6 +32,15 @@ function targetQueueStateForWorkerResult(result) {
   if (result.status === 'queued') return 'queued';
   if (result.status === 'approval-required') return 'queued';
   return 'blocked';
+}
+
+function readOnlyFilesForClaim(claim = {}) {
+  const allowed = new Set((claim.writeSet?.paths || [])
+    .map(normalizeWriteSetPath)
+    .filter(Boolean));
+  return [...new Set((claim.item?.sourceOfTruthTargets || [])
+    .map(normalizeWriteSetPath)
+    .filter(file => file && !allowed.has(file)))].sort();
 }
 
 function summaryStatusForWorkerResult(result) {
@@ -69,6 +78,53 @@ function assertDoneResultHasProof(result) {
 
   const err = new Error('Worker done result requires evidence files and verification proof.');
   err.code = 'WORKER_DONE_RESULT_MISSING_PROOF';
+  throw err;
+}
+
+function normalizeValidationCommandText(value) {
+  return String(value || '')
+    .replace(/^candidate:\s*/i, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function validationCommandLooksConcrete(command) {
+  const normalized = normalizeValidationCommandText(command);
+  return normalized
+    && !normalized.includes('<')
+    && !normalized.includes('>')
+    && !normalized.startsWith('missing-')
+    && !normalized.includes('definitely-missing');
+}
+
+function resultVerificationText(result) {
+  return normalizeValidationCommandText([
+    result.summary,
+    ...(result.verification || []).flatMap(item => [
+      item?.command,
+      ...(Array.isArray(item?.args) ? item.args : []),
+      item?.status,
+      item?.summary,
+      item?.stdout,
+      item?.stderr,
+    ]),
+  ].map(item => String(item || '')).join(' '));
+}
+
+function assertDoneResultIncludesHarnessValidation(result, requiredValidationCommands = []) {
+  if (result.status !== 'done') return;
+  const required = [...new Set((requiredValidationCommands || [])
+    .map(normalizeValidationCommandText)
+    .filter(validationCommandLooksConcrete))];
+  if (!required.length) return;
+  const text = resultVerificationText(result);
+  const matched = required.find(command => text.includes(command));
+  if (matched) return;
+
+  const err = new Error('Worker done result does not include required harness validation evidence.');
+  err.code = 'WORKER_DONE_RESULT_MISSING_HARNESS_VALIDATION';
+  err.requiredValidationCommands = required;
   throw err;
 }
 
@@ -198,6 +254,7 @@ async function applyWorkerResult(runRoot, options = {}) {
   if (request) validateAdapterResultForRequest(request, result);
   else validator.assertValid('adapterResult', result);
   assertDoneResultHasProof(result);
+  assertDoneResultIncludesHarnessValidation(result, options.requiredValidationCommands || []);
 
   const duplicate = await findWorkerResultEvent(runRoot, claimId, result.idempotencyKey);
   if (duplicate) {
@@ -232,6 +289,7 @@ async function applyWorkerResult(runRoot, options = {}) {
       idempotencyKey: result.idempotencyKey,
       status: result.status,
       toState,
+      summary: result.summary || '',
       patchArtifact: result.patchArtifact || '',
       changedFiles: normalizeLockFileList(result.changedFiles || []),
       declaredTargetFiles: normalizeLockFileList(declaredTargetFiles),
@@ -349,6 +407,7 @@ async function runWorkerLoopOnce(options = {}) {
     workspaceRoot,
     workspaceMode: 'read-only-plus-overlay',
     allowedFiles: claim.writeSet?.paths || [],
+    readOnlyFiles: readOnlyFilesForClaim(claim),
     inputArtifacts: [`queue/claimed/${claim.item.id}.json`],
     outputContract: 'orpad.workerResult.v1',
     adapterCallId: options.adapterCallId || `${claim.claim.claimId}-worker`,
@@ -479,6 +538,7 @@ async function runWorkerLoopOnce(options = {}) {
       lockTargetFiles: effectiveLockTargetFiles,
       targetFilesSource: lockTargetFilesSource,
       reviewRequired: options.reviewRequired === true,
+      requiredValidationCommands: options.requiredValidationCommands || [],
     });
   } finally {
     if (lockManager) {

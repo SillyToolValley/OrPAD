@@ -13,9 +13,12 @@ const { createAuthorityManager } = require('../../src/main/authority');
 const {
   MACHINE_IPC_CHANNELS,
   appendMachineEvent,
+  appendRunLifecycleStatus,
   claimNextQueuedItem,
   findQueueItem,
   ingestCandidateProposal,
+  patchReviewStateFromEvents,
+  readMachineEvents,
   registerPatchArtifact,
   registerMachineHandlers,
   transitionQueueItem,
@@ -172,6 +175,18 @@ async function updateHarnessGraphNodeConfig(pipelineDir, nodeId, patch) {
   const node = graph.graph.nodes.find(entry => entry.id === nodeId);
   if (!node) throw new Error(`Graph node not found: ${nodeId}`);
   node.config = { ...(node.config || {}), ...patch };
+  await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
+}
+
+async function appendHarnessPatchReviewNode(pipelineDir) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  graph.graph.nodes.push({
+    id: 'patch-review',
+    type: 'orpad.patchReview',
+    label: 'Review patch results',
+    config: { reviewMode: 'user-selected-files' },
+  });
   await fs.writeFile(graphPath, `${JSON.stringify(graph, null, 2)}\n`, 'utf8');
 }
 
@@ -1127,6 +1142,229 @@ test('Machine IPC autonomous run with patchReviewMode auto-apply approves and ap
   assert.equal(after, 'after from Machine IPC harness\n');
 });
 
+test('Machine IPC autonomous run with patchReviewMode auto-apply applies routine auto-pending patches', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260521_ipc_auto_apply_routine_patches',
+    capabilityToken: 'test-token',
+    options: { llmApprovalMode: 'bypass' },
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: {
+      llmApprovalMode: 'bypass',
+      runUntil: 'human-decision',
+      patchReviewMode: 'auto-apply',
+    },
+  });
+
+  assert.equal(executed.success, true);
+  assert.equal(executed.drive.mode, 'human-decision');
+  assert.equal(executed.drive.autoAppliedPatchCount, 1);
+  assert.notEqual(executed.drive.stopReason, 'patch-review');
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'after from Machine IPC harness\n');
+
+  const review = patchReviewStateFromEvents(await readMachineEvents(path.join(path.dirname(pipelinePath), 'runs', created.runId)));
+  assert.equal(review.autoApplyPendingCount, 0);
+  assert.equal(review.appliedCount, 1);
+});
+
+test('Machine IPC executeRunStep inherits auto patch mode from run metadata', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260521_ipc_inherits_auto_patch_mode',
+    capabilityToken: 'test-token',
+    options: {
+      llmApprovalMode: 'bypass',
+      patchReviewMode: 'auto-apply',
+    },
+  });
+  assert.equal(created.success, true);
+  assert.equal(created.runState.metadata.patchReviewMode, 'auto-apply');
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: {
+      runUntil: 'human-decision',
+    },
+  });
+
+  assert.equal(executed.success, true);
+  assert.equal(executed.drive.autoAppliedPatchCount, 1);
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'after from Machine IPC harness\n');
+  const review = patchReviewStateFromEvents(await readMachineEvents(path.join(path.dirname(pipelinePath), 'runs', created.runId)));
+  assert.equal(review.autoApplyPendingCount, 0);
+});
+
+test('Machine IPC auto-apply records preflight base mismatches as patch conflicts', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'before\n', 'utf8');
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260521_ipc_auto_apply_preflight_conflict',
+    capabilityToken: 'test-token',
+    options: {
+      llmApprovalMode: 'bypass',
+      patchReviewMode: 'auto-apply',
+    },
+  });
+  assert.equal(created.success, true);
+
+  const patch = {
+    schemaVersion: 'orpad.patchArtifact.v1',
+    createdAt: new Date('2026-05-21T00:00:00.000Z').toISOString(),
+    allowedFiles: ['src/smoke-target.md'],
+    changes: [{
+      path: 'src/smoke-target.md',
+      beforeContent: 'before\n',
+      afterContent: 'after\n',
+      beforeSha256: sha256Text('before\n'),
+      afterSha256: sha256Text('after\n'),
+      beforeExists: true,
+      afterExists: true,
+    }],
+    violations: [],
+  };
+  const registered = await registerPatchArtifact(created.runRoot, {
+    runId: created.runId,
+    patch,
+    artifactPath: 'artifacts/patches/preflight-conflict.patch.json',
+    producedBy: 'test.auto-apply-preflight',
+  });
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'preflight-conflict',
+    reason: 'worker-result.accepted',
+    artifactRefs: [registered.file.path],
+    payload: {
+      status: 'done',
+      toState: 'done',
+      patchArtifact: registered.file.path,
+      changedFiles: ['src/smoke-target.md'],
+      declaredTargetFiles: ['src/smoke-target.md'],
+      lockTargetFiles: ['src/smoke-target.md'],
+      reviewRequired: false,
+      verification: [{ writeSetViolationCount: 0 }],
+    },
+  });
+  await appendRunLifecycleStatus(created.runRoot, {
+    runId: created.runId,
+    toState: 'waiting',
+    reason: 'test.waiting-with-auto-pending-patch',
+  });
+  await fs.writeFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'changed outside\n', 'utf8');
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: {
+      runUntil: 'human-decision',
+    },
+  });
+
+  assert.equal(executed.success, true);
+  assert.equal(executed.drive.autoAppliedPatchCount, 0);
+  assert.equal(executed.drive.autoApplyConflictCount, 1);
+  const events = await readMachineEvents(created.runRoot);
+  assert.equal(events.some(item => (
+    item.eventType === 'patch.apply_conflict'
+    && item.payload?.patchArtifact === registered.file.path
+    && item.payload?.code === 'PATCH_BASE_MISMATCH'
+  )), true);
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'changed outside\n');
+});
+
+test('Machine IPC autonomous run continues after routine pending-patch overlap without a second Continue', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
+  await updateHarnessGraphNodeConfig(pipelineDir, 'worker', { targetFiles: ['src/smoke-target.md'] });
+  await appendHarnessPatchReviewNode(pipelineDir);
+  const pipeline = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  const first = pipeline.run.machineHarness.candidateProposal;
+  pipeline.run.machineHarness.candidateProposals = [
+    first,
+    {
+      ...first,
+      proposalId: 'proposal-ipc-harness-smoke-second',
+      suggestedWorkItemId: 'ipc-harness-smoke-second',
+      title: 'Exercise Machine IPC worker execution again',
+      fingerprint: 'ipc-harness:src/smoke-target.md:second',
+    },
+  ];
+  delete pipeline.run.machineHarness.candidateProposal;
+  await fs.writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`, 'utf8');
+
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260520_ipc_pending_patch_overlap_continues',
+    capabilityToken: 'test-token',
+    options: { llmApprovalMode: 'bypass' },
+  });
+  assert.equal(created.success, true);
+
+  const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: {
+      llmApprovalMode: 'bypass',
+      runUntil: 'human-decision',
+      patchReviewMode: 'auto-apply',
+      maxAutonomousSteps: 5,
+    },
+  });
+
+  assert.equal(executed.success, true);
+  assert.equal(executed.drive.mode, 'human-decision');
+  assert.ok(executed.drive.stepsRun >= 2, 'one IPC call should drive the step after pending-patch-overlap resolution');
+  assert.notEqual(executed.drive.stopReason, 'patch-review');
+  assert.equal(executed.events.some(event => (
+    event.eventType === 'patch.applied'
+    && event.reason === 'machine.patch-review.auto-apply-routine'
+  )), true);
+  assert.equal(executed.events.some(event => (
+    event.eventType === 'worker.result'
+    && event.itemId === 'ipc-harness-smoke-second'
+  )), true);
+
+  const firstItem = await findQueueItem(path.join(path.dirname(pipelinePath), 'runs', created.runId), 'ipc-harness-smoke');
+  const secondItem = await findQueueItem(path.join(path.dirname(pipelinePath), 'runs', created.runId), 'ipc-harness-smoke-second');
+  assert.equal(firstItem.state, 'done');
+  assert.notEqual(secondItem.state, 'queued');
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'after from Machine IPC harness\n');
+});
+
 test('Machine IPC denied approval decisions cancel blocked work without grants', async () => {
   const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
   const source = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
@@ -1289,6 +1527,206 @@ test('Machine IPC retryNode appends node.scheduled at attempt N+1 to invalidate 
   assert.equal(latest.eventType, 'node.scheduled');
   assert.equal(latest.payload.attempt, 2);
   assert.equal(latest.payload.reason, 'user-retry-requested');
+});
+
+test('Machine IPC retryNode requeues active worker claims after a failed worker attempt', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260519_retry_worker_requeues_claim',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const candidate = {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-retry-worker-requeue',
+    suggestedWorkItemId: 'retry-worker-requeue',
+    sourceNode: 'probe/retry-worker',
+    title: 'Exercise worker retry requeue',
+    fingerprint: 'retry-worker:claim',
+    evidence: [{ id: 'retry-worker-source', file: 'src/smoke-target.md' }],
+    acceptanceCriteria: ['Worker retry requeues the claimed item.'],
+    sourceOfTruthTargets: ['src/smoke-target.md'],
+  };
+  await ingestCandidateProposal(created.runRoot, candidate, {
+    runId: created.runId,
+    transitionId: 'ingest:retry-worker-requeue',
+  });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'retry-worker-requeue',
+    toState: 'queued',
+    transitionId: 'triage:retry-worker-requeue',
+  });
+  const claimed = await claimNextQueuedItem(created.runRoot, {
+    runId: created.runId,
+    claimId: 'claim-retry-worker-requeue',
+    now: '2999-01-01T00:00:00.000Z',
+    leaseMs: 60 * 60 * 1000,
+  });
+  assert.equal(claimed.claimed, true);
+  await appendRunLifecycleStatus(created.runRoot, {
+    runId: created.runId,
+    toState: 'waiting',
+    reason: 'test.worker-failed',
+  });
+
+  const retried = await handlers.get(MACHINE_IPC_CHANNELS.retryNode)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    nodePath: 'main/worker',
+    nodeType: 'orpad.workerLoop',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(retried.success, true);
+  assert.equal(retried.recoveredClaimCount, 1);
+  assert.equal((await findQueueItem(created.runRoot, 'retry-worker-requeue')).state, 'queued');
+
+  const snapshot = await handlers.get(MACHINE_IPC_CHANNELS.getRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+  });
+  assert.equal(snapshot.activeClaims.length, 0);
+});
+
+test('Machine IPC retryNode requeues a blocked worker item when itemId is provided', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260519_retry_worker_requeues_blocked_item',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  await ingestCandidateProposal(created.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-retry-worker-blocked',
+    suggestedWorkItemId: 'retry-worker-blocked',
+    sourceNode: 'probe/retry-worker',
+    title: 'Exercise blocked worker retry',
+    fingerprint: 'retry-worker:blocked',
+    evidence: [{ id: 'retry-worker-source', file: 'src/smoke-target.md' }],
+    acceptanceCriteria: ['Blocked worker retry returns the item to queued.'],
+    sourceOfTruthTargets: ['src/smoke-target.md'],
+  }, {
+    runId: created.runId,
+    transitionId: 'ingest:retry-worker-blocked',
+  });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'retry-worker-blocked',
+    toState: 'blocked',
+    reason: 'test.worker-blocked',
+    transitionId: 'block:retry-worker-blocked',
+  });
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'node.completed',
+    payload: {
+      nodeType: 'orpad.workerLoop',
+      status: 'completed',
+      attempt: 1,
+      workerStatus: 'blocked',
+      itemId: 'retry-worker-blocked',
+    },
+  });
+
+  const retried = await handlers.get(MACHINE_IPC_CHANNELS.retryNode)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    nodePath: 'main/worker',
+    nodeType: 'orpad.workerLoop',
+    itemId: 'retry-worker-blocked',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(retried.success, true);
+  assert.equal(retried.requeuedBlockedItemId, 'retry-worker-blocked');
+  assert.equal((await findQueueItem(created.runRoot, 'retry-worker-blocked')).state, 'queued');
+});
+
+test('Machine IPC retryNode requeues a done worker item when itemId is provided', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260519_retry_worker_requeues_done_item',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  await ingestCandidateProposal(created.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-retry-worker-done',
+    suggestedWorkItemId: 'retry-worker-done',
+    sourceNode: 'probe/retry-worker',
+    title: 'Exercise done worker retry',
+    fingerprint: 'retry-worker:done',
+    evidence: [{ id: 'retry-worker-source', file: 'src/smoke-target.md' }],
+    acceptanceCriteria: ['Done worker retry returns the item to queued.'],
+    sourceOfTruthTargets: ['src/smoke-target.md'],
+  }, {
+    runId: created.runId,
+    transitionId: 'ingest:retry-worker-done',
+  });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'retry-worker-done',
+    toState: 'queued',
+    transitionId: 'triage:retry-worker-done',
+  });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'retry-worker-done',
+    toState: 'claimed',
+    transitionId: 'claim:retry-worker-done',
+    itemPatch: {
+      claimId: 'claim-retry-worker-done',
+      claimedBy: 'test-worker',
+    },
+  });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'retry-worker-done',
+    toState: 'done',
+    transitionId: 'done:retry-worker-done',
+    itemPatch: {
+      closedByClaimId: 'claim-retry-worker-done',
+      workerResultStatus: 'done',
+    },
+  });
+
+  const retried = await handlers.get(MACHINE_IPC_CHANNELS.retryNode)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    nodePath: 'main/worker',
+    nodeType: 'orpad.workerLoop',
+    itemId: 'retry-worker-done',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(retried.success, true);
+  assert.equal(retried.requeuedBlockedItemId, 'retry-worker-done');
+  const stored = await findQueueItem(created.runRoot, 'retry-worker-done');
+  assert.equal(stored.state, 'queued');
+  assert.equal(stored.item.claimId, undefined);
+  assert.equal(stored.item.closedByClaimId, undefined);
+  assert.equal(stored.item.workerResultStatus, undefined);
 });
 
 test('Machine IPC retryNode rejects when nodePath is missing', async () => {

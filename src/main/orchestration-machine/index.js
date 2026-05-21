@@ -3,6 +3,7 @@ const apiAgentAdapter = require('./adapters/api-agent');
 const approvals = require('./approvals');
 const cliAgentAdapter = require('./adapters/cli-agent');
 const commandGrants = require('./command-grants');
+const contentEditorialEvaluator = require('./content-editorial-evaluator');
 const proposalAdapter = require('./adapters/proposal-adapter');
 const claims = require('./claims');
 const dispatcher = require('./dispatcher');
@@ -51,6 +52,7 @@ module.exports = {
   ...approvals,
   ...cliAgentAdapter,
   ...commandGrants,
+  ...contentEditorialEvaluator,
   ...proposalAdapter,
   ...claims,
   ...dispatcher,

@@ -134,6 +134,7 @@ function addParallelProbeHarness(pipelinePath: string): void {
   pipeline.run.machineHarness.probeNodePaths = ['main/probe', 'main/probe-secondary'];
   pipeline.run.machineHarness.parallelProbes = true;
   pipeline.run.machineHarness.probeConcurrency = 2;
+  pipeline.run.machineHarness.workerConcurrency = 2;
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
@@ -557,7 +558,7 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(runningProbeNode).toContainText('Running');
   await expect(runningProbeNode).toHaveClass(/runtime-running/);
   await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(1);
-  await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(2);
+  await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(1);
   await expect(win.locator('button[data-orch-mode="readonly"]')).toHaveClass(/active/);
   await expect(win.locator('button[data-orch-mode="readwrite"]')).toBeDisabled();
   await win.locator('[data-pipeline-run-menu]').click();
@@ -1097,6 +1098,10 @@ test('Machine UI play action attempts managed run and blocks non-runnable pipeli
 test('Machine UI implements node harness contracts for the selected pipeline', async () => {
   const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
   removeMachineHarness(pipelinePath);
+  const labDir = path.join(workspace, 'ThreadProgramming', 'Unit3', 'Lab05_Semaphore');
+  fs.mkdirSync(labDir, { recursive: true });
+  fs.writeFileSync(path.join(labDir, 'Program.cs'), 'Console.WriteLine("Semaphore lab");\n');
+  fs.writeFileSync(path.join(labDir, 'Lab05_Semaphore.csproj'), '<Project Sdk="Microsoft.NET.Sdk" />\n');
   const app = await launchElectron([], {
     ORPAD_MACHINE_IPC: '1',
     ORPAD_MACHINE_IPC_TOKEN: 'test-token',
@@ -1132,9 +1137,62 @@ test('Machine UI implements node harness contracts for the selected pipeline', a
   const state = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
   expect(state.status).toBe('succeeded');
   expect(state.nodes.every((node: any) => node.status === 'succeeded')).toBe(true);
+  expect(state.projectProfile.stacks).toContain('dotnet');
+  expect(state.projectProfile.requiredTools).toContain('dotnet');
+  expect(state.harnessAuthoring.path).toBe('harness-authoring-spec.json');
+  expect(state.harnessAuthoring.mode).toContain('deterministic');
+  expect(state.provisioning.path).toBe('harness-provisioning.json');
+  expect(['ready', 'degraded', 'blocked']).toContain(state.provisioning.status);
   const probeState = state.nodes.find((node: any) => node.nodePath === 'main/probe');
   expect(probeState).toBeTruthy();
   expect(fs.existsSync(path.join(pipelineDir, 'harness', 'generated', probeState.artifact))).toBe(true);
+  const profilePath = path.join(pipelineDir, 'harness', 'generated', 'project-profile.json');
+  const toolPlanPath = path.join(pipelineDir, 'harness', 'generated', 'tool-plan.json');
+  const harnessSpecPath = path.join(pipelineDir, 'harness', 'generated', 'harness-authoring-spec.json');
+  const provisioningPath = path.join(pipelineDir, 'harness', 'generated', 'harness-provisioning.json');
+  const toolHealthPath = path.join(pipelineDir, 'harness', 'generated', 'tool-health.json');
+  const validationPreflightPath = path.join(pipelineDir, 'harness', 'generated', 'validation-preflight.json');
+  const mcpPlanPath = path.join(pipelineDir, 'harness', 'generated', 'mcp-plan.json');
+  const toolPolicyPath = path.join(pipelineDir, 'harness', 'generated', 'tool-policy.json');
+  const observabilityPlanPath = path.join(pipelineDir, 'harness', 'generated', 'observability-plan.json');
+  const evalPlanPath = path.join(pipelineDir, 'harness', 'generated', 'eval-plan.json');
+  const feedbackLoopPlanPath = path.join(pipelineDir, 'harness', 'generated', 'feedback-loop.json');
+  const llmOpsPlanPath = path.join(pipelineDir, 'harness', 'generated', 'llmops-plan.json');
+  const securityRiskPlanPath = path.join(pipelineDir, 'harness', 'generated', 'security-risk-plan.json');
+  expect(fs.existsSync(profilePath)).toBe(true);
+  expect(fs.existsSync(toolPlanPath)).toBe(true);
+  expect(fs.existsSync(harnessSpecPath)).toBe(true);
+  expect(fs.existsSync(provisioningPath)).toBe(true);
+  expect(fs.existsSync(toolHealthPath)).toBe(true);
+  expect(fs.existsSync(validationPreflightPath)).toBe(true);
+  expect(fs.existsSync(mcpPlanPath)).toBe(true);
+  expect(fs.existsSync(toolPolicyPath)).toBe(true);
+  expect(fs.existsSync(observabilityPlanPath)).toBe(true);
+  expect(fs.existsSync(evalPlanPath)).toBe(true);
+  expect(fs.existsSync(feedbackLoopPlanPath)).toBe(true);
+  expect(fs.existsSync(llmOpsPlanPath)).toBe(true);
+  expect(fs.existsSync(securityRiskPlanPath)).toBe(true);
+  const profile = JSON.parse(fs.readFileSync(profilePath, 'utf-8'));
+  const harnessSpec = JSON.parse(fs.readFileSync(harnessSpecPath, 'utf-8'));
+  const provisioning = JSON.parse(fs.readFileSync(provisioningPath, 'utf-8'));
+  const toolPolicy = JSON.parse(fs.readFileSync(toolPolicyPath, 'utf-8'));
+  const evalPlan = JSON.parse(fs.readFileSync(evalPlanPath, 'utf-8'));
+  expect(profile.stacks.some((stack: any) => stack.id === 'dotnet')).toBe(true);
+  expect(profile.validationCommands.some((command: string) => command.includes('dotnet build'))).toBe(true);
+  expect(profile.protocolContracts.some((contract: any) => contract.id === 'worker-patch')).toBe(true);
+  expect(harnessSpec.schemaVersion).toBe('orpad.harnessAuthoringSpec.v1');
+  expect(harnessSpec.nodeContracts.some((contract: any) => contract.nodePath === 'main/worker')).toBe(true);
+  expect(provisioning.schemaVersion).toBe('orpad.harnessProvisioning.v1');
+  expect(pipeline.harness.provisioning).toBe('harness/generated/harness-provisioning.json');
+  expect(pipeline.harness.toolPolicy).toBe('harness/generated/tool-policy.json');
+  expect(toolPolicy.schemaVersion).toBe('orpad.toolPolicy.v1');
+  expect(evalPlan.schemaVersion).toBe('orpad.evalPlan.v1');
+  const probeArtifact = JSON.parse(fs.readFileSync(path.join(pipelineDir, 'harness', 'generated', probeState.artifact), 'utf-8'));
+  expect(probeArtifact.environment.stacks.some((stack: any) => stack.id === 'dotnet')).toBe(true);
+  expect(probeArtifact.protocols.some((contract: any) => contract.id === 'validation-evidence')).toBe(true);
+  expect(probeArtifact.harnessAuthoring.nodeContract.nodePath).toBe('main/probe');
+  expect(probeArtifact.provisioning.ref).toBe('harness-provisioning.json');
+  expect(probeArtifact.provisioning.toolPolicyRef).toBe('tool-policy.json');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

@@ -1,0 +1,58 @@
+{
+  "kind": "orpad.nodePack",
+  "schemaVersion": "1.0",
+  "id": "orpad.starter.security-review",
+  "name": "Security Review Starter Pack",
+  "version": "0.1.0",
+  "origin": "built-in",
+  "trustLevel": "official",
+  "mutable": false,
+  "description": "Reusable orchestration hints for least-authority review, secret handling, XSS, IPC boundaries, and high-risk capability gates.",
+  "author": {
+    "name": "OrPAD",
+    "github": "https://github.com/luke-youngmin-cho/OrPAD",
+    "repository": "https://github.com/luke-youngmin-cho/OrPAD"
+  },
+  "license": "MIT",
+  "compatibility": {
+    "orpad": ">=1.0.0-beta.3",
+    "pipelineSchema": ">=1.0",
+    "packFormat": "orpad.nodePack.v1"
+  },
+  "dependsOn": [
+    { "id": "orpad.core", "version": ">=1.0.0-beta.3" },
+    { "id": "orpad.workstream", "version": ">=0.1.0" }
+  ],
+  "installPolicy": {
+    "allowLifecycleScripts": false,
+    "allowExecutableHandlers": false
+  },
+  "capabilities": ["read.workspace", "write.runArtifacts", "run.localVerification"],
+  "nodes": [],
+  "graphs": [
+    {
+      "id": "security-review-workstream",
+      "path": "graphs/security-review-workstream.or-graph",
+      "label": "Security Review Workstream",
+      "role": "reusable",
+      "description": "Discovery and verification lens for high-risk authority, secret, XSS, IPC, and destructive-action review.",
+      "inputs": ["workspaceContext"],
+      "outputs": ["securityCandidateItems"]
+    }
+  ],
+  "skills": [
+    {
+      "id": "security-review-audit",
+      "path": "skills/security-review-audit.md",
+      "description": "Guides least-authority review with evidence-first findings and explicit approval gates."
+    }
+  ],
+  "rules": [
+    {
+      "id": "security-review-scope",
+      "path": "rules/security-review-scope.or-rule",
+      "description": "Includes security-sensitive source, authority, key, IPC, HTML, network, and command execution paths."
+    }
+  ],
+  "examples": []
+}

@@ -497,6 +497,14 @@ test('pipeline check surfaces warning when entry graph is omitted from graph dec
   await win.locator('#btn-preview').click();
   await expect(win.locator('.pipeline-runbar')).toBeVisible();
 
+  const entryGraphPath = path.join(path.dirname(pipelinePath), 'graphs', 'main.or-graph');
+  const entryGraph = JSON.parse(fs.readFileSync(entryGraphPath, 'utf-8'));
+  entryGraph.graph.nodes = entryGraph.graph.nodes.filter((node: { id?: string }) => node.id !== 'quality-graph');
+  entryGraph.graph.transitions = entryGraph.graph.transitions.filter((edge: { from?: string; to?: string }) => (
+    edge.from !== 'quality-graph' && edge.to !== 'quality-graph'
+  ));
+  fs.writeFileSync(entryGraphPath, JSON.stringify(entryGraph, null, 2));
+
   const warningPipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
   warningPipeline.graphs = {
     quality: { file: 'graphs/quality.or-graph', description: 'Quality graph' },

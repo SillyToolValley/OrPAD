@@ -33,7 +33,12 @@ const {
   latestRunExportRoot,
   durableRunRoot,
 } = require('./path-resolver');
-const { createMachineRun, normalizeRunLlmApprovalMode, readRunState } = require('./run-store');
+const {
+  createMachineRun,
+  normalizeRunLlmApprovalMode,
+  normalizeRunPatchReviewMode,
+  readRunState,
+} = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { cancelClaimedItem, emitNodeCancelledForInflight } = require('./worker-loop');
 const { readActiveWriteSetLocks } = require('./write-sets');
@@ -46,6 +51,7 @@ const {
 const { getProviderEntry, listProviderEntries } = require('../../shared/ai/provider-catalog');
 const { readBudgetLedger, summarizeLedger } = require('./router/budget-ledger');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
+const { findQueueItem, transitionQueueItem } = require('./queue-store');
 
 const fsp = fs.promises;
 
@@ -251,6 +257,20 @@ function optionalPatchReviewMode(options) {
     throw machineError('MACHINE_IPC_SCHEMA_INVALID', 'options.patchReviewMode must be manual or auto-apply.');
   }
   return mode;
+}
+
+function hasExplicitOption(options, key) {
+  return options && options[key] != null && options[key] !== '';
+}
+
+function resolveRunLlmApprovalMode(options, runState) {
+  if (hasExplicitOption(options, 'llmApprovalMode')) return optionalLlmApprovalMode(options);
+  return normalizeRunLlmApprovalMode(runState?.metadata?.llmApprovalMode || 'ask');
+}
+
+function resolveRunPatchReviewMode(options, runState) {
+  if (hasExplicitOption(options, 'patchReviewMode')) return optionalPatchReviewMode(options);
+  return normalizeRunPatchReviewMode(runState?.metadata?.patchReviewMode || 'manual');
 }
 
 function requiredString(value, label) {
@@ -492,6 +512,7 @@ async function createRunHandler(event, authority, request) {
   const taskText = optionalTaskText(options);
   const externalResearch = optionalExternalResearch(options);
   const llmApprovalMode = optionalLlmApprovalMode(options);
+  const patchReviewMode = optionalPatchReviewMode(options);
   const validation = await validateRunbookFile(context.pipelinePath, {
     trustLevel: normalizeTrustLevel(options),
     checkFiles: options.checkFiles !== false,
@@ -512,6 +533,7 @@ async function createRunHandler(event, authority, request) {
     taskText,
     externalResearch,
     llmApprovalMode,
+    patchReviewMode,
   });
   return {
     success: true,
@@ -1393,6 +1415,14 @@ function pendingPatchDecisionReviews(events = []) {
   ));
 }
 
+function autoApplyablePatchReviews(events = []) {
+  return patchReviewStateFromEvents(events).reviews.filter(review => (
+    review?.patchArtifact
+    && !review.resolved
+    && (review.status === 'pending' || review.status === 'auto-pending')
+  ));
+}
+
 function activeQueueCount(inventory = {}) {
   return Number(inventory.activeCount) || 0;
 }
@@ -1456,6 +1486,36 @@ async function autoApprovePendingApprovals(runRoot, runId, approvals = []) {
   return decisions;
 }
 
+async function appendAutonomousPatchApplyFailure(runRoot, options = {}) {
+  const {
+    runId,
+    patchArtifact,
+    selectedFiles = [],
+    code = 'MACHINE_PATCH_APPLY_FAILED',
+    message = 'Patch could not be applied automatically.',
+    mismatches = [],
+    conflicts = [],
+    path: failedPath = '',
+  } = options;
+  const eventType = code === 'PATCH_BASE_MISMATCH' ? 'patch.apply_conflict' : 'patch.apply_failed';
+  return appendMachineEvent(runRoot, {
+    runId,
+    actor: 'machine-autonomous-driver',
+    eventType,
+    reason: 'machine-autonomous.patch-review.auto-apply',
+    artifactRefs: patchArtifact ? [patchArtifact] : [],
+    payload: {
+      patchArtifact,
+      selectedFiles,
+      code,
+      message,
+      path: failedPath || mismatches[0]?.path || conflicts[0]?.path || '',
+      mismatches: Array.isArray(mismatches) ? mismatches : [],
+      conflicts: Array.isArray(conflicts) ? conflicts : [],
+    },
+  }).catch(() => null);
+}
+
 // Auto-Apply Patches mode: emits the same `patch.approved` →
 // `patches.apply_started` → per-patch apply → `patches.apply_finished`
 // event sequence that the renderer-driven Approve & Apply flow would
@@ -1475,25 +1535,76 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
     }
 
     const approved = [];
+    const preApplyConflicts = [];
     let workingReview = review;
     for (const item of review.reviews) {
-      if (item.status !== 'pending') continue;
+      if (item.status !== 'pending' && item.status !== 'auto-pending') continue;
       const patchArtifact = item.patchArtifact;
       let patch;
       try {
         patch = await loadRunPatchArtifact(runRoot, patchArtifact);
       } catch (err) {
-        approved.push({ patchArtifact, ok: false, code: err?.code || 'MACHINE_PATCH_LOAD_FAILED', message: err?.message || '' });
+        const code = err?.code || 'MACHINE_PATCH_LOAD_FAILED';
+        const message = err?.message || 'Patch artifact could not be loaded.';
+        await appendAutonomousPatchApplyFailure(runRoot, {
+          runId,
+          patchArtifact,
+          selectedFiles: item.changedFiles || [],
+          code,
+          message,
+        });
+        const conflict = { patchArtifact, ok: false, code, message };
+        approved.push(conflict);
+        preApplyConflicts.push(conflict);
         continue;
       }
       const selectedFiles = selectedFilesForLoadedPatch(patch, item.changedFiles);
-      if (!selectedFiles.length) continue;
-      const overlap = approvedSelectedFileConflicts(workingReview, patchArtifact, selectedFiles);
-      if (overlap.length) {
-        approved.push({ patchArtifact, ok: false, code: 'MACHINE_PATCH_APPROVAL_OVERLAP', conflicts: overlap });
+      if (!selectedFiles.length) {
+        await appendAutonomousPatchApplyFailure(runRoot, {
+          runId,
+          patchArtifact,
+          selectedFiles,
+          code: 'MACHINE_PATCH_SELECTION_REQUIRED',
+          message: 'Patch has no selectable files for automatic apply.',
+        });
+        const conflict = { patchArtifact, ok: false, code: 'MACHINE_PATCH_SELECTION_REQUIRED' };
+        approved.push(conflict);
+        preApplyConflicts.push(conflict);
         continue;
       }
-      const selectedPatch = selectPatchSubset(patch, selectedFiles);
+      const overlap = approvedSelectedFileConflicts(workingReview, patchArtifact, selectedFiles);
+      if (overlap.length) {
+        await appendAutonomousPatchApplyFailure(runRoot, {
+          runId,
+          patchArtifact,
+          selectedFiles,
+          code: 'MACHINE_PATCH_APPROVAL_OVERLAP',
+          message: `Selected files are already approved in another patch: ${overlap.map(entry => entry.path).join(', ')}`,
+          conflicts: overlap,
+        });
+        const conflict = { patchArtifact, ok: false, code: 'MACHINE_PATCH_APPROVAL_OVERLAP', conflicts: overlap };
+        approved.push(conflict);
+        preApplyConflicts.push(conflict);
+        continue;
+      }
+      let selectedPatch;
+      try {
+        selectedPatch = selectPatchSubset(patch, selectedFiles);
+      } catch (err) {
+        const code = err?.code || 'MACHINE_PATCH_SELECTION_INVALID';
+        const message = err?.message || 'Patch selection is invalid.';
+        await appendAutonomousPatchApplyFailure(runRoot, {
+          runId,
+          patchArtifact,
+          selectedFiles,
+          code,
+          message,
+        });
+        const conflict = { patchArtifact, ok: false, code, message };
+        approved.push(conflict);
+        preApplyConflicts.push(conflict);
+        continue;
+      }
       const base = await inspectPatchBase({
         workspaceRoot: context.workspaceRoot,
         patch: selectedPatch,
@@ -1501,7 +1612,17 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
       });
       const blocking = base.mismatches.filter(entry => !entry.alreadyApplied);
       if (blocking.length) {
-        approved.push({ patchArtifact, ok: false, code: 'PATCH_BASE_MISMATCH', mismatches: blocking });
+        await appendAutonomousPatchApplyFailure(runRoot, {
+          runId,
+          patchArtifact,
+          selectedFiles,
+          code: 'PATCH_BASE_MISMATCH',
+          message: `Patch base mismatch for ${blocking[0].path}.`,
+          mismatches: blocking,
+        });
+        const conflict = { patchArtifact, ok: false, code: 'PATCH_BASE_MISMATCH', mismatches: blocking };
+        approved.push(conflict);
+        preApplyConflicts.push(conflict);
         continue;
       }
       const approvalSnapshot = approvalSnapshotForChanges(
@@ -1526,7 +1647,12 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
       : workingReview;
     const approvedReviews = postApproveReview.reviews.filter(entry => entry.status === 'approved');
     if (!approvedReviews.length) {
-      return { approved, applied: [], conflicts: [], skipped: 'no-approved' };
+      return {
+        approved,
+        applied: [],
+        conflicts: preApplyConflicts,
+        skipped: preApplyConflicts.length ? '' : 'no-approved',
+      };
     }
 
     const startedEvent = await appendMachineEvent(runRoot, {
@@ -1539,7 +1665,7 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
     });
 
     const applied = [];
-    const conflicts = [];
+    const conflicts = [...preApplyConflicts];
     for (const entry of approvedReviews) {
       const patchArtifact = entry.patchArtifact;
       const fallbackSelectedFiles = Array.isArray(entry.decision?.selectedFiles) && entry.decision.selectedFiles.length
@@ -1620,6 +1746,23 @@ function driveResponseFields({ steps = [], autoApprovedApprovals = [], autoAppli
   };
 }
 
+const AUTONOMOUS_DRIVER_MIN_STEPS = 50;
+const AUTONOMOUS_DRIVER_MAX_STEPS = 500;
+
+async function autonomousDriverMaxSteps(runRoot, options = {}) {
+  const requested = Number(options?.maxAutonomousSteps);
+  if (Number.isFinite(requested) && requested > 0) {
+    return Math.max(1, Math.min(AUTONOMOUS_DRIVER_MAX_STEPS, Math.floor(requested)));
+  }
+  const inventory = await summarizeQueueInventory(runRoot).catch(() => null);
+  const active = activeQueueCount(inventory);
+  const queueScaled = active > 0 ? (active * 4) + 20 : AUTONOMOUS_DRIVER_MIN_STEPS;
+  return Math.max(
+    AUTONOMOUS_DRIVER_MIN_STEPS,
+    Math.min(AUTONOMOUS_DRIVER_MAX_STEPS, queueScaled),
+  );
+}
+
 async function executeMachineRunToHumanDecision({
   context,
   runRoot,
@@ -1631,7 +1774,7 @@ async function executeMachineRunToHumanDecision({
   patchReviewMode,
   runtimeOptions,
 }) {
-  const maxSteps = Math.max(1, Math.min(50, Number(request.options?.maxAutonomousSteps) || 20));
+  const maxSteps = await autonomousDriverMaxSteps(runRoot, request.options || {});
   const steps = [];
   const autoApprovedApprovals = [];
   const autoAppliedPatchBatches = [];
@@ -1650,13 +1793,13 @@ async function executeMachineRunToHumanDecision({
       stopReason = autoDecisionStopReason(snapshot, afterApprovalInventory);
       if (stopReason === 'approval-required') break;
     }
-    if (stopReason === 'patch-review' && patchReviewMode === 'auto-apply') {
+    if (patchReviewMode === 'auto-apply' && (stopReason === 'patch-review' || autoApplyablePatchReviews(snapshot.events).length)) {
       const batch = await autoApplyPendingPatches(runRoot, runId, context);
       autoAppliedPatchBatches.push(batch);
       // Stop if no patches were actually applied this cycle — prevents
       // an infinite loop when every pending review is blocked by base
       // mismatch, missing artifact, or already-in-flight apply.
-      if (!batch.applied.length) break;
+      if (!batch.applied.length && stopReason === 'patch-review') break;
       snapshot = await readRunSnapshot(runRoot);
       const afterPatchInventory = await summarizeQueueInventory(runRoot);
       stopReason = autoDecisionStopReason(snapshot, afterPatchInventory);
@@ -1712,14 +1855,14 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
   const options = assertPlainObject(request.options == null ? {} : request.options, 'options');
   const taskText = optionalTaskText(options);
   const externalResearch = optionalExternalResearch(options);
-  const llmApprovalMode = optionalLlmApprovalMode(options);
   const runUntil = optionalRunUntil(options);
-  const patchReviewMode = optionalPatchReviewMode(options);
   const runRoot = await resolveMachineRunRoot(context, runId);
   const snapshot = await readRunSnapshot(runRoot);
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
   }
+  const llmApprovalMode = resolveRunLlmApprovalMode(options, snapshot.runState);
+  const patchReviewMode = resolveRunPatchReviewMode(options, snapshot.runState);
 
   return withRunLifecycleExclusive(runRoot, async () => {
     try {
@@ -1993,6 +2136,29 @@ async function skipNodeBody({ runRoot, runId, nodePath, reason, request }) {
   };
 }
 
+function latestBlockedWorkerItemId(events = [], nodePath = '') {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event) continue;
+    if (
+      event.nodePath === nodePath
+      && event.eventType === 'node.completed'
+      && String(event.payload?.workerStatus || '').toLowerCase() === 'blocked'
+      && event.payload?.itemId
+    ) {
+      return String(event.payload.itemId);
+    }
+    if (
+      event.eventType === 'worker.result'
+      && String(event.payload?.status || '').toLowerCase() === 'blocked'
+      && event.itemId
+    ) {
+      return String(event.itemId);
+    }
+  }
+  return '';
+}
+
 // Retry a previously-completed-but-failed node (typically a probe whose
 // adapter returned status='failed'). The renderer wraps each Failed
 // adapter card with a "Retry probe" button that hits this handler.
@@ -2023,6 +2189,52 @@ async function retryNodeHandler(event, authority, request = {}) {
     }
     const nodeType = String(request.nodeType || '').trim() || lastNodeType || 'orpad.unknown';
     const nextAttempt = maxAttempt + 1;
+    const now = new Date().toISOString();
+    let recoveredClaims = [];
+    let requeuedBlockedItemId = '';
+    if (nodeType === 'orpad.workerLoop') {
+      const runState = await readRunState(runRoot);
+      if (String(runState?.lifecycleStatus || '') !== 'running') {
+        recoveredClaims = await recoverStaleClaims(runRoot, {
+          runId,
+          now,
+          force: true,
+          reason: 'claim.retry-recovered',
+        });
+      }
+      const retryItemId = String(request.itemId || '').trim() || latestBlockedWorkerItemId(events, nodePath);
+      if (retryItemId) {
+        const currentItem = await findQueueItem(runRoot, retryItemId);
+        if (['blocked', 'done'].includes(currentItem?.state)) {
+          const retryFromState = currentItem.state;
+          await transitionQueueItem(runRoot, {
+            runId,
+            itemId: retryItemId,
+            toState: 'queued',
+            expectedFromState: retryFromState,
+            reason: 'worker.retry-requeued',
+            transitionId: `retry:${retryItemId}:attempt-${nextAttempt}`,
+            now,
+            itemPatch: {
+              claimedBy: undefined,
+              claimedAt: undefined,
+              claimId: undefined,
+              claimLeaseExpiresAt: undefined,
+              writeSetLockId: undefined,
+              closedByClaimId: undefined,
+              workerResultStatus: undefined,
+              closedAt: undefined,
+            },
+            payload: {
+              nodePath,
+              attempt: nextAttempt,
+              retryFromState,
+            },
+          });
+          requeuedBlockedItemId = retryItemId;
+        }
+      }
+    }
     const scheduledEvent = await recordNodeLifecycleEvent(runRoot, {
       runId,
       nodePath,
@@ -2032,7 +2244,9 @@ async function retryNodeHandler(event, authority, request = {}) {
       payload: {
         reason: 'user-retry-requested',
         decidedBy: 'renderer',
-        decidedAt: new Date().toISOString(),
+        decidedAt: now,
+        recoveredClaimCount: recoveredClaims.length,
+        requeuedBlockedItemId,
       },
     });
     return {
@@ -2042,6 +2256,8 @@ async function retryNodeHandler(event, authority, request = {}) {
       nodePath,
       attempt: nextAttempt,
       eventSequence: scheduledEvent?.sequence,
+      recoveredClaimCount: recoveredClaims.length,
+      requeuedBlockedItemId,
     };
   });
 }

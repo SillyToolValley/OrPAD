@@ -161,11 +161,13 @@ async function prepareCliOverlayWorkspace(options = {}) {
     workspaceRoot,
     overlayRoot,
     allowedFiles: request.allowedFiles || [],
+    readOnlyFiles: request.readOnlyFiles || [],
   });
   return {
     workspaceRoot: path.resolve(workspaceRoot),
     overlayRoot,
     overlayRootMode,
+    readOnlyFiles: request.readOnlyFiles || [],
     copied,
   };
 }
@@ -341,6 +343,7 @@ function createCliAgentAdapter(options = {}) {
           processResult = await runMachineProcess({
             command: commandSpec.command,
             args: commandSpec.args || [],
+            stdin: commandSpec.stdin,
             cwd: commandSpec.cwd,
             runId,
             adapterCallId: request.adapterCallId,
@@ -369,6 +372,8 @@ function createCliAgentAdapter(options = {}) {
               adapterCallId: request.adapterCallId,
               attemptId: request.attemptId,
               idempotencyKey: request.idempotencyKey,
+              allowedFiles: request.allowedFiles || [],
+              readOnlyFiles: request.readOnlyFiles || [],
             },
             overlay: {
               ...overlay,

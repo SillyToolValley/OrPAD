@@ -1,0 +1,62 @@
+{
+  "$schema": "https://orpad.dev/schemas/or-graph/v1.json",
+  "kind": "orpad.graph",
+  "version": "1.0",
+  "graph": {
+    "id": "frontend-ux-workstream",
+    "label": "Frontend UX Workstream",
+    "start": "entry",
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Entry"
+      },
+      {
+        "id": "map-frontend-ux-surface",
+        "type": "orpad.context",
+        "label": "Map frontend UX surface",
+        "config": {
+          "ruleRef": "frontend-ux-scope",
+          "skillRef": "frontend-ux-audit",
+          "summary": "Collect renderer, web UI, style, interaction-state, graph editor, and e2e evidence before proposing UI changes."
+        }
+      },
+      {
+        "id": "probe-frontend-ux",
+        "type": "orpad.probe",
+        "label": "Probe frontend UX candidates",
+        "config": {
+          "lens": "frontend-ux",
+          "skillRef": "frontend-ux-audit",
+          "maxCandidates": 9,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "verify-frontend-ux",
+        "type": "orpad.gate",
+        "label": "Verify frontend UX",
+        "config": {
+          "criteria": [
+            "The affected UI workflow exposes the requested control states and actions",
+            "Layout, text, menus, and inspector controls do not overlap across relevant viewports",
+            "Focused e2e, browser, or screenshot evidence is recorded for user-visible behavior"
+          ],
+          "onFail": "warn"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Exit"
+      }
+    ],
+    "transitions": [
+      { "from": "entry", "to": "map-frontend-ux-surface" },
+      { "from": "map-frontend-ux-surface", "to": "probe-frontend-ux" },
+      { "from": "probe-frontend-ux", "to": "verify-frontend-ux" },
+      { "from": "verify-frontend-ux", "to": "exit", "condition": "pass" }
+    ]
+  }
+}

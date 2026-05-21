@@ -113,6 +113,7 @@ test('createMachineRun writes durable run root and leaves latest-run as export-o
     now: fixedNow,
     taskText: `  ${taskText}\n`,
     llmApprovalMode: 'bypass',
+    patchReviewMode: 'auto-apply',
   });
 
   assert.equal(run.runRoot, path.join(pipelineDir, 'runs', runId));
@@ -124,6 +125,7 @@ test('createMachineRun writes durable run root and leaves latest-run as export-o
   assert.equal(events[0].sequence, 0);
   assert.equal(events[0].payload.metadata.taskText, taskText);
   assert.equal(events[0].payload.metadata.llmApprovalMode, 'bypass');
+  assert.equal(events[0].payload.metadata.patchReviewMode, 'auto-apply');
 
   const runState = await readRunState(run.runRoot);
   assert.equal(runState.runId, runId);
@@ -132,6 +134,7 @@ test('createMachineRun writes durable run root and leaves latest-run as export-o
   assert.equal(runState.eventSequence, 0);
   assert.equal(runState.metadata.taskText, taskText);
   assert.equal(runState.metadata.llmApprovalMode, 'bypass');
+  assert.equal(runState.metadata.patchReviewMode, 'auto-apply');
 
   await assert.rejects(
     fs.stat(run.latestRunExportPath),

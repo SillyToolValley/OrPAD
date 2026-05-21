@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import Module from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -8,9 +10,12 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   BUILT_IN_NODE_PACK_MANIFESTS,
+  STARTER_NODE_PACK_MANIFESTS,
   createLosslessNodePlaceholder,
   createNodePackLockEntry,
   resolveNodeTypeCompatibility,
+  discoverNodePackManifests,
+  selectAuthoringNodePacks,
   validatePipelineNodePacks,
   validateNodePackManifest,
 } = require('../../src/main/orchestration-machine/node-packs');
@@ -31,6 +36,7 @@ const {
 } = require('../../src/main/runbooks/validator');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, '../..');
 
 function communityPack(overrides = {}) {
   return {
@@ -75,6 +81,118 @@ test('built-in workstream node pack validates with safe install policy and lock 
   assert.equal(result.nodeTypeMap['orpad.workerLoop'].packId, 'orpad.workstream');
   assert.equal(lock.id, 'orpad.workstream');
   assert.equal(lock.resolvedNodeTypes.includes('orpad.workerLoop'), true);
+});
+
+test('starter situation node packs are portable metadata-only packs on disk', async () => {
+  assert.equal(STARTER_NODE_PACK_MANIFESTS.length >= 3, true);
+
+  for (const nodePack of STARTER_NODE_PACK_MANIFESTS) {
+    const result = validateNodePackManifest(nodePack, {
+      installMode: 'normal',
+      grantedCapabilities: nodePack.capabilities,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics, null, 2));
+    assert.equal(result.resolutionState, 'resolved');
+    assert.equal(nodePack.installPolicy.allowLifecycleScripts, false);
+    assert.equal(nodePack.installPolicy.allowExecutableHandlers, false);
+    assert.deepEqual(nodePack.nodes, []);
+
+    const packRoot = path.join(repoRoot, 'nodes', nodePack.id);
+    const diskManifest = JSON.parse(await fs.readFile(path.join(packRoot, 'orpad.node-pack.json'), 'utf-8'));
+    assert.equal(diskManifest.id, nodePack.id);
+    assert.equal(diskManifest.version, nodePack.version);
+    assert.equal(diskManifest.trustLevel, nodePack.trustLevel);
+
+    for (const collection of ['graphs', 'skills', 'rules']) {
+      for (const asset of nodePack[collection] || []) {
+        const stat = await fs.stat(path.join(packRoot, asset.path));
+        assert.equal(stat.isFile(), true, `${nodePack.id} declares missing ${collection} asset ${asset.path}`);
+      }
+    }
+  }
+});
+
+test('node pack discovery loads built-in and user pools in deterministic order', async (t) => {
+  const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-user-node-packs-'));
+  t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
+  const userPackDir = path.join(userRoot, 'community.safe-pack');
+  await fs.mkdir(userPackDir, { recursive: true });
+  await fs.writeFile(path.join(userPackDir, 'orpad.node-pack.json'), JSON.stringify(communityPack({
+    origin: 'user',
+    trustLevel: 'signed',
+  }), null, 2), 'utf-8');
+
+  const duplicateDir = path.join(userRoot, 'orpad.core-duplicate');
+  await fs.mkdir(duplicateDir, { recursive: true });
+  await fs.writeFile(path.join(duplicateDir, 'orpad.node-pack.json'), JSON.stringify({
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'orpad.core',
+    name: 'Duplicate Core',
+    version: '9.9.9',
+    origin: 'user',
+    trustLevel: 'signed',
+    compatibility: { packFormat: 'orpad.nodePack.v1' },
+    capabilities: [],
+    nodes: [],
+  }, null, 2), 'utf-8');
+
+  const result = discoverNodePackManifests({
+    builtInNodePacksRoot: path.join(repoRoot, 'nodes'),
+    userNodePacksRoot: userRoot,
+  });
+  const ids = result.nodePacks.map(pack => pack.id);
+
+  assert.equal(ids.includes('orpad.core'), true);
+  assert.equal(ids.includes('orpad.starter.electron-maintenance'), true);
+  assert.equal(ids.includes('community.safe-pack'), true);
+  assert.ok(ids.indexOf('orpad.core') < ids.indexOf('community.safe-pack'));
+  assert.equal(ids.filter(id => id === 'orpad.core').length, 1);
+  assert.equal(result.diagnostics.some(item => item.code === 'NODE_PACK_DISCOVERY_DUPLICATE_ID'), true);
+});
+
+test('node pack discovery reports node type conflicts for manager review', async (t) => {
+  const builtInRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-conflict-builtins-'));
+  t.after(() => fs.rm(builtInRoot, { recursive: true, force: true }));
+  for (const pack of [
+    communityPack({ id: 'community.left', nodes: [{ type: 'community.conflictNode', path: 'nodes/a.or-node', capabilities: [] }] }),
+    communityPack({ id: 'community.right', nodes: [{ type: 'community.conflictNode', path: 'nodes/b.or-node', capabilities: [] }] }),
+  ]) {
+    const dir = path.join(builtInRoot, pack.id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'orpad.node-pack.json'), JSON.stringify(pack, null, 2), 'utf-8');
+  }
+
+  const result = discoverNodePackManifests({
+    builtInNodePacksRoot: builtInRoot,
+    userNodePacksRoot: false,
+  });
+
+  assert.equal(result.conflicts.length, 1);
+  assert.equal(result.conflicts[0].nodeType, 'community.conflictNode');
+  assert.equal(result.diagnostics.some(item => item.code === 'NODE_PACK_TYPE_CONFLICT'), true);
+});
+
+test('authoring node pack selector chooses packs from prompt and workspace signals', () => {
+  const selected = selectAuthoringNodePacks(
+    'Review Electron preload IPC security before release and verify renderer packaging risks.',
+    {
+      files: [
+        'src/main/main.js',
+        'src/main/preload.js',
+        'src/renderer/renderer.js',
+        'electron-builder.yml',
+        'SECURITY.md',
+      ],
+    },
+    { maxPacks: 3 },
+  );
+  const ids = selected.map(pack => pack.id);
+
+  assert.equal(ids.includes('orpad.starter.electron-maintenance'), true);
+  assert.equal(ids.includes('orpad.starter.security-review'), true);
+  assert.equal(ids.includes('orpad.starter.release-readiness'), true);
+  assert.equal(selected.every(pack => pack.matchedSignals.length > 0), true);
 });
 
 test('maintenance pipeline node pack declarations validate before launch', () => {

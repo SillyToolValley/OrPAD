@@ -114,8 +114,11 @@ contextBridge.exposeInMainWorld('orpad', {
     auditRunEvidence: (workspacePath, pipelinePath) => ipcRenderer.invoke('pipeline-audit-run-evidence', workspacePath, pipelinePath),
   },
   orchestration: {
+    authorHarness: (request) => ipcRenderer.invoke('orchestration-author-harness', request),
+    provisionHarness: (request) => ipcRenderer.invoke('orchestration-provision-harness', request),
     generatePipeline: (request) => ipcRenderer.invoke('orchestration-generate-pipeline', request),
     cancelGeneratePipeline: (requestId) => ipcRenderer.invoke('orchestration-cancel-generate-pipeline', requestId),
+    listNodePacks: (request = {}) => ipcRenderer.invoke('orchestration-list-node-packs', request),
     onGenerateEvent: (cb) => {
       const listener = (_event, payload) => cb(payload);
       ipcRenderer.on('orchestration-generate-pipeline-event', listener);

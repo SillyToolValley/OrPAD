@@ -18,12 +18,15 @@ const TRANSITION_ACTIONS = Object.freeze({
   'claimed->done': 'close',
   'claimed->blocked': 'close',
   'claimed->queued': 'close',
+  'blocked->queued': 'retry',
+  'done->queued': 'retry',
 });
 const LEGACY_ACTORS = Object.freeze({
   ingest: 'orpad.workQueue',
   triage: 'orpad.triage',
   claim: 'orpad.dispatcher',
   close: 'orpad.workerLoop',
+  retry: 'orpad.workerLoop',
 });
 
 function queueRoot(runRoot) {

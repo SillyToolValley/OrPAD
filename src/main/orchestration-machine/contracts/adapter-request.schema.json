@@ -67,6 +67,12 @@
         "type": "string"
       }
     },
+    "readOnlyFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "approvalGrants": {
       "type": "array",
       "items": {

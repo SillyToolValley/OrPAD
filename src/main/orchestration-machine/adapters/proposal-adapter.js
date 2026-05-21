@@ -49,6 +49,7 @@ function createAdapterRequest(options = {}) {
     workspaceRoot,
     workspaceMode,
     allowedFiles: options.allowedFiles || [],
+    readOnlyFiles: options.readOnlyFiles || [],
     approvalGrants: options.approvalGrants || [],
     baselineWorkspaceDigest: options.baselineWorkspaceDigest || '',
     inputArtifacts: safeInputArtifacts,

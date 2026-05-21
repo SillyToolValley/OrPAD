@@ -109,6 +109,12 @@ function normalizeRunLlmApprovalMode(value) {
   return 'ask';
 }
 
+function normalizeRunPatchReviewMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (mode === 'auto-apply') return 'auto-apply';
+  return 'manual';
+}
+
 async function createMachineRun(options = {}) {
   const {
     workspaceRoot,
@@ -119,6 +125,7 @@ async function createMachineRun(options = {}) {
     taskText = '',
     externalResearch = null,
     llmApprovalMode = 'ask',
+    patchReviewMode = 'manual',
   } = options;
   const context = resolvePipelineContext({ workspaceRoot, pipelinePath });
   await assertNoSymlinkInWorkspacePath(context.workspaceRoot, context.pipelinePath, {
@@ -146,6 +153,7 @@ async function createMachineRun(options = {}) {
   const normalizedExternalResearch = normalizeRunExternalResearch(externalResearch);
   if (normalizedExternalResearch) metadata.externalResearch = normalizedExternalResearch;
   metadata.llmApprovalMode = normalizeRunLlmApprovalMode(llmApprovalMode);
+  metadata.patchReviewMode = normalizeRunPatchReviewMode(patchReviewMode);
   const createdEvent = await appendMachineEvent(targetRunRoot, {
     runId,
     timestamp,
@@ -189,6 +197,7 @@ module.exports = {
   createMachineRun,
   createRunId,
   normalizeRunLlmApprovalMode,
+  normalizeRunPatchReviewMode,
   readRunState,
   repairRunStateFromEvents,
   runStatePath,

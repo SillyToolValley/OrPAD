@@ -495,7 +495,9 @@ const machineRunPendingActions = new Map();
 const machineRunProgressTimers = new Map();
 const machineRunExternalResearchDecisions = new Map();
 const pipelineHarnessImplementedAtCache = new Map();
+const pipelineHarnessAuthoringBadgeCache = new Map();
 const pipelineHarnessImplementationStatusCache = new Map();
+const pipelineHarnessImplementationPendingPaths = new Set();
 const pipelineHarnessRequiredBeforeRunCache = new Set();
 const machinePatchReviewShown = new Set();
 let lastMachineRunRecord = null;
@@ -1884,15 +1886,18 @@ function updateTitle() {
     fileInfoEl.textContent = '';
     fileInfoEl.title = '';
     renderTemplateStatusChip();
+    document.title = 'OrPAD';
     window.orpad.setTitle('OrPAD');
     return;
   }
   const name = getTabDisplayName(tab);
   const sourceLabel = tab.source ? ' - Unsaved (from URL)' : '';
+  const nextTitle = (tab.isModified ? '* ' : '') + name + ' - OrPAD';
   fileInfoEl.textContent = (tab.isModified ? '* ' : '') + name + sourceLabel;
   fileInfoEl.title = tab.sourceUrl || tab.filePath || '';
   renderTemplateStatusChip();
-  window.orpad.setTitle((tab.isModified ? '* ' : '') + name + ' - OrPAD');
+  document.title = nextTitle;
+  window.orpad.setTitle(nextTitle);
 }
 
 function showSaveFlash() {
@@ -2065,6 +2070,7 @@ let orchNodeClickTimer = 0;
 let suppressOrchContextMenuUntil = 0;
 let suppressOrchContextMenuPoint = null;
 const orchGraphMetaCache = new Map();
+let orchNodePackCatalogCache = null;
 let currentDiffPanel = null; // { el, recompute } - valid while diff panel is mounted
 // Set when the left diff textarea echoes into CodeMirror - the debounced renderPreview
 // would otherwise trigger a second recompute for the same keystroke.
@@ -2347,7 +2353,7 @@ function renderJSONPreview(content) {
 
 const ORCH_TREE_NODE_TYPES = [
   'Sequence', 'Selector', 'Parallel', 'Discuss', 'Loop', 'Gate', 'Context',
-  'Timeout', 'Retry', 'Catch', 'CrossCheck', 'Skill', 'Planner', 'OrchTree',
+  'Timeout', 'Retry', 'Catch', 'CrossCheck', 'Decorator', 'Action', 'Skill', 'Planner', 'OrchTree',
 ];
 const ORCH_GRAPH_NODE_TYPES = [
   'orpad.entry', 'orpad.context', 'orpad.gate', 'orpad.selector', 'orpad.skill', 'orpad.tree', 'orpad.graph',
@@ -2377,6 +2383,8 @@ const ORCH_NODE_TYPE_LABELS = {
   Tool: 'Tool',
   Human: 'Human',
   Wait: 'Wait',
+  Decorator: 'Decorator',
+  Action: 'Action',
 };
 const ORCH_NODE_WIDTH = 236;
 const ORCH_NODE_HEIGHT = 88;
@@ -2913,6 +2921,7 @@ function machineQueueInventoryCounts(inventory) {
     counts,
     activeCount,
     terminalCount,
+    candidateCount: Number(counts.candidate) || 0,
     queuedCount: Number(counts.queued) || 0,
     claimedCount: Number(counts.claimed) || 0,
     blockedCount: Number(inventory?.blockedCount) || Number(counts.blocked) || 0,
@@ -2965,6 +2974,8 @@ function machineLatestBlockedWorkDetails(record) {
       reason = `${machineCountLabel(changedFiles.length, 'changed file')} ${patchReviewStatus === 'applied' ? 'applied to the workspace' : 'kept as review-only evidence'}.`;
     } else if (['conflict', 'failed'].includes(patchReviewStatus)) {
       reason = `${machineCountLabel(changedFiles.length, 'changed file')} needs patch follow-up after ${patchReviewStatus}.`;
+    } else if (patchReview && !patchReview.patchReviewEligible) {
+      reason = `${machineCountLabel(changedFiles.length, 'changed file')} saved as blocked-work evidence; workspace files were not changed.`;
     } else {
       reason = `${machineCountLabel(changedFiles.length, 'changed file')} staged for patch review.`;
     }
@@ -3025,13 +3036,30 @@ function machineSkipBlockReason(record, nodePath, nodeType = '') {
   return `Skip disabled: ${machineQueueInventorySummary(machineLatestQueueInventory(record))}. Continue queued work or stop the run; skipping ${nodePath || 'this node'} leaves queued work stranded.`;
 }
 
-function renderOrchInspectorField(label, field, path, value, issue = null) {
+function renderOrchInspectorField(label, field, path, value, issue = null, options = {}) {
   const hasIssue = !!issue;
+  const displayValue = String(value ?? '');
+  const valueKindAttr = options.valueKind ? ` data-orch-value-kind="${escapeHtml(options.valueKind)}"` : '';
+  const placeholderAttr = options.placeholder ? ` placeholder="${escapeHtml(options.placeholder)}"` : '';
+  const rows = Math.max(1, Number(options.rows) || 2);
+  const control = options.multiline
+    ? `<textarea data-orch-edit="${escapeHtml(field)}" data-orch-path="${escapeHtml(path)}"${valueKindAttr}${placeholderAttr} rows="${rows}" ${hasIssue ? 'aria-invalid="true"' : ''}>${escapeHtml(displayValue)}</textarea>`
+    : `<input data-orch-edit="${escapeHtml(field)}" data-orch-path="${escapeHtml(path)}"${valueKindAttr}${placeholderAttr} value="${escapeHtml(displayValue)}" ${hasIssue ? 'aria-invalid="true"' : ''}>`;
   return `
     <label class="${hasIssue ? 'has-inline-diagnostic' : ''}">
       <span>${escapeHtml(label)}</span>
-      <input data-orch-edit="${escapeHtml(field)}" data-orch-path="${escapeHtml(path)}" value="${escapeHtml(value || '')}" ${hasIssue ? 'aria-invalid="true"' : ''}>
+      ${control}
       ${renderPipelineInlineDiagnostic(issue)}
+    </label>
+  `;
+}
+
+function renderOrchInspectorCheckbox(label, field, path, checked, hint = '') {
+  return `
+    <label class="orch-inspector-check">
+      <input type="checkbox" data-orch-edit="${escapeHtml(field)}" data-orch-path="${escapeHtml(path)}" ${checked ? 'checked' : ''}>
+      <span>${escapeHtml(label)}</span>
+      ${hint ? `<small>${escapeHtml(hint)}</small>` : ''}
     </label>
   `;
 }
@@ -3079,9 +3107,12 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
       if (queue.totalCount > 0 && queue.activeCount > 0) {
         const status = machineQueueInventorySummary(inventory);
         const blockedText = queue.blockedCount > 0 ? ` ${machineBlockedWorkInlineText(activeRecord)}` : '';
+        const candidateOnly = queue.candidateCount > 0 && queue.queuedCount === 0 && queue.claimedCount === 0;
         return {
           state: 'warn',
-          text: queue.blockedCount > 0
+          text: candidateOnly
+            ? `Triage waiting: ${status}. Continue triages candidates before dispatch.`
+            : queue.blockedCount > 0
             ? `Queue has blockers: ${status}. Continue runs the next queued item.${blockedText}`
             : `Queue waiting: ${status}. Continue runs the next queued item.`,
         };
@@ -3173,7 +3204,8 @@ function pipelinePreviewRunHeaderMetrics(record) {
     const processed = queue.doneCount + queue.blockedCount + queue.rejectedCount;
     progressLabel = `${processed}/${queue.totalCount}`;
     const blockedText = queue.blockedCount > 0 ? ` ${machineBlockedWorkInlineText(record)}` : '';
-    progressTitle = `Work queue: ${machineQueueInventorySummary(inventory)}. ${queue.activeCount ? 'Continue processes the next queued item.' : 'No active queue items remain.'}${blockedText}`;
+    const candidateOnly = queue.candidateCount > 0 && queue.queuedCount === 0 && queue.claimedCount === 0;
+    progressTitle = `Work queue: ${machineQueueInventorySummary(inventory)}. ${queue.activeCount ? (candidateOnly ? 'Continue triages candidate items before dispatch.' : 'Continue processes the next queued item.') : 'No active queue items remain.'}${blockedText}`;
   } else if (seenPaths.size > 0) {
     progressLabel = `${completedPaths.size}/${seenPaths.size}`;
     progressTitle = `${completedPaths.size} resolved (completed or skipped) out of ${seenPaths.size} nodes touched in this run.`;
@@ -3646,7 +3678,7 @@ function renderProbeActionButtons(f, runIdAttr, nodePathAttr, record = null) {
       return 'node';
     })();
     const skipBlockReason = machineSkipBlockReason(record, nodePathAttr, f?.nodeType || '');
-    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Re-run this ${nodeKindLabel} at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output, timeout) — Continue is dispatched automatically afterwards.">Retry ${nodeKindLabel}</button>`);
+    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" data-item-id="${escapeHtml(f?.itemId || '')}" title="Re-run this ${nodeKindLabel} at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output, timeout) — Continue is dispatched automatically afterwards.">Retry ${nodeKindLabel}</button>`);
     buttons.push(skipBlockReason
       ? `<button class="pipe-failed-probe-link pipe-failed-probe-skip" disabled title="${escapeHtml(skipBlockReason)}">Skip ${nodeKindLabel}</button>`
       : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this ${nodeKindLabel}. Use only when its work is genuinely not required for this run.">Skip ${nodeKindLabel}</button>`);
@@ -3737,9 +3769,12 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const previewRunRecord = getActiveMachineRunRecord(runbookPath);
   const previewRunInProgress = isMachineRunInProgress(previewRunRecord, runbookPath);
   const previewRunId = previewRunRecord?.runState?.runId || previewRunRecord?.runId || '';
+  const cancelPending = isMachineRunCancelPending(runbookPath, previewRunId);
   const startPending = machineRunStartPendingPaths.has(runbookKey);
+  const harnessPending = pipelineHarnessImplementationPendingPaths.has(runbookKey);
   const externalResearchLimitation = pipelineDoc?.metadata?.externalResearch?.limitation || pipelineDoc?.run?.externalResearchLimitation || '';
   const harnessImplementedAt = pipelineDocHarnessImplementedAt(pipelineDoc, runbookKey);
+  const harnessAuthoringBadge = pipelineDocHarnessAuthoringBadge(pipelineDoc, harnessImplementedAt, runbookKey);
   const harnessProgress = harnessImplementationProgressForPath(runbookPath);
   const requiresHarnessBeforeRun = pipelineRequiresHarnessBeforeRun(runbookPath, pipelineDoc, harnessImplementedAt);
   const runtimeBlockReason = machineRuntimeBlockReason();
@@ -3753,16 +3788,18 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const machineDisabled = startPending || previewRunInProgress || (checked && !machineStartable);
   const defaultAction = machineCompatible && previewRunInProgress ? 'machine-cancel-run' : 'default';
   const defaultTitle = machineCompatible
-    ? (previewRunInProgress ? 'Stop Run' : (startPending ? 'Starting run...' : (machineStartable ? 'Start Run' : (machineReason || 'Start Run'))))
+    ? (previewRunInProgress ? (cancelPending ? 'Cancel requested...' : 'Stop Run') : (startPending ? 'Starting run...' : (machineStartable ? 'Start Run' : (machineReason || 'Start Run'))))
     : (agentReady ? 'Prepare Handoff' : 'Run this pipeline');
   const defaultDisabled = machineCompatible
-    ? (startPending || (!previewRunInProgress && checked && !machineStartable) || (previewRunInProgress && !window.orpad?.machine?.cancelRun))
+    ? (startPending || (!previewRunInProgress && checked && !machineStartable) || (previewRunInProgress && (cancelPending || !window.orpad?.machine?.cancelRun)))
     : false;
   const defaultDangerClass = machineCompatible && previewRunInProgress ? ' danger' : '';
   const defaultIcon = machineCompatible && previewRunInProgress
     ? orchToolIcon('M5 5h8v8H5z')
     : orchToolIcon('M5 3l7 5-7 5V3z');
-  const runStatus = pipelinePreviewRunStatus(validation, runtimeBlockReason, previewRunInProgress, previewRunRecord);
+  const runStatus = cancelPending
+    ? { state: 'warn', text: 'Cancel requested...' }
+    : pipelinePreviewRunStatus(validation, runtimeBlockReason, previewRunInProgress, previewRunRecord);
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
   const activePathTitle = runbookRelativePath(context.activePath || runbookPath);
@@ -3783,7 +3820,9 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         ${runHeaderMetrics.progressLabel ? `<span class="pipeline-runbar-progress" title="${escapeHtml(runHeaderMetrics.progressTitle || '')}">progress <code>${escapeHtml(runHeaderMetrics.progressLabel)}</code></span>` : ''}
         ${runHeaderMetrics.elapsed ? `<span class="pipeline-runbar-elapsed" title="${escapeHtml(`Started ${runHeaderMetrics.startedAt}`)}">${escapeHtml(runHeaderMetrics.elapsed)}</span>` : ''}
         ${harnessProgress ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(harnessProgress.title)}">${escapeHtml(harnessProgress.label)}</span>` : ''}
+        ${harnessPending && !harnessProgress ? '<span class="pipeline-runbar-status warn" title="Harness implementation request is starting.">Starting harness</span>' : ''}
         ${harnessImplementedAt ? `<span class="pipeline-runbar-status done" title="${escapeHtml(`Harness implemented at ${harnessImplementedAt}`)}">Harness ready</span>` : ''}
+        ${harnessAuthoringBadge ? `<span class="pipeline-runbar-status ${escapeHtml(harnessAuthoringBadge.state)}" title="${escapeHtml(harnessAuthoringBadge.title)}">${escapeHtml(harnessAuthoringBadge.label)}</span>` : ''}
         ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
         ${renderMachineBudgetIndicatorHtml(pipelineDoc)}
       </div>
@@ -3797,7 +3836,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
           </summary>
           <div class="pipeline-run-menu" role="menu">
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.')}">Run locally</button>
-            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress ? '' : 'disabled'} title="Create or refresh the Machine harness scaffold for this pipeline.">Implement Harness</button>
+            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress && !harnessPending ? '' : 'disabled'} title="Create or refresh the Machine harness scaffold for this pipeline.">Implement Harness</button>
             <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start autonomous Machine run and stop at patch review.'))}">Start Run</button>
             <button data-pipeline-run-action="managed-ask" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="Debug mode: ask before LLM CLI permission bypass instead of auto-driving to patch review.">Start Run (Ask Permissions)</button>
             <button data-pipeline-run-action="managed-auto-apply" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="Fully autonomous: auto-approve and apply every patch the worker produces. No human gate at patchReview. Use only for trusted pipelines.">Start Run (Auto-Apply Patches)</button>
@@ -4370,6 +4409,8 @@ function orchNodeTypeStem(type) {
 function orchNodeDefaultLabel(type) {
   const labels = {
     Sequence: 'New sequence',
+    Decorator: 'Repeater',
+    Action: 'New action',
     Skill: 'New skill',
     OrchTree: 'New tree subflow',
     'orpad.entry': 'Entry',
@@ -4393,6 +4434,63 @@ function orchNodeDefaultLabel(type) {
   return labels[type] || 'New node';
 }
 
+function isOrchNodeBypassed(node) {
+  return node?.bypass === true || node?.config?.bypass === true;
+}
+
+function setOrchNodeBypass(node, enabled) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+  if (enabled) {
+    node.bypass = true;
+    return;
+  }
+  delete node.bypass;
+  if (node.config && typeof node.config === 'object' && !Array.isArray(node.config)) {
+    delete node.config.bypass;
+  }
+}
+
+function isRepeaterDecorator(node) {
+  if (node?.type !== 'Decorator') return false;
+  const kind = String(node?.config?.decorator || node?.config?.kind || node?.decorator || 'Repeater').trim();
+  return !kind || /^repeater$/i.test(kind);
+}
+
+function applyOrchDecoratorDefaults(node) {
+  if (!node || typeof node !== 'object' || Array.isArray(node) || node.type !== 'Decorator') return;
+  if (!node.config || typeof node.config !== 'object' || Array.isArray(node.config)) node.config = {};
+  if (!String(node.config.decorator || node.config.kind || node.decorator || '').trim()) node.config.decorator = 'Repeater';
+  if (isRepeaterDecorator(node) && (node.config.repeatCount === undefined || node.config.repeatCount === null || node.config.repeatCount === '')) {
+    node.config.repeatCount = 1;
+  }
+}
+
+function orchNodeDefaultConfig(type) {
+  const configs = {
+    Decorator: { decorator: 'Repeater', repeatCount: 1 },
+    'orpad.skill': { skillRef: '' },
+    'orpad.tree': { treeRef: '' },
+    'orpad.graph': { graphRef: '' },
+    'orpad.rule': { ruleRef: '' },
+    'orpad.gate': { criteria: ['Review required evidence'] },
+    'orpad.selector': { selector: 'decision', options: ['default'], default: 'default' },
+    'orpad.probe': { lens: 'workspace', maxCandidates: 7 },
+    'orpad.workQueue': { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' },
+    'orpad.triage': { queueRef: 'queue' },
+    'orpad.dispatcher': { queueRef: 'queue', workerLoopRef: 'worker' },
+    'orpad.workerLoop': { queueRef: 'queue', targetFiles: [] },
+    'orpad.patchReview': { patchRoot: 'harness/generated/latest-run/patches' },
+    'orpad.artifactContract': {
+      artifactRoot: 'harness/generated/latest-run/artifacts',
+      queueRoot: 'harness/generated/latest-run/queue',
+      required: [],
+      requiredQueue: ['journal.jsonl'],
+      onMissing: 'mark-partial',
+    },
+  };
+  return cloneOrchData(configs[type] || {}) || {};
+}
+
 function createOrchNode(type = 'Context', children = [], siblings = []) {
   const id = uniqueOrchChildId(siblings, `${orchNodeTypeStem(type)}-${(siblings || []).length + 1}`);
   const node = {
@@ -4401,10 +4499,8 @@ function createOrchNode(type = 'Context', children = [], siblings = []) {
     label: orchNodeDefaultLabel(type),
   };
   if (type === 'Skill') node.file = '';
-  if (type === 'orpad.skill') node.config = { skillRef: '' };
-  if (type === 'orpad.tree') node.config = { treeRef: '' };
-  if (type === 'orpad.graph') node.config = { graphRef: '' };
-  if (type === 'orpad.rule') node.config = { ruleRef: '' };
+  const defaultConfig = orchNodeDefaultConfig(type);
+  if (Object.keys(defaultConfig).length) node.config = defaultConfig;
   if (type === 'OrchTree') node.tree = {
     id: `${id}-tree`,
     label: 'Tree subflow',
@@ -4415,6 +4511,10 @@ function createOrchNode(type = 'Context', children = [], siblings = []) {
 }
 
 function setOrchNodeEditField(node, field, value) {
+  if (field === 'bypass') {
+    setOrchNodeBypass(node, value === true || String(value).toLowerCase() === 'true');
+    return;
+  }
   const parts = String(field || '').split('.').filter(Boolean);
   if (parts.length <= 1) {
     node[field] = value;
@@ -4428,8 +4528,25 @@ function setOrchNodeEditField(node, field, value) {
   target[parts[parts.length - 1]] = value;
 }
 
+function orchEditControlValue(control) {
+  if (control?.type === 'checkbox') return control.checked === true;
+  const value = control?.value ?? '';
+  if (control?.dataset?.orchValueKind === 'int-or-text') {
+    const trimmed = String(value).trim();
+    if (/^-?\d+$/.test(trimmed)) return Number(trimmed);
+    return trimmed;
+  }
+  return value;
+}
+
+function shouldCommitOrchEditOnInput(control) {
+  const tag = String(control?.tagName || '').toUpperCase();
+  return tag === 'SELECT' || control?.type === 'checkbox';
+}
+
 function applyOrchTypeDefaults(node, type) {
   if (type === 'Skill' && !node.file) node.file = '';
+  if (type === 'Decorator') applyOrchDecoratorDefaults(node);
   if (type === 'OrchTree' && !node.tree) {
     node.tree = {
       id: `${node.id || 'subflow'}-tree`,
@@ -4437,10 +4554,9 @@ function applyOrchTypeDefaults(node, type) {
       root: { id: 'root', type: 'Sequence', label: node.label || 'Tree subflow' },
     };
   }
-  if (type === 'orpad.skill') node.config = { ...(node.config || {}), skillRef: node.config?.skillRef || '' };
+  const defaultConfig = orchNodeDefaultConfig(type);
+  if (Object.keys(defaultConfig).length) node.config = { ...defaultConfig, ...(node.config || {}) };
   if (type === 'orpad.tree') node.config = { ...(node.config || {}), treeRef: node.config?.treeRef || node.config?.ref || '' };
-  if (type === 'orpad.graph') node.config = { ...(node.config || {}), graphRef: node.config?.graphRef || '' };
-  if (type === 'orpad.rule') node.config = { ...(node.config || {}), ruleRef: node.config?.ruleRef || '' };
 }
 
 function createOrchSubtree(siblings = []) {
@@ -5279,53 +5395,103 @@ function closeOrchContextMenu() {
   contentEl.querySelector('[data-orch-context-menu]')?.remove();
 }
 
+function orchContextMutationLocked(baseFilePath = getActiveTab()?.filePath) {
+  const context = pipelineContextForPath(baseFilePath);
+  return !!context?.pipelinePath && isPipelineMachineRunInProgress(context.pipelinePath);
+}
+
+function canRunOrchContextMutation(baseFilePath = getActiveTab()?.filePath) {
+  return !orchContextMutationLocked(baseFilePath);
+}
+
+function ensureOrchContextMutationMode(baseFilePath = getActiveTab()?.filePath) {
+  if (orchContextMutationLocked(baseFilePath)) {
+    notifyFormatError('Pipeline flow', new Error('Run in progress; editing is locked.'));
+    return false;
+  }
+  if (orchTreeGraphMode !== 'readwrite') orchTreeGraphMode = 'readwrite';
+  return true;
+}
+
+function orchContextGraphPoint(frame, x, y) {
+  const previewRect = contentEl.querySelector('.orch-preview')?.getBoundingClientRect();
+  const frameRect = frame?.getBoundingClientRect?.();
+  if (!previewRect || !frameRect) return null;
+  const point = orchFramePointToGraph({
+    x: x + previewRect.left - frameRect.left,
+    y: y + previewRect.top - frameRect.top,
+  });
+  return snapOrchPoint(point);
+}
+
+function orchSpecificContextMenuItems(node, canMutate) {
+  if (!node || typeof node !== 'object') return [];
+  const items = [];
+  if (canMutate) {
+    items.push(['toggle-bypass', isOrchNodeBypassed(node) ? 'Disable Bypass' : 'Enable Bypass']);
+  }
+  if (canMutate && node.type === 'Decorator') {
+    items.push(['edit-repeat-count', isRepeaterDecorator(node) ? 'Edit repeat count' : 'Set as Repeater']);
+  }
+  return items;
+}
+
 function showOrchContextMenu({ x, y, path = '', edgeId = '', readwrite = false, frame = null, doc = null, baseFilePath = getActiveTab()?.filePath }) {
   closeOrchContextMenu();
   const targetPath = path || selectedOrchNodePath;
   const isGraphView = getActiveTab()?.viewType === 'orch-graph';
+  const root = orchDocForContextAction(doc);
+  const node = path && root ? orchValueAtPath(root, path) : null;
+  const canMutate = canRunOrchContextMutation(baseFilePath);
+  const graphPoint = isGraphView ? orchContextGraphPoint(frame, x, y) : null;
   const canOpenTree = canOpenOrchSubtree(path, doc);
   const canOpenFile = !!orchNodeFileTarget(path, doc, baseFilePath);
-  const machineNodePath = targetPath ? machineNodePathForOrchNode(targetPath, doc, baseFilePath) : '';
+  const machineNodePath = path ? machineNodePathForOrchNode(path, doc, baseFilePath) : '';
   const nodeRuntimeStatus = machineNodePath ? machineStatusForNodePath(machineNodePath, baseFilePath) : null;
   const hasMachineFailure = machineNodePath ? machineFailureForNodePath(machineNodePath, baseFilePath).length > 0 : false;
   const items = [];
   if (edgeId) {
-    if (readwrite) {
+    if (canMutate) {
       items.push(['transition-curve', 'Curve']);
       items.push(['transition-straight', 'Straight']);
       items.push(['delete-transition', 'Delete']);
     }
     items.push(['fit', 'Fit']);
   } else {
-  if (canOpenTree) {
-    items.push(['open-subtree', canOpenFile ? 'Open layer' : 'Open']);
-  }
-  if (canOpenFile) {
-    items.push(['open-file', canOpenTree ? 'Open file' : 'Open']);
-  }
-  if (readwrite && (targetPath || (isGraphView && !activeOrchGraphLayerPath()))) {
-    items.push(['add-context', 'Add Context']);
-    items.push(['add-skill', 'Add Skill']);
-    items.push(['insert-subtree', 'Insert subtree']);
-  }
-  if (targetPath && isGraphView) {
-    items.push(['improve-node-prompt', 'Improve node prompt']);
-    items.push(['choose-node-model', 'Choose node model']);
-    if (['failed', 'blocked'].includes(nodeRuntimeStatus?.state) || hasMachineFailure) {
-      items.push(['failure-details', 'Failure details']);
+    if (canOpenTree) {
+      items.push(['open-subtree', canOpenFile ? 'Open layer' : 'Open']);
     }
-  }
-  if (readwrite && isGraphView && path && selectedOrchNodePath && selectedOrchNodePath !== path) {
-    items.push(['connect-selected', 'Connect selected']);
-  }
-  if (readwrite && path) {
-    if (!selectedOrchNodeIsRoot(path)) items.push(['delete-node', 'Delete node']);
-  }
-  if (readwrite && !path) {
-    items.push(['auto-layout', 'Auto layout']);
-  }
-  items.push(['fit', 'Fit']);
-  if (!readwrite && !items.length) items.push(['fit', 'Fit']);
+    if (canOpenFile) {
+      items.push(['open-file', canOpenTree ? 'Open file' : 'Open']);
+    }
+    if (path) {
+      items.push(...orchSpecificContextMenuItems(node, canMutate));
+    }
+    if (canMutate && (targetPath || (isGraphView && !activeOrchGraphLayerPath()))) {
+      items.push(['add-node-browser', 'Add Node...']);
+      items.push(['add-context', 'Add Context']);
+      items.push(['add-skill', 'Add Skill']);
+      if (!isOrchGraphStateLayer()) items.push(['add-decorator', 'Add Decorator']);
+      items.push(['insert-subtree', 'Insert subtree']);
+    }
+    if (path && isGraphView) {
+      items.push(['improve-node-prompt', 'Improve node prompt']);
+      items.push(['choose-node-model', 'Choose node model']);
+      if (['failed', 'blocked'].includes(nodeRuntimeStatus?.state) || hasMachineFailure) {
+        items.push(['failure-details', 'Failure details']);
+      }
+    }
+    if (canMutate && isGraphView && path && selectedOrchNodePath && selectedOrchNodePath !== path) {
+      items.push(['connect-selected', 'Connect selected']);
+    }
+    if (canMutate && path) {
+      if (!selectedOrchNodeIsRoot(path)) items.push(['delete-node', 'Delete node']);
+    }
+    if (canMutate && !path) {
+      items.push(['auto-layout', 'Auto layout']);
+    }
+    items.push(['fit', 'Fit']);
+    if (!readwrite && !items.length) items.push(['fit', 'Fit']);
   }
 
   const menu = document.createElement('div');
@@ -5333,7 +5499,10 @@ function showOrchContextMenu({ x, y, path = '', edgeId = '', readwrite = false, 
   menu.dataset.orchContextMenu = 'true';
   menu.style.left = `${Math.round(x)}px`;
   menu.style.top = `${Math.round(y)}px`;
-  menu.innerHTML = items.map(([action, label]) => `<button data-orch-context-action="${action}" data-orch-path="${escapeHtml(path)}" data-orch-edge="${escapeHtml(edgeId)}">${escapeHtml(label)}</button>`).join('');
+  const graphPointAttr = graphPoint
+    ? ` data-orch-graph-x="${escapeHtml(String(Math.round(graphPoint.x)))}" data-orch-graph-y="${escapeHtml(String(Math.round(graphPoint.y)))}"`
+    : '';
+  menu.innerHTML = items.map(([action, label]) => `<button data-orch-context-action="${action}" data-orch-path="${escapeHtml(path)}" data-orch-edge="${escapeHtml(edgeId)}"${graphPointAttr}>${escapeHtml(label)}</button>`).join('');
   contentEl.querySelector('.orch-preview')?.appendChild(menu);
   const menuRect = menu.getBoundingClientRect();
   const hostRect = contentEl.getBoundingClientRect();
@@ -5342,8 +5511,14 @@ function showOrchContextMenu({ x, y, path = '', edgeId = '', readwrite = false, 
   menu.querySelectorAll('[data-orch-context-action]').forEach(button => {
     button.addEventListener('click', () => {
       const action = button.dataset.orchContextAction;
+      const contextPoint = button.dataset.orchGraphX
+        ? { x: Number(button.dataset.orchGraphX), y: Number(button.dataset.orchGraphY) }
+        : null;
+      const actionPath = action === 'add-node-browser' && isGraphView && !path
+        ? ''
+        : (button.dataset.orchPath || targetPath);
       closeOrchContextMenu();
-      runOrchContextAction(action, button.dataset.orchPath || targetPath, frame, button.dataset.orchEdge || edgeId, doc, baseFilePath);
+      runOrchContextAction(action, actionPath, frame, button.dataset.orchEdge || edgeId, doc, baseFilePath, contextPoint);
     });
   });
 }
@@ -5401,24 +5576,83 @@ function addGraphTransition(draft, fromPath, toPath) {
   graph.transitions.push({ id: uniqueGraphTransitionId(graph, from.id, to.id), from: from.id, to: to.id });
 }
 
-function addGraphNode(draft, sourcePath, type) {
+function addGraphNode(draft, sourcePath, type, position = null) {
   const graph = ensureOrchGraphDoc(draft);
   const node = createOrchNode(type, [], graph.nodes);
   graph.nodes.push(node);
   if (!graph.start) graph.start = node.id;
   const newPath = `graph.nodes.${graph.nodes.length - 1}`;
   if (sourcePath && orchValueAtPath(draft, sourcePath)?.id) addGraphTransition(draft, sourcePath, newPath);
+  if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+    setOrchMetaNodePosition(newPath, position.x, position.y);
+  }
   setOrchSelection(newPath);
 }
 
-function addOrchLinkedNode(draft, path, type) {
-  if (isOrchGraphStateLayer()) addGraphNode(draft, path, type);
+function addOrchLinkedNode(draft, path, type, position = null) {
+  if (isOrchGraphStateLayer()) addGraphNode(draft, path, type, position);
   else addOrchChild(draft, path, type);
 }
 
 function insertOrchLinkedSubtree(draft, path) {
   if (isOrchGraphStateLayer()) addGraphNode(draft, path, 'orpad.tree');
   else insertOrchSubtree(draft, path);
+}
+
+function orchNodeTemplateIdStem(template = {}) {
+  return String(template.idStem || template.id || template.type || 'node')
+    .replace(/^orpad[.:]/i, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'node';
+}
+
+function createOrchNodeFromTemplate(template = {}, siblings = []) {
+  const type = template.type || 'Context';
+  const node = createOrchNode(type, [], siblings);
+  const id = uniqueOrchChildId(siblings, orchNodeTemplateIdStem(template));
+  node.id = id;
+  node.type = type;
+  node.label = template.label || orchNodeDefaultLabel(type);
+  if (node.tree && typeof node.tree === 'object' && !Array.isArray(node.tree)) {
+    node.tree.id = `${id}-tree`;
+  }
+  const templateConfig = template.config && typeof template.config === 'object' && !Array.isArray(template.config)
+    ? cloneOrchData(template.config)
+    : null;
+  if (templateConfig) node.config = { ...(node.config || {}), ...templateConfig };
+  if (template.file !== undefined) node.file = template.file;
+  if (template.ref !== undefined) node.ref = template.ref;
+  if (template.tree && typeof template.tree === 'object' && !Array.isArray(template.tree)) node.tree = cloneOrchData(template.tree);
+  applyOrchTypeDefaults(node, node.type);
+  return node;
+}
+
+function addGraphNodeFromTemplate(draft, sourcePath, template, position = null) {
+  const graph = ensureOrchGraphDoc(draft);
+  const node = createOrchNodeFromTemplate(template, graph.nodes);
+  graph.nodes.push(node);
+  if (!graph.start) graph.start = node.id;
+  const newPath = `graph.nodes.${graph.nodes.length - 1}`;
+  if (sourcePath && orchValueAtPath(draft, sourcePath)?.id) addGraphTransition(draft, sourcePath, newPath);
+  if (position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+    setOrchMetaNodePosition(newPath, position.x, position.y);
+  }
+  setOrchSelection(newPath);
+}
+
+function addOrchChildFromTemplate(draft, path, template) {
+  const node = orchValueAtPath(draft, path);
+  if (!node || typeof node !== 'object') return;
+  if (!Array.isArray(node.children)) node.children = [];
+  node.children.push(createOrchNodeFromTemplate(template, node.children));
+  setOrchSelection(`${path}.children.${node.children.length - 1}`);
+}
+
+function addOrchLinkedNodeFromTemplate(draft, path, template, position = null) {
+  if (isOrchGraphStateLayer()) addGraphNodeFromTemplate(draft, path, template, position);
+  else addOrchChildFromTemplate(draft, path, template);
 }
 
 function deleteOrchNodeAtPath(draft, path) {
@@ -5613,7 +5847,248 @@ function openNodeFailureDetailsModal(path, doc = null, baseFilePath = getActiveT
   });
 }
 
-function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, doc = null, baseFilePath = getActiveTab()?.filePath) {
+function fallbackOrchNodePackCatalog() {
+  return [
+    {
+      id: 'orpad.behavior-tree',
+      name: 'Behavior Tree Nodes',
+      description: 'Local behavior-tree nodes for tree layers.',
+      nodes: ORCH_TREE_NODE_TYPES.map(type => ({ type })),
+    },
+    {
+      id: 'orpad.core',
+      name: 'OrPAD Core Nodes',
+      description: 'Core OrPAD graph nodes.',
+      nodes: ['orpad.entry', 'orpad.context', 'orpad.gate', 'orpad.selector', 'orpad.skill', 'orpad.tree', 'orpad.graph', 'orpad.rule', 'orpad.artifactContract'].map(type => ({ type })),
+    },
+    {
+      id: 'orpad.workstream',
+      name: 'OrPAD Workstream Nodes',
+      description: 'Queue-driven workstream nodes.',
+      nodes: ['orpad.probe', 'orpad.workQueue', 'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop', 'orpad.patchReview', 'orpad.barrier', 'orpad.exit'].map(type => ({ type })),
+    },
+  ];
+}
+
+async function loadOrchNodePackCatalog() {
+  if (orchNodePackCatalogCache) return orchNodePackCatalogCache;
+  try {
+    const response = await window.orpad?.orchestration?.listNodePacks?.({ workspacePath });
+    if (response?.success !== false && Array.isArray(response?.nodePacks)) {
+      orchNodePackCatalogCache = response.nodePacks;
+      return orchNodePackCatalogCache;
+    }
+  } catch {}
+  orchNodePackCatalogCache = fallbackOrchNodePackCatalog();
+  return orchNodePackCatalogCache;
+}
+
+function orchNodeBrowserSurface() {
+  return isOrchGraphStateLayer() ? 'graph' : 'tree';
+}
+
+function orchNodeBrowserAllowedTypes(surface = orchNodeBrowserSurface()) {
+  return new Set(surface === 'graph' ? ORCH_GRAPH_NODE_TYPES : ORCH_TREE_NODE_TYPES);
+}
+
+function orchNodeBrowserPackLabel(pack = {}) {
+  return pack.name || pack.id || 'Node Pack';
+}
+
+function orchNodeBrowserItemFromNode(pack, node, surface) {
+  const type = String(node?.type || '').trim();
+  if (!type || !orchNodeBrowserAllowedTypes(surface).has(type)) return null;
+  const label = node?.label || orchNodeTypeLabel(type) || type;
+  const packName = orchNodeBrowserPackLabel(pack);
+  const description = node?.description || node?.runtimeHandlerKind || `${label} from ${packName}.`;
+  return {
+    id: `${pack.id || packName}:node:${type}`,
+    kind: 'Node',
+    type,
+    label,
+    packId: pack.id || '',
+    packName,
+    description,
+    searchText: `${label} ${type} ${packName} ${description}`.toLowerCase(),
+    template: {
+      type,
+      idStem: orchNodeTypeStem(type),
+      label: orchNodeDefaultLabel(type),
+      config: orchNodeDefaultConfig(type),
+    },
+  };
+}
+
+function buildOrchNodeBrowserPacks(rawPacks = [], surface = orchNodeBrowserSurface()) {
+  const packs = [];
+  const sourcePacks = Array.isArray(rawPacks) && rawPacks.length ? rawPacks : fallbackOrchNodePackCatalog();
+  if (surface === 'tree') {
+    packs.push({
+      id: 'orpad.behavior-tree',
+      name: 'Behavior Tree',
+      description: 'Sequence, selector, decorator, action, and skill nodes for tree layers.',
+      items: ORCH_TREE_NODE_TYPES.map(type => ({
+        id: `orpad.behavior-tree:node:${type}`,
+        kind: 'Node',
+        type,
+        label: orchNodeTypeLabel(type) || type,
+        packId: 'orpad.behavior-tree',
+        packName: 'Behavior Tree',
+        description: `${orchNodeTypeLabel(type) || type} node for tree layers.`,
+        searchText: `${type} ${orchNodeTypeLabel(type) || ''} Behavior Tree`.toLowerCase(),
+        template: {
+          type,
+          idStem: orchNodeTypeStem(type),
+          label: orchNodeDefaultLabel(type),
+          config: orchNodeDefaultConfig(type),
+        },
+      })),
+    });
+  }
+  for (const pack of sourcePacks) {
+    const items = (Array.isArray(pack?.nodes) ? pack.nodes : [])
+      .map(node => orchNodeBrowserItemFromNode(pack, node, surface))
+      .filter(Boolean)
+      .sort((a, b) => a.label.localeCompare(b.label));
+    if (!items.length) continue;
+    packs.push({
+      id: pack.id || pack.name || `pack-${packs.length + 1}`,
+      name: orchNodeBrowserPackLabel(pack),
+      description: pack.description || '',
+      items,
+    });
+  }
+  return packs.filter(pack => Array.isArray(pack.items) && pack.items.length);
+}
+
+function findOrchNodeBrowserItem(packs, itemId) {
+  for (const pack of packs || []) {
+    const item = pack.items.find(candidate => candidate.id === itemId);
+    if (item) return item;
+  }
+  return null;
+}
+
+function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveTab()?.filePath, contextPoint = null) {
+  const body = document.createElement('div');
+  body.className = 'orch-node-browser';
+  body.innerHTML = `
+    <div class="orch-node-browser-search">
+      <input data-orch-node-search type="text" placeholder="Search nodes">
+    </div>
+    <div class="orch-node-browser-tabs" data-orch-node-tabs role="tablist"></div>
+    <div class="orch-node-browser-list" data-orch-node-list role="listbox"></div>
+    <div class="orch-node-browser-empty" data-orch-node-empty hidden>No nodes match this search.</div>
+  `;
+  const tabsEl = body.querySelector('[data-orch-node-tabs]');
+  const listEl = body.querySelector('[data-orch-node-list]');
+  const emptyEl = body.querySelector('[data-orch-node-empty]');
+  const searchEl = body.querySelector('[data-orch-node-search]');
+  let packs = [];
+  let activePackId = '';
+
+  const addTemplate = (item) => {
+    if (!item?.template) return;
+    if (!ensureOrchContextMutationMode(baseFilePath)) return;
+    const position = !path && isOrchGraphStateLayer() ? contextPoint : null;
+    applyOrchTreeMutation((draft) => addOrchLinkedNodeFromTemplate(draft, path, item.template, position));
+    closeFmtModal();
+  };
+
+  const render = () => {
+    if (!packs.length) {
+      tabsEl.innerHTML = '';
+      listEl.innerHTML = '';
+      emptyEl.hidden = false;
+      emptyEl.textContent = 'No node packs are available for this layer.';
+      return;
+    }
+    if (!packs.some(pack => pack.id === activePackId)) activePackId = packs[0].id;
+    tabsEl.innerHTML = packs.map(pack => `
+      <button class="orch-node-browser-tab ${pack.id === activePackId ? 'active' : ''}" data-orch-node-pack-tab="${escapeHtml(pack.id)}" role="tab" aria-selected="${pack.id === activePackId ? 'true' : 'false'}">
+        <strong>${escapeHtml(pack.name)}</strong>
+        <span>${pack.items.length}</span>
+      </button>
+    `).join('');
+    tabsEl.querySelectorAll('[data-orch-node-pack-tab]').forEach(button => {
+      button.addEventListener('click', () => {
+        activePackId = button.dataset.orchNodePackTab || '';
+        render();
+      });
+    });
+    const query = String(searchEl?.value || '').trim().toLowerCase();
+    const activePack = packs.find(pack => pack.id === activePackId) || packs[0];
+    const items = activePack.items.filter(item => !query || item.searchText.includes(query));
+    listEl.innerHTML = '';
+    items.forEach(item => {
+      const button = document.createElement('button');
+      button.className = 'orch-node-browser-item';
+      button.dataset.orchNodeTemplate = item.id;
+      button.innerHTML = `
+        <span class="orch-node-browser-item-main">
+          <strong>${escapeHtml(item.label)}</strong>
+          <small>${escapeHtml(item.description)}</small>
+        </span>
+        <span class="orch-node-browser-item-meta">
+          <span class="orch-node-browser-pill">${escapeHtml(item.kind)}</span>
+          <code>${escapeHtml(item.type)}</code>
+        </span>
+      `;
+      button.addEventListener('click', () => addTemplate(findOrchNodeBrowserItem(packs, item.id)));
+      listEl.appendChild(button);
+    });
+    emptyEl.hidden = items.length > 0;
+    emptyEl.textContent = 'No nodes match this search.';
+  };
+
+  openFmtModal({
+    title: 'Add Node',
+    body,
+    footer: [{ label: 'Close', onClick: closeFmtModal }],
+  });
+  listEl.innerHTML = '<div class="orch-node-browser-loading">Loading node packs...</div>';
+  searchEl?.addEventListener('input', render);
+  loadOrchNodePackCatalog()
+    .then(rawPacks => {
+      packs = buildOrchNodeBrowserPacks(rawPacks, orchNodeBrowserSurface());
+      activePackId = packs[0]?.id || '';
+      render();
+      setTimeout(() => searchEl?.focus(), 20);
+    })
+    .catch(err => {
+      packs = buildOrchNodeBrowserPacks(fallbackOrchNodePackCatalog(), orchNodeBrowserSurface());
+      render();
+      notifyFormatError('Node packs', err);
+    });
+}
+
+function focusOrchInspectorEdit(field, path = selectedOrchNodePath) {
+  const fieldSelector = CSS.escape(field || '');
+  const pathSelector = CSS.escape(path || '');
+  window.setTimeout(() => {
+    const control = contentEl.querySelector(`[data-orch-edit="${fieldSelector}"][data-orch-path="${pathSelector}"]`);
+    control?.focus?.();
+    if (control && typeof control.select === 'function') control.select();
+  }, 40);
+}
+
+function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, doc = null, baseFilePath = getActiveTab()?.filePath, contextPoint = null) {
+  const mutationActions = new Set([
+    'toggle-bypass',
+    'edit-repeat-count',
+    'transition-curve',
+    'transition-straight',
+    'delete-transition',
+    'auto-layout',
+    'add-node-browser',
+    'add-context',
+    'add-skill',
+    'add-decorator',
+    'insert-subtree',
+    'connect-selected',
+    'delete-node',
+  ]);
+  if (mutationActions.has(action) && !ensureOrchContextMutationMode(baseFilePath)) return;
   if (action === 'open-subtree') {
     openOrchGraphLayer(path);
     return;
@@ -5638,6 +6113,34 @@ function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, 
     openNodeFailureDetailsModal(path, doc, baseFilePath);
     return;
   }
+  if (action === 'add-node-browser') {
+    openOrchAddNodeBrowser(path, doc, baseFilePath, contextPoint);
+    return;
+  }
+  if (action === 'toggle-bypass') {
+    if (!path) return;
+    applyOrchTreeMutation((draft) => {
+      const node = orchValueAtPath(draft, path);
+      if (!node || typeof node !== 'object') return;
+      setOrchNodeBypass(node, !isOrchNodeBypassed(node));
+      setOrchSelection(path);
+    });
+    return;
+  }
+  if (action === 'edit-repeat-count') {
+    if (!path) return;
+    applyOrchTreeMutation((draft) => {
+      const node = orchValueAtPath(draft, path);
+      if (!node || typeof node !== 'object') return;
+      node.type = 'Decorator';
+      if (!node.config || typeof node.config !== 'object' || Array.isArray(node.config)) node.config = {};
+      node.config.decorator = 'Repeater';
+      applyOrchDecoratorDefaults(node);
+      setOrchSelection(path);
+    });
+    focusOrchInspectorEdit('config.repeatCount', path);
+    return;
+  }
   if (action === 'transition-curve' || action === 'transition-straight') {
     if (!edgeId) return;
     setOrchTransitionMeta(edgeId, {
@@ -5658,8 +6161,10 @@ function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, 
   }
   if (!path && getActiveTab()?.viewType !== 'orch-graph') return;
   applyOrchTreeMutation((draft) => {
-    if (action === 'add-context') addOrchLinkedNode(draft, path, isOrchGraphStateLayer() ? 'orpad.context' : 'Context');
-    else if (action === 'add-skill') addOrchLinkedNode(draft, path, isOrchGraphStateLayer() ? 'orpad.skill' : 'Skill');
+    const position = !path && isOrchGraphStateLayer() ? contextPoint : null;
+    if (action === 'add-context') addOrchLinkedNode(draft, path, isOrchGraphStateLayer() ? 'orpad.context' : 'Context', position);
+    else if (action === 'add-skill') addOrchLinkedNode(draft, path, isOrchGraphStateLayer() ? 'orpad.skill' : 'Skill', position);
+    else if (action === 'add-decorator') addOrchLinkedNode(draft, path, 'Decorator', position);
     else if (action === 'insert-subtree') insertOrchLinkedSubtree(draft, path);
     else if (action === 'connect-selected') addGraphTransition(draft, selectedOrchNodePath, path);
     else if (action === 'delete-node') deleteOrchNodeAtPath(draft, path);
@@ -5757,6 +6262,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
   const typeLabel = orchNodeTypeLabel(node?.type) || 'Node';
   const runtime = machineRuntimeStatusForGraphNode(item, runProjection);
   const progress = machineNodeProgress(item, runProjection);
+  const bypassed = isOrchNodeBypassed(node);
   // The graph wrapper's node.completed fires once per executeRunStep but the underlying queue
   // can still hold unfinished items waiting for the next step (e.g. paused at patch-review).
   // Prefer the queue truth over the wrapper's stale completed status so users do not see
@@ -5803,7 +6309,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
     });
   }
   return `
-    <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}${hasBreakpoint ? ' has-breakpoint' : ''}"
+    <div class="orch-graph-node type-${escapeHtml(orchTypeClass(node?.type))}${runtimeClass} ${selected ? 'selected' : ''} ${primary ? 'primary' : ''} ${readwrite ? 'draggable' : ''}${hasBreakpoint ? ' has-breakpoint' : ''}${bypassed ? ' bypassed' : ''}"
       data-orch-path="${escapeHtml(path)}"
       ${displayRuntime?.nodePath ? `data-machine-node-path="${escapeHtml(displayRuntime.nodePath)}"` : ''}
       role="button"
@@ -5811,6 +6317,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
       style="left:${Math.round(x)}px;top:${Math.round(y)}px">
       ${renderMachineNodeProgressBadge(progress)}
       ${breakpointMarker}
+      ${bypassed ? '<span class="orch-graph-node-bypass" title="This node instance is marked Bypass.">Bypass</span>' : ''}
       <div class="orch-graph-node-top">
         <strong>${escapeHtml(title)}</strong>
         <span title="${escapeHtml(node?.type || '')}">${escapeHtml(typeLabel)}</span>
@@ -6167,6 +6674,20 @@ function renderOrchTypeField(path, node) {
   `;
 }
 
+function renderOrchDecoratorFields(path, node) {
+  if (node?.type !== 'Decorator') return '';
+  const kind = node.config?.decorator || node.config?.kind || node.decorator || 'Repeater';
+  return `
+    ${renderOrchInspectorField('Decorator', 'config.decorator', path, kind)}
+    ${isRepeaterDecorator(node) ? renderOrchInspectorField('Repeat count', 'config.repeatCount', path, node.config?.repeatCount ?? 1, null, {
+      multiline: true,
+      rows: 2,
+      valueKind: 'int-or-text',
+      placeholder: '1',
+    }) : ''}
+  `;
+}
+
 function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.filePath, runProjection = null) {
   if (selectedOrchEdgeId) {
     const transition = orchTransitionMeta(selectedOrchEdgeId);
@@ -6211,6 +6732,7 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
         <h3>${escapeHtml(node.label || node.id || 'Node')}</h3>
         <dl>
           <dt>Kind</dt><dd title="${escapeHtml(node.type || '')}">${escapeHtml(orchNodeTypeLabel(node.type))}</dd>
+          ${isOrchNodeBypassed(node) ? '<dt>Bypass</dt><dd>Enabled</dd>' : ''}
           ${node.file ? `<dt>File</dt><dd>${escapeHtml(node.file)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.id ? `<dt>Tree</dt><dd>${escapeHtml(node.tree.id)}</dd>` : ''}
           ${isOrchTreeRefType(node.type) && node.tree?.root ? `<dt>Tree nodes</dt><dd>${countOrchNestedNodes(node.tree.root)}</dd>` : ''}
@@ -6226,6 +6748,8 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
       ${renderOrchInspectorField('Step key', 'id', selectedOrchNodePath, node.id || '')}
       ${renderOrchInspectorField('Label', 'label', selectedOrchNodePath, node.label || '')}
       ${renderOrchTypeField(selectedOrchNodePath, node)}
+      ${renderOrchInspectorCheckbox('Bypass', 'bypass', selectedOrchNodePath, isOrchNodeBypassed(node), 'Mark this node instance as bypassed in the authored flow.')}
+      ${renderOrchDecoratorFields(selectedOrchNodePath, node)}
       ${node.type === 'Skill' ? renderOrchInspectorField('Skill file', 'file', selectedOrchNodePath, node.file || '', graphNodeFieldDiagnostic(diagnostics, 'file', node)) : ''}
       ${node.type === 'orpad.skill' ? renderOrchInspectorField('Skill ref', 'config.skillRef', selectedOrchNodePath, node.config?.skillRef || '', graphNodeFieldDiagnostic(diagnostics, 'config.skillRef', node)) : ''}
       ${node.type === 'orpad.tree' ? renderOrchInspectorField('Tree ref', 'config.treeRef', selectedOrchNodePath, node.config?.treeRef || node.config?.ref || '', graphNodeFieldDiagnostic(diagnostics, 'config.treeRef', node)) : ''}
@@ -6531,14 +7055,19 @@ function renderOrchTreePreview(content) {
     });
   });
   contentEl.querySelectorAll('[data-orch-edit]').forEach(control => {
-    control.addEventListener('change', () => {
+    let lastCommittedEdit = '';
+    const commitOrchEdit = () => {
       const field = control.dataset.orchEdit;
       const path = control.dataset.orchPath;
+      const value = orchEditControlValue(control);
+      const editKey = JSON.stringify([field, path, value]);
+      if (editKey === lastCommittedEdit) return;
+      lastCommittedEdit = editKey;
       applyOrchTreeMutation((draft) => {
         const node = orchValueAtPath(draft, path);
         if (!node || typeof node !== 'object') return;
         const previousId = node.id;
-        setOrchNodeEditField(node, field, control.value);
+        setOrchNodeEditField(node, field, value);
         if (getActiveTab()?.viewType === 'orch-graph' && field === 'id' && previousId && previousId !== node.id) {
           const graph = ensureOrchGraphDoc(draft);
           if (graph.start === previousId) graph.start = node.id;
@@ -6547,9 +7076,12 @@ function renderOrchTreePreview(content) {
             if (transition.to === previousId) transition.to = node.id;
           });
         }
-        if (field === 'type') applyOrchTypeDefaults(node, control.value);
+        if (field === 'type') applyOrchTypeDefaults(node, value);
+        if (field === 'config.decorator') applyOrchDecoratorDefaults(node);
       });
-    });
+    };
+    control.addEventListener('change', commitOrchEdit);
+    if (shouldCommitOrchEditOnInput(control)) control.addEventListener('input', commitOrchEdit);
   });
   contentEl.querySelectorAll('.orch-graph-node').forEach(nodeEl => {
     let drag = null;
@@ -6692,7 +7224,8 @@ function renderOrchTreePreview(content) {
       if (shouldSuppressOrchContextMenu(event)) return;
       event.preventDefault();
       const path = nodeEl.dataset.orchPath;
-      if (!isOrchNodeSelected(path)) setOrchSelection(path);
+      const keepSourceSelection = canRunOrchContextMutation() && getActiveTab()?.viewType === 'orch-graph' && selectedOrchNodePath && selectedOrchNodePath !== path;
+      if (!keepSourceSelection && !isOrchNodeSelected(path)) setOrchSelection(path);
       const hostRect = contentEl.querySelector('.orch-preview')?.getBoundingClientRect() || contentEl.getBoundingClientRect();
       showOrchContextMenu({
         x: event.clientX - hostRect.left,
@@ -6954,14 +7487,19 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
     });
   });
   contentEl.querySelectorAll('[data-orch-edit]').forEach(control => {
-    control.addEventListener('change', () => {
+    let lastCommittedEdit = '';
+    const commitOrchEdit = () => {
       const field = control.dataset.orchEdit;
       const path = control.dataset.orchPath;
+      const value = orchEditControlValue(control);
+      const editKey = JSON.stringify([field, path, value]);
+      if (editKey === lastCommittedEdit) return;
+      lastCommittedEdit = editKey;
       applyOrchTreeMutation((draft) => {
         const node = orchValueAtPath(draft, path);
         if (!node || typeof node !== 'object') return;
         const previousId = node.id;
-        setOrchNodeEditField(node, field, control.value);
+        setOrchNodeEditField(node, field, value);
         if (field === 'id' && previousId && previousId !== node.id) {
           const graph = ensureOrchGraphDoc(draft);
           if (graph.start === previousId) graph.start = node.id;
@@ -6970,9 +7508,12 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
             if (transition.to === previousId) transition.to = node.id;
           });
         }
-        if (field === 'type') applyOrchTypeDefaults(node, control.value);
+        if (field === 'type') applyOrchTypeDefaults(node, value);
+        if (field === 'config.decorator') applyOrchDecoratorDefaults(node);
       });
-    });
+    };
+    control.addEventListener('change', commitOrchEdit);
+    if (shouldCommitOrchEditOnInput(control)) control.addEventListener('input', commitOrchEdit);
   });
   contentEl.querySelectorAll('.orch-graph-node').forEach(nodeEl => {
     let drag = null;
@@ -7099,7 +7640,7 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
       if (shouldSuppressOrchContextMenu(event)) return;
       event.preventDefault();
       const path = nodeEl.dataset.orchPath;
-      const keepSourceSelection = readwrite && getActiveTab()?.viewType === 'orch-graph' && selectedOrchNodePath && selectedOrchNodePath !== path;
+      const keepSourceSelection = canRunOrchContextMutation(graphBaseFilePath) && getActiveTab()?.viewType === 'orch-graph' && selectedOrchNodePath && selectedOrchNodePath !== path;
       if (!keepSourceSelection && !isOrchNodeSelected(path)) setOrchSelection(path);
       const hostRect = contentEl.querySelector('.orch-preview')?.getBoundingClientRect() || contentEl.getBoundingClientRect();
       showOrchContextMenu({ x: event.clientX - hostRect.left, y: event.clientY - hostRect.top, path, readwrite, frame: nodeEl.closest('[data-orch-frame]'), doc: graphDoc, baseFilePath: graphBaseFilePath });
@@ -8758,7 +9299,9 @@ function clearWorkspacePipelineState() {
   machineApprovalPromptSeen.clear();
   machineBlockedDecisionPromptSeen.clear();
   pipelineHarnessImplementedAtCache.clear();
+  pipelineHarnessAuthoringBadgeCache.clear();
   pipelineHarnessImplementationStatusCache.clear();
+  pipelineHarnessImplementationPendingPaths.clear();
   pipelineHarnessRequiredBeforeRunCache.clear();
   machinePatchReviewShown.clear();
 }
@@ -10146,7 +10689,7 @@ function machineEventLabel(event) {
     case 'patch.review_required':
       return 'Patch review required';
     case 'patch.approved':
-      return event?.reason === 'machine-autonomous.patch-review.auto-apply'
+      return ['machine-autonomous.patch-review.auto-apply', 'machine.patch-review.auto-apply-routine'].includes(event?.reason)
         ? 'Patch auto-approved'
         : 'Patch approved';
     case 'patch.applied':
@@ -10158,11 +10701,11 @@ function machineEventLabel(event) {
     case 'patch.apply_conflict':
       return 'Patch apply conflict';
     case 'patches.apply_started':
-      return event?.reason === 'machine-autonomous.patch-review.auto-apply'
+      return ['machine-autonomous.patch-review.auto-apply', 'machine.patch-review.auto-apply-routine'].includes(event?.reason)
         ? 'Auto-apply started'
         : 'Patch apply started';
     case 'patches.apply_finished':
-      return event?.reason === 'machine-autonomous.patch-review.auto-apply'
+      return ['machine-autonomous.patch-review.auto-apply', 'machine.patch-review.auto-apply-routine'].includes(event?.reason)
         ? 'Auto-apply finished'
         : 'Patch apply finished';
     case 'approval.requested':
@@ -10304,6 +10847,15 @@ function machinePatchReviewDecisionForArtifact(record, patchArtifact) {
   )) || null;
 }
 
+function machineWorkerPatchReviewEligible(eventOrPayload = {}) {
+  const payload = eventOrPayload?.payload || eventOrPayload || {};
+  const status = String(payload.status || '').trim().toLowerCase();
+  const toState = String(payload.toState || '').trim().toLowerCase();
+  if (status && status !== 'done') return false;
+  if (toState && toState !== 'done') return false;
+  return true;
+}
+
 function machinePatchBatchInFlight(record) {
   let started = null;
   let finished = null;
@@ -10345,14 +10897,17 @@ function machineWorkerReviewInfoForEvent(record, event) {
   const payload = event.payload || {};
   const verification = payload.verification || [];
   const patchArtifact = payload.patchArtifact || '';
+  const patchReviewEligible = machineWorkerPatchReviewEligible(payload);
   const patchReviewDecision = machinePatchReviewDecisionForArtifact(record, patchArtifact);
   const decisionType = patchReviewDecision?.eventType || '';
-  const patchReviewStatus = MACHINE_PATCH_STATUS_BY_EVENT[decisionType] || 'pending';
+  const patchReviewStatus = MACHINE_PATCH_STATUS_BY_EVENT[decisionType] || (patchReviewEligible ? 'pending' : '');
   const patchReviewResolved = MACHINE_PATCH_RESOLVED_EVENT_TYPES.includes(decisionType);
   return {
     event,
     itemId: event.itemId || '',
     status: String(payload.status || ''),
+    toState: String(payload.toState || ''),
+    patchReviewEligible,
     patchArtifact,
     patchReviewDecision,
     patchReviewStatus,
@@ -10402,7 +10957,7 @@ function machinePatchReviewOutcome(record) {
   if (!reviews.length) return null;
   const events = record?.events || [];
   const statusCounts = reviews.reduce((counts, review) => {
-    const status = review.patchReviewStatus || 'pending';
+    const status = review.patchReviewStatus || 'evidence';
     counts[status] = (counts[status] || 0) + 1;
     return counts;
   }, {});
@@ -10413,7 +10968,11 @@ function machinePatchReviewOutcome(record) {
   const skippedArtifacts = machineUniqueNonEmptyStrings(reviews
     .filter(review => review.patchReviewStatus === 'skipped')
     .map(review => review.patchArtifact));
-  const unresolved = reviews.filter(review => !review.patchReviewResolved);
+  const unresolved = reviews.filter(review => (
+    review.patchReviewEligible
+    && !review.patchReviewResolved
+    && review.patchReviewStatus !== 'approved'
+  ));
   const historicalConflictCount = events.filter(event => event?.eventType === 'patch.apply_conflict').length;
   const historicalFailedCount = events.filter(event => event?.eventType === 'patch.apply_failed').length;
   const outcome = {
@@ -10598,7 +11157,7 @@ function machineRunAttentionDetails(record) {
         : '',
     });
   }
-  if (workerReview?.patchArtifact && !workerReview.patchReviewResolved && workerReview.changedFiles.length && workerStatus !== 'blocked') {
+  if (workerReview?.patchArtifact && workerReview.patchReviewEligible && !workerReview.patchReviewResolved && workerReview.changedFiles.length && workerStatus !== 'blocked') {
     notices.push({
       state: 'warning',
       title: 'Patch ready',
@@ -10607,10 +11166,10 @@ function machineRunAttentionDetails(record) {
   } else if (workerStatus === 'blocked' && !workerReview?.patchReviewResolved) {
     notices.push({
       state: 'warning',
-      title: 'Review required',
+      title: 'Worker blocked',
       text: [
         workerReview.changedFiles.length
-          ? `${machineCountLabel(workerReview.changedFiles.length, 'changed file')} staged in run evidence; workspace files were not changed.`
+          ? `${machineCountLabel(workerReview.changedFiles.length, 'changed file')} saved as blocked-work evidence; workspace files were not changed.`
           : 'Work stopped before producing an applicable workspace change.',
         workerReview.patchArtifact ? `Patch evidence: ${workerReview.patchArtifact}.` : '',
         workerReview.missingExpectedChanges.length
@@ -10765,8 +11324,9 @@ function machineDisplayStatus(record, runInProgress) {
   if (!runInProgress && lifecycleValue === 'waiting') {
     const lifecycleStatus = runState.lifecycleStatus || 'waiting';
     if (queue.totalCount > 0 && queue.activeCount > 0) {
+      const candidateOnly = queue.candidateCount > 0 && queue.queuedCount === 0 && queue.claimedCount === 0;
       return {
-        lifecycleLabel: queue.blockedCount > 0 ? 'Queue has blockers' : 'Queue waiting',
+        lifecycleLabel: candidateOnly ? 'Triage waiting' : (queue.blockedCount > 0 ? 'Queue has blockers' : 'Queue waiting'),
         lifecycleClass: 'warn',
         lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
         summaryLabel: machineQueueInventorySummary(inventory),
@@ -10890,10 +11450,36 @@ function machinePendingPatchReviewRequiredEvents(record) {
   });
 }
 
+function machineRunUsesAutoPatchApply(record) {
+  const metadataMode = String(record?.runState?.metadata?.patchReviewMode || '').toLowerCase();
+  if (metadataMode === 'auto-apply') return true;
+  return (record?.events || []).some(event => (
+    ['patch.approved', 'patches.apply_started', 'patches.apply_finished', 'patch.applied', 'patch.apply_conflict', 'patch.apply_failed'].includes(event?.eventType)
+    && [
+      'machine-autonomous.patch-review.auto-apply',
+      'machine.patch-review.auto-apply-routine',
+    ].includes(event?.reason)
+  ));
+}
+
+function machineShouldSurfacePatchReview(record, review) {
+  if (!review?.patchArtifact || !review.patchReviewEligible) return false;
+  return !machineRunUsesAutoPatchApply(record);
+}
+
+function machinePatchReviewModeForRun(record, runOptions = {}) {
+  if (runOptions.patchReviewMode === 'auto-apply') return 'auto-apply';
+  if (runOptions.patchReviewMode === 'manual') return 'manual';
+  return machineRunUsesAutoPatchApply(record) ? 'auto-apply' : 'manual';
+}
+
 function machineLatestAutoPatchAuditEvent(record) {
   return latestMachineEventMatching(record, event => (
     ['patch.approved', 'patches.apply_started', 'patches.apply_finished', 'patch.applied', 'patch.apply_conflict', 'patch.apply_failed'].includes(event?.eventType)
-    && event?.reason === 'machine-autonomous.patch-review.auto-apply'
+    && [
+      'machine-autonomous.patch-review.auto-apply',
+      'machine.patch-review.auto-apply-routine',
+    ].includes(event?.reason)
   ));
 }
 
@@ -11138,6 +11724,7 @@ function setMachineRunStartPending(runbookPath, pending) {
 // plus a fresh toast on contention; the runtime side is a Set keyed by
 // (runbookKey, runId|'__start__').
 const machineRunMutationLocks = new Set();
+const machineRunCancelPendingKeys = new Set();
 
 function machineRunMutationLockKey(runbookPath, runId) {
   const key = runbookNormalizePath(runbookPath).toLowerCase();
@@ -11163,12 +11750,35 @@ function notifyMachineRunBusy(action) {
   try {
     notifyFormatError(
       'Run busy',
-      new Error(`${action} ignored: another lifecycle action is already in progress for this run.`),
+      new Error(`${action} is already in progress for this run. Wait for it to finish before retrying.`),
     );
   } catch {
     // Toast surface may not be ready yet; silent fallback is fine — the
     // IPC mutex still rejects the duplicate with MACHINE_RUN_BUSY.
   }
+}
+
+function notifyMachineCancelAlreadyRequested() {
+  try {
+    notifyFormatError(
+      'Cancel requested',
+      new Error('Cancel is already in progress for this run. Waiting for the current run step to stop.'),
+    );
+  } catch {
+    // Non-critical toast path.
+  }
+}
+
+function setMachineRunCancelPending(runbookPath, runId, pending) {
+  if (!runbookPath || !runId) return;
+  const key = machineRunActionKey(runbookPath, runId);
+  if (pending) machineRunCancelPendingKeys.add(key);
+  else machineRunCancelPendingKeys.delete(key);
+}
+
+function isMachineRunCancelPending(runbookPath, runId) {
+  if (!runbookPath || !runId) return false;
+  return machineRunCancelPendingKeys.has(machineRunActionKey(runbookPath, runId));
 }
 
 function setMachineRunActionPending(runbookPath, runId, pending) {
@@ -11336,6 +11946,42 @@ function pipelineDocHarnessImplementedAt(pipelineDoc, runbookKey = '') {
     || '';
 }
 
+function pipelineDocHarnessAuthoringBadge(pipelineDoc, harnessImplementedAt = '', runbookKey = '') {
+  if (!harnessImplementedAt) return null;
+  const cached = runbookKey ? pipelineHarnessAuthoringBadgeCache.get(runbookKey) : null;
+  const implementation = pipelineDoc?.metadata?.harnessImplementation || {};
+  const mode = String(
+    implementation.harnessAuthoringMode
+      || pipelineDoc?.harness?.actualAuthoringMode
+      || pipelineDoc?.harness?.authoringResultMode
+      || cached?.mode
+      || '',
+  ).trim();
+  const requestedMode = String(pipelineDoc?.harness?.authoringMode || '').trim();
+  const error = String(
+    implementation.harnessAuthoringError
+      || pipelineDoc?.harness?.authoringError
+      || cached?.error
+      || '',
+  ).trim();
+  if (!mode && !error) return null;
+  const title = [
+    mode ? `Actual harness authoring: ${mode}` : '',
+    requestedMode ? `Requested mode: ${requestedMode}` : '',
+    error ? `Authoring error: ${error}` : '',
+  ].filter(Boolean).join(' | ');
+  let badge = null;
+  if (mode === 'llm-authored-spec') {
+    badge = { state: 'done', label: 'AI-authored', title };
+  } else if (mode.includes('fallback') || error) {
+    badge = { state: 'warn', label: 'Fallback harness', title };
+  } else {
+    badge = { state: 'done', label: mode, title };
+  }
+  if (runbookKey) pipelineHarnessAuthoringBadgeCache.set(runbookKey, { ...badge, mode, error, requestedMode });
+  return badge;
+}
+
 function pipelineDocIsGeneratedOrchestration(pipelineDoc) {
   return !!pipelineDoc?.metadata?.orchestrationAuthoring;
 }
@@ -11349,6 +11995,20 @@ function pipelineRequiresHarnessBeforeRun(runbookPath, pipelineDoc = null, harne
     pipelineHarnessRequiredBeforeRunCache.delete(key);
   }
   return pipelineHarnessRequiredBeforeRunCache.has(key) && !harnessImplementedAt;
+}
+
+async function refreshPipelineHarnessMetadataCache(runbookPath) {
+  const key = harnessImplementationKey(runbookPath);
+  if (!key) return;
+  try {
+    const doc = await readRendererJson(runbookPath);
+    const implementedAt = pipelineDocHarnessImplementedAt(doc, key);
+    if (!implementedAt) return;
+    pipelineHarnessImplementedAtCache.set(key, implementedAt);
+    pipelineDocHarnessAuthoringBadge(doc, implementedAt, key);
+  } catch {
+    // Cache refresh is best-effort; validation/rendering owns user-visible errors.
+  }
 }
 
 async function generatedPipelineNeedsHarnessBeforeRun(runbookPath) {
@@ -11958,6 +12618,9 @@ function machineUpdateRunRecord(runbookPath, record) {
     exported: record.exported || record.export || current.exported || null,
   };
   if (runbookPath) setRunbookCache(machineRunRecordCache, runbookPath, next);
+  if (runbookPath && runId && isMachineRunTerminal(next.runState || {})) {
+    setMachineRunCancelPending(runbookPath, runId, false);
+  }
   if (selectedMatches) {
     selectedRunbookPath = runbookPath || selectedRunbookPath;
     lastMachineRunRecord = next;
@@ -12073,6 +12736,7 @@ async function maybeOpenMachineLlmApprovalModal(runbookPath, record) {
 function machinePendingPatchReviewInfos(record) {
   return machineWorkerReviewInfos(record).filter(review => (
     review?.patchArtifact
+    && machineShouldSurfacePatchReview(record, review)
     && !review.patchReviewResolved
     && review.patchReviewStatus !== 'approved'
   ));
@@ -12443,6 +13107,9 @@ function machineExecuteControlDetails(record, validation = null, runbookPath = s
   }
   if (queue.activeCount > 0) {
     const blockedText = queue.blockedCount > 0 ? ` ${machineBlockedWorkInlineText(record)}` : '';
+    if (queue.candidateCount > 0 && queue.queuedCount === 0 && queue.claimedCount === 0) {
+      return `Continue: triage candidate items before dispatch (${machineQueueInventorySummary(inventory)}).`;
+    }
     return `Continue: process the next queued item (${machineQueueInventorySummary(inventory)}).${blockedText}`;
   }
   return 'Continue this run.';
@@ -12486,7 +13153,14 @@ function machineResumeControlDetails(record, runbookPath = selectedRunbookPath) 
   return { state: 'good', text: 'Recovery ready: OrPAD can repair work state and recover interrupted work before continuing' };
 }
 
-function machineCancellationControlDetails(record) {
+function machineCancellationControlDetails(record, runbookPath = selectedRunbookPath) {
+  const runId = record?.runState?.runId || record?.runId || '';
+  if (isMachineRunCancelPending(runbookPath, runId)) {
+    return {
+      state: 'warn',
+      text: 'Cancel requested; waiting for the current run step to stop.',
+    };
+  }
   const activeClaims = record?.activeClaims || [];
   const cancellation = record?.cancellation || null;
   if (cancellation) {
@@ -12675,7 +13349,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const runInProgress = isMachineRunInProgress(record, runbookPath);
   const executeDetails = machineExecuteControlDetails(record, validation, runbookPath);
   const resumeDetails = machineResumeControlDetails(record, runbookPath);
-  const cancellationDetails = machineCancellationControlDetails(record);
+  const cancellationDetails = machineCancellationControlDetails(record, runbookPath);
   const attentionDetails = machineRunAttentionDetails(record);
   const runId = runState.runId || record.runId || '';
   const runLabel = machineRunDisplayLabel({
@@ -12932,6 +13606,7 @@ async function validateSelectedRunbook(runbookPath) {
   const pipelineApi = window.orpad?.pipelines || window.orpad?.runbooks;
   selectedRunbookPath = runbookPath;
   selectedRunbookValidation = await pipelineApi.validateFile(runbookPath, { trustLevel: 'local-authored' });
+  await refreshPipelineHarnessMetadataCache(runbookPath);
   setRunbookCache(runbookValidationCache, runbookPath, selectedRunbookValidation);
   lastRunRecord = null;
   lastMachineRunRecord = getRunbookCache(machineRunRecordCache, runbookPath);
@@ -13211,6 +13886,9 @@ function defaultMachineAdapterForGraph(graphDoc) {
     proposalTimeoutMs: 600000,
     workerTimeoutMs: 900000,
     claimLeaseMs: 1800000,
+    claimPolicy: {
+      concurrency: 1,
+    },
     probeNodePaths: graphNodePathsByType(graphDoc, 'orpad.probe'),
     triageNodePath: firstGraphNodePathByType(graphDoc, 'orpad.triage', 'triage'),
     dispatcherNodePath: firstGraphNodePathByType(graphDoc, 'orpad.dispatcher', 'dispatch'),
@@ -13220,8 +13898,571 @@ function defaultMachineAdapterForGraph(graphDoc) {
   };
 }
 
+const HARNESS_PROFILE_IGNORED_DIRS = new Set([
+  '.git',
+  '.orpad',
+  '.vs',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  'bin',
+  'obj',
+  'release',
+  'playwright-report',
+  'test-results',
+]);
+const HARNESS_PROFILE_MAX_FILES = 1500;
+
+function harnessProfileFileName(filePath) {
+  return runbookNormalizePath(filePath).split('/').filter(Boolean).pop() || '';
+}
+
+function harnessProfileRelativePath(filePath) {
+  const rel = runbookRelativePath(filePath || '').replace(/^\/+/, '');
+  return rel || harnessProfileFileName(filePath);
+}
+
+function flattenHarnessWorkspaceTree(items, out = [], depth = 0) {
+  if (!Array.isArray(items) || out.length >= HARNESS_PROFILE_MAX_FILES || depth > 8) return out;
+  for (const item of items) {
+    if (!item || out.length >= HARNESS_PROFILE_MAX_FILES) break;
+    const name = harnessProfileFileName(item.name || item.path || '');
+    if (item.isDirectory) {
+      if (HARNESS_PROFILE_IGNORED_DIRS.has(name)) continue;
+      flattenHarnessWorkspaceTree(item.children || [], out, depth + 1);
+      continue;
+    }
+    const rel = harnessProfileRelativePath(item.path || item.name || '');
+    if (!rel || rel.startsWith('.orpad/')) continue;
+    out.push(rel);
+  }
+  return out;
+}
+
+async function collectHarnessWorkspaceFiles() {
+  if (!workspacePath || typeof window.orpad?.readDirectory !== 'function') return [];
+  try {
+    const tree = await window.orpad.readDirectory(workspacePath);
+    return [...new Set(flattenHarnessWorkspaceTree(tree || []))].slice(0, HARNESS_PROFILE_MAX_FILES);
+  } catch {
+    return [];
+  }
+}
+
+function selectedHarnessNodePackIds(pipelineDoc) {
+  return [
+    ...(pipelineDoc?.nodePacks || []).map(pack => pack?.id),
+    ...(pipelineDoc?.metadata?.orchestrationAuthoring?.nodePackSelection || []).map(pack => pack?.id),
+  ].map(item => String(item || '').trim()).filter(Boolean);
+}
+
+function harnessFilesMatching(files, pattern, limit = 8) {
+  return files.filter(file => pattern.test(file)).slice(0, limit);
+}
+
+function quotedHarnessPath(file) {
+  return /\s/.test(file) ? `"${file}"` : file;
+}
+
+function addHarnessStack(stacks, stack) {
+  if (!stack?.id || stacks.some(item => item.id === stack.id)) return;
+  stacks.push({
+    confidence: stack.confidence || 'medium',
+    signals: stack.signals || [],
+    cliTools: stack.cliTools || [],
+    validationCommands: stack.validationCommands || [],
+    setupNotes: stack.setupNotes || [],
+    mcpRecommendations: stack.mcpRecommendations || [],
+    ...stack,
+  });
+}
+
+function inferHarnessProjectProfile({ pipelineDoc, graphDoc, files, generatedAt }) {
+  const packIds = selectedHarnessNodePackIds(pipelineDoc);
+  const hasPack = id => packIds.includes(id);
+  const stacks = [];
+  const dotnetProjects = harnessFilesMatching(files, /\.csproj$/i);
+  const dotnetSolutions = harnessFilesMatching(files, /\.sln$/i);
+  const dotnetSources = harnessFilesMatching(files, /\.cs$/i);
+  const nodePackages = harnessFilesMatching(files, /(^|\/)package\.json$/i);
+  const playwrightConfigs = harnessFilesMatching(files, /(^|\/)playwright\.config\.[cm]?[jt]s$/i);
+  const pythonProjects = harnessFilesMatching(files, /(^|\/)(pyproject\.toml|requirements\.txt|pytest\.ini|tox\.ini|setup\.py)$/i);
+  const pythonSources = harnessFilesMatching(files, /\.py$/i);
+  const cppProjects = harnessFilesMatching(files, /(^|\/)(cmakelists\.txt|makefile|vcpkg\.json)$/i);
+  const cppSources = harnessFilesMatching(files, /\.(c|cc|cpp|cxx|h|hpp|hxx|vcxproj)$/i);
+  const goProjects = harnessFilesMatching(files, /(^|\/)go\.mod$/i);
+  const rustProjects = harnessFilesMatching(files, /(^|\/)cargo\.toml$/i);
+  const javaProjects = harnessFilesMatching(files, /(^|\/)(pom\.xml|build\.gradle|build\.gradle\.kts)$/i);
+
+  if (hasPack('orpad.starter.dotnet-lab-code') || dotnetProjects.length || dotnetSolutions.length || dotnetSources.length) {
+    const target = dotnetSolutions[0] || dotnetProjects[0] || '';
+    addHarnessStack(stacks, {
+      id: 'dotnet',
+      label: '.NET / C#',
+      confidence: dotnetProjects.length || dotnetSolutions.length ? 'high' : 'medium',
+      signals: [...dotnetSolutions, ...dotnetProjects, ...dotnetSources].slice(0, 12),
+      cliTools: ['dotnet'],
+      validationCommands: [
+        'dotnet --info',
+        target ? `dotnet restore ${quotedHarnessPath(target)}` : 'dotnet restore',
+        target ? `dotnet build ${quotedHarnessPath(target)} --no-restore` : 'dotnet build',
+        target ? `dotnet test ${quotedHarnessPath(target)} --no-build` : 'dotnet test',
+        dotnetProjects[0] ? `dotnet run --project ${quotedHarnessPath(dotnetProjects[0])}` : '',
+      ].filter(Boolean),
+      setupNotes: [
+        'Prefer project or solution scoped dotnet commands over ad hoc source-file execution.',
+        'For lab/course work, compare README expected observations against actual Program.cs behavior.',
+      ],
+      mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'git diff/status'],
+    });
+  }
+
+  if (hasPack('orpad.starter.frontend-ux') || nodePackages.length || playwrightConfigs.length || files.some(file => /\.(tsx|jsx|vue|svelte|css|html)$/i.test(file))) {
+    addHarnessStack(stacks, {
+      id: 'node-frontend',
+      label: 'Node / Frontend',
+      confidence: nodePackages.length ? 'high' : 'medium',
+      signals: [...nodePackages, ...playwrightConfigs, ...harnessFilesMatching(files, /\.(tsx|jsx|vue|svelte|css|html)$/i)].slice(0, 12),
+      cliTools: ['node', 'npm', playwrightConfigs.length ? 'playwright' : 'browser'],
+      validationCommands: [
+        'npm install or npm ci when dependencies are missing',
+        'npm run build',
+        'npm test',
+        playwrightConfigs.length ? 'npx playwright test' : '',
+      ].filter(Boolean),
+      setupNotes: [
+        'Use browser or screenshot verification for user-visible layout, inspector, menu, or canvas changes.',
+        'Keep focused e2e coverage close to the affected workflow.',
+      ],
+      mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'browser automation', 'git diff/status'],
+    });
+  }
+
+  if (pythonProjects.length || pythonSources.length) {
+    addHarnessStack(stacks, {
+      id: 'python',
+      label: 'Python',
+      confidence: pythonProjects.length ? 'high' : 'medium',
+      signals: [...pythonProjects, ...pythonSources].slice(0, 12),
+      cliTools: ['python'],
+      validationCommands: ['python --version', 'python -m pytest'],
+      setupNotes: ['Prefer virtual-environment aware commands when project metadata declares one.'],
+      mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'git diff/status'],
+    });
+  }
+
+  if (cppProjects.length || cppSources.length) {
+    addHarnessStack(stacks, {
+      id: 'cpp',
+      label: 'C / C++',
+      confidence: cppProjects.length ? 'high' : 'medium',
+      signals: [...cppProjects, ...cppSources].slice(0, 12),
+      cliTools: ['cmake', 'ctest', 'msbuild or make when applicable'],
+      validationCommands: ['cmake --build <build-dir>', 'ctest --test-dir <build-dir> --output-on-failure'],
+      setupNotes: ['Resolve the actual generator/build directory before running destructive clean or rebuild commands.'],
+      mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'git diff/status'],
+    });
+  }
+
+  if (goProjects.length) {
+    addHarnessStack(stacks, {
+      id: 'go',
+      label: 'Go',
+      confidence: 'high',
+      signals: goProjects,
+      cliTools: ['go'],
+      validationCommands: ['go test ./...', 'go vet ./...'],
+      mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'git diff/status'],
+    });
+  }
+
+  if (rustProjects.length) {
+    addHarnessStack(stacks, {
+      id: 'rust',
+      label: 'Rust',
+      confidence: 'high',
+      signals: rustProjects,
+      cliTools: ['cargo'],
+      validationCommands: ['cargo test', 'cargo clippy --all-targets --all-features'],
+      mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'git diff/status'],
+    });
+  }
+
+  if (javaProjects.length) {
+    addHarnessStack(stacks, {
+      id: 'java',
+      label: 'Java / JVM',
+      confidence: 'high',
+      signals: javaProjects,
+      cliTools: ['maven or gradle'],
+      validationCommands: javaProjects.some(file => /pom\.xml$/i.test(file)) ? ['mvn test'] : ['./gradlew test'],
+      mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'git diff/status'],
+    });
+  }
+
+  if (!stacks.length) {
+    addHarnessStack(stacks, {
+      id: 'generic-workspace',
+      label: 'Generic workspace',
+      confidence: 'low',
+      signals: files.slice(0, 12),
+      cliTools: ['git'],
+      validationCommands: ['git status --short'],
+      setupNotes: ['No dominant build system was detected; worker prompts must discover validation locally before editing.'],
+      mcpRecommendations: ['filesystem workspace access', 'git diff/status'],
+    });
+  }
+
+  if (hasPack('orpad.starter.test-regression')) {
+    for (const stack of stacks) {
+      if (!stack.setupNotes.includes('Every fix should record reproduction, focused validation, and residual risk.')) {
+        stack.setupNotes.push('Every fix should record reproduction, focused validation, and residual risk.');
+      }
+    }
+  }
+
+  const validationCommands = [...new Set(stacks.flatMap(stack => stack.validationCommands || []))];
+  const mcpRecommendations = [...new Set(stacks.flatMap(stack => stack.mcpRecommendations || []))];
+  const requiredTools = [...new Set([
+    'workspace read/write filesystem',
+    'patch artifact writer',
+    'queue state store',
+    ...(pipelineDoc?.run?.machineAdapter?.command ? [`adapter CLI: ${pipelineDoc.run.machineAdapter.command}`] : []),
+    ...stacks.flatMap(stack => stack.cliTools || []),
+  ].filter(Boolean))];
+
+  return {
+    schemaVersion: 'orpad.harnessProjectProfile.v1',
+    generatedAt,
+    pipelineId: pipelineDoc?.id || '',
+    graphId: graphDoc?.graph?.id || graphDoc?.id || '',
+    selectedNodePacks: packIds,
+    workspace: {
+      fileCountSampled: files.length,
+      truncated: files.length >= HARNESS_PROFILE_MAX_FILES,
+      sampleFiles: files.slice(0, 80),
+    },
+    stacks,
+    requiredTools,
+    mcpRecommendations,
+    validationCommands,
+    protocolContracts: [
+      {
+        id: 'candidate-proposal',
+        schemaVersion: 'orpad.candidateProposal.v1',
+        producer: 'orpad.probe',
+        consumer: 'orpad.workQueue',
+        purpose: 'Convert findings into bounded work items with evidence, acceptance criteria, sourceOfTruthTargets, and targetFiles.',
+      },
+      {
+        id: 'work-item',
+        schemaVersion: 'orpad.workItem.v1',
+        producer: 'orpad.workQueue',
+        consumer: 'orpad.dispatcher / orpad.workerLoop',
+        purpose: 'Own candidate, queued, claimed, done, blocked, and rejected state outside the LLM.',
+      },
+      {
+        id: 'worker-patch',
+        schemaVersion: 'orpad.workerResult.v1',
+        producer: 'orpad.workerLoop',
+        consumer: 'orpad.patchReview',
+        purpose: 'Return a patch artifact with base SHA checks, changed files, proof, and validation evidence.',
+      },
+      {
+        id: 'validation-evidence',
+        schemaVersion: 'orpad.validationEvidence.v1',
+        producer: 'worker or verifier',
+        consumer: 'orpad.gate / artifactContract',
+        purpose: 'Record commands, pass/fail/blocked status, logs, screenshots, or residual risk per changed surface.',
+      },
+    ],
+  };
+}
+
+function harnessToolPlanFromProfile(profile, pipelineDoc) {
+  return {
+    schemaVersion: 'orpad.harnessToolPlan.v1',
+    generatedAt: profile.generatedAt,
+    adapter: {
+      type: pipelineDoc?.run?.machineAdapter?.type || 'codex-cli',
+      command: pipelineDoc?.run?.machineAdapter?.command || 'codex',
+      proposalSandbox: pipelineDoc?.run?.machineAdapter?.proposalSandbox || 'read-only',
+      workerSandbox: pipelineDoc?.run?.machineAdapter?.workerSandbox || 'workspace-write',
+      approvalPolicy: pipelineDoc?.run?.machineAdapter?.approvalPolicy || 'never',
+    },
+    requiredTools: profile.requiredTools,
+    mcpRecommendations: profile.mcpRecommendations,
+    validationCommands: profile.validationCommands,
+    notes: [
+      'This plan is inferred during harness implementation from workspace files, selected node packs, and pipeline adapter metadata.',
+      'Commands are candidate validation contracts, not automatically executed during harness implementation.',
+      'Workers must record actual pass/fail/blocked evidence when they use these commands.',
+    ],
+  };
+}
+
+function localHarnessAuthoringSpec(projectProfile, toolPlan, nodes, pipelineDoc, graphDoc) {
+  const generatedAt = new Date().toISOString();
+  const nodeContracts = nodes.map((node, index) => {
+    const nodePath = harnessNodePathForGraphNode(node, index);
+    const type = String(node?.type || '').trim();
+    const requestedCapabilities = ['workspace-read', 'artifact-write'];
+    if (type === 'orpad.workerLoop') requestedCapabilities.push('workspace-write', 'patch-artifact-write', 'validation-command-runner');
+    if (type === 'orpad.probe') requestedCapabilities.push('candidate-proposal-write');
+    if (type === 'orpad.workQueue') requestedCapabilities.push('queue-state-write');
+    if (type === 'orpad.dispatcher') requestedCapabilities.push('queue-claim-write', 'file-lock-read');
+    if (type === 'orpad.patchReview') requestedCapabilities.push('patch-base-sha-check', 'review-decision-record');
+    if (type === 'orpad.gate') requestedCapabilities.push('validation-evidence-read');
+    return {
+      nodePath,
+      nodeId: node?.id || '',
+      nodeType: type,
+      label: node?.label || node?.id || type || '',
+      requestedCapabilities,
+      requiredTools: toolPlan.requiredTools || projectProfile.requiredTools || [],
+      mcpRecommendations: projectProfile.mcpRecommendations || [],
+      validationCommands: ['orpad.workerLoop', 'orpad.gate'].includes(type) ? (projectProfile.validationCommands || []) : [],
+      protocolContracts: projectProfile.protocolContracts || [],
+      evidenceRequired: type === 'orpad.workerLoop'
+        ? ['Worker result must include changed files, patch artifact, proof summary, and validation status or blocker.']
+        : type === 'orpad.probe'
+          ? ['Candidate proposals must include evidence, acceptance criteria, sourceOfTruthTargets, and predictable targetFiles when possible.']
+          : type === 'orpad.gate'
+            ? ['Gate must read validation evidence and record pass, revise, blocked, or residual-risk reasoning.']
+            : [],
+      adapterGuidance: type === 'orpad.workerLoop'
+        ? 'Run implementation in workspace-write sandbox with patch/base-SHA evidence; prefer project-specific validation commands from the tool plan.'
+        : 'Run in read-only or metadata-write mode unless this node explicitly owns queue, artifact, or review state.',
+    };
+  });
+  return {
+    schemaVersion: 'orpad.harnessAuthoringSpec.v1',
+    authoringMode: 'renderer-deterministic-fallback',
+    generatedAt,
+    pipelineId: pipelineDoc?.id || projectProfile.pipelineId || '',
+    graphId: graphDoc?.graph?.id || graphDoc?.id || projectProfile.graphId || '',
+    summary: 'Harness spec inferred in renderer fallback from project profile, tool plan, graph node types, and selected node packs.',
+    projectProfileRef: 'project-profile.json',
+    toolPlanRef: 'tool-plan.json',
+    requiredTools: toolPlan.requiredTools || projectProfile.requiredTools || [],
+    mcpRecommendations: projectProfile.mcpRecommendations || [],
+    validationCommands: projectProfile.validationCommands || [],
+    protocolContracts: projectProfile.protocolContracts || [],
+    nodeContracts,
+    commandPolicy: {
+      defaultMode: 'suggest-and-record',
+      runDuringHarnessImplementation: false,
+      requireEvidenceWhenUsedByWorker: true,
+      destructiveCommandsRequireApproval: true,
+    },
+    residualRisks: [],
+  };
+}
+
+function harnessSpecContractForNode(harnessSpec, nodePath) {
+  return (Array.isArray(harnessSpec?.nodeContracts) ? harnessSpec.nodeContracts : [])
+    .find(contract => contract?.nodePath === nodePath) || null;
+}
+
+function generatedPipelineShouldUseLlmHarnessAuthoring(pipelineDoc) {
+  const mode = String(pipelineDoc?.harness?.authoringMode || pipelineDoc?.metadata?.harnessAuthoring?.mode || '').trim();
+  return mode === 'llm-with-deterministic-fallback' || mode === 'llm';
+}
+
+async function authorHarnessSpecForPipeline({ runbookPath, pipelineDoc, graphDoc, projectProfile, toolPlan, nodes, harnessRootPath }) {
+  const localSpec = localHarnessAuthoringSpec(projectProfile, toolPlan, nodes, pipelineDoc, graphDoc);
+  const specPath = normalizeRunbookFilePath(`${harnessRootPath}/harness-authoring-spec.json`);
+  const promptPath = normalizeRunbookFilePath(`${harnessRootPath}/harness-authoring-prompt.md`);
+  const useLlm = generatedPipelineShouldUseLlmHarnessAuthoring(pipelineDoc);
+  let bridgeError = '';
+  if (typeof window.orpad?.orchestration?.authorHarness === 'function') {
+    try {
+      const providerSelection = useLlm ? (loadGenerateProviderSelection() || {
+        providerId: 'codex-cli',
+        model: 'codex',
+        family: 'cli',
+        qualityTier: 'standard',
+      }) : null;
+      const response = await window.orpad.orchestration.authorHarness({
+        workspacePath,
+        pipelinePath: runbookPath,
+        projectProfile,
+        toolPlan,
+        useLlm,
+        fallbackToDeterministic: true,
+        providerSelection,
+        authoringTimeoutMs: 1200000,
+      });
+      if (response?.success && response.spec) {
+        return {
+          spec: response.spec,
+          authoringMode: response.authoringMode || response.spec.authoringMode || 'deterministic-fallback',
+          authoringError: response.authoringError || '',
+          specPath: runbookNormalizePath(response.specPath || specPath),
+          promptPath: runbookNormalizePath(response.promptPath || promptPath),
+        };
+      }
+      bridgeError = response?.error || 'Main-process harness authoring returned no spec.';
+    } catch (err) {
+      bridgeError = err?.message || String(err);
+      // Fall through to renderer deterministic fallback so the harness action
+      // still completes and records the missing authoring bridge as evidence.
+    }
+  } else {
+    bridgeError = 'Main-process harness authoring bridge is unavailable.';
+  }
+  const fallbackError = `Renderer deterministic fallback used: ${bridgeError || 'main-process harness authoring did not complete.'}`;
+  const fallbackSpec = {
+    ...localSpec,
+    authoringError: fallbackError,
+    residualRisks: [
+      ...(Array.isArray(localSpec.residualRisks) ? localSpec.residualRisks : []),
+      fallbackError,
+    ].slice(0, 20),
+  };
+  await window.orpad.createFile(promptPath).catch(() => {});
+  await window.orpad.saveFile(promptPath, [
+    '# OrPAD Harness Authoring Prompt',
+    '',
+    fallbackError,
+    '',
+    JSON.stringify({ projectProfile, toolPlan, graph: graphDoc?.graph || graphDoc || {} }, null, 2),
+  ].join('\n'));
+  await window.orpad.createFile(specPath).catch(() => {});
+  await window.orpad.saveFile(specPath, JSON.stringify(fallbackSpec, null, 2));
+  return {
+    spec: fallbackSpec,
+    authoringMode: fallbackSpec.authoringMode,
+    authoringError: fallbackError,
+    specPath,
+    promptPath,
+  };
+}
+
+async function provisionHarnessForPipeline({ runbookPath, projectProfile, toolPlan, harnessAuthoring, harnessRootPath }) {
+  const provisioningPath = normalizeRunbookFilePath(`${harnessRootPath}/harness-provisioning.json`);
+  const toolHealthPath = normalizeRunbookFilePath(`${harnessRootPath}/tool-health.json`);
+  const validationPreflightPath = normalizeRunbookFilePath(`${harnessRootPath}/validation-preflight.json`);
+  const mcpPlanPath = normalizeRunbookFilePath(`${harnessRootPath}/mcp-plan.json`);
+  const agentReadinessPath = normalizeRunbookFilePath(`${harnessRootPath}/agent-readiness.json`);
+  const toolPolicyPath = normalizeRunbookFilePath(`${harnessRootPath}/tool-policy.json`);
+  const observabilityPlanPath = normalizeRunbookFilePath(`${harnessRootPath}/observability-plan.json`);
+  const evalPlanPath = normalizeRunbookFilePath(`${harnessRootPath}/eval-plan.json`);
+  const feedbackLoopPlanPath = normalizeRunbookFilePath(`${harnessRootPath}/feedback-loop.json`);
+  const llmOpsPlanPath = normalizeRunbookFilePath(`${harnessRootPath}/llmops-plan.json`);
+  const securityRiskPlanPath = normalizeRunbookFilePath(`${harnessRootPath}/security-risk-plan.json`);
+  const fallbackArtifactPayloads = (message) => ({
+    [toolHealthPath]: { schemaVersion: 'orpad.harnessToolHealth.v1', tools: [], summary: {}, error: message },
+    [validationPreflightPath]: { schemaVersion: 'orpad.harnessValidationPreflight.v1', commands: [], summary: {}, error: message },
+    [mcpPlanPath]: { schemaVersion: 'orpad.harnessMcpPlan.v1', recommendedServers: [], orpadCapabilities: [], error: message },
+    [agentReadinessPath]: { schemaVersion: 'orpad.agentReadiness.v1', error: message },
+    [toolPolicyPath]: { schemaVersion: 'orpad.toolPolicy.v1', error: message },
+    [observabilityPlanPath]: { schemaVersion: 'orpad.observabilityPlan.v1', error: message },
+    [evalPlanPath]: { schemaVersion: 'orpad.evalPlan.v1', error: message },
+    [feedbackLoopPlanPath]: { schemaVersion: 'orpad.feedbackLoopPlan.v1', error: message },
+    [llmOpsPlanPath]: { schemaVersion: 'orpad.llmOpsPlan.v1', error: message },
+    [securityRiskPlanPath]: { schemaVersion: 'orpad.securityRiskPlan.v1', error: message },
+  });
+  const writeFallbackProvisioningArtifacts = async (message, fallbackReport) => {
+    await window.orpad.createFile(provisioningPath).catch(() => {});
+    await window.orpad.saveFile(provisioningPath, JSON.stringify(fallbackReport, null, 2));
+    for (const [artifactPath, payload] of Object.entries(fallbackArtifactPayloads(message))) {
+      await window.orpad.createFile(artifactPath).catch(() => {});
+      await window.orpad.saveFile(artifactPath, JSON.stringify(payload, null, 2));
+    }
+  };
+  const returnProvisioningResult = (report, error = '', response = {}) => ({
+    report,
+    status: report.status || 'unknown',
+    error,
+    provisioningPath: runbookNormalizePath(response.provisioningPath || provisioningPath),
+    toolHealthPath: runbookNormalizePath(response.toolHealthPath || toolHealthPath),
+    validationPreflightPath: runbookNormalizePath(response.validationPreflightPath || validationPreflightPath),
+    mcpPlanPath: runbookNormalizePath(response.mcpPlanPath || mcpPlanPath),
+    agentReadinessPath: runbookNormalizePath(response.agentReadinessPath || agentReadinessPath),
+    toolPolicyPath: runbookNormalizePath(response.toolPolicyPath || toolPolicyPath),
+    observabilityPlanPath: runbookNormalizePath(response.observabilityPlanPath || observabilityPlanPath),
+    evalPlanPath: runbookNormalizePath(response.evalPlanPath || evalPlanPath),
+    feedbackLoopPlanPath: runbookNormalizePath(response.feedbackLoopPlanPath || feedbackLoopPlanPath),
+    llmOpsPlanPath: runbookNormalizePath(response.llmOpsPlanPath || llmOpsPlanPath),
+    securityRiskPlanPath: runbookNormalizePath(response.securityRiskPlanPath || securityRiskPlanPath),
+  });
+  if (typeof window.orpad?.orchestration?.provisionHarness === 'function') {
+    try {
+      const response = await window.orpad.orchestration.provisionHarness({
+        workspacePath,
+        pipelinePath: runbookPath,
+        projectProfile,
+        toolPlan,
+        harnessSpec: harnessAuthoring?.spec || {},
+      });
+      if (response?.success && response.report) {
+        return returnProvisioningResult(response.report, '', response);
+      }
+      throw new Error(response?.error || 'Main-process harness provisioning returned no report.');
+    } catch (err) {
+      const message = err?.message || String(err);
+      const fallbackReport = {
+        schemaVersion: 'orpad.harnessProvisioning.v1',
+        generatedAt: new Date().toISOString(),
+        status: 'blocked',
+        toolHealthPath: 'tool-health.json',
+        validationPreflightPath: 'validation-preflight.json',
+        mcpPlanPath: 'mcp-plan.json',
+        agentReadinessPath: 'agent-readiness.json',
+        toolPolicyPath: 'tool-policy.json',
+        observabilityPlanPath: 'observability-plan.json',
+        evalPlanPath: 'eval-plan.json',
+        feedbackLoopPlanPath: 'feedback-loop.json',
+        llmOpsPlanPath: 'llmops-plan.json',
+        securityRiskPlanPath: 'security-risk-plan.json',
+        enforcement: {
+          enforceAtRun: false,
+          runBlockers: [`Harness provisioning bridge failed: ${message}`],
+          warnings: [],
+        },
+      };
+      await writeFallbackProvisioningArtifacts(message, fallbackReport);
+      return returnProvisioningResult(fallbackReport, message);
+    }
+  }
+  const message = 'Main-process harness provisioning bridge is unavailable.';
+  const fallbackReport = {
+    schemaVersion: 'orpad.harnessProvisioning.v1',
+    generatedAt: new Date().toISOString(),
+    status: 'blocked',
+    toolHealthPath: 'tool-health.json',
+    validationPreflightPath: 'validation-preflight.json',
+    mcpPlanPath: 'mcp-plan.json',
+    agentReadinessPath: 'agent-readiness.json',
+    toolPolicyPath: 'tool-policy.json',
+    observabilityPlanPath: 'observability-plan.json',
+    evalPlanPath: 'eval-plan.json',
+    feedbackLoopPlanPath: 'feedback-loop.json',
+    llmOpsPlanPath: 'llmops-plan.json',
+    securityRiskPlanPath: 'security-risk-plan.json',
+    enforcement: {
+      enforceAtRun: false,
+      runBlockers: [message],
+      warnings: [],
+    },
+  };
+  await writeFallbackProvisioningArtifacts(message, fallbackReport);
+  return returnProvisioningResult(fallbackReport, message);
+}
+
 function harnessImplementationDelay(ms = 35) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function setHarnessImplementationPending(runbookPath, pending) {
+  const key = harnessImplementationKey(runbookPath);
+  if (!key) return;
+  if (pending) pipelineHarnessImplementationPendingPaths.add(key);
+  else pipelineHarnessImplementationPendingPaths.delete(key);
+  rerenderPipelinePreviewIfActive(runbookPath);
 }
 
 function harnessNodePathForGraphNode(node, index, graphKey = 'main') {
@@ -13244,7 +14485,8 @@ async function saveHarnessImplementationState(statePath, state) {
   if (!saved) throw new Error('Failed to save harness implementation state.');
 }
 
-function harnessNodeImplementationContract(node, stateNode, pipelineDoc) {
+function harnessNodeImplementationContract(node, stateNode, pipelineDoc, profile, toolPlan, harnessAuthoring, harnessProvisioning) {
+  const authoredContract = harnessSpecContractForNode(harnessAuthoring?.spec, stateNode.nodePath);
   return {
     schemaVersion: 'orpad.harnessNodeImplementation.v1',
     pipelineId: pipelineDoc.id || '',
@@ -13264,12 +14506,64 @@ function harnessNodeImplementationContract(node, stateNode, pipelineDoc) {
       improvementPrompt: node?.config?.improvementPrompt || '',
       modelOverrideKey: stateNode.nodePath,
     },
+    environment: {
+      profileRef: 'project-profile.json',
+      toolPlanRef: 'tool-plan.json',
+      stacks: (profile?.stacks || []).map(stack => ({
+        id: stack.id,
+        label: stack.label,
+        confidence: stack.confidence,
+        signals: (stack.signals || []).slice(0, 6),
+      })),
+      requiredTools: profile?.requiredTools || [],
+      validationCommands: profile?.validationCommands || [],
+      mcpRecommendations: profile?.mcpRecommendations || [],
+    },
+    harnessAuthoring: {
+      specRef: 'harness-authoring-spec.json',
+      promptRef: 'harness-authoring-prompt.md',
+      mode: harnessAuthoring?.authoringMode || harnessAuthoring?.spec?.authoringMode || '',
+      error: harnessAuthoring?.authoringError || '',
+      nodeContract: authoredContract,
+    },
+    provisioning: {
+      ref: 'harness-provisioning.json',
+      toolHealthRef: 'tool-health.json',
+      validationPreflightRef: 'validation-preflight.json',
+      mcpPlanRef: 'mcp-plan.json',
+      agentReadinessRef: 'agent-readiness.json',
+      toolPolicyRef: 'tool-policy.json',
+      observabilityPlanRef: 'observability-plan.json',
+      evalPlanRef: 'eval-plan.json',
+      feedbackLoopPlanRef: 'feedback-loop.json',
+      llmOpsPlanRef: 'llmops-plan.json',
+      securityRiskPlanRef: 'security-risk-plan.json',
+      status: harnessProvisioning?.status || harnessProvisioning?.report?.status || '',
+      blockers: harnessProvisioning?.report?.enforcement?.runBlockers || [],
+      warnings: harnessProvisioning?.report?.enforcement?.warnings || [],
+    },
+    protocols: profile?.protocolContracts || [],
     status: 'succeeded',
     implementedAt: stateNode.completedAt,
   };
 }
 
 async function implementSelectedMachineHarness(runbookPath) {
+  const key = harnessImplementationKey(runbookPath);
+  if (!workspacePath || !runbookPath || !key) return;
+  if (pipelineHarnessImplementationPendingPaths.has(key)) {
+    notifyFormatError('Harness', new Error('Harness implementation is already running for this pipeline.'));
+    return;
+  }
+  setHarnessImplementationPending(runbookPath, true);
+  try {
+    return await implementSelectedMachineHarnessInner(runbookPath);
+  } finally {
+    setHarnessImplementationPending(runbookPath, false);
+  }
+}
+
+async function implementSelectedMachineHarnessInner(runbookPath) {
   if (!workspacePath || !runbookPath) return;
   const pipelineRead = await window.orpad.readFile(runbookPath);
   if (pipelineRead?.error) throw new Error(pipelineRead.error);
@@ -13288,9 +14582,43 @@ async function implementSelectedMachineHarness(runbookPath) {
   const harnessNodesPath = normalizeRunbookFilePath(`${harnessRootPath}/nodes`);
   const statePath = normalizeRunbookFilePath(`${harnessRootPath}/implementation-state.json`);
   const notesPath = normalizeRunbookFilePath(`${harnessRootPath}/README.md`);
+  const profilePath = normalizeRunbookFilePath(`${harnessRootPath}/project-profile.json`);
+  const toolPlanPath = normalizeRunbookFilePath(`${harnessRootPath}/tool-plan.json`);
   await window.orpad.createFolder(normalizeRunbookFilePath(`${pipelineDir}/harness`)).catch(() => {});
   await window.orpad.createFolder(harnessRootPath).catch(() => {});
   await window.orpad.createFolder(harnessNodesPath).catch(() => {});
+
+  const workspaceFiles = await collectHarnessWorkspaceFiles();
+  const projectProfile = inferHarnessProjectProfile({
+    pipelineDoc,
+    graphDoc,
+    files: workspaceFiles,
+    generatedAt: now,
+  });
+  const toolPlan = harnessToolPlanFromProfile(projectProfile, pipelineDoc);
+  const harnessAuthoring = await authorHarnessSpecForPipeline({
+    runbookPath,
+    pipelineDoc,
+    graphDoc,
+    projectProfile,
+    toolPlan,
+    nodes,
+    harnessRootPath,
+  });
+  await window.orpad.createFile(profilePath).catch(() => {});
+  await window.orpad.createFile(toolPlanPath).catch(() => {});
+  await window.orpad.saveFile(profilePath, JSON.stringify(projectProfile, null, 2));
+  await window.orpad.saveFile(toolPlanPath, JSON.stringify(toolPlan, null, 2));
+  const harnessProvisioning = await provisionHarnessForPipeline({
+    runbookPath,
+    projectProfile,
+    toolPlan,
+    harnessAuthoring,
+    harnessRootPath,
+  });
+  const provisioningBlockers = harnessProvisioning.report?.enforcement?.runBlockers || [];
+  const provisioningBlocked = (harnessProvisioning.status || harnessProvisioning.report?.status || '') === 'blocked'
+    || provisioningBlockers.length > 0;
 
   const state = {
     schemaVersion: 'orpad.harnessImplementation.v1',
@@ -13298,8 +14626,41 @@ async function implementSelectedMachineHarness(runbookPath) {
     startedAt: now,
     implementedAt: '',
     source: 'electron-ui',
-    status: 'running',
+    status: provisioningBlocked ? 'blocked' : 'running',
     nodeCount: nodes.length,
+    projectProfile: {
+      path: 'project-profile.json',
+      stacks: projectProfile.stacks.map(stack => stack.id),
+      requiredTools: projectProfile.requiredTools,
+      validationCommandCount: projectProfile.validationCommands.length,
+    },
+    toolPlan: {
+      path: 'tool-plan.json',
+      mcpRecommendations: projectProfile.mcpRecommendations,
+    },
+    harnessAuthoring: {
+      path: 'harness-authoring-spec.json',
+      promptPath: 'harness-authoring-prompt.md',
+      mode: harnessAuthoring.authoringMode,
+      error: harnessAuthoring.authoringError || '',
+    },
+    provisioning: {
+      path: 'harness-provisioning.json',
+      toolHealthPath: 'tool-health.json',
+      validationPreflightPath: 'validation-preflight.json',
+      mcpPlanPath: 'mcp-plan.json',
+      agentReadinessPath: 'agent-readiness.json',
+      toolPolicyPath: 'tool-policy.json',
+      observabilityPlanPath: 'observability-plan.json',
+      evalPlanPath: 'eval-plan.json',
+      feedbackLoopPlanPath: 'feedback-loop.json',
+      llmOpsPlanPath: 'llmops-plan.json',
+      securityRiskPlanPath: 'security-risk-plan.json',
+      status: harnessProvisioning.status || harnessProvisioning.report?.status || '',
+      error: harnessProvisioning.error || '',
+      blockers: provisioningBlockers,
+      warnings: harnessProvisioning.report?.enforcement?.warnings || [],
+    },
     nodes: nodes.map((node, index) => ({
       nodePath: harnessNodePathForGraphNode(node, index),
       id: node.id || '',
@@ -13316,9 +14677,26 @@ async function implementSelectedMachineHarness(runbookPath) {
   pipelineDoc.harness = {
     ...(pipelineDoc.harness || {}),
     path: harnessRoot,
-    implementedAt: now,
     implementationState: `${harnessRoot.replace(/\/+$/, '')}/implementation-state.json`,
+    lastAttemptAt: now,
+    actualAuthoringMode: harnessAuthoring.authoringMode,
+    authoringError: harnessAuthoring.authoringError || '',
   };
+  pipelineDoc.harness.projectProfile = `${harnessRoot.replace(/\/+$/, '')}/project-profile.json`;
+  pipelineDoc.harness.toolPlan = `${harnessRoot.replace(/\/+$/, '')}/tool-plan.json`;
+  pipelineDoc.harness.harnessAuthoringPrompt = `${harnessRoot.replace(/\/+$/, '')}/harness-authoring-prompt.md`;
+  pipelineDoc.harness.harnessAuthoringSpec = `${harnessRoot.replace(/\/+$/, '')}/harness-authoring-spec.json`;
+  pipelineDoc.harness.provisioning = `${harnessRoot.replace(/\/+$/, '')}/harness-provisioning.json`;
+  pipelineDoc.harness.toolHealth = `${harnessRoot.replace(/\/+$/, '')}/tool-health.json`;
+  pipelineDoc.harness.validationPreflight = `${harnessRoot.replace(/\/+$/, '')}/validation-preflight.json`;
+  pipelineDoc.harness.mcpPlan = `${harnessRoot.replace(/\/+$/, '')}/mcp-plan.json`;
+  pipelineDoc.harness.agentReadiness = `${harnessRoot.replace(/\/+$/, '')}/agent-readiness.json`;
+  pipelineDoc.harness.toolPolicy = `${harnessRoot.replace(/\/+$/, '')}/tool-policy.json`;
+  pipelineDoc.harness.observabilityPlan = `${harnessRoot.replace(/\/+$/, '')}/observability-plan.json`;
+  pipelineDoc.harness.evalPlan = `${harnessRoot.replace(/\/+$/, '')}/eval-plan.json`;
+  pipelineDoc.harness.feedbackLoopPlan = `${harnessRoot.replace(/\/+$/, '')}/feedback-loop.json`;
+  pipelineDoc.harness.llmOpsPlan = `${harnessRoot.replace(/\/+$/, '')}/llmops-plan.json`;
+  pipelineDoc.harness.securityRiskPlan = `${harnessRoot.replace(/\/+$/, '')}/security-risk-plan.json`;
   if (!pipelineDoc.run || typeof pipelineDoc.run !== 'object' || Array.isArray(pipelineDoc.run)) pipelineDoc.run = {};
   if (!pipelineDoc.run.machineAdapter && !pipelineDoc.run.machineHarness) {
     pipelineDoc.run.machineAdapter = defaultMachineAdapterForGraph(graphDoc);
@@ -13326,11 +14704,63 @@ async function implementSelectedMachineHarness(runbookPath) {
   pipelineDoc.metadata = {
     ...(pipelineDoc.metadata || {}),
     harnessImplementation: {
-      implementedAt: now,
       statePath: pipelineDoc.harness.implementationState,
+      attemptedAt: now,
+      implementedAt: '',
+      projectProfilePath: pipelineDoc.harness.projectProfile,
+      toolPlanPath: pipelineDoc.harness.toolPlan,
+      harnessAuthoringPromptPath: pipelineDoc.harness.harnessAuthoringPrompt,
+      harnessAuthoringSpecPath: pipelineDoc.harness.harnessAuthoringSpec,
+      harnessAuthoringMode: harnessAuthoring.authoringMode,
+      harnessAuthoringError: harnessAuthoring.authoringError || '',
+      provisioningPath: pipelineDoc.harness.provisioning,
+      toolPolicyPath: pipelineDoc.harness.toolPolicy,
+      observabilityPlanPath: pipelineDoc.harness.observabilityPlan,
+      evalPlanPath: pipelineDoc.harness.evalPlan,
+      feedbackLoopPlanPath: pipelineDoc.harness.feedbackLoopPlan,
+      llmOpsPlanPath: pipelineDoc.harness.llmOpsPlan,
+      securityRiskPlanPath: pipelineDoc.harness.securityRiskPlan,
+      provisioningStatus: harnessProvisioning.status || harnessProvisioning.report?.status || '',
+      provisioningBlockerCount: (harnessProvisioning.report?.enforcement?.runBlockers || []).length,
+      provisioningWarningCount: (harnessProvisioning.report?.enforcement?.warnings || []).length,
       nodeCount: nodes.length,
+      stacks: projectProfile.stacks.map(stack => stack.id),
+      requiredTools: projectProfile.requiredTools,
+      validationCommandCount: projectProfile.validationCommands.length,
     },
   };
+
+  if (provisioningBlocked) {
+    delete pipelineDoc.harness.implementedAt;
+    state.blockedAt = new Date().toISOString();
+    state.message = `Harness provisioning blocked: ${provisioningBlockers.slice(0, 3).join(' | ') || harnessProvisioning.error || 'see harness-provisioning.json'}`;
+    setHarnessImplementationState(runbookPath, state);
+    await saveHarnessImplementationState(statePath, state);
+    await window.orpad.saveFile(notesPath, [
+      '# Harness Implementation',
+      '',
+      `Attempted at: ${now}`,
+      '',
+      `Harness authoring: ${harnessAuthoring.authoringMode}${harnessAuthoring.authoringError ? ` (${harnessAuthoring.authoringError})` : ''}`,
+      `Harness provisioning: blocked${harnessProvisioning.error ? ` (${harnessProvisioning.error})` : ''}`,
+      '',
+      'Provisioning blockers:',
+      ...provisioningBlockers.map(blocker => `- ${blocker}`),
+      '',
+    ].join('\n'));
+    const blockedSaved = await window.orpad.saveFile(runbookPath, JSON.stringify(pipelineDoc, null, 2));
+    if (!blockedSaved) throw new Error('Failed to save blocked harness implementation state.');
+    if (getActiveTab()?.filePath && runbookNormalizePath(getActiveTab().filePath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase()) {
+      replaceEditorDoc(JSON.stringify(pipelineDoc, null, 2));
+    }
+    await validateSelectedRunbook(runbookPath);
+    renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
+    throw new Error(state.message);
+  }
+
+  pipelineDoc.harness.implementedAt = now;
+  pipelineDoc.metadata.harnessImplementation.implementedAt = now;
 
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index];
@@ -13350,7 +14780,7 @@ async function implementSelectedMachineHarness(runbookPath) {
       await window.orpad.createFile(artifactPath).catch(() => {});
       const artifactSaved = await window.orpad.saveFile(
         artifactPath,
-        JSON.stringify(harnessNodeImplementationContract(node, stateNode, pipelineDoc), null, 2),
+        JSON.stringify(harnessNodeImplementationContract(node, stateNode, pipelineDoc, projectProfile, toolPlan, harnessAuthoring, harnessProvisioning), null, 2),
       );
       if (!artifactSaved) throw new Error(`Failed to save harness artifact for ${stateNode.nodePath}.`);
     } catch (err) {
@@ -13373,13 +14803,40 @@ async function implementSelectedMachineHarness(runbookPath) {
     '',
     `Implemented at: ${state.implementedAt}`,
     '',
+    '## Project Profile',
+    '',
+    `Stacks: ${projectProfile.stacks.map(stack => stack.label).join(', ') || 'None detected'}`,
+    `Required tools: ${projectProfile.requiredTools.join(', ') || 'None detected'}`,
+    `MCP recommendations: ${projectProfile.mcpRecommendations.join(', ') || 'None'}`,
+    `Harness authoring: ${harnessAuthoring.authoringMode}${harnessAuthoring.authoringError ? ` (${harnessAuthoring.authoringError})` : ''}`,
+    `Harness provisioning: ${harnessProvisioning.status || harnessProvisioning.report?.status || 'unknown'}${harnessProvisioning.error ? ` (${harnessProvisioning.error})` : ''}`,
+    `Provisioning blockers: ${(harnessProvisioning.report?.enforcement?.runBlockers || []).length}`,
+    `Provisioning warnings: ${(harnessProvisioning.report?.enforcement?.warnings || []).length}`,
+    '',
+    'Operational harness artifacts:',
+    '- agent-readiness.json',
+    '- tool-policy.json',
+    '- observability-plan.json',
+    '- eval-plan.json',
+    '- feedback-loop.json',
+    '- llmops-plan.json',
+    '- security-risk-plan.json',
+    '',
+    'Validation command candidates:',
+    ...(projectProfile.validationCommands.length
+      ? projectProfile.validationCommands.map(command => `- ${command}`)
+      : ['- No validation command candidates inferred.']),
+    '',
     'This folder stores generated Machine harness state and per-node harness contracts for the selected pipeline.',
+    'The project profile and tool plan are inferred during harness implementation so workers know the likely stack, validation tools, MCP needs, and protocol contracts before editing.',
     'Run evidence is still written under latest-run/ and durable runs/.',
     '',
   ].join('\n'));
   const saved = await window.orpad.saveFile(runbookPath, JSON.stringify(pipelineDoc, null, 2));
   if (!saved) throw new Error('Failed to save pipeline harness implementation.');
-  pipelineHarnessImplementedAtCache.set(runbookNormalizePath(runbookPath).toLowerCase(), state.implementedAt);
+  const runbookKey = runbookNormalizePath(runbookPath).toLowerCase();
+  pipelineHarnessImplementedAtCache.set(runbookKey, state.implementedAt);
+  pipelineDocHarnessAuthoringBadge(pipelineDoc, state.implementedAt, runbookKey);
 
   if (getActiveTab()?.filePath && runbookNormalizePath(getActiveTab().filePath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase()) {
     replaceEditorDoc(JSON.stringify(pipelineDoc, null, 2));
@@ -13909,6 +15366,7 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOption
         ...(taskText ? { taskText } : {}),
         ...(externalResearch ? { externalResearch } : {}),
         llmApprovalMode: runOptions.llmApprovalMode === 'ask' ? 'ask' : 'bypass',
+        patchReviewMode: runOptions.patchReviewMode === 'auto-apply' ? 'auto-apply' : 'manual',
       },
     });
   } catch (err) {
@@ -14025,6 +15483,7 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
   const taskText = currentRunbookTaskText();
   const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText, runId, providedExternalResearch);
   if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
+  const effectivePatchReviewMode = machinePatchReviewModeForRun(getLiveMachineRunRecord(runbookPath), runOptions);
   setMachineRunActionPending(runbookPath, runId, true);
   markMachineRunExecuting(runbookPath, runId);
   startMachineRunProgressPolling(runbookPath, runId);
@@ -14041,7 +15500,7 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
         ...(externalResearch ? { externalResearch } : {}),
         llmApprovalMode: runOptions.llmApprovalMode === 'ask' ? 'ask' : 'bypass',
         runUntil: runOptions.runUntil === 'step' ? 'step' : 'human-decision',
-        patchReviewMode: runOptions.patchReviewMode === 'auto-apply' ? 'auto-apply' : 'manual',
+        patchReviewMode: effectivePatchReviewMode,
       },
     });
     console.log('[execute-run-step] IPC result', { success: executed?.success, code: executed?.code, error: executed?.error || executed?.message, lifecycle: executed?.runState?.lifecycleStatus, summary: executed?.runState?.summaryStatus });
@@ -14262,22 +15721,46 @@ async function cancelSelectedMachineRun(runbookPath, runId) {
   // Same-key double cancel clicks are still rejected.
   const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, `${runId}:cancel`);
   if (!mutationLock) {
-    notifyMachineRunBusy('Cancel run');
+    notifyMachineCancelAlreadyRequested();
     return;
   }
+  setMachineRunCancelPending(runbookPath, runId, true);
+  setMachineRunActionPending(runbookPath, runId, true);
+  rerenderPipelinePreviewIfActive(runbookPath);
+  startMachineRunProgressPolling(runbookPath, runId);
   try {
-    return await cancelSelectedMachineRunInner(runbookPath, runId);
+    return await cancelSelectedMachineRunInner(runbookPath, runId, { pendingAlreadySet: true });
   } finally {
     releaseMachineRunMutationLock(mutationLock);
   }
 }
 
-async function cancelSelectedMachineRunInner(runbookPath, runId) {
-  if (!await ensureMachineRuntimeReady()) return;
+async function cancelSelectedMachineRunInner(runbookPath, runId, options = {}) {
+  let pendingSet = options.pendingAlreadySet === true;
+  const clearPending = () => {
+    if (pendingSet) {
+      setMachineRunActionPending(runbookPath, runId, false);
+      pendingSet = false;
+    }
+    setMachineRunCancelPending(runbookPath, runId, false);
+    rerenderPipelinePreviewIfActive(runbookPath);
+  };
+  if (!await ensureMachineRuntimeReady()) {
+    clearPending();
+    return;
+  }
   const token = await requestMachineCapabilityToken();
-  if (!token) return;
-  setMachineRunActionPending(runbookPath, runId, true);
-  rerenderPipelinePreviewIfActive(runbookPath);
+  if (!token) {
+    clearPending();
+    return;
+  }
+  if (!pendingSet) {
+    setMachineRunCancelPending(runbookPath, runId, true);
+    setMachineRunActionPending(runbookPath, runId, true);
+    pendingSet = true;
+    rerenderPipelinePreviewIfActive(runbookPath);
+    startMachineRunProgressPolling(runbookPath, runId);
+  }
   let cancelled = null;
   try {
     cancelled = await window.orpad.machine.cancelRun({
@@ -14289,16 +15772,14 @@ async function cancelSelectedMachineRunInner(runbookPath, runId) {
       exportLatestRun: true,
     });
   } catch (err) {
-    setMachineRunActionPending(runbookPath, runId, false);
-    rerenderPipelinePreviewIfActive(runbookPath);
+    clearPending();
     alert(err?.message || 'Could not stop the run.');
     return;
   }
-  setMachineRunActionPending(runbookPath, runId, false);
+  clearPending();
   if (!cancelled?.success) {
     if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
     alert(cancelled?.error || 'Could not stop the run.');
-    rerenderPipelinePreviewIfActive(runbookPath);
     return;
   }
   selectedRunbookPath = runbookPath;
@@ -14314,7 +15795,7 @@ async function cancelSelectedMachineRunInner(runbookPath, runId) {
 // the node on the next executeRunStep call. Then we kick off
 // executeSelectedMachineRunStep so the user does not also have to click
 // Continue afterwards.
-async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType = '') {
+async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType = '', itemId = '') {
   if (!workspacePath || !runbookPath || !runId || !nodePath || !window.orpad?.machine?.retryNode) return;
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
@@ -14325,6 +15806,7 @@ async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType =
     runId,
     nodePath,
     nodeType,
+    itemId,
     capabilityToken: token,
   });
   if (!response?.success) {
@@ -14667,14 +16149,14 @@ function machinePatchApprovalFailureMessage(result) {
       .slice(0, 3)
       .join(', ');
     return files
-      ? `These files are already selected by another approved patch: ${files}. Skip this patch or use Continue with Prompt for a follow-up.`
-      : (result.error || 'Selected files are already approved by another patch. Skip this patch or use Continue with Prompt for a follow-up.');
+      ? `These files are already selected by another approved patch: ${files}. Skip this patch, or use the Continue with Prompt button to re-run this work after the approved batch is applied.`
+      : (result.error || 'Selected files are already approved by another patch. Skip this patch, or use the Continue with Prompt button to re-run this work after the approved batch is applied.');
   }
   if (result.code === 'PATCH_BASE_MISMATCH') {
     const path = result.path || result.mismatches?.[0]?.path || '';
     return path
-      ? `Patch base no longer matches the workspace for ${path}. Skip this patch or use Continue with Prompt for a rebased follow-up.`
-      : (result.error || 'Patch base no longer matches the workspace. Skip this patch or use Continue with Prompt for a rebased follow-up.');
+      ? `Patch base no longer matches the workspace for ${path}. Skip this patch, or use the Continue with Prompt button to re-run the work against the current workspace.`
+      : (result.error || 'Patch base no longer matches the workspace. Skip this patch, or use the Continue with Prompt button to re-run the work against the current workspace.');
   }
   return result.error || 'Patch approval could not be recorded.';
 }
@@ -14789,6 +16271,37 @@ async function machineWorkerItemDetails(record, workerReview) {
   }
 }
 
+function machinePatchFollowUpPrompt(workerReview, itemDetails, patchSummary) {
+  const title = itemDetails?.title || itemDetails?.itemId || 'Machine patch';
+  const criteria = Array.isArray(itemDetails?.acceptanceCriteria) ? itemDetails.acceptanceCriteria : [];
+  const mismatched = (patchSummary?.changes || []).filter(change => (
+    change?.baseMatches === false && !change.alreadyApplied
+  ));
+  const changedFiles = (patchSummary?.changes || [])
+    .map(change => change?.path)
+    .filter(Boolean);
+  const lines = [
+    'Re-run this stale patch against the current workspace.',
+    '',
+    `Patch artifact: ${workerReview?.patchArtifact || 'unknown'}`,
+    `Work item: ${title}`,
+    itemDetails?.userImpact ? `Why: ${itemDetails.userImpact}` : '',
+    itemDetails?.actualBehavior || itemDetails?.expectedBehavior
+      ? `Change goal: ${[itemDetails.actualBehavior, itemDetails.expectedBehavior].filter(Boolean).join(' -> ')}`
+      : '',
+    criteria.length ? 'Acceptance:' : '',
+    ...criteria.map(item => `- ${item}`),
+    mismatched.length ? '' : '',
+    mismatched.length ? 'Files blocked by stale base SHA:' : '',
+    ...mismatched.map(change => `- ${change.path}: expected ${change.expectedSha || 'none'}, current ${change.currentSha || 'unknown'}`),
+    changedFiles.length ? '' : '',
+    changedFiles.length ? `Patch changed files: ${changedFiles.join(', ')}` : '',
+    '',
+    'Do not apply or copy the stale patch artifact directly. Preserve the current workspace content and implement only the still-needed change on top of it.',
+  ];
+  return lines.filter(line => line !== '').join('\n');
+}
+
 function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, patchSummary, itemDetails = null, options = {}) {
   if (!workerReview?.patchArtifact || !patchSummary || patchSummary.error || !patchSummary.changes?.length) return;
   const reviewKey = machinePatchReviewDisplayKey(runbookPath, runId, workerReview);
@@ -14829,7 +16342,6 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   const reviewIndex = Number(options.reviewIndex) || 1;
   const reviewCount = Number(options.reviewCount) || 1;
   const pendingCount = Number(options.pendingCount) || 1;
-  const reviewTitle = reviewCount > 1 ? `Review Patch ${reviewIndex} of ${reviewCount}` : 'Review Patch';
   // hasNextReview reflects whether any other patch is still awaiting a decision after this
   // one resolves, regardless of where the current patch sits in production order. This keeps
   // the "Approve & Apply" button on the very last pending review even when earlier patches
@@ -14842,22 +16354,38 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   const applicableCount = patchSummary.changes.filter(change => change.baseMatches !== false && !approvedFileOwners.has(change.path)).length;
   const noSelectableFiles = applicableCount === 0;
   const onlyOverlappingFiles = noSelectableFiles && overlapCount > 0 && conflictCount === 0;
+  const onlyBaseMismatchFiles = noSelectableFiles && conflictCount > 0 && overlapCount === 0;
+  const blockedByStaleBase = noSelectableFiles && conflictCount > 0;
+  const reviewTitlePrefix = onlyBaseMismatchFiles
+    ? 'Rebase Required'
+    : (onlyOverlappingFiles ? 'Batch Conflict' : 'Review Patch');
+  const reviewTitle = reviewCount > 1 ? `${reviewTitlePrefix} ${reviewIndex} of ${reviewCount}` : reviewTitlePrefix;
   const skipApplyLabel = onlyOverlappingFiles
     ? 'Skip This Patch & Apply Approved'
-    : 'Skip & Apply';
+    : (onlyBaseMismatchFiles ? 'Skip Stale Patch & Apply Approved' : 'Skip & Apply');
+  const skipReviewOnlyLabel = onlyBaseMismatchFiles
+    ? 'Skip Stale Patch & Next'
+    : (onlyOverlappingFiles ? 'Skip Conflicting Patch & Next' : 'Skip This Patch & Next');
+  const skipNoSelectableLabel = hasNextReview
+    ? skipReviewOnlyLabel
+    : skipApplyLabel;
+  const followUpButtonLabel = noSelectableFiles ? 'Start Follow-up with Prompt' : 'Continue with Prompt';
   const totalFiles = patchSummary.changes.length;
+  const defaultFollowUpPrompt = noSelectableFiles
+    ? machinePatchFollowUpPrompt(workerReview, itemDetails, patchSummary)
+    : '';
   const noSelectableReason = noSelectableFiles
     ? (overlapCount
-      ? `이번 패치가 변경하려는 모든 파일이 이미 다른 승인 패치에 의해 선점되어 있습니다. 한 batch에 같은 파일을 두 패치가 동시에 쓸 수 없어 충돌이 보장되므로, 이 패치는 "review-only evidence"로 두고 Skip 하세요. 필요하면 승인 batch가 적용된 뒤 follow-up run으로 재시도합니다. (No files are selectable in this patch because every changed file is already owned by another approved patch in this run.)`
-      : '이번 패치의 base SHA가 현재 워크스페이스와 일치하지 않습니다 (다른 편집이 먼저 들어옴). 그대로 적용하면 손상 위험이 있어 OrPAD가 막습니다. "review-only evidence"로 Skip 하거나, Continue with Prompt로 follow-up run을 띄워 재계산하세요. (No files are selectable in this patch because its file base no longer matches the workspace.)')
+      ? `No files are selectable because every changed file is already owned by another approved patch in this run. This is a batch ordering conflict, not a content-risk review. Use "${skipNoSelectableLabel}" to keep this patch as review-only evidence, or "${followUpButtonLabel}" after the approved batch is applied if the work is still needed.`
+      : `No files are selectable because this patch was generated from an older file base. This is a rebase-required state, not a content-risk human review. Use "${followUpButtonLabel}" to rerun the same work against the current workspace, or "${skipNoSelectableLabel}" only if the change is no longer needed.`)
     : '';
   const summaryClassification = totalFiles
     ? `<div class="runbook-diagnostic" style="background:rgba(59,130,246,0.10);border:1px solid rgba(59,130,246,0.35);">`
-      + `<strong>이 패치의 파일 분류 (총 ${totalFiles}개):</strong> `
-      + `<span title="현재 base SHA와 일치하고 다른 승인 패치와 충돌하지 않는 파일">적용 가능 <strong>${applicableCount}</strong></span>`
-      + (overlapCount ? `, <span title="이번 run에서 이미 다른 패치가 승인한 파일 — 같은 batch에서 동시 적용 불가">다른 승인 패치 선점 <strong>${overlapCount}</strong></span>` : '')
-      + (conflictCount ? `, <span title="base SHA가 워크스페이스와 어긋남 — 안전하게 적용 불가">base SHA 불일치 <strong>${conflictCount}</strong></span>` : '')
-      + (applicableCount === 0 ? ` — 이 패치에서 선택 가능한 파일이 0개이므로 Skip 또는 follow-up run 으로 처리하세요.` : '')
+      + `<strong>Patch file status (${totalFiles} total):</strong> `
+      + `<span title="Files whose base SHA still matches the workspace and are not owned by another approved patch">applicable <strong>${applicableCount}</strong></span>`
+      + (overlapCount ? `, <span title="Files already selected by another approved patch in this run">approved-batch overlap <strong>${overlapCount}</strong></span>` : '')
+      + (conflictCount ? `, <span title="Files whose base SHA no longer matches the workspace; safe apply requires a rebase/follow-up">rebase required <strong>${conflictCount}</strong></span>` : '')
+      + (applicableCount === 0 ? ` - no files can be selected safely. Use <strong>${escapeHtml(blockedByStaleBase ? followUpButtonLabel : skipNoSelectableLabel)}</strong>${blockedByStaleBase ? ` or ${escapeHtml(skipNoSelectableLabel)}` : ` or ${escapeHtml(followUpButtonLabel)}`} below.` : '')
       + `</div>`
     : '';
   const changeRows = patchSummary.changes.map((change, index) => {
@@ -14870,7 +16398,8 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       <strong>${escapeHtml(change.path)}</strong><br>
       <span>${escapeHtml(String(change.action))}; ${escapeHtml(String(change.beforeLines))} -> ${escapeHtml(String(change.afterLines))} lines (${escapeHtml(String(change.deltaLabel))}); SHA ${escapeHtml(change.beforeSha || 'none')} -> ${escapeHtml(change.afterSha || 'none')}</span>
       ${change.baseMessage ? `<br><span>${escapeHtml(change.baseMessage)}${change.baseMatches === false ? ` Expected ${escapeHtml(change.expectedSha || 'none')}, current ${escapeHtml(change.currentSha || 'none')}.` : ''}</span>` : ''}
-      ${approvedOwner ? `<br><span>Disabled: this file is already selected by another approved patch (${escapeHtml(approvedOwner.split(/[\\/]/).pop() || approvedOwner)}). Apply the approved batch first, then run a follow-up if this patch's change is still needed.</span>` : ''}
+      ${change.baseMatches === false && !change.alreadyApplied ? `<br><span>Disabled: rebase required. This file changed after the patch was generated, so OrPAD will not apply the stale full-file patch.</span>` : ''}
+      ${approvedOwner ? `<br><span>Disabled: this file is already selected by another approved patch (${escapeHtml(approvedOwner.split(/[\\/]/).pop() || approvedOwner)}). Apply the approved batch first, then use ${escapeHtml(followUpButtonLabel)} if this patch's change is still needed.</span>` : ''}
     </label>
   `;
   }).join('');
@@ -14889,25 +16418,36 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       else await finalizePatchReviewQueue(runbookPath, runId, record);
     }
   };
+  const introText = onlyBaseMismatchFiles
+    ? `This patch still may be useful, but it was generated from an older file base. OrPAD blocked direct apply to avoid overwriting newer workspace changes. Start a follow-up to rebase the same goal onto the current workspace, or skip only if the change is no longer needed.`
+    : (onlyOverlappingFiles
+      ? `This patch changes files already selected by another approved patch in this batch. Apply the approved batch first, then start a follow-up if this work is still needed.`
+      : `The run produced a patch for ${title}. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.`);
+  const batchReviewText = onlyBaseMismatchFiles
+    ? `${reviewCount} patch results. This one is blocked by stale base SHA, so the decision is rebase/follow-up vs skip, not semantic human review.`
+    : `${reviewCount} patch results. Review each worker patch before treating the run as applied.`;
+  const workspaceStatusText = noSelectableFiles
+    ? 'Workspace not changed. Direct apply is disabled for this patch; follow-up records this artifact as review-only evidence before rerunning the work.'
+    : (reviewCount > 1
+      ? 'Workspace not changed yet. Approving queues the selection. Files are written together after every patch in this run is reviewed.'
+      : 'Workspace not changed yet. Approving applies the selected files immediately after a fresh base SHA check.');
   body.innerHTML = `
-    <p>The run produced a patch for <strong>${escapeHtml(title)}</strong>. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.</p>
-    ${reviewCount > 1 ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(String(reviewCount))} patch results</strong> Review each worker patch before treating the run as applied.</div>` : ''}
+    <p>${escapeHtml(introText)}</p>
+    ${reviewCount > 1 ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(String(reviewCount))} patch results</strong> ${escapeHtml(batchReviewText.replace(`${reviewCount} patch results. `, ''))}</div>` : ''}
     ${itemDetails?.userImpact ? `<div class="runbook-diagnostic"><strong>Why</strong> ${escapeHtml(itemDetails.userImpact)}</div>` : ''}
     ${itemDetails?.actualBehavior || itemDetails?.expectedBehavior ? `<div class="runbook-diagnostic"><strong>Change goal</strong> ${escapeHtml([itemDetails.actualBehavior, itemDetails.expectedBehavior].filter(Boolean).join(' -> '))}</div>` : ''}
     ${criteria.length ? `<div class="runbook-diagnostic"><strong>Acceptance</strong><ul>${criteria.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>` : ''}
-    <div class="runbook-diagnostic warning"><strong>Workspace not changed yet.</strong> ${reviewCount > 1
-      ? 'Approving queues the selection. Files are written together after every patch in this run is reviewed.'
-      : 'Approving applies the selected files immediately after a fresh base SHA check.'}</div>
+    <div class="runbook-diagnostic warning"><strong>${escapeHtml(workspaceStatusText)}</strong></div>
     ${summaryClassification}
     <div class="runbook-diagnostic warning" data-machine-patch-status ${noSelectableReason ? '' : 'hidden'}>${escapeHtml(noSelectableReason)}</div>
-    ${conflictCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(conflictCount, 'conflicting file'))}</strong> 워크스페이스가 이미 바뀐 파일 — base SHA가 패치가 기대한 값과 다릅니다 (대개 이전 승인 패치가 먼저 적용되었기 때문). 강제로 적용하면 손상 위험이 있어 OrPAD가 unchecked로 막습니다. 이 줄을 적용하려면 follow-up run을 띄우세요. (already changed in the workspace, likely by an earlier approved patch)</div>` : ''}
-    ${overlapCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(overlapCount, 'overlapping file'))}</strong> 이번 run의 다른 승인 패치가 이미 선택한 파일 — 한 batch 안에서 같은 파일을 두 패치가 동시에 쓰면 두 번째 패치의 base SHA가 자동 불일치가 되므로 disabled 처리됩니다. 이번 패치를 적용하려면 승인된 batch를 먼저 apply한 뒤 follow-up run으로 재시도하세요. (already selected by another approved patch in this run)</div>` : ''}
+    ${conflictCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(conflictCount, 'file requiring rebase'))}</strong> The workspace file already changed, so its base SHA no longer matches this patch. OrPAD disables direct apply because the patch could overwrite newer work. Use <strong>${escapeHtml(followUpButtonLabel)}</strong> if this change is still needed.</div>` : ''}
+    ${overlapCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(overlapCount, 'overlapping file'))}</strong> Another approved patch in this run already selected this file. Two patches cannot safely write the same file in one batch. Apply the approved batch first, then use <strong>${escapeHtml(followUpButtonLabel)}</strong> if this change is still needed.</div>` : ''}
     <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
     <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
     <div style="max-height:280px; overflow:auto; margin-top:8px;">${changeRows}</div>
     <label style="display:block; margin-top:12px;">
       Follow-up prompt
-      <textarea class="runbook-task-input" data-machine-patch-prompt rows="3" placeholder="Optional: tell OrPAD what to do in the next Continue run."></textarea>
+      <textarea class="runbook-task-input" data-machine-patch-prompt rows="${defaultFollowUpPrompt ? 9 : 3}" placeholder="Optional: tell OrPAD what to do in the next Continue run.">${escapeHtml(defaultFollowUpPrompt)}</textarea>
     </label>
   `;
   const selectedFiles = () => [...body.querySelectorAll('[data-machine-patch-file]:checked')]
@@ -14931,7 +16471,8 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
         }, noSelectableFiles ? '' : 'Skipping this patch...'),
       },
       {
-        label: 'Continue with Prompt',
+        label: followUpButtonLabel,
+        primary: blockedByStaleBase,
         onClick: () => runPatchReviewDecision(async () => {
           const prompt = body.querySelector('[data-machine-patch-prompt]')?.value || '';
           if (prompt.trim()) {
@@ -14949,9 +16490,9 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       },
       {
         label: noSelectableFiles
-          ? (hasNextReview ? 'Skip This Patch & Next' : skipApplyLabel)
+          ? skipNoSelectableLabel
           : (hasNextReview ? 'Approve & Next' : 'Approve & Apply'),
-        primary: true,
+        primary: !blockedByStaleBase,
         disabled: false,
         onClick: () => {
           if (noSelectableFiles) {
@@ -14989,9 +16530,13 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record, options = {
   // will pick the next patch up after the current modal closes.
   if (fmtModalEl && !fmtModalEl.classList.contains('hidden')) return false;
   const allReviews = machineWorkerReviewInfos(record)
-    .filter(review => review?.patchArtifact);
+    .filter(review => (
+      review?.patchArtifact
+      && (review.patchReviewEligible || review.patchReviewDecision)
+    ));
   const decisionRequiredReviews = allReviews.filter(review => (
-    !review.patchReviewResolved
+    machineShouldSurfacePatchReview(record, review)
+    && !review.patchReviewResolved
     && review.patchReviewStatus !== 'approved'
   ));
   if (!decisionRequiredReviews.length && machineHasBlockedPatchReviewNode(record)) {
@@ -15933,6 +17478,9 @@ async function createOrpadRunbookStarter(options = {}) {
         proposalTimeoutMs: 600000,
         workerTimeoutMs: 900000,
         claimLeaseMs: 1800000,
+        claimPolicy: {
+          concurrency: 1,
+        },
         probeNodePaths: ['main/probe'],
         triageNodePath: 'main/triage',
         dispatcherNodePath: 'main/dispatch',
@@ -16233,6 +17781,7 @@ contentEl?.addEventListener('click', async (event) => {
       const runId = probeButton.dataset.runId || '';
       const nodePath = probeButton.dataset.nodePath || '';
       const nodeType = probeButton.dataset.nodeType || '';
+      const itemId = probeButton.dataset.itemId || '';
       const runbookPath = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
       if (!runId || !nodePath || !runbookPath) {
         notifyFormatError('Retry probe', new Error('Missing runId / nodePath / pipelinePath.'));
@@ -16242,7 +17791,7 @@ contentEl?.addEventListener('click', async (event) => {
       const previousLabel = probeButton.textContent;
       probeButton.textContent = 'Scheduling retry…';
       try {
-        await retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType);
+        await retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType, itemId);
       } catch (err) {
         notifyFormatError('Retry probe', err);
       } finally {

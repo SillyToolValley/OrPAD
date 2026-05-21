@@ -409,6 +409,26 @@ test('patch review resume state blocks patch artifacts with empty changedFiles',
   assert.equal(state.pendingPatchArtifacts[0], 'artifacts/patches/empty-changed-files.patch.json');
 });
 
+test('patch review resume state ignores patch artifacts from blocked workers', () => {
+  const state = patchReviewResumeStateFromEvents([
+    {
+      eventType: 'worker.result',
+      sequence: 1,
+      payload: {
+        status: 'blocked',
+        toState: 'blocked',
+        patchArtifact: 'artifacts/patches/blocked-partial.patch.json',
+        changedFiles: ['src/partial.md'],
+      },
+    },
+  ]);
+
+  assert.equal(state.required, false);
+  assert.equal(state.resolved, true);
+  assert.equal(state.patchCount, 0);
+  assert.deepEqual(state.pendingPatchArtifacts, []);
+});
+
 test('finalize keeps run blocked when review-required patch has not emitted node.blocked', async () => {
   const run = await makeRun('run_20260517_finalize_patch_review_crash_window');
   const itemId = await queueProposal(run, proposal({

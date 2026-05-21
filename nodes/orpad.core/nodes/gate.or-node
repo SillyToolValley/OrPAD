@@ -34,6 +34,58 @@
       "policyRef": {
         "type": "string"
       },
+      "evaluationMode": {
+        "type": "string"
+      },
+      "judgePolicy": {
+        "type": "string",
+        "enum": ["rule-only", "rule-then-llm", "llm-required"]
+      },
+      "failureRouting": {
+        "type": "string"
+      },
+      "sourceNodePack": {
+        "type": "string"
+      },
+      "qualityDimensions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "expectedEvaluationArtifacts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "expectedJudgeArtifacts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "nodePackRubric": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "judgeArtifact": {
+        "type": "string"
+      },
+      "judgeResultArtifact": {
+        "type": "string"
+      },
+      "judgeArtifacts": {
+        "type": "array"
+      },
+      "judgeResultArtifacts": {
+        "type": "array"
+      },
+      "summary": {
+        "type": "string"
+      },
       "onPass": {
         "type": "string",
         "default": "continue"

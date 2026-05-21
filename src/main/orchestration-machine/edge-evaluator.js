@@ -24,6 +24,7 @@
 
 const GATE_PASS_CONDITIONS = new Set(['pass', 'continue', 'accept', 'accepted', 'ok', 'success']);
 const GATE_REVISE_CONDITIONS = new Set(['revise', 'reject', 'rejected', 'fail', 'retry']);
+const GATE_CONTINUE_ON_FAIL_POLICIES = new Set(['warn', 'continue', 'continue-with-warning']);
 const PATCH_ACCEPT_CONDITIONS = new Set(['accepted', 'accept', 'pass', 'continue']);
 const PATCH_REJECT_CONDITIONS = new Set(['rejected', 'reject', 'revise']);
 
@@ -43,7 +44,11 @@ function decideEdgeForSelector(condition, sourceResult) {
 }
 
 function decideEdgeForGate(condition, sourceResult) {
-  const valid = Boolean(sourceResult?.valid);
+  const rawValid = Boolean(sourceResult?.valid);
+  const onFail = normalizeCondition(sourceResult?.onFail);
+  const strictFailure = sourceResult?.strictFailure === true || sourceResult?.warningDoesNotPass === true;
+  const continueOnFail = !rawValid && !strictFailure && GATE_CONTINUE_ON_FAIL_POLICIES.has(onFail);
+  const valid = rawValid || continueOnFail;
   // Queue-state conditions (Pattern I: queue-drain loop).
   if (condition === 'queue-empty' || condition === 'queue-not-empty') {
     // `summarizeQueueInventory` returns `{ counts: { candidate, queued,
@@ -75,13 +80,13 @@ function decideEdgeForGate(condition, sourceResult) {
   }
   if (GATE_PASS_CONDITIONS.has(condition)) {
     return valid
-      ? { fired: true, reason: 'gate-pass' }
-      : { fired: false, reason: 'gate-failed' };
+      ? { fired: true, reason: rawValid ? 'gate-pass' : 'gate-warning-pass', onFail }
+      : { fired: false, reason: strictFailure ? 'gate-strict-failed' : 'gate-failed', onFail };
   }
   if (GATE_REVISE_CONDITIONS.has(condition)) {
     return valid
-      ? { fired: false, reason: 'gate-passed-skip-revise' }
-      : { fired: true, reason: 'gate-revise' };
+      ? { fired: false, reason: rawValid ? 'gate-passed-skip-revise' : 'gate-warning-skip-revise', onFail }
+      : { fired: true, reason: strictFailure ? 'gate-strict-revise' : 'gate-revise', onFail };
   }
   return { fired: true, reason: 'gate-condition-unrecognized-default-fire' };
 }

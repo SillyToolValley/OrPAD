@@ -40,6 +40,8 @@ const ALL_NODE_TYPES = new Set([
   'Retry',
   'Catch',
   'CrossCheck',
+  'Decorator',
+  'Action',
   'Skill',
   'Planner',
   'OrchTree',

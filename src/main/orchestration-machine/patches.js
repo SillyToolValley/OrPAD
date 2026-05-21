@@ -12,6 +12,26 @@ function sha256Text(value) {
   return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
 }
 
+function sha256Buffer(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function bufferIsUtf8Text(buffer) {
+  const text = buffer.toString('utf8');
+  return Buffer.from(text, 'utf8').equals(buffer);
+}
+
+function snapshotFromBuffer(buffer) {
+  const text = buffer.toString('utf8');
+  const isText = bufferIsUtf8Text(buffer);
+  return {
+    sha256: sha256Buffer(buffer),
+    isText,
+    text: isText ? text : '',
+    base64: isText ? '' : buffer.toString('base64'),
+  };
+}
+
 function isPathAllowedByWriteSet(filePath, allowedFiles = []) {
   const normalized = normalizeWriteSetPath(filePath);
   const allowed = normalizeWriteSetPaths(allowedFiles);
@@ -32,6 +52,16 @@ function resolveWorkspacePath(root, relativePath) {
 async function readTextIfExists(filePath) {
   try {
     return await fsp.readFile(filePath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function readFileSnapshotIfExists(filePath) {
+  try {
+    const buffer = await fsp.readFile(filePath);
+    return snapshotFromBuffer(buffer);
   } catch (err) {
     if (err?.code === 'ENOENT') return null;
     throw err;
@@ -72,6 +102,41 @@ async function readWorkspaceTextIfExists(root, relativePath) {
   return readTextIfExists(resolveWorkspacePath(root, relativePath));
 }
 
+async function readWorkspaceFileSnapshotIfExists(root, relativePath) {
+  await assertNoSymlinkInWorkspacePath(root, relativePath);
+  return readFileSnapshotIfExists(resolveWorkspacePath(root, relativePath));
+}
+
+function patchChangeFromSnapshots(relPath, before, after) {
+  const binary = Boolean(before && !before.isText) || Boolean(after && !after.isText);
+  const change = {
+    path: relPath,
+    beforeExists: before !== null,
+    afterExists: after !== null,
+    beforeSha256: before === null ? '' : before.sha256,
+    afterSha256: after === null ? '' : after.sha256,
+  };
+  if (binary) {
+    return {
+      ...change,
+      contentEncoding: 'base64',
+      beforeContentBase64: before === null ? '' : (before.isText ? Buffer.from(before.text, 'utf8').toString('base64') : before.base64),
+      afterContentBase64: after === null ? '' : (after.isText ? Buffer.from(after.text, 'utf8').toString('base64') : after.base64),
+    };
+  }
+  return {
+    ...change,
+    beforeContent: before === null ? '' : before.text,
+    afterContent: after === null ? '' : after.text,
+  };
+}
+
+function patchChangeUsesBase64(change = {}) {
+  return change.contentEncoding === 'base64'
+    || Object.prototype.hasOwnProperty.call(change, 'afterContentBase64')
+    || Object.prototype.hasOwnProperty.call(change, 'beforeContentBase64');
+}
+
 async function walkFiles(root) {
   const files = [];
   async function visit(dir) {
@@ -98,13 +163,14 @@ function relativePortable(root, filePath) {
 }
 
 async function copyAllowedFilesToOverlay(options = {}) {
-  const { workspaceRoot, overlayRoot, allowedFiles = [] } = options;
+  const { workspaceRoot, overlayRoot, allowedFiles = [], readOnlyFiles = [] } = options;
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   if (!overlayRoot) throw new Error('overlayRoot is required.');
   const copied = [];
-  for (const allowedFile of normalizeWriteSetPaths(allowedFiles)) {
-    await assertNoSymlinkInWorkspacePath(workspaceRoot, allowedFile);
-    const source = resolveWorkspacePath(workspaceRoot, allowedFile);
+  const overlaySeedFiles = normalizeWriteSetPaths([...allowedFiles, ...readOnlyFiles]);
+  for (const seedFile of overlaySeedFiles) {
+    await assertNoSymlinkInWorkspacePath(workspaceRoot, seedFile);
+    const source = resolveWorkspacePath(workspaceRoot, seedFile);
     const stat = await fsp.stat(source).catch(err => (err?.code === 'ENOENT' ? null : Promise.reject(err)));
     if (!stat) continue;
     if (stat.isDirectory()) {
@@ -119,10 +185,10 @@ async function copyAllowedFilesToOverlay(options = {}) {
       continue;
     }
     if (!stat.isFile()) continue;
-    const target = path.join(path.resolve(overlayRoot), ...allowedFile.split('/'));
+    const target = path.join(path.resolve(overlayRoot), ...seedFile.split('/'));
     await fsp.mkdir(path.dirname(target), { recursive: true });
     await fsp.copyFile(source, target);
-    copied.push(allowedFile);
+    copied.push(seedFile);
   }
   return copied.sort();
 }
@@ -145,25 +211,19 @@ async function collectOverlayPatch(options = {}) {
 
   for (const relPath of [...overlayRelPaths].sort()) {
     const allowedPath = isPathAllowedByWriteSet(relPath, allowed);
-    const before = await readWorkspaceTextIfExists(workspaceRoot, relPath);
-    const after = await readTextIfExists(resolveWorkspacePath(overlayRoot, relPath));
+    const before = await readWorkspaceFileSnapshotIfExists(workspaceRoot, relPath);
+    const after = await readFileSnapshotIfExists(resolveWorkspacePath(overlayRoot, relPath));
     if (!allowedPath) {
-      violations.push({
-        path: relPath,
-        reason: 'outside-write-set',
-      });
+      if ((before?.sha256 || '') !== (after?.sha256 || '')) {
+        violations.push({
+          path: relPath,
+          reason: 'outside-write-set',
+        });
+      }
       continue;
     }
-    if (before === after) continue;
-    changes.push({
-      path: relPath,
-      beforeExists: before !== null,
-      afterExists: after !== null,
-      beforeSha256: before === null ? '' : sha256Text(before),
-      afterSha256: after === null ? '' : sha256Text(after),
-      beforeContent: before === null ? '' : before,
-      afterContent: after === null ? '' : after,
-    });
+    if ((before?.sha256 || '') === (after?.sha256 || '')) continue;
+    changes.push(patchChangeFromSnapshots(relPath, before, after));
   }
 
   const deletionCandidates = [];
@@ -181,17 +241,9 @@ async function collectOverlayPatch(options = {}) {
   }
 
   for (const relPath of [...new Set(deletionCandidates)].sort()) {
-    const source = await readWorkspaceTextIfExists(workspaceRoot, relPath);
+    const source = await readWorkspaceFileSnapshotIfExists(workspaceRoot, relPath);
     if (source === null || overlayRelPaths.has(relPath)) continue;
-    changes.push({
-      path: relPath,
-      beforeExists: true,
-      afterExists: false,
-      beforeSha256: sha256Text(source),
-      afterSha256: '',
-      beforeContent: source,
-      afterContent: '',
-    });
+    changes.push(patchChangeFromSnapshots(relPath, source, null));
   }
 
   return {
@@ -238,8 +290,12 @@ async function inspectPatchBase(options = {}) {
   for (const change of patch.changes || []) {
     await assertNoSymlinkInWorkspacePath(workspaceRoot, change.path);
     const target = resolveWorkspacePath(workspaceRoot, change.path);
-    const current = await readTextIfExists(target);
-    const currentSha = current === null ? '' : sha256Text(current);
+    const current = patchChangeUsesBase64(change)
+      ? await readFileSnapshotIfExists(target)
+      : await readTextIfExists(target);
+    const currentSha = current === null
+      ? ''
+      : (patchChangeUsesBase64(change) ? current.sha256 : sha256Text(current));
     const expectedSha = change.beforeExists === false ? '' : change.beforeSha256;
     const afterSha = change.afterExists === false ? '' : change.afterSha256;
     if (currentSha !== expectedSha) {
@@ -287,7 +343,11 @@ async function applyPatchArtifact(options = {}) {
       await fsp.rm(target);
     } else {
       await fsp.mkdir(path.dirname(target), { recursive: true });
-      await fsp.writeFile(target, change.afterContent || '', 'utf8');
+      if (patchChangeUsesBase64(change)) {
+        await fsp.writeFile(target, Buffer.from(change.afterContentBase64 || '', 'base64'));
+      } else {
+        await fsp.writeFile(target, change.afterContent || '', 'utf8');
+      }
     }
     applied.push({ path: change.path, appliedAt: now });
   }

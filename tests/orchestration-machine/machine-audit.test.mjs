@@ -386,6 +386,26 @@ test('audit-orpad-machine-run fails when candidate inventory counts are corrupte
   assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_COUNT_MISMATCH'), true);
 });
 
+test('audit-orpad-machine-run accepts a candidate inventory file re-registered later in the run', async () => {
+  const run = await makeAuditableRun();
+  await registerCandidateInventoryArtifact(run.runRoot, {
+    runId: run.runId,
+    probes: [
+      {
+        nodePath: 'main/probe',
+        candidateProposals: [proposal()],
+      },
+    ],
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+  assert.equal(codes.has('MACHINE_CANDIDATE_INVENTORY_SOURCE_SEQUENCE_INVALID'), false);
+});
+
 test('audit-orpad-machine-run accepts a concrete risk-check-scoped empty-pass inventory row', async () => {
   const run = await makeCompletedProbeRun('run_20260430_audit_empty_pass_concrete');
   await registerCandidateInventoryArtifact(run.runRoot, {
@@ -660,6 +680,103 @@ test('audit-orpad-machine-run fails when node-scoped adapter event occurs after 
   assert.equal(codes.has('MACHINE_ADAPTER_EVENT_AFTER_NODE_TERMINAL'), true);
 });
 
+test('audit-orpad-machine-run accepts adapter events for a later node attempt after an earlier attempt terminal', async () => {
+  const run = await makeAuditableRun();
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'node.scheduled',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'scheduled',
+      attempt: 1,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'node.started',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'started',
+      attempt: 1,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'node.scheduled',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-2`,
+      nodeType: 'orpad.workerLoop',
+      status: 'scheduled',
+      attempt: 2,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'node.started',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-2`,
+      nodeType: 'orpad.workerLoop',
+      status: 'started',
+      attempt: 2,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'lock.granted',
+    payload: {
+      phase: 'file-lock-queue-phase-1',
+      taskId: 'claim-later-attempt',
+      attempt: 2,
+      targetFiles: ['src/renderer/renderer.js'],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'node.completed',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'completed',
+      attempt: 1,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'worker-fixture',
+      adapterCallId: 'claim-later-attempt-graph-cli',
+      attemptId: 'claim-later-attempt-graph-cli-attempt-1',
+      idempotencyKey: 'claim-later-attempt-graph-cli:attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+  assert.equal(codes.has('MACHINE_ADAPTER_EVENT_AFTER_NODE_TERMINAL'), false);
+});
+
 test('audit-orpad-machine-run fails when done worker result has no proof', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-worker-proof-'));
   const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
@@ -894,6 +1011,137 @@ test('audit-orpad-machine-run fails when queue done transition has no prior work
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_QUEUE_DONE_WITHOUT_WORKER_RESULT'), true);
   assert.equal(codes.has('MACHINE_QUEUE_CLAIM_WITHOUT_LEASE'), false);
+});
+
+test('audit-orpad-machine-run matches queue done transitions to the latest worker result claim', async () => {
+  const run = await makeAuditableRun();
+  const itemId = 'graph-editor-graph-specific-node-types';
+  const staleClaimId = 'claim-stale-worker-result';
+  const freshClaimId = 'claim-fresh-worker-result';
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/patches/stale-worker-result.patch.json',
+    content: '{"schemaVersion":"orpad.patchArtifact.v1","changes":[]}\n',
+    producedBy: 'worker-fixture',
+    registeredBy: 'machine',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'worker-fixture',
+      adapterCallId: 'stale-worker-call',
+      attemptId: 'stale-worker-attempt-1',
+      idempotencyKey: 'stale-worker-call:stale-worker-attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId,
+    artifactRefs: ['artifacts/patches/stale-worker-result.patch.json'],
+    payload: {
+      claimId: staleClaimId,
+      adapterCallId: 'stale-worker-call',
+      attemptId: 'stale-worker-attempt-1',
+      idempotencyKey: 'stale-worker-call:stale-worker-attempt-1',
+      status: 'done',
+      toState: 'done',
+      patchArtifact: 'artifacts/patches/stale-worker-result.patch.json',
+      verification: [{ command: 'fixture', ok: true }],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'claim.lease-created',
+    itemId,
+    reason: 'dispatcher.claim-lease',
+    payload: {
+      claimId: freshClaimId,
+      workerId: 'worker-audit',
+      leaseMs: 300000,
+      expiresAt: '2026-04-30T00:05:00.000Z',
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'claimed',
+    transitionId: `claim:${itemId}:${freshClaimId}`,
+    payload: {
+      claimId: freshClaimId,
+      workerId: 'worker-audit',
+    },
+  });
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/patches/fresh-worker-result.patch.json',
+    content: '{"schemaVersion":"orpad.patchArtifact.v1","changes":[]}\n',
+    producedBy: 'worker-fixture',
+    registeredBy: 'machine',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'worker-fixture',
+      adapterCallId: 'fresh-worker-call',
+      attemptId: 'fresh-worker-attempt-1',
+      idempotencyKey: 'fresh-worker-call:fresh-worker-attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId,
+    artifactRefs: ['artifacts/patches/fresh-worker-result.patch.json'],
+    payload: {
+      claimId: freshClaimId,
+      adapterCallId: 'fresh-worker-call',
+      attemptId: 'fresh-worker-attempt-1',
+      idempotencyKey: 'fresh-worker-call:fresh-worker-attempt-1',
+      status: 'done',
+      toState: 'done',
+      patchArtifact: 'artifacts/patches/fresh-worker-result.patch.json',
+      verification: [{ command: 'fixture', ok: true }],
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId,
+    toState: 'done',
+    transitionId: `close:${freshClaimId}:fresh-worker-call`,
+    payload: {
+      claimId: freshClaimId,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'claim.lease-released',
+    itemId,
+    reason: 'worker-result.done',
+    payload: {
+      claimId: freshClaimId,
+      state: 'released',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+  assert.equal(codes.has('MACHINE_QUEUE_DONE_WORKER_CLAIM_MISMATCH'), false);
 });
 
 test('audit-orpad-machine-run fails when claim lease has no prior write-set acquisition', async () => {

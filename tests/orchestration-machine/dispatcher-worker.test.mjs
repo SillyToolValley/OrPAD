@@ -8,6 +8,7 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   acquireWriteSetLock,
+  appendMachineEvent,
   appendRunLifecycleStatus,
   applyWorkerResult,
   cancelClaimedItem,
@@ -229,6 +230,163 @@ test('dispatcher serializes concurrent claim selection so each queued item is cl
     .filter(event => event.eventType === 'queue.transition' && event.toState === 'claimed');
   assert.equal(claimEvents.length, 2);
   assert.equal(new Set(claimEvents.map(event => event.itemId)).size, 2);
+});
+
+test('dispatcher treats unresolved patch artifacts as virtual write locks and claims non-overlapping work', async () => {
+  const run = await makeRun('run_20260430_dispatcher_pending_patch_selects_around_overlap');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'completed-shared-work',
+    reason: 'test.pending-patch-artifact',
+    artifactRefs: ['artifacts/patches/shared.patch.json'],
+    payload: {
+      claimId: 'claim-completed-shared-work',
+      patchArtifact: 'artifacts/patches/shared.patch.json',
+      changedFiles: ['src/shared.md'],
+      status: 'done',
+    },
+  });
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'overlapping-work',
+    fingerprint: 'ux:overlapping-work',
+    createdAt: '2026-04-30T00:00:01.000Z',
+    sourceOfTruthTargets: ['src/shared.md'],
+  }), 1);
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'independent-work',
+    fingerprint: 'ux:independent-work',
+    createdAt: '2026-04-30T00:00:02.000Z',
+    sourceOfTruthTargets: ['src/other.md'],
+  }), 2);
+
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-independent-work',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  assert.equal(claimed.claimed, true);
+  assert.equal(claimed.item.id, 'independent-work');
+  assert.deepEqual(claimed.pendingPatchOverlaps.map(entry => entry.itemId), ['overlapping-work']);
+  assert.deepEqual(claimed.pendingPatchOverlaps[0].overlappingPaths, ['src/shared.md']);
+  assert.equal((await findQueueItem(run.runRoot, 'overlapping-work')).state, 'queued');
+  assert.equal((await findQueueItem(run.runRoot, 'independent-work')).state, 'claimed');
+});
+
+test('dispatcher pauses claiming when every queued item overlaps an unresolved patch artifact', async () => {
+  const run = await makeRun('run_20260430_dispatcher_pending_patch_all_overlap');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'completed-shared-work',
+    reason: 'test.pending-patch-artifact',
+    artifactRefs: ['artifacts/patches/shared.patch.json'],
+    payload: {
+      claimId: 'claim-completed-shared-work',
+      patchArtifact: 'artifacts/patches/shared.patch.json',
+      changedFiles: ['src/shared.md'],
+      status: 'done',
+    },
+  });
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'overlapping-work',
+    fingerprint: 'ux:overlapping-work',
+    sourceOfTruthTargets: ['src/shared.md'],
+  }), 1);
+
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  assert.equal(claimed.claimed, false);
+  assert.equal(claimed.stopReason, 'pending-patch-overlap');
+  assert.deepEqual(claimed.pendingPatchOverlaps.map(entry => entry.patchArtifact), ['artifacts/patches/shared.patch.json']);
+  assert.equal((await findQueueItem(run.runRoot, 'overlapping-work')).state, 'queued');
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+});
+
+test('dispatcher does not treat blocked worker patch artifacts as virtual write locks', async () => {
+  const run = await makeRun('run_20260520_dispatcher_ignores_blocked_patch_lock');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'blocked-shared-work',
+    reason: 'test.blocked-patch-artifact',
+    artifactRefs: ['artifacts/patches/blocked.patch.json'],
+    payload: {
+      claimId: 'claim-blocked-shared-work',
+      patchArtifact: 'artifacts/patches/blocked.patch.json',
+      changedFiles: ['src/shared.md'],
+      status: 'blocked',
+      toState: 'blocked',
+    },
+  });
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'overlapping-work',
+    fingerprint: 'ux:overlapping-work-after-blocked',
+    sourceOfTruthTargets: ['src/shared.md'],
+  }), 1);
+
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-overlapping-work',
+    now: '2026-05-20T00:00:20.000Z',
+  });
+
+  assert.equal(claimed.claimed, true);
+  assert.equal(claimed.item.id, 'overlapping-work');
+  assert.deepEqual(claimed.pendingPatchOverlaps, []);
+  assert.equal((await findQueueItem(run.runRoot, 'overlapping-work')).state, 'claimed');
+});
+
+test('dispatcher allows overlapping queued work after the pending patch artifact is resolved', async () => {
+  const run = await makeRun('run_20260430_dispatcher_pending_patch_resolved');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'completed-shared-work',
+    reason: 'test.pending-patch-artifact',
+    artifactRefs: ['artifacts/patches/shared.patch.json'],
+    payload: {
+      claimId: 'claim-completed-shared-work',
+      patchArtifact: 'artifacts/patches/shared.patch.json',
+      changedFiles: ['src/shared.md'],
+      status: 'done',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'patch.applied',
+    reason: 'test.patch-applied',
+    artifactRefs: ['artifacts/patches/shared.patch.json'],
+    payload: {
+      patchArtifact: 'artifacts/patches/shared.patch.json',
+      selectedFiles: ['src/shared.md'],
+      applied: [{ path: 'src/shared.md' }],
+    },
+  });
+  await queueProposal(run, proposal({
+    suggestedWorkItemId: 'overlapping-work',
+    fingerprint: 'ux:overlapping-work',
+    sourceOfTruthTargets: ['src/shared.md'],
+  }), 1);
+
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-overlapping-work',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+
+  assert.equal(claimed.claimed, true);
+  assert.equal(claimed.item.id, 'overlapping-work');
+  assert.deepEqual(claimed.pendingPatchOverlaps, []);
 });
 
 test('dispatcher audit-only write-set mode lets overlapping worker claims reach the in-memory lock manager', async () => {
@@ -482,6 +640,73 @@ test('worker result closes a claimed item only after proof is accepted', async (
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
   assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'worker.result').length, 1);
   assert.deepEqual((await readJournal(run.runRoot)).map(entry => entry.action), ['ingest', 'triage', 'claim', 'close']);
+});
+
+test('worker done result must include required harness validation evidence', async () => {
+  const run = await makeRun('run_20260521_worker_harness_validation_missing');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'harness-validation-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-harness-validation-missing',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+  const result = workerResult(request, {
+    verification: [{ command: 'static inspection', status: 'passed' }],
+  });
+  await registerWorkerResultArtifacts(run, result);
+
+  await assert.rejects(
+    applyWorkerResult(run.runRoot, {
+      runId: run.runId,
+      claimId: claimed.claim.claimId,
+      itemId,
+      request,
+      result,
+      now: '2026-04-30T00:00:30.000Z',
+      requiredValidationCommands: ['dotnet test ThreadProgramming.sln --no-build'],
+    }),
+    error => error?.code === 'WORKER_DONE_RESULT_MISSING_HARNESS_VALIDATION',
+  );
+
+  assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'worker.result').length, 0);
+});
+
+test('worker done result accepts harness validation command evidence', async () => {
+  const run = await makeRun('run_20260521_worker_harness_validation_present');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'harness-validation-present',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-harness-validation-present',
+    now: '2026-04-30T00:00:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+  const result = workerResult(request, {
+    verification: [{
+      command: 'dotnet',
+      args: ['test', 'ThreadProgramming.sln', '--no-build'],
+      status: 'passed',
+    }],
+  });
+  await registerWorkerResultArtifacts(run, result);
+
+  const applied = await applyWorkerResult(run.runRoot, {
+    runId: run.runId,
+    claimId: claimed.claim.claimId,
+    itemId,
+    request,
+    result,
+    now: '2026-04-30T00:00:30.000Z',
+    requiredValidationCommands: ['dotnet test ThreadProgramming.sln --no-build'],
+  });
+
+  assert.equal(applied.toState, 'done');
+  const workerEvent = (await readMachineEvents(run.runRoot)).find(event => event.eventType === 'worker.result');
+  assert.equal(workerEvent.payload.summary, 'Applied fixture worker result.');
 });
 
 test('approval-required worker result requeues claimed item and creates permission request', async () => {

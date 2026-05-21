@@ -1,0 +1,23 @@
+{
+  "kind": "orpad.rule",
+  "version": "1.0",
+  "id": "frontend-ux-scope",
+  "include": [
+    "src/renderer/**",
+    "src/web/**",
+    "src/**/*.css",
+    "src/**/*.html",
+    "tests/e2e/**",
+    "playwright.config.*",
+    "package.json"
+  ],
+  "exclude": [
+    "dist/**",
+    "release/**",
+    "out/**",
+    "node_modules/**",
+    ".env",
+    "**/*secret*",
+    "**/*token*"
+  ]
+}

@@ -8,6 +8,7 @@ import { auditRun, RUN_METADATA_SCHEMA } from '../../scripts/audit-orpad-run.mjs
 
 const require = createRequire(import.meta.url);
 const {
+  appendRunSummaryStatus,
   createMachineRun,
   exportLatestRun,
   exportLegacyJournal,
@@ -221,6 +222,31 @@ test('evidence snapshot materializes provenance from durable run state', async (
   const audit = await auditRun(path.join(run.pipelineDir, 'pipeline.or-pipeline'));
   assert.equal(audit.diagnostics.some(item => item.code === 'RUN_METADATA_SCHEMA_UNSUPPORTED'), false);
   assert.equal(audit.diagnostics.some(item => item.code === 'RUN_METADATA_STATUS_INVALID'), false);
+});
+
+test('evidence snapshot uses durable run-state status when summary markdown is absent', async () => {
+  const run = await makeRun();
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/queue/triage-log.md',
+    content: '# Triage log\n',
+    producedBy: 'adapter:proposal-only',
+    registeredBy: 'machine',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'done',
+    reason: 'test.done-summary',
+  });
+
+  const exported = await exportLatestRun({
+    runRoot: run.runRoot,
+    pipelineDir: run.pipelineDir,
+    exportedAt: '2026-04-30T00:00:10.000Z',
+  });
+  const metadata = JSON.parse(await fs.readFile(path.join(exported.targetRoot, 'run-metadata.json'), 'utf8'));
+
+  assert.equal(metadata.status, 'done');
 });
 
 test('artifact registry refuses to continue after registered evidence changes', async () => {

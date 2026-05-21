@@ -150,6 +150,22 @@ test('patchReviewStateFromEvents blocks patch artifacts that omit changedFiles',
   assert.equal(state.pending[0].reviewReason, PATCH_REVIEW_REASONS.destructiveScope);
 });
 
+test('patchReviewStateFromEvents ignores patch artifacts from blocked workers', () => {
+  const state = patchReviewStateFromEvents([{
+    eventType: 'worker.result',
+    sequence: 1,
+    payload: {
+      status: 'blocked',
+      toState: 'blocked',
+      patchArtifact: 'artifacts/patches/partial-blocked.patch.json',
+      changedFiles: ['src/partial.md'],
+    },
+  }]);
+  assert.equal(state.patchCount, 0);
+  assert.equal(state.required, false);
+  assert.equal(state.autoApplyPendingCount, 0);
+});
+
 test('loadRunPatchArtifact rejects tampered registered patch artifacts before auto-apply', async (t) => {
   const { workspaceRoot, run } = await makeRun('run_patch_review_classifier_integrity');
   t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));

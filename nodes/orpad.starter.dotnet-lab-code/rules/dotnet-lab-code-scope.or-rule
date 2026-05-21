@@ -1,0 +1,23 @@
+{
+  "kind": "orpad.rule",
+  "version": "1.0",
+  "id": "dotnet-lab-code-scope",
+  "include": [
+    "**/*.cs",
+    "**/*.csproj",
+    "**/*.sln",
+    "**/*.md",
+    "global.json",
+    "Directory.Build.*"
+  ],
+  "exclude": [
+    "**/bin/**",
+    "**/obj/**",
+    ".vs/**",
+    "node_modules/**",
+    "dist/**",
+    ".env",
+    "**/*secret*",
+    "**/*token*"
+  ]
+}

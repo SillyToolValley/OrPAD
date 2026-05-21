@@ -1,0 +1,73 @@
+{
+  "$schema": "https://orpad.dev/schemas/or-graph/v1.json",
+  "kind": "orpad.graph",
+  "version": "1.0",
+  "graph": {
+    "id": "content-qa-workstream",
+    "label": "Content QA Workstream",
+    "start": "entry",
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Entry"
+      },
+      {
+        "id": "map-content-scope",
+        "type": "orpad.context",
+        "label": "Map content QA scope",
+        "config": {
+          "ruleRef": "content-qa-scope",
+          "skillRef": "content-qa-audit",
+          "summary": "Inspect docs, templates, Markdown, tutorial, locale, and learning-material structure before proposing edits."
+        }
+      },
+      {
+        "id": "probe-content-qa",
+        "type": "orpad.probe",
+        "label": "Probe content quality gaps",
+        "config": {
+          "lens": "content-qa",
+          "skillRef": "content-qa-audit",
+          "maxCandidates": 7,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "verify-content-gate",
+        "type": "orpad.gate",
+        "label": "Verify content quality",
+        "config": {
+          "criteria": [
+            "Content structure, claims, and examples align with the requested audience",
+            "Final editorial quality is evaluated through OrPAD-owned rule analyzer artifacts",
+            "Optional LLM judge results are JSON-only and cite evidenceRefs when judgePolicy requires them",
+            "Unverified claims are flagged instead of asserted",
+            "Markdown or locale-sensitive changes have focused validation or a documented blocker",
+            "Before/after evidence names additions, removals, consolidation, or rewrite"
+          ],
+          "evaluationMode": "content-editorial-quality",
+          "judgePolicy": "rule-only",
+          "expectedEvaluationArtifacts": [
+            "artifacts/evaluations/content-editorial/workers/<worker-id>-seq-<event-sequence>.json"
+          ],
+          "expectedJudgeArtifacts": [
+            "artifacts/evaluations/content-editorial/judges/<worker-id>-seq-<event-sequence>.json"
+          ],
+          "onFail": "warn"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Exit"
+      }
+    ],
+    "transitions": [
+      { "from": "entry", "to": "map-content-scope" },
+      { "from": "map-content-scope", "to": "probe-content-qa" },
+      { "from": "probe-content-qa", "to": "verify-content-gate" },
+      { "from": "verify-content-gate", "to": "exit", "condition": "pass" }
+    ]
+  }
+}

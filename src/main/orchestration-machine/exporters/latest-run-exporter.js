@@ -7,6 +7,7 @@ const { writeArtifactManifest } = require('../artifacts');
 const { readMachineEvents } = require('../events');
 const { atomicWriteFile, ensureDir, writeJsonAtomic } = require('../metadata-store');
 const { latestRunExportRoot } = require('../path-resolver');
+const { readRunState } = require('../run-store');
 
 const fsp = fs.promises;
 const LATEST_RUN_EXPORT_RELATIVE_PATH = 'harness/generated/latest-run';
@@ -91,6 +92,15 @@ function eventTimestamp(event) {
   return Number.isFinite(Date.parse(value)) ? value : '';
 }
 
+function runStateEvidenceStatus(runState) {
+  const summaryStatus = String(runState?.summaryStatus || '').toLowerCase();
+  if (['done', 'partial', 'blocked'].includes(summaryStatus)) return summaryStatus;
+  const lifecycleStatus = String(runState?.lifecycleStatus || '').toLowerCase();
+  if (lifecycleStatus === 'completed') return 'done';
+  if (lifecycleStatus === 'blocked') return 'blocked';
+  return '';
+}
+
 async function collectSnapshotFiles(root, current = root, results = []) {
   let entries = [];
   try {
@@ -163,13 +173,14 @@ async function exportLatestRun(options = {}) {
     const firstEventAt = eventTimestamp(events[0]);
     const lastEventAt = eventTimestamp(events[events.length - 1]);
     const summaryStatus = await readSummaryStatus(path.join(tempRoot, 'summary.md'));
+    const runStateStatus = runStateEvidenceStatus(await readRunState(runRoot));
     const metadata = {
       schemaVersion: RUN_METADATA_SCHEMA,
       pipelineId: pipelineId || pipeline?.id || path.basename(path.resolve(pipelineDir)),
       runId: manifest.runId,
       startedAt: startedAt || firstEventAt || exportedAt,
       endedAt: endedAt || lastEventAt || exportedAt,
-      status: status || summaryStatus || 'partial',
+      status: status || summaryStatus || runStateStatus || 'partial',
       headSha: headSha || currentHead || 'unavailable',
       workspaceStatusDigest: workspaceStatusDigest || gitStatusDigest(currentStatus),
       sourceRunRoot: path.resolve(runRoot),

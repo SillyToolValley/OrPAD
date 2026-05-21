@@ -17,7 +17,13 @@ const {
   readClaimLease,
 } = require('./claims');
 const { readQueueItems, transitionQueueItem } = require('./queue-store');
-const { acquireWriteSetLock, releaseWriteSetLock } = require('./write-sets');
+const {
+  acquireWriteSetLock,
+  normalizeWriteSetPath,
+  normalizeWriteSetPaths,
+  pathsOverlap,
+  releaseWriteSetLock,
+} = require('./write-sets');
 
 const claimSelectionQueues = new Map();
 
@@ -65,6 +71,100 @@ function writeSetPathsForItem(item = {}) {
   return item.sourceOfTruthTargets || [];
 }
 
+function normalizePatchChangedFiles(files = []) {
+  const normalized = [];
+  for (const file of Array.isArray(files) ? files : []) {
+    try {
+      const next = normalizeWriteSetPath(file);
+      if (next) normalized.push(next);
+    } catch {
+      // Historical worker.result events may contain diagnostics rather
+      // than strict workspace-relative paths. They should not break
+      // future dispatch; the patch review path will still surface them.
+    }
+  }
+  return [...new Set(normalized)].sort();
+}
+
+function workerResultIsPendingPatchEligible(payload = {}) {
+  const status = String(payload.status || '').trim().toLowerCase();
+  const toState = String(payload.toState || '').trim().toLowerCase();
+  if (status && status !== 'done') return false;
+  if (toState && toState !== 'done') return false;
+  return true;
+}
+
+function pendingPatchWriteSetsFromEvents(events = []) {
+  const pending = new Map();
+  for (const event of events || []) {
+    if (event?.eventType === 'worker.result') {
+      if (!workerResultIsPendingPatchEligible(event.payload || {})) continue;
+      const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+      const paths = normalizePatchChangedFiles(event?.payload?.changedFiles || []);
+      if (!patchArtifact || !paths.length) continue;
+      pending.set(patchArtifact, {
+        patchArtifact,
+        itemId: event.itemId || '',
+        claimId: event.payload?.claimId || '',
+        paths,
+        sourceSequence: event.sequence ?? null,
+      });
+      continue;
+    }
+    if (event?.eventType === 'patch.applied' || event?.eventType === 'patch.review_skipped') {
+      const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
+      if (patchArtifact) pending.delete(patchArtifact);
+    }
+  }
+  return [...pending.values()];
+}
+
+function pendingPatchOverlapForItem(item = {}, pendingPatches = []) {
+  if (!pendingPatches.length) return null;
+  const itemPaths = normalizeWriteSetPaths(writeSetPathsForItem(item));
+  if (!itemPaths.length) {
+    const patch = pendingPatches[0];
+    return {
+      itemId: item.id || '',
+      paths: [],
+      globalWriteSet: true,
+      patchArtifact: patch.patchArtifact,
+      patchItemId: patch.itemId,
+      patchPaths: patch.paths,
+      overlappingPaths: patch.paths,
+    };
+  }
+  for (const patch of pendingPatches) {
+    const overlappingPaths = itemPaths.filter(itemPath => (
+      patch.paths.some(patchPath => pathsOverlap(itemPath, patchPath))
+    ));
+    if (!overlappingPaths.length) continue;
+    return {
+      itemId: item.id || '',
+      paths: itemPaths,
+      globalWriteSet: false,
+      patchArtifact: patch.patchArtifact,
+      patchItemId: patch.itemId,
+      patchPaths: patch.paths,
+      overlappingPaths,
+    };
+  }
+  return null;
+}
+
+function selectQueuedItemForDispatch(queued = [], pendingPatches = []) {
+  const deferred = [];
+  for (const entry of queued) {
+    const pendingPatchOverlap = pendingPatchOverlapForItem(entry.item, pendingPatches);
+    if (pendingPatchOverlap) {
+      deferred.push(pendingPatchOverlap);
+      continue;
+    }
+    return { entry, deferred };
+  }
+  return { entry: null, deferred };
+}
+
 async function withClaimSelectionQueue(runRoot, task) {
   const key = path.resolve(runRoot);
   const previous = claimSelectionQueues.get(key) || Promise.resolve();
@@ -99,6 +199,8 @@ async function recoverStaleClaims(runRoot, options = {}) {
     now = new Date().toISOString(),
     toState = 'queued',
     reason = 'claim.stale-recovered',
+    force = false,
+    leaseState = force ? 'cancelled' : 'expired',
   } = options;
   await assertRunLifecycleCanTransition(runRoot, 'running', reason);
   const recovered = [];
@@ -110,7 +212,8 @@ async function recoverStaleClaims(runRoot, options = {}) {
     const claimId = entry.item.claimId;
     if (!claimId) continue;
     const lease = await readClaimLease(runRoot, claimId);
-    if (!lease || lease.state !== 'active' || !isClaimLeaseExpired(lease, now)) continue;
+    if (!lease || lease.state !== 'active') continue;
+    if (!force && !isClaimLeaseExpired(lease, now)) continue;
     if (await hasAcceptedWorkerResult(runRoot, claimId)) continue;
 
     const transition = await transitionQueueItem(runRoot, {
@@ -132,9 +235,9 @@ async function recoverStaleClaims(runRoot, options = {}) {
         recovery: 'stale-claim',
       },
     });
-    await markClaimLeaseReleased(runRoot, claimId, { now, state: 'expired', reason });
+    await markClaimLeaseReleased(runRoot, claimId, { now, state: leaseState, reason });
     if (lease.writeSetLockId) {
-      await releaseWriteSetLock(runRoot, lease.writeSetLockId, { now, state: 'expired', reason });
+      await releaseWriteSetLock(runRoot, lease.writeSetLockId, { now, state: leaseState, reason });
     }
     recovered.push({ transition, lease });
   }
@@ -160,8 +263,22 @@ async function claimNextQueuedItemUnlocked(runRoot, options = {}) {
 
   if (!queued.length) return { claimed: false, stopReason: 'queue-empty', recovered };
 
-  const next = queued[0];
-  const approvalGrants = approvedApprovalGrantsFromEvents(await readMachineEvents(runRoot));
+  const events = await readMachineEvents(runRoot);
+  const pendingPatches = options.enforcePendingPatchConflicts === false
+    ? []
+    : pendingPatchWriteSetsFromEvents(events);
+  const selection = selectQueuedItemForDispatch(queued, pendingPatches);
+  if (!selection.entry) {
+    return {
+      claimed: false,
+      stopReason: 'pending-patch-overlap',
+      recovered,
+      pendingPatchOverlaps: selection.deferred,
+    };
+  }
+
+  const next = selection.entry;
+  const approvalGrants = approvedApprovalGrantsFromEvents(events);
   if (!hasApprovalGrant(next.item, approvalGrants)) {
     const approval = await requestApprovalForItem(runRoot, {
       runId,
@@ -176,6 +293,7 @@ async function claimNextQueuedItemUnlocked(runRoot, options = {}) {
       approval,
       runState: approval.runState,
       recovered,
+      pendingPatchOverlaps: selection.deferred,
     };
   }
 
@@ -259,6 +377,7 @@ async function claimNextQueuedItemUnlocked(runRoot, options = {}) {
     writeSet: writeSet.lock,
     transition,
     recovered,
+    pendingPatchOverlaps: selection.deferred,
   };
 }
 
@@ -271,7 +390,10 @@ module.exports = {
   approvedApprovalGrantsFromEvents,
   compareQueuedWorkItems,
   hasApprovalGrant,
+  pendingPatchOverlapForItem,
+  pendingPatchWriteSetsFromEvents,
   recoverStaleClaims,
+  selectQueuedItemForDispatch,
   severityRank,
   writeSetPathsForItem,
 };

@@ -27,6 +27,6 @@
         }
       }
     },
-    "required": ["reviewMode", "inputs"]
+    "required": ["reviewMode"]
   }
 }

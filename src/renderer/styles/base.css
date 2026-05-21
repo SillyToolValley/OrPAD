@@ -3081,6 +3081,25 @@ body.json-diff-mode #preview-pane {
 .orch-graph-node.runtime-cancelled {
   border-color: color-mix(in srgb, var(--danger-color, #ff7676) 62%, var(--border-color));
 }
+.orch-graph-node.bypassed {
+  opacity: 0.72;
+  border-style: dashed;
+  background: color-mix(in srgb, var(--bg-primary) 84%, var(--bg-secondary));
+}
+.orch-graph-node-bypass {
+  position: absolute;
+  top: calc(-10px * var(--us));
+  left: calc(8px * var(--us));
+  padding: calc(2px * var(--us)) calc(6px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-primary) 96%, var(--syntax-meta, #e0af68) 8%);
+  color: var(--syntax-meta, #e0af68);
+  font-size: calc(9px * var(--us));
+  font-weight: 700;
+  letter-spacing: 0;
+  pointer-events: none;
+}
 .orch-runtime-status {
   display: inline-flex;
   align-items: center;
@@ -3301,6 +3320,166 @@ body.json-diff-mode #preview-pane {
   background: var(--hover-bg);
   color: var(--text-primary);
 }
+.orch-node-browser {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.34fr) minmax(260px, 1fr);
+  grid-template-rows: auto minmax(260px, 54vh);
+  gap: calc(10px * var(--us));
+  width: min(860px, 78vw);
+}
+.orch-node-browser-search {
+  grid-column: 1 / -1;
+}
+.orch-node-browser-search input {
+  width: 100%;
+  min-width: 0;
+  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(6px * var(--us));
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: calc(12px * var(--us));
+}
+.orch-node-browser-tabs {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border-color);
+  padding-right: calc(8px * var(--us));
+}
+.orch-node-browser-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(8px * var(--us));
+  width: 100%;
+  min-height: calc(34px * var(--us));
+  margin-bottom: calc(5px * var(--us));
+  padding: calc(7px * var(--us)) calc(8px * var(--us));
+  border: 1px solid transparent;
+  border-radius: calc(6px * var(--us));
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.orch-node-browser-tab strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(11px * var(--us));
+}
+.orch-node-browser-tab span {
+  flex: none;
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+}
+.orch-node-browser-tab.active,
+.orch-node-browser-tab:hover,
+.orch-node-browser-tab:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent-color) 48%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  color: var(--text-primary);
+}
+.orch-node-browser-list {
+  min-width: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: calc(7px * var(--us));
+}
+.orch-node-browser-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: calc(10px * var(--us));
+  width: 100%;
+  min-height: calc(56px * var(--us));
+  padding: calc(9px * var(--us)) calc(10px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(7px * var(--us));
+  background: color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary));
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.orch-node-browser-item:hover,
+.orch-node-browser-item:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent-color) 55%, var(--border-color));
+  background: var(--hover-bg);
+  color: var(--text-primary);
+}
+.orch-node-browser-item-main,
+.orch-node-browser-item-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(3px * var(--us));
+}
+.orch-node-browser-item-main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: calc(12px * var(--us));
+}
+.orch-node-browser-item-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+}
+.orch-node-browser-item-meta {
+  align-items: flex-end;
+}
+.orch-node-browser-item-meta code {
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+}
+.orch-node-browser-pill {
+  padding: calc(2px * var(--us)) calc(6px * var(--us));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
+  font-size: calc(9.5px * var(--us));
+  font-weight: 700;
+}
+.orch-node-browser-empty,
+.orch-node-browser-loading {
+  padding: calc(12px * var(--us));
+  color: var(--text-tertiary);
+  font-size: calc(11px * var(--us));
+}
+@media (max-width: 760px) {
+  .orch-node-browser {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(220px, 48vh);
+    width: min(92vw, 560px);
+  }
+  .orch-node-browser-tabs {
+    display: flex;
+    gap: calc(6px * var(--us));
+    overflow-x: auto;
+    border-right: 0;
+    padding-right: 0;
+    padding-bottom: calc(4px * var(--us));
+  }
+  .orch-node-browser-tab {
+    width: max-content;
+    min-width: calc(120px * var(--us));
+  }
+  .orch-node-browser-item {
+    grid-template-columns: 1fr;
+  }
+  .orch-node-browser-item-meta {
+    align-items: flex-start;
+    flex-direction: row;
+  }
+}
 .orch-graph-node.type-skill { border-top-color: var(--syntax-string, #9ece6a); }
 .orch-graph-node.type-orpad-entry,
 .orch-graph-node.type-orpad-exit { border-top-color: var(--syntax-function, #7aa2f7); }
@@ -3311,7 +3490,8 @@ body.json-diff-mode #preview-pane {
 .orch-graph-node.type-human { border-top-color: var(--syntax-number, #ff9e64); }
 .orch-graph-node.type-orchtree { border-top-color: var(--syntax-keyword, #bb9af7); }
 .orch-graph-node.type-parallel,
-.orch-graph-node.type-crosscheck { border-top-color: var(--syntax-keyword, #bb9af7); }
+.orch-graph-node.type-crosscheck,
+.orch-graph-node.type-decorator { border-top-color: var(--syntax-keyword, #bb9af7); }
 .orch-graph-node.type-catch,
 .orch-graph-node.type-timeout,
 .orch-graph-node.type-retry { border-top-color: var(--danger-color, #ff7676); }
@@ -3407,7 +3587,8 @@ body.json-diff-mode #preview-pane {
   font-size: calc(10px * var(--us));
 }
 .orch-inspector input,
-.orch-inspector select {
+.orch-inspector select,
+.orch-inspector textarea {
   min-width: 0;
   padding: calc(6px * var(--us)) calc(7px * var(--us));
   border: 1px solid var(--border-color);
@@ -3416,6 +3597,26 @@ body.json-diff-mode #preview-pane {
   color: var(--text-primary);
   font: inherit;
   font-size: calc(11px * var(--us));
+}
+.orch-inspector textarea {
+  resize: vertical;
+  line-height: 1.35;
+}
+.orch-inspector-check {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: calc(6px * var(--us));
+}
+.orch-inspector-check input {
+  width: calc(14px * var(--us));
+  height: calc(14px * var(--us));
+  padding: 0;
+}
+.orch-inspector-check small {
+  grid-column: 2;
+  color: var(--text-tertiary);
+  font-size: calc(9.5px * var(--us));
+  line-height: 1.35;
 }
 .orch-inspector dl {
   display: grid;

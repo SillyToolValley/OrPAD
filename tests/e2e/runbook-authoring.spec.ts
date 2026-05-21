@@ -22,7 +22,7 @@ const args = process.argv.slice(2);
 const outputIndex = args.indexOf('--output-last-message');
 if (outputIndex < 0 || !args[outputIndex + 1]) throw new Error('missing --output-last-message');
 const outputPath = args[outputIndex + 1];
-const prompt = args[args.length - 1] || '';
+const prompt = args[args.length - 1] === '-' ? fs.readFileSync(0, 'utf8') : (args[args.length - 1] || '');
 const match = prompt.match(/<orpad-authoring-input>\\s*([\\s\\S]*?)\\s*<\\/orpad-authoring-input>/);
 if (!match) throw new Error('missing authoring input');
 const input = JSON.parse(match[1]);
@@ -87,6 +87,309 @@ process.stdout.write(stdout);
 `, 'utf-8');
   return scriptPath;
 }
+
+function writeFakeCodexLifecycleCli(fakeRoot: string): string {
+  fs.mkdirSync(fakeRoot, { recursive: true });
+  const scriptPath = path.join(fakeRoot, 'fake-codex-lifecycle.js');
+  fs.writeFileSync(scriptPath, `
+const childProcess = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+function writeJson(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n');
+}
+
+const args = process.argv.slice(2);
+const outputIndex = args.indexOf('--output-last-message');
+const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : '';
+const prompt = args[args.length - 1] === '-' ? fs.readFileSync(0, 'utf8') : (args[args.length - 1] || '');
+const authoringMatch = prompt.match(/<orpad-authoring-input>\\s*([\\s\\S]*?)\\s*<\\/orpad-authoring-input>/);
+
+if (authoringMatch) {
+  const input = JSON.parse(authoringMatch[1]);
+  fs.mkdirSync(path.dirname(input.authoringSpecPath), { recursive: true });
+  const spec = {
+    title: 'README Lifecycle Pipeline',
+    description: 'LLM-authored graph for a generated UI lifecycle smoke.',
+    graph: {
+      id: 'readme-lifecycle',
+      label: 'README lifecycle flow',
+      start: 'entry',
+      nodes: [
+        { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+        { id: 'context', type: 'orpad.context', label: 'Map README', config: { summary: 'Inspect README.md.' } },
+        { id: 'probe-readme', type: 'orpad.probe', label: 'Find README improvement', config: { lens: 'readme-lifecycle', maxCandidates: 1 } },
+        { id: 'queue', type: 'orpad.workQueue', label: 'Queue README work' },
+        { id: 'triage', type: 'orpad.triage', label: 'Prioritize README work' },
+        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch README work' },
+        { id: 'worker', type: 'orpad.workerLoop', label: 'Edit README', config: { targetFiles: ['README.md'] } },
+        { id: 'patch-review', type: 'orpad.patchReview', label: 'Review README patch' },
+        { id: 'verify', type: 'orpad.gate', label: 'Verify README work', config: { criteria: ['worker proof accepted', 'queue empty'], onFail: 'warn' } },
+        { id: 'artifact', type: 'orpad.artifactContract', label: 'Record evidence' },
+        { id: 'exit', type: 'orpad.exit', label: 'Exit' }
+      ],
+      transitions: [
+        { from: 'entry', to: 'context' },
+        { from: 'context', to: 'probe-readme' },
+        { from: 'probe-readme', to: 'queue' },
+        { from: 'queue', to: 'triage' },
+        { from: 'triage', to: 'dispatch' },
+        { from: 'dispatch', to: 'worker' },
+        { from: 'worker', to: 'patch-review' },
+        { from: 'patch-review', to: 'verify', condition: 'accepted' },
+        { from: 'patch-review', to: 'worker', condition: 'rejected' },
+        { from: 'verify', to: 'triage', condition: 'queue-not-empty' },
+        { from: 'verify', to: 'artifact', condition: 'queue-empty' },
+        { from: 'artifact', to: 'exit' }
+      ]
+    },
+    skill: {
+      acceptanceCriteria: ['README receives a lifecycle proof line.']
+    },
+    metadata: {
+      authoringNotes: 'Fake lifecycle Codex generated this spec, then invoked OrPAD CLI.'
+    }
+  };
+  fs.writeFileSync(input.authoringSpecPath, JSON.stringify(spec, null, 2));
+  const stdout = childProcess.execFileSync(process.execPath, [
+    input.orpadCliPath,
+    'generate',
+    '--workspace',
+    input.workspaceRoot,
+    '--prompt-file',
+    input.promptFile,
+    '--authoring-spec-file',
+    input.authoringSpecPath,
+    '--json'
+  ], { encoding: 'utf-8' });
+  fs.writeFileSync(outputPath, stdout);
+  process.stdout.write(stdout);
+  process.exit(0);
+}
+
+if (outputPath) {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  const result = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'done',
+    summary: 'Fake lifecycle proposal.',
+    artifacts: [],
+    candidateProposals: [{
+      schemaVersion: 'orpad.candidateProposal.v1',
+      proposalId: 'proposal-readme-lifecycle',
+      suggestedWorkItemId: 'readme-lifecycle',
+      sourceNode: 'main/probe-readme',
+      title: 'Add README lifecycle proof',
+      fingerprint: 'README.md:lifecycle-proof',
+      evidence: [{ id: 'readme-before', file: 'README.md', summary: 'README exists.' }],
+      acceptanceCriteria: ['README receives a lifecycle proof line.'],
+      sourceOfTruthTargets: ['README.md'],
+      targetFiles: ['README.md'],
+      verificationPlan: 'Inspect README.md for the proof line.',
+      approvalRequired: false
+    }]
+  };
+  fs.writeFileSync(outputPath, JSON.stringify(result));
+  writeJson(result);
+  process.exit(0);
+}
+
+const allowedMatch = prompt.match(/allowedFiles:\\s*(\\[[^\\n]+\\])/);
+const allowedFiles = allowedMatch ? JSON.parse(allowedMatch[1]) : ['README.md'];
+const target = allowedFiles[0] || 'README.md';
+fs.appendFileSync(path.join(process.cwd(), target), '\\nOrPAD UI lifecycle proof.\\n');
+writeJson({
+  schemaVersion: 'orpad.workerResult.v1',
+  status: 'done',
+  summary: 'Fake lifecycle worker changed ' + target,
+  artifacts: []
+});
+`, 'utf-8');
+  return scriptPath;
+}
+
+test('graph editor supports node bypass and repeater decorator controls', async () => {
+  test.setTimeout(60_000);
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-graph-node-actions-'));
+  const treePath = path.join(workspace, 'tree.orch-tree.json');
+  const graphPath = path.join(workspace, 'flow.orch-graph.json');
+  fs.writeFileSync(treePath, JSON.stringify({
+    $schema: 'https://orchpad.dev/schemas/orch-tree/v4.1.json',
+    version: '4.1',
+    trees: [{
+      id: 'node-actions-tree',
+      label: 'Node actions tree',
+      root: {
+        id: 'root',
+        type: 'Sequence',
+        label: 'Root',
+        children: [
+          { id: 'work', type: 'Context', label: 'Work item' },
+        ],
+      },
+    }],
+  }, null, 2));
+  fs.writeFileSync(graphPath, JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'node-actions-flow',
+      start: 'start',
+      nodes: [
+        { id: 'start', type: 'orpad.context', label: 'Start' },
+        { id: 'done', type: 'orpad.exit', label: 'Done' },
+      ],
+      transitions: [{ from: 'start', to: 'done' }],
+    },
+  }, null, 2));
+
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'tree.orch-tree.json' }).click();
+  await win.locator('#btn-preview').click();
+  await win.locator('button[data-orch-mode="readwrite"]').click();
+  const treeNode = win.locator('.orch-graph-node[data-orch-path="trees.0.root.children.0"]');
+  await treeNode.click();
+  await win.locator('.orch-floating-inspector select[data-orch-edit="type"]').selectOption('Decorator');
+  const decoratorField = win.locator('.orch-floating-inspector input[data-orch-edit="config.decorator"]');
+  await expect(decoratorField).toHaveValue('Repeater');
+  const repeatField = win.locator('.orch-floating-inspector textarea[data-orch-edit="config.repeatCount"]');
+  await expect(repeatField).toBeVisible();
+  await decoratorField.evaluate((input) => {
+    (input as HTMLInputElement).value = 'Limiter';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(repeatField).toHaveCount(0);
+  await treeNode.click({ button: 'right' });
+  await expect(win.locator('.orch-context-menu')).toContainText('Set as Repeater');
+  await win.locator('button[data-orch-context-action="edit-repeat-count"]').click();
+  await expect(decoratorField).toHaveValue('Repeater');
+  await expect(repeatField).toBeVisible();
+  await expect(repeatField).toBeFocused();
+  await repeatField.evaluate((textarea) => {
+    (textarea as HTMLTextAreaElement).value = '5';
+    textarea.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await treeNode.click({ button: 'right' });
+  await expect(win.locator('.orch-context-menu')).toContainText('Edit repeat count');
+  await win.locator('button[data-orch-context-action="edit-repeat-count"]').click();
+  await expect(repeatField).toBeFocused();
+  await win.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S');
+  await expect.poll(() => {
+    const saved = JSON.parse(fs.readFileSync(treePath, 'utf-8'));
+    return saved.trees[0].root.children[0].config.repeatCount;
+  }).toBe(5);
+
+  await win.locator('.runbook-item').filter({ hasText: 'flow.orch-graph.json' }).click();
+  await expect(win.locator('.tab-item.active')).toContainText('flow.orch-graph.json');
+  await win.locator('#btn-preview').click();
+  await expect(win.locator('.orch-preview')).toContainText('Flow setup');
+  await win.locator('button[data-orch-mode="readonly"]').click();
+  await expect(win.locator('button[data-orch-mode="readonly"]')).toHaveClass(/active/);
+  const graphNodeSelector = '.orch-graph-node[data-orch-path="graph.nodes.0"]';
+  const graphNode = win.locator(graphNodeSelector);
+  await expect(graphNode).toBeVisible();
+  await expect.poll(async () => win.evaluate((selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    (el as HTMLElement).click();
+    return true;
+  }, graphNodeSelector)).toBe(true);
+  await win.locator('.orch-graph-frame').evaluate((frame) => {
+    const rect = frame.getBoundingClientRect();
+    frame.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: rect.left + 8,
+      clientY: rect.top + 8,
+    }));
+  });
+  await expect(win.locator('.orch-context-menu')).not.toContainText('Enable Bypass');
+  await expect(win.locator('.orch-context-menu')).toContainText('Add Node...');
+  await expect(win.locator('.orch-context-menu')).toContainText('Auto layout');
+  await expect.poll(async () => win.evaluate((selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: rect.left + 18,
+      clientY: rect.top + 18,
+    }));
+    return true;
+  }, graphNodeSelector)).toBe(true);
+  await expect(win.locator('.orch-context-menu')).toContainText('Enable Bypass');
+  await win.locator('button[data-orch-context-action="toggle-bypass"]').click();
+  await expect(win.locator('button[data-orch-mode="readwrite"]')).toHaveClass(/active/);
+  await expect(graphNode).toHaveClass(/bypassed/);
+  await expect(win.locator('.orch-floating-inspector input[data-orch-edit="bypass"]')).toBeChecked();
+  await expect.poll(async () => win.evaluate((selector) => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: rect.left + 18,
+      clientY: rect.top + 18,
+    }));
+    return true;
+  }, graphNodeSelector)).toBe(true);
+  await expect(win.locator('.orch-context-menu')).toContainText('Disable Bypass');
+  await win.locator('.orch-graph-frame').evaluate((frame) => {
+    const rect = frame.getBoundingClientRect();
+    frame.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: rect.left + 180,
+      clientY: rect.top + 120,
+    }));
+  });
+  await expect(win.locator('.orch-context-menu')).toContainText('Add Node...');
+  await win.locator('button[data-orch-context-action="add-node-browser"]').click();
+  await expect(win.locator('#fmt-modal')).not.toHaveClass(/hidden/);
+  await expect(win.locator('button[data-orch-node-pack-tab="orpad.core"]')).toContainText('OrPAD Core');
+  await expect(win.locator('button[data-orch-node-pack-tab="orpad.workstream"]')).toContainText('OrPAD Workstream');
+  await win.locator('button[data-orch-node-pack-tab="orpad.workstream"]').click();
+  await win.locator('input[data-orch-node-search]').fill('work queue');
+  await expect(win.locator('button[data-orch-node-template*="orpad.workQueue"]')).toContainText('Work queue');
+  await win.locator('button[data-orch-node-template*="orpad.workQueue"]').click();
+  await expect(win.locator('#fmt-modal')).toHaveClass(/hidden/);
+  await expect(win.locator('.orch-graph-node')).toHaveCount(3);
+  await expect(win.locator('.orch-graph-node.selected')).toContainText('New work queue');
+  await win.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S');
+  await expect.poll(() => {
+    try {
+      const saved = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
+      return {
+        bypass: saved.graph.nodes[0].bypass,
+        workQueue: saved.graph.nodes.some((node: any) => node.type === 'orpad.workQueue'),
+      };
+    } catch {
+      return null;
+    }
+  }).toEqual({ bypass: true, workQueue: true });
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
 
 test('creates an OrPAD pipeline inside the current workspace', async () => {
   test.setTimeout(60_000);
@@ -168,8 +471,8 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('[data-runbook-generate-status]')).toContainText('Pipeline generated');
   await win.locator('[data-pipeline-run-menu]').click();
   await expect(win.locator('button[data-pipeline-run-action="implement-harness"]')).toBeEnabled();
-  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeDisabled();
-  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toHaveAttribute('title', /Implement Harness/);
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeEnabled();
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toHaveAttribute('title', /implement the Machine harness first/);
   await win.locator('[data-pipeline-run-menu]').click();
 
   const pipelinesRoot = path.join(workspace, '.orpad', 'pipelines');
@@ -194,6 +497,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(pipeline.nodePacks.map((entry: { id: string }) => entry.id)).toContain('orpad.workstream');
   expect(pipeline.run.machineAdapter.type).toBe('codex-cli');
   expect(pipeline.run.machineAdapter.candidateLimit).toBe(5);
+  expect(pipeline.run.machineAdapter.claimPolicy.concurrency).toBe(1);
   expect(pipeline.run.runSelection.collectAllVisibleCandidates).toBe(true);
   expect(pipeline.run.runSelection.queueAllActionableCandidates).toBe(true);
   expect(pipeline.run.queueProtocol.schema).toBe('orpad.workItem.v1');
@@ -514,14 +818,15 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   const graphMetaPath = path.join(runbookDir, 'graphs', graphFile.replace('.or-graph', '.or-graph.meta.json'));
   await expect.poll(() => fs.existsSync(graphMetaPath)).toBe(true);
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
+  const graphTransitionCountBeforeAdd = await win.locator('.orch-transition').count();
   await win.locator('button[data-orch-action="add-child"]').click();
   await expect(win.locator('.orch-graph-node')).toHaveCount(13);
-  await expect(win.locator('.orch-transition')).toHaveCount(12);
+  await expect(win.locator('.orch-transition')).toHaveCount(graphTransitionCountBeforeAdd + 1);
   await expect(win.locator('.orch-graph-node.selected')).toContainText('New context');
   await expect(win.locator('.orch-graph-node.selected')).toContainText('Context');
   await win.keyboard.press('Delete');
   await expect(win.locator('.orch-graph-node')).toHaveCount(12);
-  await expect(win.locator('.orch-transition')).toHaveCount(11);
+  await expect(win.locator('.orch-transition')).toHaveCount(graphTransitionCountBeforeAdd);
   await graphContextNode.evaluate((el) => (el as HTMLElement).click());
   await win.locator('.orch-graph-node[data-orch-path="graph.nodes.3"]').evaluate((el) => {
     const rect = el.getBoundingClientRect();
@@ -535,7 +840,7 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   });
   await expect(win.locator('.orch-context-menu')).toContainText('Connect selected');
   await win.locator('button[data-orch-context-action="connect-selected"]').click();
-  await expect(win.locator('.orch-transition')).toHaveCount(12);
+  await expect(win.locator('.orch-transition')).toHaveCount(graphTransitionCountBeforeAdd + 1);
   await win.locator('.orch-transition-hit').first().evaluate((pathEl) => {
     const rect = pathEl.getBoundingClientRect();
     pathEl.dispatchEvent(new MouseEvent('mousedown', {
@@ -552,10 +857,95 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   await expect(win.locator('.orch-transition-handle')).toBeVisible();
   await win.locator('button[data-orch-action="delete-transition"]').click();
   await expect(win.locator('.orch-graph-node')).toHaveCount(12);
-  await expect(win.locator('.orch-transition')).toHaveCount(11);
+  await expect(win.locator('.orch-transition')).toHaveCount(graphTransitionCountBeforeAdd);
   await win.keyboard.press('Control+S');
   await expect.poll(() => fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8')).toContain('Edited graph context');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('generated pipeline can implement harness and run from the UI', async () => {
+  test.setTimeout(120_000);
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-ui-lifecycle-'));
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-fake-ui-lifecycle-'));
+  const fakeCodexPath = writeFakeCodexLifecycleCli(fakeRoot);
+  fs.writeFileSync(path.join(workspace, 'README.md'), '# UI Lifecycle Fixture\n');
+
+  const app = await launchElectron([], {
+    ORPAD_CODEX_CLI_PATH: fakeCodexPath,
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('[data-runbook-task]').fill('Improve README using local evidence and run it through OrPAD.');
+  await win.locator('button[data-runbook-action="starter"]').click();
+  const generatePicker = win.locator('.orpad-generate-picker-overlay');
+  await expect(generatePicker).toBeVisible();
+  await generatePicker.locator('button', { hasText: 'Generate with this tool' }).click();
+  await expect(win.locator('[data-runbook-generate-status]')).toContainText('Pipeline generated', { timeout: 30_000 });
+
+  const pipelinePath = await win.locator('.runbook-item.selected').getAttribute('data-runbook-path');
+  expect(pipelinePath).toBeTruthy();
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath as string, 'utf-8'));
+  expect(pipeline.run.machineAdapter.command).toBe('codex');
+  expect(pipeline.run.machineAdapter.claimPolicy.concurrency).toBe(1);
+
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="implement-harness"]').click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready', { timeout: 30_000 });
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Fallback harness', { timeout: 30_000 });
+  const harnessSpecPath = path.join(path.dirname(pipelinePath as string), 'harness', 'generated', 'harness-authoring-spec.json');
+  const provisioningPath = path.join(path.dirname(pipelinePath as string), 'harness', 'generated', 'harness-provisioning.json');
+  const evalPlanPath = path.join(path.dirname(pipelinePath as string), 'harness', 'generated', 'eval-plan.json');
+  const securityRiskPlanPath = path.join(path.dirname(pipelinePath as string), 'harness', 'generated', 'security-risk-plan.json');
+  await expect.poll(() => fs.existsSync(harnessSpecPath), { timeout: 10_000 }).toBe(true);
+  await expect.poll(() => fs.existsSync(provisioningPath), { timeout: 10_000 }).toBe(true);
+  await expect.poll(() => fs.existsSync(evalPlanPath), { timeout: 10_000 }).toBe(true);
+  await expect.poll(() => fs.existsSync(securityRiskPlanPath), { timeout: 10_000 }).toBe(true);
+  const harnessSpec = JSON.parse(fs.readFileSync(harnessSpecPath, 'utf-8'));
+  const provisioning = JSON.parse(fs.readFileSync(provisioningPath, 'utf-8'));
+  const evalPlan = JSON.parse(fs.readFileSync(evalPlanPath, 'utf-8'));
+  const implementedPipeline = JSON.parse(fs.readFileSync(pipelinePath as string, 'utf-8'));
+  expect(harnessSpec.schemaVersion).toBe('orpad.harnessAuthoringSpec.v1');
+  expect(implementedPipeline.harness.actualAuthoringMode).toBe('deterministic-fallback');
+  expect(implementedPipeline.metadata.harnessImplementation.harnessAuthoringMode).toBe('deterministic-fallback');
+  expect(provisioning.schemaVersion).toBe('orpad.harnessProvisioning.v1');
+  expect(evalPlan.schemaVersion).toBe('orpad.evalPlan.v1');
+  expect(harnessSpec.nodeContracts.some((contract: any) => contract.nodePath === 'main/worker')).toBe(true);
+
+  await win.locator('[data-pipeline-run-menu]').click();
+  await win.locator('button[data-pipeline-run-action="managed-auto-apply"]').click();
+  await expect(win.locator('[data-machine-token-input]')).toBeVisible();
+  await win.locator('[data-machine-token-input]').fill('test-token');
+  await win.getByRole('button', { name: 'Use Token' }).click();
+  await expect(win.locator('.orpad-adapter-picker')).toBeVisible();
+  await win.locator('[data-adapter-picker-confirm="true"]').click();
+  await expect(win.locator('.orpad-adapter-picker-overlay')).toHaveCount(0);
+
+  await expect.poll(() => fs.readFileSync(path.join(workspace, 'README.md'), 'utf-8'), {
+    timeout: 45_000,
+  }).toContain('OrPAD UI lifecycle proof.');
+  await expect(win.locator('#runbooks-content')).toContainText('Work result', { timeout: 30_000 });
+  await expect(win.locator('#runbooks-content')).not.toContainText('MACHINE_COMMAND_NOT_GRANTED');
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  const runDirs = fs.readdirSync(path.join(path.dirname(pipelinePath as string), 'runs'));
+  expect(runDirs.length).toBe(1);
+  const runState = JSON.parse(fs.readFileSync(path.join(path.dirname(pipelinePath as string), 'runs', runDirs[0], 'run-state.json'), 'utf-8'));
+  expect(runState.metadata.patchReviewMode).toBe('auto-apply');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+  fs.rmSync(fakeRoot, { recursive: true, force: true });
 });

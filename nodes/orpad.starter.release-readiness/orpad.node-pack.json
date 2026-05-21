@@ -1,0 +1,58 @@
+{
+  "kind": "orpad.nodePack",
+  "schemaVersion": "1.0",
+  "id": "orpad.starter.release-readiness",
+  "name": "Release Readiness Starter Pack",
+  "version": "0.1.0",
+  "origin": "built-in",
+  "trustLevel": "official",
+  "mutable": false,
+  "description": "Reusable orchestration hints for release checklist, version, changelog, installer, build, and audit evidence workflows.",
+  "author": {
+    "name": "OrPAD",
+    "github": "https://github.com/luke-youngmin-cho/OrPAD",
+    "repository": "https://github.com/luke-youngmin-cho/OrPAD"
+  },
+  "license": "MIT",
+  "compatibility": {
+    "orpad": ">=1.0.0-beta.3",
+    "pipelineSchema": ">=1.0",
+    "packFormat": "orpad.nodePack.v1"
+  },
+  "dependsOn": [
+    { "id": "orpad.core", "version": ">=1.0.0-beta.3" },
+    { "id": "orpad.workstream", "version": ">=0.1.0" }
+  ],
+  "installPolicy": {
+    "allowLifecycleScripts": false,
+    "allowExecutableHandlers": false
+  },
+  "capabilities": ["read.workspace", "write.workspace", "write.runArtifacts", "run.localVerification"],
+  "nodes": [],
+  "graphs": [
+    {
+      "id": "release-readiness-workstream",
+      "path": "graphs/release-readiness-workstream.or-graph",
+      "label": "Release Readiness Workstream",
+      "role": "reusable",
+      "description": "Discovery and verification lens for release metadata, build health, notes, packaging, and audit evidence.",
+      "inputs": ["workspaceContext"],
+      "outputs": ["releaseCandidateItems"]
+    }
+  ],
+  "skills": [
+    {
+      "id": "release-readiness-audit",
+      "path": "skills/release-readiness-audit.md",
+      "description": "Guides release readiness checks with explicit build, version, note, and risk evidence."
+    }
+  ],
+  "rules": [
+    {
+      "id": "release-readiness-scope",
+      "path": "rules/release-readiness-scope.or-rule",
+      "description": "Includes package metadata, build scripts, release notes, installers, and relevant validation assets."
+    }
+  ],
+  "examples": []
+}

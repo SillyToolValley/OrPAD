@@ -8,6 +8,7 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const {
   assertCliProcessContainment,
+  codexCliExecArgs,
   codexCliInvocation,
   commandUsesDangerousArg,
   commandUsesDangerousCodexBypass,
@@ -79,6 +80,42 @@ test('codexCliInvocation routes Windows codex shim through node executable', asy
     if (previousMachineNode === undefined) delete process.env.ORPAD_MACHINE_NODE_EXEC_PATH;
     else process.env.ORPAD_MACHINE_NODE_EXEC_PATH = previousMachineNode;
   }
+});
+
+test('codexCliInvocation lets ORPAD_CODEX_CLI_PATH override the generated codex command', async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-codex-env-'));
+  const fakeCodexScript = path.join(tempRoot, 'fake-codex.js');
+  const fakeNode = path.join(tempRoot, process.platform === 'win32' ? 'node.exe' : 'node');
+  await fs.writeFile(fakeCodexScript, '', 'utf8');
+  await fs.writeFile(fakeNode, '', 'utf8');
+
+  const previousCodexPath = process.env.ORPAD_CODEX_CLI_PATH;
+  const previousMachineNode = process.env.ORPAD_MACHINE_NODE_EXEC_PATH;
+  try {
+    process.env.ORPAD_CODEX_CLI_PATH = fakeCodexScript;
+    process.env.ORPAD_MACHINE_NODE_EXEC_PATH = fakeNode;
+    const invocation = codexCliInvocation('codex');
+    assert.equal(invocation.command, fakeNode);
+    assert.deepEqual(invocation.prefixArgs, [fakeCodexScript]);
+  } finally {
+    if (previousCodexPath === undefined) delete process.env.ORPAD_CODEX_CLI_PATH;
+    else process.env.ORPAD_CODEX_CLI_PATH = previousCodexPath;
+    if (previousMachineNode === undefined) delete process.env.ORPAD_MACHINE_NODE_EXEC_PATH;
+    else process.env.ORPAD_MACHINE_NODE_EXEC_PATH = previousMachineNode;
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('codexCliExecArgs can route long prompts through stdin', () => {
+  const args = codexCliExecArgs({
+    sandbox: 'read-only',
+    approvalPolicy: 'never',
+    promptViaStdin: true,
+    ephemeral: true,
+  });
+  assert.equal(args.at(-1), '-');
+  assert.equal(args.includes('read-only'), true);
+  assert.equal(args.includes('--ephemeral'), true);
 });
 
 test('commandUsesDangerousArg detects plugin-declared dangerous args, not just codex', () => {
@@ -181,7 +218,8 @@ test('codex plugin buildWorkerCommandSpec produces stable codex CLI args from a 
   assert.equal(spec.args.includes('--sandbox'), true);
   assert.equal(spec.args.includes('workspace-write'), true);
   assert.equal(spec.args.includes('--ephemeral'), true);
-  assert.equal(spec.args.at(-1), 'Hello worker.');
+  assert.equal(spec.args.at(-1), '-');
+  assert.equal(spec.stdin, 'Hello worker.');
 });
 
 test('codex plugin adds dangerous bypass arg only when run bypass is explicit', () => {

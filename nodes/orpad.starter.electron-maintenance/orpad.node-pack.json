@@ -1,0 +1,58 @@
+{
+  "kind": "orpad.nodePack",
+  "schemaVersion": "1.0",
+  "id": "orpad.starter.electron-maintenance",
+  "name": "Electron Maintenance Starter Pack",
+  "version": "0.1.0",
+  "origin": "built-in",
+  "trustLevel": "official",
+  "mutable": false,
+  "description": "Reusable orchestration hints for Electron app maintenance, IPC/preload review, renderer build health, and packaging workflows.",
+  "author": {
+    "name": "OrPAD",
+    "github": "https://github.com/luke-youngmin-cho/OrPAD",
+    "repository": "https://github.com/luke-youngmin-cho/OrPAD"
+  },
+  "license": "MIT",
+  "compatibility": {
+    "orpad": ">=1.0.0-beta.3",
+    "pipelineSchema": ">=1.0",
+    "packFormat": "orpad.nodePack.v1"
+  },
+  "dependsOn": [
+    { "id": "orpad.core", "version": ">=1.0.0-beta.3" },
+    { "id": "orpad.workstream", "version": ">=0.1.0" }
+  ],
+  "installPolicy": {
+    "allowLifecycleScripts": false,
+    "allowExecutableHandlers": false
+  },
+  "capabilities": ["read.workspace", "write.workspace", "write.runArtifacts", "run.localVerification"],
+  "nodes": [],
+  "graphs": [
+    {
+      "id": "electron-maintenance-workstream",
+      "path": "graphs/electron-maintenance-workstream.or-graph",
+      "label": "Electron Maintenance Workstream",
+      "role": "reusable",
+      "description": "Discovery and verification lens for Electron main/preload/renderer maintenance.",
+      "inputs": ["workspaceContext"],
+      "outputs": ["electronCandidateItems"]
+    }
+  ],
+  "skills": [
+    {
+      "id": "electron-maintenance-audit",
+      "path": "skills/electron-maintenance-audit.md",
+      "description": "Guides IPC, preload, renderer, packaging, and Electron verification evidence."
+    }
+  ],
+  "rules": [
+    {
+      "id": "electron-maintenance-scope",
+      "path": "rules/electron-maintenance-scope.or-rule",
+      "description": "Includes Electron main, preload, renderer, build, package, and e2e files while excluding secrets and generated output."
+    }
+  ],
+  "examples": []
+}

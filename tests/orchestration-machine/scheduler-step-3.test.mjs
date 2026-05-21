@@ -354,13 +354,13 @@ test('Step 3.A (3-way selector): selector drops two of three branches; only the 
   assert.ok(completedPaths.includes('main/probe'), 'probe should complete via the live branch');
 });
 
-// Step 3.C: a gate that fires its 'revise' edge (loop-back to an
-// earlier-positioned worker) must emit a `scheduler.loopBackReset`
+// Step 3.C: a decision node that fires a loop-back edge to an
+// earlier-positioned worker must emit a `scheduler.loopBackReset`
 // event for audit. Step 3 MVP scope: emission only — re-dispatch
 // within the same run-step is deferred to a future increment. The
-// event must carry the source (gate) and target (worker) paths so
+// event must carry the source and target paths so
 // audit consumers can reconstruct the loop-back chain.
-test('Step 3.C: gate firing revise edge emits scheduler.loopBackReset event for the loop-back target', async (t) => {
+test('Step 3.C: barrier firing partial edge emits scheduler.loopBackReset event for the loop-back target', async (t) => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await writePipeline(t, 'loop-back-reset', {
     kind: 'orpad.graph',
     version: '1.0',
@@ -369,18 +369,16 @@ test('Step 3.C: gate firing revise edge emits scheduler.loopBackReset event for 
       nodes: [
         { id: 'entry', type: 'orpad.entry', label: 'Entry' },
         // Gate that always fails — its 'revise' edge loops back to the
-        // canonical worker. Today the runtime gate has no failure
-        // criteria that evaluate true against an empty event log, so
-        // we configure it with onFail: 'warn' to keep the run going.
+        // canonical worker.
         { id: 'plan', type: 'orpad.context', label: 'Plan' },
         { id: 'probe', type: 'orpad.probe', label: 'Probe' },
         { id: 'queue', type: 'orpad.workQueue', label: 'Queue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
         { id: 'triage', type: 'orpad.triage', label: 'Triage', config: { queueRef: 'queue' } },
         { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
         { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue' } },
-        // Gate fails by listing an unsupported criterion; runtime
-        // returns valid:false, fires 'revise' edge back to worker.
-        { id: 'verify-gate', type: 'orpad.gate', label: 'Verify', config: { criteria: ['this-criterion-is-never-satisfied'], onFail: 'warn' } },
+        // Barrier stays partial because one declared predecessor is
+        // missing. With continue-with-warning it completes valid:false.
+        { id: 'verify-barrier', type: 'orpad.barrier', label: 'Verify', config: { waitFor: ['missing-predecessor'], onPartialFailure: 'continue-with-warning' } },
         { id: 'exit', type: 'orpad.exit', label: 'Exit' },
       ],
       transitions: [
@@ -390,11 +388,11 @@ test('Step 3.C: gate firing revise edge emits scheduler.loopBackReset event for 
         { from: 'queue', to: 'triage' },
         { from: 'triage', to: 'dispatch' },
         { from: 'dispatch', to: 'worker' },
-        { from: 'worker', to: 'verify-gate' },
-        // Loop-back: gate fails -> revise -> back to worker (earlier
+        { from: 'worker', to: 'verify-barrier' },
+        // Loop-back: barrier partial -> back to worker (earlier
         // in source order, so the scheduler classifies as loop-back).
-        { from: 'verify-gate', to: 'worker', condition: 'revise' },
-        { from: 'verify-gate', to: 'exit', condition: 'pass' },
+        { from: 'verify-barrier', to: 'worker', condition: 'partial' },
+        { from: 'verify-barrier', to: 'exit', condition: 'pass' },
       ],
     },
   });
@@ -409,9 +407,9 @@ test('Step 3.C: gate firing revise edge emits scheduler.loopBackReset event for 
   });
   const events = await readMachineEvents(run.runRoot);
   const resetEvents = events.filter(event => event.eventType === 'scheduler.loopBackReset');
-  assert.equal(resetEvents.length, 1, 'gate firing revise should emit exactly one loop-back reset event this run-step');
+  assert.equal(resetEvents.length, 1, 'barrier firing partial should emit exactly one loop-back reset event this run-step');
   assert.equal(resetEvents[0].nodePath, 'main/worker');
-  assert.equal(resetEvents[0].payload.sourceNodePath, 'main/verify-gate');
+  assert.equal(resetEvents[0].payload.sourceNodePath, 'main/verify-barrier');
   assert.equal(resetEvents[0].payload.targetNodePath, 'main/worker');
   assert.equal(resetEvents[0].payload.phase, 'phase-3-step-3-loop-back');
   // Step 3 MVP: worker is NOT re-dispatched within this run-step
