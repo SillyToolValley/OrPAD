@@ -115,7 +115,9 @@ body.orchestration-window #welcome {
 }
 body.orchestration-window #toolbar {
   position: relative;
+  z-index: 1000;
   height: calc(36px * var(--us));
+  overflow: visible;
 }
 body.orchestration-window #toolbar > :not(#btn-orchestration):not(#orchestration-runbar-slot):not(#btn-theme) {
   display: none !important;
@@ -141,7 +143,7 @@ body.orchestration-window #orchestration-runbar-slot {
   position: absolute;
   left: 50%;
   top: 50%;
-  z-index: 1;
+  z-index: 1001;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -243,6 +245,112 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-meta stron
   max-width: none;
   font-size: calc(12px * var(--us));
 }
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap[open],
+body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap[open] {
+  z-index: 260;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger {
+  width: 100%;
+  min-width: 0;
+  min-height: calc(24px * var(--us));
+  padding: 0 calc(6px * var(--us));
+  border: 0;
+  border-radius: calc(6px * var(--us));
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: calc(12px * var(--us));
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(6px * var(--us));
+  cursor: pointer;
+  list-style: none;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger::-webkit-details-marker {
+  display: none;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger:hover {
+  background: var(--hover-bg);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger .ogi {
+  flex: 0 0 auto;
+  width: calc(14px * var(--us));
+  height: calc(14px * var(--us));
+  color: var(--text-tertiary);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger:disabled {
+  cursor: not-allowed;
+  color: var(--text-tertiary);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu {
+  position: absolute;
+  top: calc(30px * var(--us));
+  left: 0;
+  z-index: 240;
+  width: min(calc(360px * var(--us)), calc(100vw - calc(48px * var(--us))));
+  max-height: min(calc(360px * var(--us)), calc(100vh - calc(84px * var(--us))));
+  overflow: auto;
+  display: grid;
+  gap: calc(4px * var(--us));
+  padding: calc(6px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(8px * var(--us));
+  background: var(--bg-primary);
+  box-shadow: 0 calc(16px * var(--us)) calc(36px * var(--us)) rgba(0, 0, 0, 0.28);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu button {
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: calc(42px * var(--us));
+  display: grid;
+  align-items: center;
+  justify-content: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  gap: calc(3px * var(--us));
+  padding: calc(7px * var(--us)) calc(8px * var(--us));
+  border: 0;
+  border-radius: calc(6px * var(--us));
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu button:hover,
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu button.selected {
+  background: var(--hover-bg);
+  color: var(--text-primary);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu button.selected {
+  outline: 1px solid color-mix(in srgb, var(--accent-color) 55%, transparent);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu strong,
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu span {
+  color: var(--text-tertiary);
+  font-size: calc(10.5px * var(--us));
+}
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-path,
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status,
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current,
@@ -264,6 +372,26 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-empty .pip
 body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu {
   top: calc(30px * var(--us));
   right: 0;
+  z-index: 260;
+  width: max-content;
+  min-width: calc(250px * var(--us));
+  max-width: min(calc(360px * var(--us)), calc(100vw - calc(48px * var(--us))));
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu button {
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  min-height: calc(30px * var(--us));
+  display: block;
+  padding: calc(7px * var(--us)) calc(9px * var(--us));
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap:not([open]) .pipeline-select-menu,
+body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap:not([open]) .pipeline-run-menu {
+  display: none !important;
 }
 
 /* ===================== Toolbar ===================== */

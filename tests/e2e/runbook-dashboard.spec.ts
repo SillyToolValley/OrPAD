@@ -338,20 +338,58 @@ test('toolbar opens Orchestration in a dedicated workspace window', async () => 
   await expect(orchestrationWin.locator('#preview-pane')).toBeVisible();
   await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Describe the work');
   await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Generate Pipeline');
-  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Agent Workstream');
+  await expect(orchestrationWin.locator('#runbooks-content [data-runbook-section="pipelines"]')).toHaveCount(0);
   await expect(orchestrationWin.locator('#toolbar #orchestration-runbar-slot [data-orchestration-runbar-placeholder]')).toBeVisible();
-  await expect(orchestrationWin.locator('#toolbar #orchestration-runbar-slot')).toContainText('Select a pipeline');
-  await orchestrationWin.locator('.runbook-item[data-runbook-format="or-pipeline"]')
-    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })
-    .click();
+  await expect(orchestrationWin.locator('#toolbar #orchestration-runbar-slot')).toContainText('Select Pipeline');
+  await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
+  const pipelineOption = orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) });
+  await expect(pipelineOption).toBeVisible();
+  const pipelineOptionBox = await pipelineOption.boundingBox();
+  expect(pipelineOptionBox?.width || 0).toBeGreaterThan(220);
+  await pipelineOption.click();
   const toolbarRunbar = orchestrationWin.locator('#toolbar #orchestration-runbar-slot [data-pipeline-preview-runbar]');
   await expect(toolbarRunbar).toBeVisible();
-  await expect(toolbarRunbar.locator('strong')).toContainText('Agent Workstream');
+  await expect(toolbarRunbar.locator('[data-pipeline-select-trigger] span')).toContainText('Agent Workstream');
   await expect(toolbarRunbar.locator('.pipeline-runbar-status').first()).toBeHidden();
+  await expect(toolbarRunbar.locator('.pipeline-run-menu')).toBeHidden();
+  await expect(toolbarRunbar.locator('.pipeline-select-menu')).toBeHidden();
+  await toolbarRunbar.locator('[data-pipeline-run-menu]').click();
+  const runMenuOption = toolbarRunbar.locator('.pipeline-run-menu button').filter({ hasText: 'Start Run' }).first();
+  await expect(runMenuOption).toBeVisible();
+  const runMenuOptionBox = await runMenuOption.boundingBox();
+  expect(runMenuOptionBox?.width || 0).toBeGreaterThan(220);
+  const toolbarZ = await orchestrationWin.locator('#toolbar').evaluate((el) => Number(getComputedStyle(el).zIndex) || 0);
+  const graphToolbarZ = await orchestrationWin.locator('.orch-toolbar').first().evaluate((el) => Number(getComputedStyle(el).zIndex) || 0);
+  expect(toolbarZ).toBeGreaterThan(graphToolbarZ);
+  await toolbarRunbar.locator('.pipeline-run-menu-wrap').evaluate((el: HTMLElement) => el.removeAttribute('open'));
+  await toolbarRunbar.locator('[data-pipeline-select-trigger]').click();
+  const selectedPipelineOption = orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline].selected');
+  await expect(selectedPipelineOption).toBeVisible();
+  const selectedPipelineOptionBox = await selectedPipelineOption.boundingBox();
+  expect(selectedPipelineOptionBox?.width || 0).toBeGreaterThan(220);
+  await toolbarRunbar.locator('[data-pipeline-run-menu]').click();
+  await expect(selectedPipelineOption).toBeHidden();
+  await expect(toolbarRunbar.locator('.pipeline-run-menu button').filter({ hasText: 'Start Run' }).first()).toBeVisible();
+  await toolbarRunbar.locator('[data-pipeline-select-trigger]').click();
+  await expect(toolbarRunbar.locator('.pipeline-run-menu button').filter({ hasText: 'Start Run' }).first()).toBeHidden();
+  await expect(selectedPipelineOption).toBeVisible();
+  await toolbarRunbar.locator('[data-pipeline-select]').evaluate((el: HTMLElement) => el.removeAttribute('open'));
   await expect(orchestrationWin.locator('#content [data-pipeline-preview-runbar]')).toHaveCount(0);
   await expect(orchestrationWin.locator('.orch-graph-node')).toHaveCount(6);
   const graphFrame = orchestrationWin.locator('[data-orch-frame]').first();
   await expect(graphFrame).toBeVisible();
+  await graphFrame.locator('[data-orch-zoom="in"]').click();
+  const viewport = graphFrame.locator('[data-orch-viewport]');
+  const zoomedTransform = await viewport.evaluate((el: HTMLElement) => el.style.transform);
+  const graphBoxBeforeClick = await graphFrame.boundingBox();
+  expect(graphBoxBeforeClick).toBeTruthy();
+  await orchestrationWin.mouse.click(
+    (graphBoxBeforeClick?.x || 0) + (graphBoxBeforeClick?.width || 0) - 80,
+    (graphBoxBeforeClick?.y || 0) + (graphBoxBeforeClick?.height || 0) - 80,
+  );
+  await orchestrationWin.waitForTimeout(120);
+  await expect.poll(async () => await viewport.evaluate((el: HTMLElement) => el.style.transform)).toBe(zoomedTransform);
   await orchestrationWin.setViewportSize({ width: 1120, height: 620 });
   const compactGraphBox = await graphFrame.boundingBox();
   await orchestrationWin.setViewportSize({ width: 1120, height: 840 });
@@ -402,7 +440,10 @@ test('Orchestration button asks for a project folder before opening', async () =
   await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
 
   await expect(orchestrationWin.locator('#runbooks-content')).toContainText(path.basename(workspace));
-  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Agent Workstream');
+  await expect(orchestrationWin.locator('#runbooks-content [data-runbook-section="pipelines"]')).toHaveCount(0);
+  await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
+  await expect(orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })).toBeVisible();
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

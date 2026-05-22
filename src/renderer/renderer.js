@@ -288,7 +288,7 @@ function renderOrchestrationRunbarPlaceholderHtml() {
   return `
     <div class="pipeline-runbar pipeline-runbar-empty" data-orchestration-runbar-placeholder>
       <div class="pipeline-runbar-meta">
-        <strong>Select a pipeline</strong>
+        ${renderOrchestrationPipelineSelectControl()}
       </div>
       <div class="pipeline-runbar-actions">
         <button class="pipeline-run-primary" disabled title="Select a pipeline to run." aria-label="Run selected pipeline">
@@ -2094,6 +2094,9 @@ let orchGraphViewport = { x: 0, y: 0, scale: 1 };
 let orchGraphFitAfterRender = true;
 let orchGraphResizeObserver = null;
 let orchGraphResizeFitRaf = 0;
+let orchGraphRenderFitRaf = 0;
+let orchGraphResponsiveFitSuppressedUntil = 0;
+const orchGraphObservedFrameSizes = new WeakMap();
 let orchGridSnapEnabled = false;
 let orchTempSnap = false;
 let orchHistoryBatchDepth = 0;
@@ -2494,6 +2497,10 @@ function setOrchSelection(paths) {
   selectedOrchNodePaths = new Set(list);
   selectedOrchNodePath = list[0] || '';
   selectedOrchEdgeId = '';
+}
+
+function hasOrchSelection() {
+  return !!selectedOrchEdgeId || !!selectedOrchNodePath || selectedOrchNodePaths.size > 0;
 }
 
 function toggleOrchSelection(path) {
@@ -3846,10 +3853,13 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   // X/N completed, elapsed since run.created. All derive from the
   // active record's events; no new IPC.
   const runHeaderMetrics = pipelinePreviewRunHeaderMetrics(previewRunRecord);
+  const titleControlHtml = IS_ORCHESTRATION_WINDOW
+    ? renderOrchestrationPipelineSelectControl(runbookPath, displayTitle)
+    : `<strong>${escapeHtml(displayTitle)}</strong>`;
   const runbarHtml = `
     <div class="pipeline-runbar" data-pipeline-preview-runbar data-pipeline-path="${escapeHtml(runbookPath)}">
       <div class="pipeline-runbar-meta">
-        <strong>${escapeHtml(displayTitle)}</strong>
+        ${titleControlHtml}
         <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
         <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
         ${runHeaderMetrics.currentNode ? `<span class="pipeline-runbar-current" title="${escapeHtml(`Currently running: ${runHeaderMetrics.currentNode}`)}">${escapeHtml(runHeaderMetrics.currentNode)}</span>` : ''}
@@ -5290,6 +5300,42 @@ function setOrchViewport(next, options = {}) {
   updateOrchViewportDom();
 }
 
+function cancelScheduledOrchGraphFits() {
+  if (orchGraphResizeFitRaf) {
+    cancelAnimationFrame(orchGraphResizeFitRaf);
+    orchGraphResizeFitRaf = 0;
+  }
+  if (orchGraphRenderFitRaf) {
+    cancelAnimationFrame(orchGraphRenderFitRaf);
+    orchGraphRenderFitRaf = 0;
+  }
+}
+
+function suppressOrchGraphResponsiveFit(durationMs = 250) {
+  orchGraphResponsiveFitSuppressedUntil = Math.max(orchGraphResponsiveFitSuppressedUntil, Date.now() + durationMs);
+  cancelScheduledOrchGraphFits();
+}
+
+function restoreOrchViewportAfterRender(viewport) {
+  if (!viewport) return;
+  requestAnimationFrame(() => {
+    setOrchViewport(viewport, { minScale: ORCH_FIT_ZOOM_MIN });
+    requestAnimationFrame(() => setOrchViewport(viewport, { minScale: ORCH_FIT_ZOOM_MIN }));
+  });
+}
+
+function rerenderOrchPreservingViewport(renderFn) {
+  const viewport = { ...orchGraphViewport };
+  suppressOrchGraphResponsiveFit();
+  orchGraphFitAfterRender = false;
+  try {
+    renderFn?.();
+  } finally {
+    orchGraphFitAfterRender = false;
+    restoreOrchViewportAfterRender(viewport);
+  }
+}
+
 function setOrchGraphTool(tool) {
   orchGraphTemporaryTool = '';
   orchGraphTool = tool === 'hand' ? 'hand' : 'select';
@@ -5312,6 +5358,7 @@ function setOrchPointerCapture(el, pointerId) {
 
 function zoomOrchGraph(frame, scaleMultiplier, origin) {
   if (!frame) return;
+  cancelScheduledOrchGraphFits();
   const rect = frame.getBoundingClientRect();
   const localX = origin?.x ?? rect.width / 2;
   const localY = origin?.y ?? rect.height / 2;
@@ -5371,11 +5418,23 @@ function fitOrchGraphToFrame(frame = contentEl.querySelector('[data-orch-frame]'
   }, { minScale: ORCH_FIT_ZOOM_MIN });
 }
 
+function scheduleOrchGraphRenderFit(frame = contentEl.querySelector('[data-orch-frame]')) {
+  if (orchGraphRenderFitRaf) cancelAnimationFrame(orchGraphRenderFitRaf);
+  orchGraphRenderFitRaf = requestAnimationFrame(() => {
+    orchGraphRenderFitRaf = 0;
+    const activeFrame = frame?.isConnected ? frame : contentEl.querySelector('[data-orch-frame]');
+    if (!activeFrame) return;
+    fitOrchGraphToFrame(activeFrame);
+  });
+}
+
 function scheduleOrchGraphResponsiveFit(frame = contentEl.querySelector('[data-orch-frame]')) {
   if (!frame || !contentEl.querySelector('.orch-preview')) return;
+  if (Date.now() < orchGraphResponsiveFitSuppressedUntil) return;
   if (orchGraphResizeFitRaf) cancelAnimationFrame(orchGraphResizeFitRaf);
   orchGraphResizeFitRaf = requestAnimationFrame(() => {
     orchGraphResizeFitRaf = 0;
+    if (Date.now() < orchGraphResponsiveFitSuppressedUntil) return;
     const activeFrame = frame.isConnected ? frame : contentEl.querySelector('[data-orch-frame]');
     if (!activeFrame) return;
     fitOrchGraphToFrame(activeFrame);
@@ -5390,10 +5449,26 @@ function watchOrchGraphFrames() {
   const frames = [...contentEl.querySelectorAll('[data-orch-frame]')];
   if (!frames.length || typeof ResizeObserver !== 'function') return;
   orchGraphResizeObserver = new ResizeObserver((entries) => {
-    const frame = entries.find(entry => entry.target?.matches?.('[data-orch-frame]'))?.target || frames[0];
-    scheduleOrchGraphResponsiveFit(frame);
+    for (const entry of entries) {
+      const frame = entry.target;
+      if (!frame?.matches?.('[data-orch-frame]')) continue;
+      const width = Math.round(frame.clientWidth || entry.contentRect?.width || frame.getBoundingClientRect().width || 0);
+      const height = Math.round(frame.clientHeight || entry.contentRect?.height || frame.getBoundingClientRect().height || 0);
+      const previous = orchGraphObservedFrameSizes.get(frame);
+      orchGraphObservedFrameSizes.set(frame, { width, height });
+      if (!previous) continue;
+      if (Math.abs(width - previous.width) <= 2 && Math.abs(height - previous.height) <= 2) continue;
+      scheduleOrchGraphResponsiveFit(frame);
+      break;
+    }
   });
-  frames.forEach(frame => orchGraphResizeObserver.observe(frame));
+  frames.forEach(frame => {
+    orchGraphObservedFrameSizes.set(frame, {
+      width: Math.round(frame.clientWidth || 0),
+      height: Math.round(frame.clientHeight || 0),
+    });
+    orchGraphResizeObserver.observe(frame);
+  });
 }
 
 function disconnectOrchGraphFrames() {
@@ -5404,6 +5479,10 @@ function disconnectOrchGraphFrames() {
   if (orchGraphResizeFitRaf) {
     cancelAnimationFrame(orchGraphResizeFitRaf);
     orchGraphResizeFitRaf = 0;
+  }
+  if (orchGraphRenderFitRaf) {
+    cancelAnimationFrame(orchGraphRenderFitRaf);
+    orchGraphRenderFitRaf = 0;
   }
 }
 
@@ -7038,8 +7117,11 @@ function renderOrchTreePreview(content) {
       marquee.remove();
       selectDrag = null;
       if (!wasMoved) {
-        setOrchSelection('');
-        rerenderOrchTree();
+        if (!hasOrchSelection()) return;
+        rerenderOrchPreservingViewport(() => {
+          setOrchSelection('');
+          rerenderOrchTree();
+        });
         return;
       }
       const hostRect = frame.getBoundingClientRect();
@@ -7053,8 +7135,10 @@ function renderOrchTreePreview(content) {
         const rect = nodeEl.getBoundingClientRect();
         return orchRectsIntersect(screenRect, rect);
       }).map(nodeEl => nodeEl.dataset.orchPath).filter(Boolean);
-      setOrchSelection(hits);
-      rerenderOrchTree();
+      rerenderOrchPreservingViewport(() => {
+        setOrchSelection(hits);
+        rerenderOrchTree();
+      });
     };
     const finishSelectDrag = (event) => {
       if (!selectDrag || selectDrag.pointerId !== event.pointerId) return;
@@ -7380,7 +7464,7 @@ function renderOrchTreePreview(content) {
   watchOrchGraphFrames();
   if (orchGraphFitAfterRender) {
     orchGraphFitAfterRender = false;
-    requestAnimationFrame(() => fitOrchGraphToFrame());
+    scheduleOrchGraphRenderFit();
   }
 }
 
@@ -7497,8 +7581,11 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
       selectDrag.marquee.remove();
       selectDrag = null;
       if (!wasMoved) {
-        setOrchSelection('');
-        rerenderOrchPreview();
+        if (!hasOrchSelection()) return;
+        rerenderOrchPreservingViewport(() => {
+          setOrchSelection('');
+          rerenderOrchPreview();
+        });
         return;
       }
       const hostRect = frame.getBoundingClientRect();
@@ -7507,8 +7594,10 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
         .filter(nodeEl => orchRectsIntersect(screenRect, nodeEl.getBoundingClientRect()))
         .map(nodeEl => nodeEl.dataset.orchPath)
         .filter(Boolean);
-      setOrchSelection(hits);
-      rerenderOrchPreview();
+      rerenderOrchPreservingViewport(() => {
+        setOrchSelection(hits);
+        rerenderOrchPreview();
+      });
     };
     frame.addEventListener('pointerup', finishPan);
     frame.addEventListener('pointercancel', finishPan);
@@ -7760,7 +7849,7 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
   watchOrchGraphFrames();
   if (orchGraphFitAfterRender) {
     orchGraphFitAfterRender = false;
-    requestAnimationFrame(() => fitOrchGraphToFrame());
+    scheduleOrchGraphRenderFit();
   }
 }
 
@@ -9808,6 +9897,37 @@ function runbookSummaryItemForPath(filePath) {
   const summary = workspaceRunbookSummary || buildWorkspaceRunbookSummary();
   const key = runbookNormalizePath(filePath).toLowerCase();
   return (summary?.runbooks || []).find(item => runbookNormalizePath(item.path).toLowerCase() === key) || null;
+}
+
+function renderOrchestrationPipelineSelectControl(selectedPath = selectedRunbookPath, fallbackTitle = '') {
+  const summary = workspaceRunbookSummary || buildWorkspaceRunbookSummary();
+  const items = summary?.pipelines || [];
+  const selectedKey = runbookNormalizePath(selectedPath).toLowerCase();
+  const selectedItem = items.find(item => runbookNormalizePath(item.path).toLowerCase() === selectedKey);
+  const label = selectedItem ? runbookListItemTitle(selectedItem) : (fallbackTitle || 'Select Pipeline');
+  const title = selectedItem ? runbookRelativePath(selectedItem.path) : 'Choose a pipeline to inspect and run.';
+  if (!items.length) {
+    return `<button class="pipeline-select-trigger" disabled title="No pipelines found. Generate one from the side panel."><span>No pipelines</span></button>`;
+  }
+  return `
+    <details class="pipeline-select-menu-wrap" data-pipeline-select>
+      <summary class="pipeline-select-trigger" data-pipeline-select-trigger title="${escapeHtml(title)}" aria-label="Select Pipeline">
+        <span>${escapeHtml(label)}</span>
+        ${orchToolIcon('M4 6l4 4 4-4')}
+      </summary>
+      <div class="pipeline-select-menu" role="menu">
+        ${items.map(item => {
+          const itemSelected = runbookNormalizePath(item.path).toLowerCase() === selectedKey;
+          return `
+            <button class="${itemSelected ? 'selected' : ''}" data-orchestration-select-pipeline data-runbook-path="${escapeHtml(item.path)}" role="menuitem" title="${escapeHtml(runbookRelativePath(item.path))}">
+              <strong>${escapeHtml(runbookListItemTitle(item))}</strong>
+              <span>${escapeHtml(runbookListItemSubtitle(item))}</span>
+            </button>
+          `;
+        }).join('')}
+      </div>
+    </details>
+  `;
 }
 
 function isWorkspacePipelinePackagePath(filePath) {
@@ -13728,6 +13848,19 @@ function renderRunbooksPanel() {
     legacyCount ? machineCountLabel(legacyCount, 'legacy flow') : '',
     machineCountLabel(summary.fileCount, 'file'),
   ].filter(Boolean);
+  const pipelineListSection = IS_ORCHESTRATION_WINDOW ? '' : `
+    <section class="runbook-panel-section" data-runbook-section="pipelines">
+      <div class="runbook-section-heading">
+        <h3>Pipelines</h3>
+        <span class="runbook-chip">${escapeHtml(machineCountLabel(pipelineCount, 'pipeline'))}</span>
+      </div>
+      ${pipelineItems.length ? `
+        <div class="runbook-list">
+          ${renderRunbookListItems(pipelineItems, selectedKey)}
+        </div>
+      ` : '<div class="runbook-empty">No OrPAD pipelines found yet. Describe the work, then generate one.</div>'}
+    </section>
+  `;
   runbooksContentEl.innerHTML = `
     <section class="runbook-panel-section">
       <h3>Describe the work</h3>
@@ -13745,17 +13878,7 @@ function renderRunbooksPanel() {
         </span>
       </div>
     </section>
-    <section class="runbook-panel-section" data-runbook-section="pipelines">
-      <div class="runbook-section-heading">
-        <h3>Pipelines</h3>
-        <span class="runbook-chip">${escapeHtml(machineCountLabel(pipelineCount, 'pipeline'))}</span>
-      </div>
-      ${pipelineItems.length ? `
-        <div class="runbook-list">
-          ${renderRunbookListItems(pipelineItems, selectedKey)}
-        </div>
-      ` : '<div class="runbook-empty">No OrPAD pipelines found yet. Describe the work, then generate one.</div>'}
-    </section>
+    ${pipelineListSection}
     ${legacyItems.length ? `
       <section class="runbook-panel-section" data-runbook-section="legacy">
         <div class="runbook-section-heading">
@@ -17858,6 +17981,23 @@ async function handlePipelineRunButton(button) {
   }
 }
 
+function closeOrchestrationRunbarMenus(exceptDetails = null) {
+  if (!orchestrationRunbarSlotEl) return;
+  orchestrationRunbarSlotEl
+    .querySelectorAll('.pipeline-select-menu-wrap[open], .pipeline-run-menu-wrap[open]')
+    .forEach(details => {
+      if (details !== exceptDetails) details.removeAttribute('open');
+    });
+}
+
+function toggleOrchestrationRunbarMenu(trigger) {
+  const details = trigger?.closest?.('details');
+  if (!details || !orchestrationRunbarSlotEl?.contains(details)) return;
+  const shouldOpen = !details.hasAttribute('open');
+  closeOrchestrationRunbarMenus();
+  if (shouldOpen) details.setAttribute('open', '');
+}
+
 contentEl?.addEventListener('click', async (event) => {
   const probeButton = event.target.closest?.('[data-probe-action]');
   if (probeButton && contentEl.contains(probeButton)) {
@@ -18085,7 +18225,41 @@ contentEl?.addEventListener('click', async (event) => {
   await handlePipelineRunButton(button);
 });
 
+orchestrationRunbarSlotEl?.addEventListener('click', (event) => {
+  const menuTrigger = event.target.closest?.('[data-pipeline-select-trigger], [data-pipeline-run-menu]');
+  if (!menuTrigger || !orchestrationRunbarSlotEl.contains(menuTrigger)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleOrchestrationRunbarMenu(menuTrigger);
+}, true);
+
+orchestrationRunbarSlotEl?.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const menuTrigger = event.target.closest?.('[data-pipeline-select-trigger], [data-pipeline-run-menu]');
+  if (!menuTrigger || !orchestrationRunbarSlotEl.contains(menuTrigger)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleOrchestrationRunbarMenu(menuTrigger);
+}, true);
+
 orchestrationRunbarSlotEl?.addEventListener('click', async (event) => {
+  const pipelineButton = event.target.closest?.('[data-orchestration-select-pipeline]');
+  if (pipelineButton && orchestrationRunbarSlotEl.contains(pipelineButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    pipelineButton.closest('details')?.removeAttribute('open');
+    const targetPath = pipelineButton.dataset.runbookPath || '';
+    if (!targetPath) return;
+    const selectedKey = runbookNormalizePath(selectedRunbookPath).toLowerCase();
+    const targetKey = runbookNormalizePath(targetPath).toLowerCase();
+    if (selectedKey && selectedKey === targetKey) return;
+    try {
+      await toggleRunbookSlot(targetPath);
+    } catch (err) {
+      notifyFormatError('Pipeline', err);
+    }
+    return;
+  }
   const button = event.target.closest?.('[data-pipeline-run-action]');
   if (!button || !orchestrationRunbarSlotEl.contains(button)) return;
   event.preventDefault();
