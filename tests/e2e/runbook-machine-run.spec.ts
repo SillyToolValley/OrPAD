@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -13,9 +14,15 @@ const {
   executeMachineRunStep,
   findQueueItem,
   ingestCandidateProposal,
+  readMachineEvents,
+  registerPatchArtifact,
   transitionQueueItem,
   writeQueueItem,
 } = require('../../src/main/orchestration-machine');
+
+function sha256Text(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
 
 function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
   fs.writeFileSync(path.join(userData, 'approved-workspace.json'), JSON.stringify({
@@ -243,6 +250,20 @@ async function seedActiveClaimRun(
     leaseMs: options.leaseMs ?? 30 * 24 * 60 * 60 * 1000,
     now: '2026-05-01T00:00:03.000Z',
   });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.started',
+    nodePath: 'main/worker',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'started',
+      attempt: 1,
+      itemId: item.item.id,
+      claimId: claim.claim.claimId,
+    },
+  });
   return {
     runId: run.runId,
     runRoot: run.runRoot,
@@ -265,6 +286,64 @@ async function seedStaleClaimRun(workspace: string, pipelinePath: string): Promi
   return seeded;
 }
 
+async function seedReplayProjectionRun(
+  workspace: string,
+  pipelinePath: string,
+): Promise<{ runId: string; runRoot: string; replayPosition: number }> {
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_replay_projection',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'running',
+    reason: 'machine-ui.fixture.replay-running',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/context',
+    eventType: 'node.started',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/context:attempt-1`,
+      nodeType: 'orpad.context',
+      status: 'started',
+      attempt: 1,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/context',
+    eventType: 'node.completed',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/context:attempt-1`,
+      nodeType: 'orpad.context',
+      status: 'completed',
+      attempt: 1,
+    },
+  });
+  const replayEvents = await readMachineEvents(run.runRoot);
+  const replayPosition = replayEvents.findIndex((event: { eventType?: string; nodePath?: string }) =>
+    event.eventType === 'node.completed' && event.nodePath === 'main/context') + 1;
+  expect(replayPosition).toBeGreaterThan(0);
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: 'main/probe',
+    eventType: 'node.started',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/probe:attempt-1`,
+      nodeType: 'orpad.probe',
+      status: 'started',
+      attempt: 1,
+    },
+  });
+  return { runId: run.runId, runRoot: run.runRoot, replayPosition };
+}
+
 async function enableMachineUi(win: any): Promise<void> {
   await win.evaluate(() => {
     localStorage.setItem('orpad-machine-ui-enabled', '1');
@@ -275,6 +354,7 @@ async function submitMachineCapabilityToken(win: any): Promise<void> {
   await expect(win.locator('[data-machine-token-input]')).toBeVisible();
   await win.locator('[data-machine-token-input]').fill('test-token');
   await win.getByRole('button', { name: 'Use Token' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
 }
 
 async function confirmRunProviderSelection(win: any): Promise<void> {
@@ -388,9 +468,37 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   await expect(win.locator('.cm-content')).toContainText('Run Evidence');
   await expect(win.locator('.cm-content')).not.toContainText(/run_\d{8}_\d{6}/);
   await win.locator('#btn-preview').click();
+  await expect(win.locator('#context-return-bar')).toContainText('Machine Workstream');
+  await expect(win.locator('#context-return-bar')).toContainText('Run Evidence');
   await expect(win.locator('#content')).toContainText('artifacts/discovery/candidate-inventory.json');
   await expect(win.locator('#content')).toContainText('artifacts/patches');
   await expect(win.locator('#content')).toContainText('Evidence ready for review');
+  await win.locator('[data-context-return-action="flow"]').click();
+  await expect(win.locator('.tab-item.active')).toContainText('main.or-graph');
+  await expect(win.locator('#content.view-orch-graph .orch-preview')).toBeVisible();
+  await expect(win.locator('#context-return-bar')).toHaveClass(/hidden/);
+  await expect(win.locator('#content.view-orch-graph .pipe-lifecycle-banner')).toBeVisible();
+  await win.setViewportSize({ width: 980, height: 520 });
+  const graphScroll = await win.locator('#content.view-orch-graph').evaluate((el: HTMLElement) => {
+    const preview = el.querySelector('.orch-preview') as HTMLElement | null;
+    const frame = el.querySelector('.orch-graph-frame') as HTMLElement | null;
+    el.scrollTop = 0;
+    el.scrollTop = el.scrollHeight;
+    return {
+      contentOverflowY: getComputedStyle(el).overflowY,
+      previewOverflowY: preview ? getComputedStyle(preview).overflowY : '',
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      scrollTopAfter: el.scrollTop,
+      frameBottom: frame ? frame.offsetTop + frame.offsetHeight : 0,
+    };
+  });
+  expect(graphScroll.contentOverflowY).toBe('auto');
+  expect(graphScroll.previewOverflowY).toBe('visible');
+  expect(graphScroll.scrollHeight).toBeGreaterThan(graphScroll.clientHeight);
+  expect(graphScroll.scrollTopAfter).toBeGreaterThan(0);
+  expect(graphScroll.frameBottom).toBeLessThanOrEqual(graphScroll.scrollHeight + 2);
+  await win.setViewportSize({ width: 1280, height: 720 });
 
   const runDirs = fs.readdirSync(runRoot);
   expect(fs.existsSync(path.join(runRoot, runDirs[0], 'run-state.json'))).toBe(true);
@@ -647,6 +755,213 @@ test('Machine UI does not animate inactive transitions after a waiting run', asy
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Machine UI replay slider drives graph projection and keeps run actions live', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const seeded = await seedReplayProjectionRun(workspace, pipelinePath);
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  const runbar = win.locator('[data-pipeline-preview-runbar]');
+  const primaryRunButton = win.locator('button.pipeline-run-primary');
+  const contextNode = win.locator('.orch-graph-node').filter({ hasText: 'Context' });
+  const probeNode = win.locator('.orch-graph-node').filter({ hasText: 'Probe' });
+  await expect(runbar).toContainText('progress 1/2');
+  await expect(contextNode).toContainText('Done');
+  await expect(probeNode).toContainText('Running');
+  await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(1);
+  await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'machine-cancel-run');
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    await win.locator('[data-runbook-run-details] summary').click();
+    const slider = win.locator('[data-runbook-replay-slider]');
+    await expect(slider).toBeVisible();
+    await slider.evaluate((element: HTMLInputElement, value: string) => {
+      element.value = value;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    }, String(seeded.replayPosition));
+    await expect(win.locator('#runbooks-content')).toContainText('Replaying');
+    await expect(win.locator('#runbooks-content')).toContainText('Run controls use the live run');
+    await expect(runbar).toContainText('progress 1/1');
+    await expect(contextNode).toContainText('Done');
+    await expect(probeNode).not.toContainText('Running');
+    await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(0);
+    await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'machine-cancel-run');
+
+    await win.locator('[data-runbook-run-details]').evaluate((element: HTMLDetailsElement) => {
+      element.open = true;
+    });
+    await win.locator('button[data-runbook-action="replay-live"]').click();
+    await expect(win.locator('#runbooks-content')).not.toContainText('Replaying');
+    await expect(runbar).toContainText('progress 1/2');
+    await expect(probeNode).toContainText('Running');
+    await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(1);
+  }
+
+  expect(fs.readFileSync(path.join(seeded.runRoot, 'events.jsonl'), 'utf-8')).toContain('main/probe');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI resets transient replay and history state when switching workspaces with the same run id', async () => {
+  const first = writeMachineWorkspace();
+  const second = writeMachineWorkspace();
+  const firstSeed = await seedReplayProjectionRun(first.workspace, first.pipelinePath);
+  const secondSeed = await seedReplayProjectionRun(second.workspace, second.pipelinePath);
+  expect(secondSeed.runId).toBe(firstSeed.runId);
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, first.workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  const runbar = win.locator('[data-pipeline-preview-runbar]');
+  await expect(runbar).toContainText('progress 1/2');
+
+  await win.locator('[data-runbook-run-details] summary').click();
+  const slider = win.locator('[data-runbook-replay-slider]');
+  await expect(slider).toBeVisible();
+  await slider.evaluate((element: HTMLInputElement, value: string) => {
+    element.value = value;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+  }, String(firstSeed.replayPosition));
+  await expect(win.locator('#runbooks-content')).toContainText('Replaying');
+  await expect(runbar).toContainText('progress 1/1');
+
+  const historySearch = win.locator('[data-runbook-history-search]');
+  await expect(historySearch).toBeVisible();
+  await historySearch.fill('no-such-run');
+  await expect(win.locator('#runbooks-content')).toContainText('No runs match the current filter.');
+
+  await win.locator('[data-runbook-run-details] summary').click();
+  const stickToggle = win.locator('button[data-runbook-action="toggle-replay-stick"]');
+  await expect(stickToggle).toContainText('Auto-scroll');
+  await stickToggle.click();
+  await expect(stickToggle).toContainText('Manual scroll');
+
+  const patchedDialog = await app.evaluate(({ dialog }, workspaceRoot) => {
+    if (!dialog?.showOpenDialog) return false;
+    dialog.showOpenDialog = async () => ({
+      canceled: false,
+      filePaths: [workspaceRoot],
+    });
+    return true;
+  }, second.workspace);
+  expect(patchedDialog).toBe(true);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('file.openFolder');
+  });
+  const switchedRunbook = win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' });
+  await expect(switchedRunbook).toBeVisible();
+  await switchedRunbook.click();
+
+  await expect(win.locator('#runbooks-content')).not.toContainText('Replaying');
+  await expect(runbar).toContainText('progress 1/2');
+  await expect(win.locator('[data-runbook-history-search]')).toHaveValue('');
+  await expect(win.locator('#runbooks-content')).not.toContainText('No runs match the current filter.');
+  await win.locator('[data-runbook-run-details] summary').click();
+  await expect(win.locator('button[data-runbook-action="toggle-replay-stick"]')).toContainText('Auto-scroll');
+
+  await app.close();
+  fs.rmSync(first.workspace, { recursive: true, force: true });
+  fs.rmSync(second.workspace, { recursive: true, force: true });
+});
+
+test('Machine UI does not open a blocked decision modal for a normal waiting queue', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_waiting_active_queue',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  const baseProposal = pipeline.run.machineHarness.candidateProposal;
+  const queuedItem = await ingestCandidateProposal(run.runRoot, {
+    ...baseProposal,
+    proposalId: 'proposal-machine-ui-queued-only',
+    suggestedWorkItemId: 'machine-ui-queued-only',
+    title: 'Queued work can continue without a blocker',
+    fingerprint: 'machine-ui-queued-only:src/smoke-target.md',
+  }, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-queued-only',
+    now: '2026-05-01T00:00:01.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: queuedItem.item.id,
+    toState: 'queued',
+    reason: 'machine-ui.fixture.queued',
+    transitionId: 'triage:machine-ui-queued-only',
+    now: '2026-05-01T00:00:02.000Z',
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'machine-ui.fixture.waiting',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'machine-ui.fixture.partial',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  await expect(win.locator('#runbooks-content')).toContainText('Work queue waiting');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Queue has blocked work');
+  await expect(win.locator('button[data-runbook-action="machine-open-blocked-decision"]')).toHaveCount(0);
+  await expect(win.locator('button[data-runbook-action="machine-execute-step"]')).toBeEnabled();
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('Machine UI opens a decision modal for waiting runs with blocked queue work', async () => {
   const { workspace, pipelinePath } = writeMachineWorkspace();
   const run = await createMachineRun({
@@ -723,16 +1038,14 @@ test('Machine UI opens a decision modal for waiting runs with blocked queue work
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  await expect(win.locator('#runbooks-content')).toContainText('Queue has blocked work');
+
+  await win.getByRole('button', { name: 'Resolve Blocker', exact: true }).click();
   await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
   await expect(win.locator('#fmt-modal-body')).toContainText('1 queued, 1 blocked');
   await expect(win.locator('#fmt-modal-body')).toContainText('machine-ui-blocked');
   await expect(win.locator('#fmt-modal-footer')).toContainText('Continue Queue');
-  await win.locator('#fmt-modal-footer').getByRole('button', { name: 'Decide Later' }).click();
-  await expect(win.locator('#fmt-modal')).toBeHidden();
-  await expect(win.locator('#runbooks-content')).toContainText('Queue has blocked work');
-
-  await win.locator('button[data-runbook-action="machine-open-blocked-decision"]').click();
-  await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -832,17 +1145,33 @@ test('Machine UI does not offer stop as the terminal blocked-queue follow-up', a
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('#fmt-modal')).toBeHidden();
   await expect(win.locator('#runbooks-content')).toContainText('Queue has blocked work');
-  await expect(win.locator('#runbooks-content')).toContainText('No queued work remains; review blocked items or start a follow-up run.');
+  await expect(win.locator('#runbooks-content')).toContainText('Blocked - no runnable work');
+  await expect(win.locator('#runbooks-content')).toContainText('This run will not continue by itself');
+  await expect(win.locator('#runbooks-content')).toContainText('Start follow-up');
 
-  await win.locator('button[data-runbook-action="machine-open-blocked-decision"]').click();
+  await win.getByRole('button', { name: 'Review Blocker', exact: true }).click();
   await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
   await expect(win.locator('#fmt-modal-body')).toContainText('1 blocked, 1 done');
+  await expect(win.locator('#fmt-modal-body')).toContainText('No runnable work');
   await expect(win.locator('#fmt-modal-body')).toContainText('No queued work remains');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Start Follow-up');
   await expect(win.locator('#fmt-modal-footer')).toContainText('Review Evidence');
   await expect(win.locator('#fmt-modal-footer')).toContainText('Close');
   await expect(win.locator('#fmt-modal-footer')).not.toContainText('Stop Run');
   await expect(win.locator('#fmt-modal-footer')).not.toContainText('Cancel Remaining Work');
   await expect(win.locator('#fmt-modal-footer')).not.toContainText('Continue Queue');
+  await win.locator('#fmt-modal-footer button').filter({ hasText: 'Start Follow-up' }).click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Start Follow-up');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Not an async wait');
+  await expect(win.locator('[data-machine-follow-up-prompt]')).toHaveValue(/machine-ui-terminal-blocked/);
+  await win.locator('#fmt-modal-close').click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+
+  await win.getByRole('button', { name: 'Review Evidence', exact: true }).click();
+  await expect(win.locator('.tab-item.active')).toContainText('Run Evidence');
+  await expect(win.locator('.cm-content')).toContainText('Current Decision');
+  await expect(win.locator('.cm-content')).toContainText('no runnable work remains');
+  await expect(win.locator('.cm-content')).toContainText('Blocked Work');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -932,24 +1261,50 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
     pipelinePath,
     runId: 'run_machine_ui_blocked_review',
     now: new Date('2026-05-01T00:00:00.000Z'),
+    patchReviewMode: 'auto-apply',
   });
-  const patchDir = path.join(run.runRoot, 'artifacts', 'patches');
-  fs.mkdirSync(patchDir, { recursive: true });
-  fs.writeFileSync(path.join(patchDir, 'worker.patch.json'), JSON.stringify({
-    schemaVersion: 'orpad.patchArtifact.v1',
-    createdAt: '2026-05-01T00:00:05.000Z',
-    allowedFiles: ['src/smoke-target.md', 'src/main/runbooks/validator.js'],
-    changes: [{
-      path: 'src/smoke-target.md',
-      beforeExists: true,
-      afterExists: true,
-      beforeSha256: '1111111111111111111111111111111111111111111111111111111111111111',
-      afterSha256: '2222222222222222222222222222222222222222222222222222222222222222',
-      beforeContent: 'before\n',
-      afterContent: 'after from blocked worker\nwith details\n',
-    }],
-    violations: [],
-  }, null, 2));
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  const baseProposal = pipeline.run.machineHarness.candidateProposal;
+  const blockedItem = await ingestCandidateProposal(run.runRoot, {
+    ...baseProposal,
+    proposalId: 'proposal-machine-ui-blocked-review',
+    suggestedWorkItemId: 'machine-ui-smoke',
+    title: 'Exercise Machine UI worker execution',
+    fingerprint: 'machine-ui-blocked-review:src/smoke-target.md',
+  }, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-blocked-review',
+    now: '2026-05-01T00:00:01.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: blockedItem.item.id,
+    toState: 'blocked',
+    reason: 'machine-ui.fixture.blocked-patch-review',
+    transitionId: 'block:machine-ui-blocked-review',
+    now: '2026-05-01T00:00:02.000Z',
+  });
+  const afterContent = 'after from blocked worker\nwith details\n';
+  await registerPatchArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/patches/worker.patch.json',
+    producedBy: 'test.blocked-worker-review',
+    patch: {
+      schemaVersion: 'orpad.patchArtifact.v1',
+      createdAt: '2026-05-01T00:00:05.000Z',
+      allowedFiles: ['src/smoke-target.md', 'src/main/runbooks/validator.js'],
+      changes: [{
+        path: 'src/smoke-target.md',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('before\n'),
+        afterSha256: sha256Text(afterContent),
+        beforeContent: 'before\n',
+        afterContent,
+      }],
+      violations: [],
+    },
+  });
   await appendMachineEvent(run.runRoot, {
     runId: run.runId,
     actor: 'machine',
@@ -1031,28 +1386,295 @@ test('Machine UI explains blocked overlay results and incomplete evidence', asyn
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
-  await expect(win.locator('#runbooks-content')).toContainText('Review required');
+  await expect(win.locator('#runbooks-content')).toContainText('Waiting for decision');
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Patch ready$/ })).toHaveCount(0);
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Waiting$/ })).toHaveCount(0);
-  await expect(win.locator('.runbook-chip').filter({ hasText: /^Review needed$/ })).toBeVisible();
-  await expect(win.locator('#runbooks-content')).toContainText('1 changed file staged in run evidence; workspace files were not changed.');
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Waiting for decision$/ })).toBeVisible();
+  await expect(win.locator('.runbook-chip').filter({ hasText: /^Review action required$/ })).toBeVisible();
+  await expect(win.locator('#runbooks-content')).toContainText('1 changed file saved as blocked-work evidence; workspace files were not changed.');
   await expect(win.locator('#runbooks-content')).toContainText('Missing expected change: src/main/runbooks/validator.js.');
   await expect(win.locator('#runbooks-content')).toContainText('Evidence incomplete');
   await expect(win.locator('#runbooks-content')).toContainText('2 required evidence files missing; 1 required queue file missing');
-  await expect(win.locator('#runbooks-content')).toContainText('Work needs review');
-  await expect(win.locator('#runbooks-content')).toContainText('review needed; 2 evidence files; 1 check; 1 changed file');
-  await skipPatchModalIfVisible(win);
-  await win.locator('button[data-runbook-action="machine-view-artifacts"]').click();
+  await expect(win.locator('#runbooks-content')).toContainText('Waiting for patch review');
+  await expect(win.locator('#runbooks-content')).toContainText('No worker is running');
+  await expect(win.locator('#runbooks-content')).toContainText('Review patches');
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+
+  await win.locator('button[data-runbook-action="machine-open-blocked-decision"]').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Patch Review Needed');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Patch review required');
+  await expect(win.locator('#fmt-modal-body')).toContainText('1 changed file staged for patch review.');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Review Patch');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Review Evidence');
+  await expect(win.locator('#fmt-modal-body')).not.toContainText('No queued work remains');
+  await win.locator('#fmt-modal-footer button').filter({ hasText: 'Review Patch' }).click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Review Patch');
+  await expect(win.locator('#fmt-modal-body')).toContainText('The run produced a patch');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Patch artifact: artifacts/patches/worker.patch.json');
+  await expect(win.locator('[data-machine-patch-file][value="src/smoke-target.md"]')).toBeChecked();
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Continue with Prompt');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Approve & Apply');
+  const modalScroll = await win.locator('#fmt-modal-body').evaluate((el: HTMLElement) => ({
+    overflowY: getComputedStyle(el).overflowY,
+    clientHeight: el.clientHeight,
+    scrollHeight: el.scrollHeight,
+  }));
+  expect(modalScroll.overflowY).toBe('auto');
+  expect(modalScroll.scrollHeight).toBeGreaterThan(0);
+  expect(modalScroll.clientHeight).toBeGreaterThan(0);
+  const patchListScroll = await win.locator('.machine-patch-change-list').evaluate((el: HTMLElement) => ({
+    overflowY: getComputedStyle(el).overflowY,
+  }));
+  expect(patchListScroll.overflowY).toBe('auto');
+  await win.locator('#fmt-modal-close').click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+
+  await win.getByRole('button', { name: 'Review Evidence', exact: true }).click();
   await expect(win.locator('.tab-item.active')).toContainText('Run Evidence');
   await expect(win.locator('.tab-item.active')).not.toHaveClass(/modified/);
   await expect(win.locator('.cm-content')).toContainText('Patch Review');
   await expect(win.locator('.cm-content')).toContainText('Workspace changed: no, changes are staged in run evidence only');
   await expect(win.locator('.cm-content')).toContainText('Patch artifact: artifacts/patches/worker.patch.json');
+  await win.locator('.cm-scroller').evaluate((el: HTMLElement) => {
+    el.scrollTop = el.scrollHeight;
+  });
   await expect(win.locator('.cm-content')).toContainText('Patch artifact summary: 1 file change; 2 allowed files; 0 write-set violations.');
   await expect(win.locator('.cm-content')).toContainText('Review Patch opens the changed files with apply/skip controls.');
-  await expect(win.locator('.cm-content')).toContainText('`src/smoke-target.md`: Modified; 1 -> 2 lines (+1); SHA 111111111111 -> 222222222222');
-  await expect(win.locator('.cm-content')).toContainText('Changed files staged in evidence: src/smoke-target.md');
-  await expect(win.locator('.cm-content')).toContainText('Missing expected changes: src/main/runbooks/validator.js');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI follow-up on a stale multi-patch review advances to the next patch', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  fs.writeFileSync(path.join(workspace, 'src', 'stale-target.md'), 'current stale base\n');
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_stale_follow_up_next',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const stalePatch = 'artifacts/patches/stale-follow-up.patch.json';
+  const nextPatch = 'artifacts/patches/next-review.patch.json';
+  await registerPatchArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: stalePatch,
+    producedBy: 'test.stale-follow-up',
+    patch: {
+      schemaVersion: 'orpad.patchArtifact.v1',
+      createdAt: '2026-05-01T00:00:05.000Z',
+      allowedFiles: ['src/stale-target.md'],
+      changes: [{
+        path: 'src/stale-target.md',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('old stale base\n'),
+        afterSha256: sha256Text('rebased stale result\n'),
+        beforeContent: 'old stale base\n',
+        afterContent: 'rebased stale result\n',
+      }],
+      violations: [],
+    },
+  });
+  await registerPatchArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: nextPatch,
+    producedBy: 'test.next-review',
+    patch: {
+      schemaVersion: 'orpad.patchArtifact.v1',
+      createdAt: '2026-05-01T00:00:06.000Z',
+      allowedFiles: ['src/smoke-target.md'],
+      changes: [{
+        path: 'src/smoke-target.md',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('before\n'),
+        afterSha256: sha256Text('next review result\n'),
+        beforeContent: 'before\n',
+        afterContent: 'next review result\n',
+      }],
+      violations: [],
+    },
+  });
+  for (const [patchArtifact, itemId, changedFile] of [
+    [stalePatch, 'stale-follow-up-item', 'src/stale-target.md'],
+    [nextPatch, 'next-review-item', 'src/smoke-target.md'],
+  ] as const) {
+    await appendMachineEvent(run.runRoot, {
+      runId: run.runId,
+      actor: 'machine',
+      eventType: 'worker.result',
+      itemId,
+      reason: 'worker-result.accepted',
+      artifactRefs: [patchArtifact],
+      payload: {
+        status: 'done',
+        toState: 'done',
+        patchArtifact,
+        changedFiles: [changedFile],
+        verification: [{ command: process.execPath, args: ['--version'] }],
+      },
+    });
+  }
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'patch.review_required',
+    reason: 'patch-review.test-fixture',
+    artifactRefs: [stalePatch],
+    payload: {
+      patchArtifact: stalePatch,
+      changedFiles: ['src/stale-target.md'],
+      reason: 'stale-base-fixture',
+    },
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'machine-ui.fixture.waiting',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'machine-ui.fixture.partial',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  await win.locator('button[data-probe-action="review-patches"]').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Rebase Required 1 of 2');
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Mark Follow-up & Next');
+  await win.locator('#fmt-modal-footer button').filter({ hasText: 'Mark Follow-up & Next' }).click();
+  await submitMachineCapabilityToken(win);
+  await expect(win.locator('#fmt-modal-title')).toContainText('Review Patch 2 of 2');
+  await expect(win.locator('#fmt-modal-body')).toContainText(nextPatch);
+  await expect(win.locator('body')).not.toContainText('Patch contains out-of-write-set violations.');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine UI treats write-set violation patches as follow-up only', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_write_set_violation_follow_up',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const unsafePatch = 'artifacts/patches/write-set-violation.patch.json';
+  await registerPatchArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: unsafePatch,
+    producedBy: 'test.write-set-violation',
+    patch: {
+      schemaVersion: 'orpad.patchArtifact.v1',
+      createdAt: '2026-05-01T00:00:05.000Z',
+      allowedFiles: ['src/smoke-target.md'],
+      changes: [{
+        path: 'src/smoke-target.md',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('before\n'),
+        afterSha256: sha256Text('safe visible change\n'),
+        beforeContent: 'before\n',
+        afterContent: 'safe visible change\n',
+      }],
+      violations: [{ path: 'src/outside-write-set.md', reason: 'outside write set' }],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'unsafe-follow-up-item',
+    reason: 'worker-result.accepted',
+    artifactRefs: [unsafePatch],
+    payload: {
+      status: 'done',
+      toState: 'done',
+      patchArtifact: unsafePatch,
+      changedFiles: ['src/smoke-target.md'],
+      verification: [{ command: process.execPath, args: ['--version'] }],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'patch.review_required',
+    reason: 'patch-review.write-set-violation-fixture',
+    artifactRefs: [unsafePatch],
+    payload: {
+      patchArtifact: unsafePatch,
+      changedFiles: ['src/smoke-target.md'],
+      reason: 'destructive_scope',
+    },
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'machine-ui.fixture.waiting',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'machine-ui.fixture.partial',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    (window as any).__orpadAlerts = [];
+    window.alert = (message?: any) => {
+      (window as any).__orpadAlerts.push(String(message ?? ''));
+    };
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await win.locator('button[data-probe-action="review-patches"]').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Follow-up Required');
+  await expect(win.locator('#fmt-modal-body')).toContainText('write-set violation');
+  await expect(win.locator('[data-machine-patch-file][value="src/smoke-target.md"]')).toBeDisabled();
+  await expect(win.locator('#fmt-modal-footer')).toContainText('Start Follow-up with Prompt');
+  await expect(win.locator('#fmt-modal-footer')).not.toContainText('Approve & Apply');
+  await win.locator('#fmt-modal-footer button').filter({ hasText: 'Start Follow-up with Prompt' }).click();
+  await submitMachineCapabilityToken(win);
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
+  await expect.poll(async () => win.evaluate(() => (window as any).__orpadAlerts || []))
+    .not.toContain('Patch contains out-of-write-set violations.');
+  const events = await readMachineEvents(run.runRoot);
+  const unsafePatchEvents = events.filter((event: any) => event?.payload?.patchArtifact === unsafePatch);
+  expect(unsafePatchEvents.some((event: any) => event.eventType === 'patch.review_rejected')).toBe(true);
+  expect(unsafePatchEvents.some((event: any) => ['patch.approved', 'patch.applied', 'patch.review_skipped'].includes(event.eventType))).toBe(false);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -1098,6 +1720,36 @@ test('Machine UI play action attempts managed run and blocks non-runnable pipeli
 test('Machine UI implements node harness contracts for the selected pipeline', async () => {
   const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
   removeMachineHarness(pipelinePath);
+  const staleRun = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_stale_before_harness',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  await appendMachineEvent(staleRun.runRoot, {
+    runId: staleRun.runId,
+    actor: 'machine',
+    nodePath: 'main/probe',
+    eventType: 'adapter.result',
+    reason: 'proposal-only-result.failed',
+    artifactRefs: ['artifacts/adapters/stale.transcript.json'],
+    payload: {
+      status: 'failed',
+      adapter: 'codex-cli-proposal',
+      adapterCallId: 'stale-harness-preflight-adapter',
+      message: 'Stale run failure should not remain visible while implementing harness.',
+    },
+  });
+  await appendRunLifecycleStatus(staleRun.runRoot, {
+    runId: staleRun.runId,
+    toState: 'cancelled',
+    reason: 'machine-ui.fixture.stale-before-harness',
+  });
+  await appendRunSummaryStatus(staleRun.runRoot, {
+    runId: staleRun.runId,
+    summaryStatus: 'blocked',
+    reason: 'machine-ui.fixture.stale-before-harness',
+  });
   const labDir = path.join(workspace, 'ThreadProgramming', 'Unit3', 'Lab05_Semaphore');
   fs.mkdirSync(labDir, { recursive: true });
   fs.writeFileSync(path.join(labDir, 'Program.cs'), 'Console.WriteLine("Semaphore lab");\n');
@@ -1120,9 +1772,19 @@ test('Machine UI implements node harness contracts for the selected pipeline', a
 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('runnable adapter');
+  await expect(win.locator('#content.view-orch-graph')).toContainText('Run cancelled');
+  await expect(win.locator('#content.view-orch-graph')).toContainText('Failed adapter calls (1)');
   await win.locator('[data-pipeline-run-menu]').click();
   await win.locator('button[data-pipeline-run-action="implement-harness"]').click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready');
+  await expect(win.locator('#content.view-orch-graph [data-harness-implementation-banner]')).toContainText('Harness ready');
+  await expect(win.locator('#content.view-orch-graph')).not.toContainText('Run cancelled');
+  await expect(win.locator('#content.view-orch-graph')).not.toContainText('Failed adapter calls');
+  await expect(win.locator('#runbooks-content [data-harness-implementation-banner]')).toContainText('Harness ready');
+  await expect(win.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(0);
+  await expect(win.locator('#runbooks-content')).not.toContainText('Run cancelled');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Failed adapter calls');
+  await expect(win.locator('#runbooks-content')).not.toContainText('Stale run failure should not remain visible while implementing harness.');
   const probeNode = win.locator('.orch-graph-node[data-machine-node-path="main/probe"]');
   await expect(probeNode).toContainText('Harness ready');
   await expect(probeNode).toHaveClass(/runtime-completed/);
@@ -1328,6 +1990,95 @@ test('Machine UI keeps gated managed run actions in the pipeline preview', async
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Machine UI enabling IPC loads pending patch runs without auto-opening review modals', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_enable_pending_patch',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const afterContent = 'after from enable pending patch\n';
+  await registerPatchArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/patches/enable-pending.patch.json',
+    producedBy: 'test.enable-machine-pending-patch',
+    patch: {
+      schemaVersion: 'orpad.patchArtifact.v1',
+      createdAt: '2026-05-01T00:00:05.000Z',
+      allowedFiles: ['src/smoke-target.md'],
+      changes: [{
+        path: 'src/smoke-target.md',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('before\n'),
+        afterSha256: sha256Text(afterContent),
+        beforeContent: 'before\n',
+        afterContent,
+      }],
+      violations: [],
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'machine-ui-smoke',
+    reason: 'worker-result.accepted',
+    artifactRefs: ['artifacts/patches/enable-pending.patch.json'],
+    payload: {
+      status: 'blocked',
+      toState: 'blocked',
+      patchArtifact: 'artifacts/patches/enable-pending.patch.json',
+      changedFiles: ['src/smoke-target.md'],
+      verification: [{ command: process.execPath, args: ['--version'] }],
+    },
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'machine-ui.fixture.waiting',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'machine-ui.fixture.partial',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '0',
+    ORPAD_MACHINE_IPC_TOKEN: '',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    (window as any).__orpadConfirms = [];
+    window.confirm = (message?: any) => {
+      (window as any).__orpadConfirms.push(String(message ?? ''));
+      return true;
+    };
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('button[data-runbook-action="enable-machine"]')).toBeVisible();
+  await win.locator('button[data-runbook-action="enable-machine"]').click();
+  await expect.poll(() => win.evaluate(() => ((window as any).__orpadConfirms || []).join('\n'))).toContain('Allow OrPAD to start runs');
+  await expect(win.locator('#fmt-modal')).toBeHidden();
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
+  await expect(win.locator('#runbooks-content')).toContainText('Waiting for patch review');
+  await expect(win.locator('#runbooks-content')).toContainText('No worker is running');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('Machine UI renders pending approval state from a dispatcher pause', async () => {
   const { workspace, pipelinePath } = writeMachineWorkspace();
   requireMachineApproval(pipelinePath);
@@ -1353,6 +2104,7 @@ test('Machine UI renders pending approval state from a dispatcher pause', async 
   await win.locator('button[data-pipeline-run-action="managed-ask"]').click();
   await submitMachineCapabilityToken(win);
   await confirmRunProviderSelection(win);
+  await expect(win.locator('#fmt-modal')).toBeVisible();
   await expect(win.locator('#fmt-modal-title')).toContainText('Run Approval Required');
   await win.getByRole('button', { name: 'Later' }).click();
   await expect(win.locator('#fmt-modal')).toBeHidden();
@@ -1637,6 +2389,7 @@ test('Machine UI keeps denied approval runs terminal', async () => {
   await win.locator('button[data-pipeline-run-action="managed-ask"]').click();
   await submitMachineCapabilityToken(win);
   await confirmRunProviderSelection(win);
+  await expect(win.locator('#fmt-modal')).toBeVisible();
   await expect(win.locator('#fmt-modal-title')).toContainText('Run Approval Required');
   await win.locator('#fmt-modal-footer').getByRole('button', { name: 'Decline' }).click();
   await expect(win.locator('#fmt-modal')).toBeHidden();

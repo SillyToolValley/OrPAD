@@ -57,10 +57,10 @@ function topologicalOrder(nodes, transitions) {
 // silently appends nodes whose indegree never drained to zero, which
 // hides legitimate loop-back cycles (Pattern B / Pattern I / Pattern K)
 // AND truly malformed cycles (LLM authoring errors) under the same
-// "cyclic leftover" bucket. Phase 3's ready-set scheduler will treat
+// "cyclic leftover" bucket. The ready-set scheduler treats
 // these two cases very differently — loop-back cycles re-enter the
 // ready set via an explicit `node.resetForLoopBack` event, while
-// non-loop-back cycles must reject the pipeline. Phase 1 surfaces the
+// non-loop-back cycles must reject the pipeline. Traversal surfaces the
 // information so callers can make that distinction.
 //
 // Codex CLI cross-review 2026-05-16 caught that the previous approach
@@ -78,9 +78,36 @@ function topologicalOrder(nodes, transitions) {
 // The fix: compute exact SCCs via Tarjan's algorithm. An SCC of size
 // >=2 (or a single node with a self-loop) is a real cycle. Per SCC we
 // classify its internal edges into back-edges (`toIdx <= fromIdx`) and
-// forward-edges (`toIdx > fromIdx`). A "clean" loop-back SCC has
-// exactly one back-edge; SCCs with >=2 back-edges are tangled cycles
-// that Phase 3 must reject (Pattern B/I/K all have exactly one).
+// forward-edges (`toIdx > fromIdx`). A "clean" loop-back SCC has one
+// implicit back-edge, or multiple back-edges that are explicitly labelled
+// as scheduler loop-back/redrive routes. Unlabelled multi-back-edge SCCs
+// are tangled cycles that Machine execution must reject.
+const EXPLICIT_LOOP_BACK_CONDITIONS = new Set([
+  'changes-requested',
+  'fail',
+  'failed',
+  'partial',
+  'queue-active',
+  'queue-not-empty',
+  'reject',
+  'rejected',
+  'request-revision',
+  'retry',
+  'revise',
+  'revision-requested',
+]);
+
+function normalizedEdgeCondition(edge = {}) {
+  return String(edge.condition || edge.label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+}
+
+function isExplicitLoopBackEdge(edge = {}) {
+  return EXPLICIT_LOOP_BACK_CONDITIONS.has(normalizedEdgeCondition(edge));
+}
+
 function detectGraphCycles(nodes, transitions) {
   const nodeIds = nodes.map(node => node.id).filter(Boolean);
   const idSet = new Set(nodeIds);
@@ -111,10 +138,14 @@ function detectGraphCycles(nodes, transitions) {
       nodeIds: sccNodeIds,
       backEdges: internalBackEdges,
       forwardEdges: internalForwardEdges,
-      // Pattern B/I/K cycles have exactly one back-edge. Tangled
-      // multi-back-edge cycles are the LLM-authoring-error class
-      // Phase 3 will reject.
-      isCleanLoopBack: internalBackEdges.length === 1,
+      // Pattern B/I/K cycles usually have one back-edge. Queue-drain,
+      // patch-review, and generated-pipeline redrive graphs may author
+      // several explicit loop-back conditions to the same earlier rail.
+      isCleanLoopBack: internalBackEdges.length === 1
+        || (
+          internalBackEdges.length > 1
+          && internalBackEdges.every(isExplicitLoopBackEdge)
+        ),
     });
   }
 
@@ -124,7 +155,7 @@ function detectGraphCycles(nodes, transitions) {
     return toIdx <= fromIdx;
   });
 
-  // Phase 1 surfaces tangled cycles via cyclicSCCs[i].isCleanLoopBack.
+  // Traversal surfaces tangled cycles via cyclicSCCs[i].isCleanLoopBack.
   // The previous `nonLoopBackCycleNodeIds` was structurally wrong; we
   // expose the same intent now via `tangledCycleNodeIds` derived
   // honestly from the per-SCC classification.
@@ -356,6 +387,7 @@ module.exports = {
   buildInlinePlan,
   buildTraversalPlan,
   detectGraphCycles,
+  isExplicitLoopBackEdge,
   resolveInlineGraphKey,
   topologicalOrder,
 };

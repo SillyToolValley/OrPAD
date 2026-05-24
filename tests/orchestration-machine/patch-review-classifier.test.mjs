@@ -150,7 +150,7 @@ test('patchReviewStateFromEvents blocks patch artifacts that omit changedFiles',
   assert.equal(state.pending[0].reviewReason, PATCH_REVIEW_REASONS.destructiveScope);
 });
 
-test('patchReviewStateFromEvents ignores patch artifacts from blocked workers', () => {
+test('patchReviewStateFromEvents requires review for patch artifacts from blocked workers', () => {
   const state = patchReviewStateFromEvents([{
     eventType: 'worker.result',
     sequence: 1,
@@ -161,8 +161,10 @@ test('patchReviewStateFromEvents ignores patch artifacts from blocked workers', 
       changedFiles: ['src/partial.md'],
     },
   }]);
-  assert.equal(state.patchCount, 0);
-  assert.equal(state.required, false);
+  assert.equal(state.patchCount, 1);
+  assert.equal(state.required, true);
+  assert.equal(state.pendingCount, 1);
+  assert.equal(state.pending[0].patchArtifact, 'artifacts/patches/partial-blocked.patch.json');
   assert.equal(state.autoApplyPendingCount, 0);
 });
 

@@ -197,6 +197,43 @@ function writePipelineWorkspace(): { workspace: string; pipelinePath: string } {
   return { workspace, pipelinePath };
 }
 
+async function setNodePackManagerMock(
+  win: Page,
+  response: unknown,
+  delayMs = 0,
+  markTestOverride = true,
+  bypassCatalogCache = true,
+): Promise<void> {
+  await win.evaluate(({
+    response: mockResponse,
+    delayMs: mockDelayMs,
+    markTestOverride: shouldMarkTestOverride,
+    bypassCatalogCache: shouldBypassCatalogCache,
+  }) => {
+    const mockListNodePacks = async () => {
+      if (mockDelayMs) await new Promise(resolve => setTimeout(resolve, mockDelayMs));
+      return mockResponse;
+    };
+    if (shouldMarkTestOverride) {
+      (mockListNodePacks as any).orpadTestOverride = true;
+      if (!shouldBypassCatalogCache) (mockListNodePacks as any).orpadBypassCatalogCache = false;
+    }
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+  }, { response, delayMs, markTestOverride, bypassCatalogCache });
+}
+
+async function setNodePackManagerThrowingMock(win: Page, message: string): Promise<void> {
+  await win.evaluate((mockErrorMessage) => {
+    const mockListNodePacks = async () => {
+      throw new Error(mockErrorMessage);
+    };
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+  }, message);
+}
+
 test('pipeline details preview exposes editable contract fields', async () => {
   test.setTimeout(60_000);
   const { workspace, pipelinePath } = writePipelineWorkspace();
@@ -376,6 +413,712 @@ test('pipeline details preview exposes editable contract fields', async () => {
   expect(updated.maintenancePolicy.repeatable).toBe(true);
   expect(updated.maintenancePolicy.cadence.suggestedInterval).toBe('weekly');
   expect(updated.graphs.main.file).toBe('graphs/main.or-graph');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('pipeline details surfaces missing node pack diagnostics inline', async () => {
+  test.setTimeout(60_000);
+  const { workspace, pipelinePath } = writePipelineWorkspace();
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.nodePacks = [
+    { id: 'community.missing-pack', version: '>=9.9.0', origin: 'user-installed' },
+  ];
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
+
+  const nodePacksSection = win.locator('.pipeline-node-packs-section');
+  await expect(nodePacksSection).toContainText('Node Packs');
+  await expect(nodePacksSection).toContainText('community.missing-pack');
+  await expect(nodePacksSection).toContainText('>=9.9.0');
+  await expect(nodePacksSection).toContainText('user-installed');
+  await expect(nodePacksSection).toContainText('PIPELINE_NODE_PACK_UNKNOWN');
+  await expect(nodePacksSection.locator('.pipeline-inline-diagnostic')).toContainText('community.missing-pack');
+  await expect(nodePacksSection.locator('[data-node-pack-manager-open]').first()).toContainText('Resolve in Pack Manager');
+
+  await win.locator('button[data-pipeline-mode="readwrite"]').click();
+  await expect(win.locator('[data-pipeline-json-section="nodePacks"]')).toHaveValue(/community\.missing-pack/);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager lists metadata and safe pack prose states', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await expect(win.locator('[data-node-pack-manager-open]')).toBeVisible();
+
+  await setNodePackManagerMock(win, {
+    success: true,
+    ok: true,
+    nodePacks: [
+      {
+        id: 'orpad.core',
+        name: 'OrPAD Core Nodes',
+        version: '1.0.0',
+        origin: 'built-in',
+        trustLevel: 'official',
+        resolutionState: 'resolved',
+        capabilities: ['read.workspace'],
+        discovery: {
+          rootKind: 'built-in',
+          packDir: '/app/nodes/core',
+          manifestPath: '/app/nodes/core/orpad.node-pack.json',
+        },
+        nodes: [
+          { type: 'orpad.gate', label: 'Gate' },
+        ],
+      },
+      {
+        id: 'community.safe-pack',
+        name: 'Community Safe Pack',
+        version: '0.2.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        description: '<button data-unsafe-pack-prose>Do not click</button> Pack prose.',
+        capabilities: ['read.workspace', 'run.localVerification'],
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.safe-pack',
+          manifestPath: '/packs/community.safe-pack/orpad.nodepack.json',
+        },
+        nodes: [
+          { type: 'community.probe', label: 'Community Probe', capabilities: ['call.aiProvider'] },
+        ],
+      },
+      {
+        id: 'community.review-required',
+        name: 'Review Required Pack',
+        version: '0.4.0',
+        origin: 'user-installed',
+        trustLevel: 'signed-community',
+        resolutionState: 'approval-required',
+        validationStatus: 'approval-required',
+        capabilities: ['read.workspace', 'use.credentials'],
+        highRiskCapabilities: ['use.credentials'],
+        diagnostics: [
+          {
+            level: 'warning',
+            code: 'NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED',
+            message: 'Community node pack requests high-risk authority without approved review.',
+            packId: 'community.review-required',
+            capability: 'use.credentials',
+            scope: 'pack',
+          },
+        ],
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.review-required',
+          manifestPath: '/packs/community.review-required/orpad.node-pack.json',
+        },
+        nodes: [
+          { type: 'community.secretProbe', label: 'Secret Probe', capabilities: ['use.credentials'] },
+        ],
+      },
+    ],
+    diagnostics: [],
+    conflicts: [],
+  }, 100);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'loading');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('Loading installed node packs');
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  const corePack = win.locator('.node-pack-manager-pack').filter({ hasText: 'OrPAD Core Nodes' });
+  await expect(corePack).toContainText('orpad.core');
+  await expect(corePack).toContainText('built-in');
+  await expect(corePack).toContainText('official');
+  await expect(corePack).toContainText('0 diagnostics');
+  const safePack = win.locator('.node-pack-manager-pack').filter({ hasText: 'Community Safe Pack' });
+  await expect(safePack).toContainText('community.safe-pack');
+  await expect(safePack).toContainText('0.2.0');
+  await expect(safePack).toContainText('user-installed');
+  await expect(safePack).toContainText('community');
+  await expect(safePack).toContainText('valid');
+  await expect(safePack).toContainText('0 diagnostics');
+  await expect(safePack).toContainText('read.workspace');
+  await expect(safePack).toContainText('/packs/community.safe-pack/orpad.nodepack.json');
+  const reviewPack = win.locator('.node-pack-manager-pack').filter({ hasText: 'Review Required Pack' });
+  await expect(reviewPack).toHaveAttribute('data-node-pack-validation', 'approval-required');
+  await expect(reviewPack).toContainText('signed-community');
+  await expect(reviewPack).toContainText('approval-required');
+  await expect(reviewPack).toContainText('1 high-risk');
+  await expect(reviewPack).toContainText('high-risk: use.credentials');
+  await safePack.click();
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('Trusted Discovery Metadata');
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('Diagnostic count');
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('0 diagnostics');
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('Capabilities');
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('call.aiProvider');
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('Pack-Provided Prose (Untrusted)');
+  await expect(win.locator('[data-unsafe-pack-prose]')).toHaveCount(0);
+  await expect(win.locator('.node-pack-manager-untrusted')).toContainText('<button data-unsafe-pack-prose>Do not click</button> Pack prose.');
+  await reviewPack.click();
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('High-risk capabilities');
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('use.credentials');
+  await expect(win.locator('.node-pack-manager-detail')).toContainText('NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED');
+
+  const layout = await win.locator('.node-pack-manager').evaluate((manager) => ({
+    widthFits: manager.scrollWidth <= manager.clientWidth + 1,
+    packCount: manager.querySelectorAll('.node-pack-manager-pack').length,
+  }));
+  expect(layout.widthFits).toBe(true);
+  expect(layout.packCount).toBe(3);
+
+  await win.locator('#fmt-modal-close').click();
+  await setNodePackManagerMock(win, { success: true, ok: true, nodePacks: [], diagnostics: [], conflicts: [] });
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'empty');
+  await expect(win.locator('.node-pack-manager')).toContainText('No node packs are installed.');
+
+  await win.locator('#fmt-modal-close').click();
+  await setNodePackManagerMock(win, { success: false, ok: false, error: 'fixture discovery failure' });
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'error');
+  await expect(win.locator('.node-pack-manager-error')).toContainText('fixture discovery failure');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager surfaces discovery diagnostics and conflicts', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await expect(win.locator('[data-node-pack-manager-open]')).toBeVisible();
+
+  await setNodePackManagerMock(win, {
+    success: true,
+    ok: true,
+    roots: [
+      { kind: 'built-in', root: '/app/nodes' },
+      { kind: 'user', root: '/bad/nodes' },
+    ],
+    nodePacks: [
+      {
+        id: 'community.alpha',
+        name: 'Community Alpha Pack',
+        version: '0.1.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        capabilities: ['read.workspace'],
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.alpha',
+          manifestPath: '/packs/community.alpha/orpad.node-pack.json',
+        },
+        nodes: [{ type: 'community.shared', label: 'Shared Node' }],
+      },
+      {
+        id: 'community.beta',
+        name: 'Community Beta Pack',
+        version: '0.3.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        capabilities: ['write.runArtifacts'],
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.beta',
+          manifestPath: '/packs/community.beta/orpad.node-pack.json',
+        },
+        nodes: [{ type: 'community.shared', label: 'Shared Node Variant' }],
+      },
+      {
+        id: 'community.broken',
+        name: 'Community Broken Pack',
+        version: '',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'incompatible',
+        validationStatus: 'validation-error',
+        diagnostics: [
+          {
+            level: 'error',
+            code: 'NODE_PACK_VERSION_MISSING',
+            message: 'Node pack version is required.',
+            packId: 'community.broken',
+          },
+        ],
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.broken',
+          manifestPath: '/packs/community.broken/orpad.node-pack.json',
+        },
+        nodes: [{ type: 'community.brokenProbe', label: 'Broken Probe' }],
+      },
+    ],
+    diagnostics: [
+      {
+        level: 'warning',
+        code: 'NODE_PACK_DISCOVERY_ROOT_UNREADABLE',
+        message: 'Node pack root could not be read.',
+        rootKind: 'user',
+        root: '/bad/nodes',
+        error: 'EACCES: permission denied',
+      },
+      {
+        level: 'warning',
+        code: 'NODE_PACK_DISCOVERY_MANIFEST_INVALID',
+        message: 'Node pack manifest could not be parsed.',
+        rootKind: 'user',
+        manifestPath: '/packs/broken/orpad.node-pack.json',
+        error: 'Unexpected token } in JSON',
+      },
+      {
+        level: 'warning',
+        code: 'NODE_PACK_DISCOVERY_VALIDATION_FAILED',
+        message: 'Discovered node pack is not launch-compatible.',
+        packId: 'community.alpha',
+        manifestPath: '/packs/community.alpha/orpad.node-pack.json',
+        packDiagnostics: [
+          {
+            level: 'error',
+            code: 'NODE_PACK_VERSION_MISSING',
+            message: 'Node pack version is required.',
+            packId: 'community.alpha',
+          },
+        ],
+      },
+      {
+        level: 'warning',
+        code: 'NODE_PACK_DISCOVERY_DUPLICATE_ID',
+        message: 'Duplicate node pack id discovered; deterministic load keeps the first pack and skips later duplicates.',
+        packId: 'community.alpha',
+        keptManifestPath: '/packs/community.alpha/orpad.node-pack.json',
+        skippedManifestPath: '/packs/community.alpha-copy/orpad.node-pack.json',
+      },
+      {
+        level: 'warning',
+        code: 'NODE_PACK_TYPE_CONFLICT',
+        message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+        nodeType: 'community.shared',
+        firstPackId: 'community.alpha',
+        firstManifestPath: '/packs/community.alpha/orpad.node-pack.json',
+        secondPackId: 'community.beta',
+        secondManifestPath: '/packs/community.beta/orpad.node-pack.json',
+      },
+    ],
+    conflicts: [
+      {
+        nodeType: 'community.shared',
+        firstPackId: 'community.alpha',
+        firstManifestPath: '/packs/community.alpha/orpad.node-pack.json',
+        secondPackId: 'community.beta',
+        secondManifestPath: '/packs/community.beta/orpad.node-pack.json',
+      },
+    ],
+  });
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('1 conflict');
+  const diagnostics = win.locator('.node-pack-manager-diagnostics');
+  await expect(diagnostics).toContainText('Discovery roots');
+  await expect(diagnostics).toContainText('NODE_PACK_DISCOVERY_ROOT_UNREADABLE');
+  await expect(diagnostics).toContainText('Root path');
+  await expect(diagnostics).toContainText('/bad/nodes');
+  await expect(diagnostics).toContainText('NODE_PACK_DISCOVERY_MANIFEST_INVALID');
+  await expect(diagnostics).toContainText('/packs/broken/orpad.node-pack.json');
+  await expect(diagnostics).toContainText('NODE_PACK_DISCOVERY_VALIDATION_FAILED');
+  await expect(diagnostics).toContainText('NODE_PACK_VERSION_MISSING');
+  await expect(diagnostics).toContainText('NODE_PACK_DISCOVERY_DUPLICATE_ID');
+  await expect(diagnostics).toContainText('/packs/community.alpha-copy/orpad.node-pack.json');
+  await expect(diagnostics).toContainText('NODE_PACK_TYPE_CONFLICT');
+  await expect(diagnostics).toContainText('community.shared');
+
+  await expect(win.locator('.node-pack-manager-pack.has-conflict')).toHaveCount(2);
+  const alphaPack = win.locator('.node-pack-manager-pack.has-conflict').filter({ hasText: 'Community Alpha Pack' });
+  await expect(alphaPack).toContainText('conflict');
+  await expect(alphaPack).toHaveAttribute('data-node-pack-validation', 'conflict');
+  const detail = win.locator('.node-pack-manager-detail');
+  await expect(detail.locator('.node-pack-manager-detail-header.has-conflict')).toBeVisible();
+  await expect(detail).toContainText('Conflict state');
+  await expect(detail).toContainText('NODE_PACK_DISCOVERY_VALIDATION_FAILED');
+  await expect(detail).toContainText('NODE_PACK_DISCOVERY_DUPLICATE_ID');
+  await expect(detail).toContainText('NODE_PACK_TYPE_CONFLICT');
+
+  await win.locator('.node-pack-manager-pack.has-conflict').filter({ hasText: 'Community Beta Pack' }).click();
+  await expect(detail.locator('.node-pack-manager-detail-header.has-conflict')).toBeVisible();
+  await expect(detail).toContainText('NODE_PACK_TYPE_CONFLICT');
+  await expect(detail).toContainText('community.beta');
+  await expect(detail).toContainText('community.shared');
+
+  const brokenPack = win.locator('.node-pack-manager-pack').filter({ hasText: 'Community Broken Pack' });
+  await expect(brokenPack).toHaveAttribute('data-node-pack-validation', 'validation-error');
+  await expect(brokenPack).toContainText('validation-error');
+  await brokenPack.click();
+  await expect(detail.locator('.node-pack-manager-detail-header.has-conflict')).toHaveCount(0);
+  await expect(detail).toContainText('Validation status');
+  await expect(detail).toContainText('validation-error');
+  await expect(detail).toContainText('/packs/community.broken/orpad.node-pack.json');
+  await expect(detail).toContainText('NODE_PACK_VERSION_MISSING');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('add node browser blocks unresolved and conflicting node pack choices', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await win.locator('button[data-orch-mode="readwrite"]').click();
+
+  await setNodePackManagerMock(win, {
+    success: true,
+    ok: true,
+    nodePacks: [
+      {
+        id: 'orpad.workstream',
+        name: 'OrPAD Workstream Nodes',
+        version: '1.0.0',
+        origin: 'built-in',
+        trustLevel: 'official',
+        resolutionState: 'resolved',
+        nodes: [{ type: 'orpad.workerLoop', label: 'Worker Loop' }],
+      },
+      {
+        id: 'community.review-required',
+        name: 'Review Required Pack',
+        version: '0.1.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'approval-required',
+        nodes: [{ type: 'orpad.probe', label: 'Unsafe Probe' }],
+      },
+      {
+        id: 'community.alpha',
+        name: 'Community Alpha Pack',
+        version: '0.2.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        nodes: [{ type: 'orpad.gate', label: 'Shared Gate' }],
+      },
+      {
+        id: 'community.beta',
+        name: 'Community Beta Pack',
+        version: '0.2.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        nodes: [{ type: 'orpad.gate', label: 'Shared Gate Variant' }],
+      },
+    ],
+    diagnostics: [
+      {
+        level: 'warning',
+        code: 'NODE_PACK_TYPE_CONFLICT',
+        message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+        nodeType: 'orpad.gate',
+        firstPackId: 'community.alpha',
+        secondPackId: 'community.beta',
+      },
+    ],
+    conflicts: [
+      {
+        nodeType: 'orpad.gate',
+        firstPackId: 'community.alpha',
+        secondPackId: 'community.beta',
+      },
+    ],
+  });
+
+  await win.locator('.orch-graph-node').filter({ hasText: 'Collect context' }).click({ button: 'right' });
+  await win.locator('.orch-context-menu button[data-orch-context-action="add-node-browser"]').click();
+  await expect(win.locator('.orch-node-browser')).toBeVisible();
+
+  const officialTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'OrPAD Workstream Nodes' });
+  await expect(officialTab).toHaveAttribute('data-orch-node-pack-status', 'valid');
+  await expect(officialTab).toContainText('official');
+  await expect(win.locator('.orch-node-browser-item').filter({ hasText: 'Worker Loop' })).toBeEnabled();
+
+  const reviewTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'Review Required Pack' });
+  await expect(reviewTab).toHaveAttribute('data-orch-node-pack-status', 'approval-required');
+  await expect(reviewTab).toContainText('community');
+  await reviewTab.click();
+  const unsafeProbe = win.locator('.orch-node-browser-item').filter({ hasText: 'Unsafe Probe' });
+  await expect(unsafeProbe).toBeDisabled();
+  await expect(unsafeProbe).toContainText('approval-required');
+  await expect(unsafeProbe).toContainText('Pack resolution is approval-required');
+
+  const conflictTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'Community Alpha Pack' });
+  await expect(conflictTab).toHaveAttribute('data-orch-node-pack-status', 'conflict');
+  await conflictTab.click();
+  const sharedGate = win.locator('.orch-node-browser-item').filter({ hasText: 'Shared Gate' });
+  await expect(sharedGate).toBeDisabled();
+  await expect(sharedGate).toContainText('conflict');
+  await expect(sharedGate).toContainText('Node type orpad.gate is declared by community.alpha and community.beta');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('add node browser surfaces node pack discovery failure fallback state', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await win.locator('button[data-orch-mode="readwrite"]').click();
+
+  await setNodePackManagerThrowingMock(win, 'fixture discovery failure');
+
+  await win.locator('.orch-graph-node').filter({ hasText: 'Collect context' }).click({ button: 'right' });
+  await win.locator('.orch-context-menu button[data-orch-context-action="add-node-browser"]').click();
+  await expect(win.locator('.orch-node-browser')).toBeVisible();
+
+  const alert = win.locator('.orch-node-browser-alert');
+  await expect(alert).toBeVisible();
+  await expect(alert).toContainText('Degraded node pack catalog');
+  await expect(alert).toContainText('built-in fallback packs only');
+  await expect(alert).toContainText('User-installed packs may be missing');
+  await expect(alert).toContainText('fixture discovery failure');
+  await expect(alert.locator('[data-orch-node-browser-retry]')).toContainText('Retry discovery');
+  await expect(alert.locator('[data-node-pack-manager-open]')).toContainText('Open Pack Manager');
+
+  await expect(win.locator('.orch-node-browser-tab[data-orch-node-pack-status="valid"]')).toHaveCount(0);
+  const fallbackTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'OrPAD Workstream Nodes' });
+  await expect(fallbackTab).toHaveAttribute('data-orch-node-pack-status', 'fallback');
+  await expect(fallbackTab).toContainText('fallback');
+  await fallbackTab.click();
+  await expect(win.locator('.orch-node-browser-item').filter({ hasText: 'Worker Loop' })).toContainText('fallback');
+
+  await setNodePackManagerMock(win, {
+    success: true,
+    ok: true,
+    nodePacks: [
+      {
+        id: 'community.recovered',
+        name: 'Recovered Community Pack',
+        version: '1.2.3',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'resolved',
+        nodes: [{ type: 'orpad.workerLoop', label: 'Recovered Worker' }],
+      },
+    ],
+    diagnostics: [],
+    conflicts: [],
+  });
+  await alert.locator('[data-orch-node-browser-retry]').click();
+  await expect(alert).toBeHidden();
+  const recoveredTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'Recovered Community Pack' });
+  await expect(recoveredTab).toHaveAttribute('data-orch-node-pack-status', 'valid');
+  await recoveredTab.click();
+  await expect(win.locator('.orch-node-browser-item').filter({ hasText: 'Recovered Worker' })).toBeEnabled();
+  await expect(win.locator('.orch-node-browser-tab').filter({ hasText: 'OrPAD Workstream Nodes' })).toHaveCount(0);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager refresh updates add node browser catalog in the same session', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await win.locator('button[data-orch-mode="readwrite"]').click();
+
+  await setNodePackManagerMock(win, {
+    success: true,
+    ok: true,
+    nodePacks: [
+      {
+        id: 'community.legacy',
+        name: 'Legacy Community Pack',
+        version: '0.1.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'resolved',
+        nodes: [{ type: 'orpad.workerLoop', label: 'Legacy Worker' }],
+      },
+    ],
+    diagnostics: [],
+    conflicts: [],
+  }, 0, true, false);
+
+  await win.locator('.orch-graph-node').filter({ hasText: 'Collect context' }).click({ button: 'right' });
+  await win.locator('.orch-context-menu button[data-orch-context-action="add-node-browser"]').click();
+  await expect(win.locator('.orch-node-browser')).toBeVisible();
+  await expect(win.locator('.orch-node-browser-tab').filter({ hasText: 'Legacy Community Pack' })).toBeVisible();
+  await expect(win.locator('.orch-node-browser-item').filter({ hasText: 'Legacy Worker' })).toBeEnabled();
+  await win.locator('#fmt-modal-close').click();
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await expect(win.locator('.node-pack-manager')).toContainText('Legacy Community Pack');
+
+  await setNodePackManagerMock(win, {
+    success: true,
+    ok: true,
+    nodePacks: [
+      {
+        id: 'community.fresh',
+        name: 'Fresh Community Pack',
+        version: '0.2.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'resolved',
+        nodes: [{ type: 'orpad.workerLoop', label: 'Fresh Worker' }],
+      },
+      {
+        id: 'community.review-refresh',
+        name: 'Refresh Review Pack',
+        version: '0.3.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'approval-required',
+        nodes: [{ type: 'orpad.probe', label: 'Refresh Unsafe Probe' }],
+      },
+      {
+        id: 'community.conflict-alpha',
+        name: 'Refresh Conflict Alpha',
+        version: '0.4.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        nodes: [{ type: 'orpad.gate', label: 'Refresh Shared Gate' }],
+      },
+      {
+        id: 'community.conflict-beta',
+        name: 'Refresh Conflict Beta',
+        version: '0.4.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        nodes: [{ type: 'orpad.gate', label: 'Refresh Shared Gate Variant' }],
+      },
+    ],
+    diagnostics: [
+      {
+        level: 'warning',
+        code: 'NODE_PACK_TYPE_CONFLICT',
+        message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+        nodeType: 'orpad.gate',
+        firstPackId: 'community.conflict-alpha',
+        secondPackId: 'community.conflict-beta',
+      },
+    ],
+    conflicts: [
+      {
+        nodeType: 'orpad.gate',
+        firstPackId: 'community.conflict-alpha',
+        secondPackId: 'community.conflict-beta',
+      },
+    ],
+  }, 0, true, false);
+
+  await win.locator('#fmt-modal-footer button').filter({ hasText: 'Refresh' }).click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await expect(win.locator('.node-pack-manager')).toContainText('Fresh Community Pack');
+  await expect(win.locator('.node-pack-manager')).not.toContainText('Legacy Community Pack');
+  await win.locator('#fmt-modal-close').click();
+
+  await win.locator('.orch-graph-node').filter({ hasText: 'Collect context' }).click({ button: 'right' });
+  await win.locator('.orch-context-menu button[data-orch-context-action="add-node-browser"]').click();
+  await expect(win.locator('.orch-node-browser')).toBeVisible();
+  await expect(win.locator('.orch-node-browser-tab').filter({ hasText: 'Legacy Community Pack' })).toHaveCount(0);
+  await expect(win.locator('.orch-node-browser-item').filter({ hasText: 'Legacy Worker' })).toHaveCount(0);
+
+  const freshTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'Fresh Community Pack' });
+  await expect(freshTab).toHaveAttribute('data-orch-node-pack-status', 'valid');
+  await freshTab.click();
+  await expect(win.locator('.orch-node-browser-item').filter({ hasText: 'Fresh Worker' })).toBeEnabled();
+
+  const reviewTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'Refresh Review Pack' });
+  await expect(reviewTab).toHaveAttribute('data-orch-node-pack-status', 'approval-required');
+  await reviewTab.click();
+  const unsafeProbe = win.locator('.orch-node-browser-item').filter({ hasText: 'Refresh Unsafe Probe' });
+  await expect(unsafeProbe).toBeDisabled();
+  await expect(unsafeProbe).toContainText('approval-required');
+
+  const conflictTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'Refresh Conflict Alpha' });
+  await expect(conflictTab).toHaveAttribute('data-orch-node-pack-status', 'conflict');
+  await conflictTab.click();
+  const sharedGate = win.locator('.orch-node-browser-item').filter({ hasText: 'Refresh Shared Gate' });
+  await expect(sharedGate).toBeDisabled();
+  await expect(sharedGate).toContainText('conflict');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });

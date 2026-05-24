@@ -30,6 +30,7 @@ const validator = createContractValidator();
 function targetQueueStateForWorkerResult(result) {
   if (result.status === 'done') return 'done';
   if (result.status === 'queued') return 'queued';
+  if (result.status === 'requeued') return 'queued';
   if (result.status === 'approval-required') return 'queued';
   return 'blocked';
 }
@@ -143,6 +144,55 @@ function workerResultArtifactRefs(result) {
     ...(result.artifacts || []),
     ...(result.patchArtifact ? [result.patchArtifact] : []),
   ].filter(Boolean))];
+}
+
+const WORKER_RESULT_EVIDENCE_FIELDS = Object.freeze([
+  'failingSymptom',
+  'failureSymptom',
+  'rootCause',
+  'rootCauses',
+  'filesChanged',
+  'verificationCommands',
+  'validationCommands',
+  'residualRisk',
+  'residualRisks',
+  'workerEvidence',
+  'itemEvidence',
+  'contractEvidence',
+  'evidence',
+  'reportedFilesChanged',
+  'reportedStatus',
+]);
+
+function workerResultEvidencePayload(result = {}) {
+  const payload = {};
+  for (const field of WORKER_RESULT_EVIDENCE_FIELDS) {
+    if (result[field] !== undefined) payload[field] = result[field];
+  }
+  return payload;
+}
+
+function workerResultNextAction(result = {}, toState = '') {
+  const explicit = String(result.nextAction || '').trim();
+  if (explicit) return explicit;
+  if (result.status === 'approval-required') return 'approve-or-decline-worker-tool-permission';
+  if (result.status === 'queued' || result.status === 'requeued' || toState === 'queued') {
+    return 'retry-queued-worker-item';
+  }
+  if (result.status === 'failed') return 'inspect-worker-failure-and-retry-or-requeue';
+  if (result.status === 'rejected') return 'revise-worker-result-or-requeue';
+  if (result.status === 'blocked' || toState === 'blocked') return 'resolve-worker-block-and-retry-or-requeue';
+  return '';
+}
+
+function workerResultBlockedReason(result = {}) {
+  return String(
+    result.blockedReason
+    || result.deferredReason
+    || result.failureReason
+    || result.summary
+    || '',
+  ).trim();
 }
 
 function normalizeLockFileList(files = []) {
@@ -275,6 +325,8 @@ async function applyWorkerResult(runRoot, options = {}) {
   assertWorkerResultWithinWriteSet(result, lease);
   const toState = assertWorkerResultTargetQueueState(options.toState || targetQueueStateForWorkerResult(result));
   await assertWorkerResultArtifactsRegistered(runRoot, result);
+  const nextAction = workerResultNextAction(result, toState);
+  const blockedReason = workerResultBlockedReason(result);
   const workerEvent = await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
@@ -297,6 +349,10 @@ async function applyWorkerResult(runRoot, options = {}) {
       targetFilesSource: targetFilesSource || '',
       reviewRequired: reviewRequired === true,
       verification: result.verification || [],
+      ...(nextAction ? { nextAction } : {}),
+      ...(blockedReason ? { blockedReason } : {}),
+      ...(result.deferredReason ? { deferredReason: result.deferredReason } : {}),
+      ...workerResultEvidencePayload(result),
     },
   });
   const transition = await transitionQueueItem(runRoot, {
@@ -311,6 +367,8 @@ async function applyWorkerResult(runRoot, options = {}) {
       closedByClaimId: claimId,
       workerResultStatus: result.status,
       closedAt: now,
+      ...(nextAction ? { nextAction } : {}),
+      ...(blockedReason ? { blockedReason } : {}),
       ...(result.status === 'approval-required' ? {
         approvalRequired: true,
         approvalRequiredReason: result.approvalRequest?.reason || 'llm-cli-permission-required',
@@ -343,6 +401,7 @@ async function applyWorkerResult(runRoot, options = {}) {
       claimId,
       workerStatus: result.status,
       message: result.summary,
+      ...(nextAction ? { nextAction } : {}),
     },
   });
   let approval = null;

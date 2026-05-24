@@ -47,6 +47,37 @@ test('failedAdapterCallsFromRecord finds adapter.result with status=failed', () 
   assert.equal(results[0].transcriptRef, 'artifacts/adapters/b1.transcript.json');
 });
 
+test('failedAdapterCallsFromRecord attaches run.summary diagnostics to failed adapter calls', () => {
+  const failedEvent = syntheticAdapterResult({
+    sequence: 1,
+    status: 'failed',
+    nodePath: 'main/probe-b',
+    adapterCallId: 'b1',
+  });
+  failedEvent.reason = 'proposal-only-result.failed';
+  failedEvent.payload.taskKind = 'probe';
+  const record = {
+    runRoot: '/run',
+    events: [
+      failedEvent,
+      {
+        sequence: 2,
+        eventType: 'run.summary',
+        nodePath: 'main/probe-b',
+        payload: {
+          adapterCallId: 'b1',
+          message: 'Codex CLI proposal adapter did not return valid JSON: ENOENT: missing last-message.json',
+        },
+      },
+    ],
+  };
+  const results = summary.failedAdapterCallsFromRecord(record);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].reason, 'proposal-only-result.failed');
+  assert.equal(results[0].taskKind, 'probe');
+  assert.match(results[0].message, /ENOENT: missing last-message\.json/);
+});
+
 test('failedAdapterCallsFromRecord catches blocked / rejected / approval-required', () => {
   const record = {
     events: [
@@ -60,14 +91,14 @@ test('failedAdapterCallsFromRecord catches blocked / rejected / approval-require
   assert.deepEqual(statuses, ['approval-required', 'blocked', 'rejected']);
 });
 
-test('failedAdapterCallsFromRecord ignores accepted proposal-only approval statuses with progress', () => {
+test('failedAdapterCallsFromRecord ignores proposal-only approval statuses with progress', () => {
   const event = syntheticAdapterResult({
     sequence: 1,
     status: 'approval-required',
     nodePath: 'main/probe-a',
     adapterCallId: 'a',
   });
-  event.reason = 'proposal-only-result.accepted';
+  event.reason = 'proposal-only-result.approval-required';
   event.payload.proposalCount = 3;
   event.payload.summaryStatus = 'blocked';
   const record = {

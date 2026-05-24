@@ -25,17 +25,68 @@ function toAnthropicTools(tools = []) {
   })).filter(tool => tool.name);
 }
 
-async function* streamAnthropic(res) {
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (signal?.reason) {
+    const err = new Error(String(signal.reason));
+    err.name = 'AbortError';
+    return err;
+  }
+  try {
+    return new DOMException('Aborted', 'AbortError');
+  } catch {
+    const err = new Error('Aborted');
+    err.name = 'AbortError';
+    return err;
+  }
+}
+
+async function readStreamChunk(reader, abortSignal) {
+  if (!abortSignal) return reader.read();
+  if (abortSignal.aborted) throw abortError(abortSignal);
+
+  let cleanup = null;
+  const aborted = new Promise((_, reject) => {
+    const onAbort = () => {
+      const err = abortError(abortSignal);
+      reject(err);
+      try { reader.cancel(err).catch(() => {}); } catch {}
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    cleanup = () => abortSignal.removeEventListener('abort', onAbort);
+  });
+
+  try {
+    return await Promise.race([reader.read(), aborted]);
+  } finally {
+    if (cleanup) cleanup();
+  }
+}
+
+function malformedStreamEvent(provider, data) {
+  return {
+    type: 'error',
+    code: 'PROVIDER_STREAM_MALFORMED_JSON',
+    message: `${provider} stream sent malformed JSON.`,
+    diagnostic: {
+      provider,
+      chunkLength: String(data || '').length,
+    },
+  };
+}
+
+async function* streamAnthropic(res, abortSignal) {
   if (!res.ok) await readError(res);
   if (!res.body) throw new Error('Anthropic did not return a stream.');
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let malformedReported = false;
   const toolCalls = new Map();
 
   while (true) {
-    const { value, done } = await reader.read();
+    const { value, done } = await readStreamChunk(reader, abortSignal);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const chunks = buffer.split(/\r?\n\r?\n/);
@@ -47,35 +98,40 @@ async function* streamAnthropic(res) {
         .map(line => line.slice(5).trim())
         .join('\n');
       if (!data) continue;
+      let json = null;
       try {
-        const json = JSON.parse(data);
-        if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
-          toolCalls.set(json.index || 0, {
-            id: json.content_block.id || '',
-            name: json.content_block.name || '',
-            arguments: '',
-          });
-        }
-        if (json.type === 'content_block_delta' && json.delta?.text) {
-          yield { type: 'text', delta: json.delta.text };
-        }
-        if (json.type === 'content_block_delta' && json.delta?.type === 'input_json_delta') {
-          const current = toolCalls.get(json.index || 0) || { id: '', name: '', arguments: '' };
-          current.arguments += json.delta.partial_json || '';
-          toolCalls.set(json.index || 0, current);
-        }
-        if (json.type === 'message_delta' && json.usage) {
-          yield { type: 'usage', usage: json.usage };
-        }
-        if (json.type === 'message_stop') {
-          for (const call of toolCalls.values()) {
-            if (call.name) yield { type: 'tool_call', ...call };
-          }
-          yield { type: 'done' };
-          return;
-        }
+        json = JSON.parse(data);
       } catch {
-        // Ignore provider events we do not understand yet.
+        if (!malformedReported) {
+          malformedReported = true;
+          yield malformedStreamEvent('Anthropic', data);
+        }
+        continue;
+      }
+      if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
+        toolCalls.set(json.index || 0, {
+          id: json.content_block.id || '',
+          name: json.content_block.name || '',
+          arguments: '',
+        });
+      }
+      if (json.type === 'content_block_delta' && json.delta?.text) {
+        yield { type: 'text', delta: json.delta.text };
+      }
+      if (json.type === 'content_block_delta' && json.delta?.type === 'input_json_delta') {
+        const current = toolCalls.get(json.index || 0) || { id: '', name: '', arguments: '' };
+        current.arguments += json.delta.partial_json || '';
+        toolCalls.set(json.index || 0, current);
+      }
+      if (json.type === 'message_delta' && json.usage) {
+        yield { type: 'usage', usage: json.usage };
+      }
+      if (json.type === 'message_stop') {
+        for (const call of toolCalls.values()) {
+          if (call.name) yield { type: 'tool_call', ...call };
+        }
+        yield { type: 'done' };
+        return;
       }
     }
   }
@@ -112,6 +168,6 @@ export default {
       body: JSON.stringify(body),
       signal: abortSignal,
     });
-    yield* streamAnthropic(res);
+    yield* streamAnthropic(res, abortSignal);
   },
 };

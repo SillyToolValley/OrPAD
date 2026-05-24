@@ -33,40 +33,95 @@ function killProcessTree(pid?: number): void {
   } catch {}
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+async function waitForProcessExit(child: childProcess.ChildProcess | undefined, timeoutMs = 3000): Promise<void> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  await Promise.race([
+    new Promise<void>(resolve => child.once('exit', () => resolve())),
+    delay(timeoutMs),
+  ]);
+}
+
+export function attachReliableElectronClose(
+  app: ElectronApplication,
+  userDataDir?: string,
+): ElectronApplication {
+  const close = app.close.bind(app);
+  app.close = async () => {
+    const child = app.process();
+    const closePromise = close().catch(() => {});
+    const closed = await Promise.race([
+      closePromise.then(() => true),
+      delay(5000).then(() => false),
+    ]);
+    if (!closed) {
+      killProcessTree(child.pid);
+      await Promise.race([
+        closePromise,
+        delay(5000),
+      ]);
+    }
+    killProcessTree(child.pid);
+    await waitForProcessExit(child);
+    if (userDataDir) {
+      await removeDirWithRetries(userDataDir);
+    }
+  };
+  return app;
+}
+
+export async function closeElectronApp(app: ElectronApplication | undefined | null): Promise<void> {
+  if (!app) return;
+  await app.close();
+}
+
 export async function launchElectron(
   extraArgs: string[] = [],
   extraEnv: Record<string, string> = {},
 ): Promise<ElectronApplication> {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-e2e-'));
-  const app = await electron.launch({
-    args: ['.', ...extraArgs],
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      ORPAD_TEST_USER_DATA: userDataDir,
-      ...extraEnv,
-    },
-  });
-  const win = await app.firstWindow();
-  await win.waitForLoadState('domcontentloaded');
-  await win.waitForSelector('.cm-editor', { timeout: 10000 });
-  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand, null, { timeout: 10000 });
-  const close = app.close.bind(app);
-  app.close = async () => {
-    const child = app.process();
-    try {
-      await Promise.race([
-        close(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timed out closing Electron test app.')), 5000)),
-      ]);
-    } catch {
-      killProcessTree(child.pid);
-    } finally {
-      killProcessTree(child.pid);
+  let app: ElectronApplication | undefined;
+  try {
+    app = attachReliableElectronClose(await electron.launch({
+      args: ['.', ...extraArgs],
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ORPAD_TEST_USER_DATA: userDataDir,
+        ...extraEnv,
+      },
+    }), userDataDir);
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await win.waitForSelector('.cm-editor', { timeout: 10000 });
+    await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand, null, { timeout: 10000 });
+    return app;
+  } catch (err) {
+    await closeElectronApp(app);
+    if (!app) {
       await removeDirWithRetries(userDataDir);
     }
-  };
-  return app;
+    throw err;
+  }
+}
+
+export async function withElectronApp<T>(
+  callback: (app: ElectronApplication) => Promise<T>,
+  extraArgs: string[] = [],
+  extraEnv: Record<string, string> = {},
+): Promise<T> {
+  const app = await launchElectron(extraArgs, extraEnv);
+  try {
+    return await callback(app);
+  } finally {
+    await closeElectronApp(app);
+  }
 }
 
 export async function startStaticServer(

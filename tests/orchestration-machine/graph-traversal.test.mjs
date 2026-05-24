@@ -201,9 +201,9 @@ test('topological order falls back to source order for cyclic leftovers', () => 
 // `topologicalOrder` returning cyclic nodes in source order hides
 // legitimate loop-backs (Pattern B / Pattern I / Pattern K — every
 // Ralph loop, queue-drain, and patchReview reject) and authored cycle
-// bugs under the same bucket. Phase 3 will need to reject the latter
-// while preserving the former. Phase 1 surfaces the distinction so
-// downstream code can decide; the actual rejection is deferred.
+// bugs under the same bucket. Machine execution rejects the latter
+// while preserving the former; traversal surfaces the distinction so
+// runtime validation can fail with graph-repair diagnostics.
 // Codex CLI cross-review 2026-05-16 found two bugs in the original
 // cycle detector: Kahn-in-both-directions over-reports cycle membership
 // for path nodes between SCCs, and `nonLoopBackCycleNodeIds` was
@@ -237,9 +237,10 @@ test('detectGraphCycles reports exact SCC membership and per-SCC back-edge class
   assert.equal(loopBackOnly.loopBackEdges[0].to, 'worker');
 });
 
-test('detectGraphCycles flags tangled multi-back-edge cycles as non-clean-loop-back', () => {
+test('detectGraphCycles flags unlabelled multi-back-edge cycles as non-clean-loop-back', () => {
   // Three-node cycle a -> b -> c -> a, c -> b (extra back edge).
-  // SCC = {a,b,c}. Back edges = c->a, c->b. 2 back edges -> tangled.
+  // SCC = {a,b,c}. Back edges = c->a, c->b. Without explicit
+  // loop-back labels, 2 back edges -> tangled.
   const tangled = detectGraphCycles(
     [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
     [
@@ -255,6 +256,24 @@ test('detectGraphCycles flags tangled multi-back-edge cycles as non-clean-loop-b
   assert.equal(tangled.cyclicSCCs[0].backEdges.length, 2);
   assert.equal(tangled.cyclicSCCs[0].isCleanLoopBack, false);
   assert.deepEqual(tangled.tangledCycleNodeIds.sort(), ['a', 'b', 'c']);
+});
+
+test('detectGraphCycles accepts explicitly labelled multi-back-edge loop-backs', () => {
+  const queueRedrive = detectGraphCycles(
+    [{ id: 'dispatch' }, { id: 'worker' }, { id: 'queue-gate' }],
+    [
+      { from: 'dispatch', to: 'worker' },
+      { from: 'worker', to: 'queue-gate' },
+      { from: 'queue-gate', to: 'dispatch', condition: 'queue-not-empty' },
+      { from: 'queue-gate', to: 'dispatch', condition: 'fail' },
+    ],
+  );
+
+  assert.equal(queueRedrive.hasCycle, true);
+  assert.equal(queueRedrive.cyclicSCCs.length, 1);
+  assert.equal(queueRedrive.cyclicSCCs[0].backEdges.length, 2);
+  assert.equal(queueRedrive.cyclicSCCs[0].isCleanLoopBack, true);
+  assert.deepEqual(queueRedrive.tangledCycleNodeIds, []);
 });
 
 test('detectGraphCycles does not over-report path nodes between two distinct SCCs', () => {
@@ -315,7 +334,7 @@ test('detectGraphCycles returns empty cycle data for a pure DAG', () => {
   assert.deepEqual(dag.loopBackEdges, []);
 });
 
-test('buildTraversalPlan surfaces per-graph cycle metadata so Phase 3 can decide whether to reject', async () => {
+test('buildTraversalPlan surfaces per-graph cycle metadata for runtime rejection diagnostics', async () => {
   const graphSet = await loadPipelineGraphSet({ pipelinePath: maintenancePipelinePath });
   const plan = buildTraversalPlan(graphSet);
   for (const graphPlan of plan.graphPlans) {

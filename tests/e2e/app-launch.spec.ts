@@ -2,7 +2,7 @@ import { test, expect, _electron as electron } from '@playwright/test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { launchElectron } from '../helpers';
+import { attachReliableElectronClose, closeElectronApp, launchElectron } from '../helpers';
 
 function createOrpadFileLaunchFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-file-launch-'));
@@ -91,18 +91,28 @@ function createOrpadFileLaunchFixture() {
 
 async function launchElectronWithFileArg(filePath: string) {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-file-launch-user-data-'));
-  const app = await electron.launch({
-    args: [path.resolve('src/main/main.js'), filePath],
-    env: {
-      ...process.env,
-      ORPAD_TEST_USER_DATA: userData,
-    },
-  });
-  return { app, userData };
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    app = attachReliableElectronClose(await electron.launch({
+      args: [path.resolve('src/main/main.js'), filePath],
+      env: {
+        ...process.env,
+        ORPAD_TEST_USER_DATA: userData,
+      },
+    }), userData);
+    return { app, userData };
+  } catch (err) {
+    await closeElectronApp(app);
+    if (!app) {
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
+    throw err;
+  }
 }
 
 test('desktop app launches, window title contains OrPAD', async () => {
   const app = await launchElectron();
+  try {
   const win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
 
@@ -242,7 +252,9 @@ test('desktop app launches, window title contains OrPAD', async () => {
   await win.evaluate(() => (window as any).orpadCommands.runCommand('git.openPanel'));
   await expect(win.locator('#fmt-modal')).toBeVisible();
 
-  await app.close();
+  } finally {
+    await closeElectronApp(app);
+  }
 });
 
 test('OrPAD file launch opens every registered OrPAD extension file argument', async () => {
@@ -290,7 +302,7 @@ test('OrPAD file launch opens every registered OrPAD extension file argument', a
         }
         await expect.poll(async () => app.windows().length).toBe(1);
       } finally {
-        await app.close();
+        await closeElectronApp(app);
         fs.rmSync(userData, { recursive: true, force: true });
       }
     }
@@ -321,7 +333,7 @@ test('OrPAD file launch opens tree file from second instance argument', async ()
     await expect(win.locator('.cm-content')).toContainText('Tree file launch opens a tab');
     await expect.poll(async () => app.windows().length).toBe(1);
   } finally {
-    await app.close();
+    await closeElectronApp(app);
     fs.rmSync(fixture.dir, { recursive: true, force: true });
   }
 });
@@ -357,6 +369,6 @@ test('closing the main window also closes detached terminal windows', async () =
     });
     await Promise.all([mainClosed, detachedClosed]);
   } finally {
-    await app.close();
+    await closeElectronApp(app);
   }
 });

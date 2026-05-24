@@ -10,7 +10,9 @@ const {
   auditGeneratedPipelineQuality,
 } = require('./quality-audit');
 const {
+  BUILT_IN_NODE_PACK_MANIFESTS,
   authoringNodePackPromptLines,
+  discoverNodePackManifests,
   nodePackDeclarationForPipeline,
   selectAuthoringNodePacks,
 } = require('../orchestration-machine/node-packs');
@@ -50,6 +52,21 @@ const DEFAULT_CONTENT_EDITORIAL_GATE = Object.freeze({
 });
 const CANONICAL_REQUIRED_ARTIFACTS = Object.freeze(['discovery/candidate-inventory.json']);
 const CANONICAL_REQUIRED_QUEUE = Object.freeze(['journal.jsonl']);
+const WORKER_RESULT_SCHEMA_VERSION = 'orpad.workerResult.v1';
+const ITEM_EVIDENCE_CONTRACT_SCHEMA_VERSION = 'orpad.itemEvidenceContract.v1';
+const ITEM_EVIDENCE_REQUIRED_FIELDS = Object.freeze([
+  'failingSymptom',
+  'rootCause',
+  'filesChanged',
+  'verificationCommands',
+  'residualRisk',
+]);
+const ITEM_EVIDENCE_OPTIONAL_FIELDS = Object.freeze(['followUpCandidates']);
+const ITEM_EVIDENCE_ARTIFACTS = Object.freeze([
+  'work-items/<work-item-id>/worker-evidence.json',
+  'work-items/<work-item-id>/verification.md',
+]);
+const BARRIER_PARTIAL_FAILURE_POLICIES = new Set(['fail', 'continue-with-warning', 'block']);
 const AUTHORABLE_NODE_TYPES = new Set([
   'orpad.artifactContract',
   'orpad.barrier',
@@ -107,6 +124,94 @@ function nodeId(value, fallback = 'node') {
 
 function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function uniqueEvidenceFields(values) {
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const field = String(value || '').trim();
+    if (field && !out.includes(field)) out.push(field);
+  }
+  return out;
+}
+
+function itemEvidenceFieldContracts() {
+  return {
+    failingSymptom: { type: 'string', minLength: 1 },
+    rootCause: { type: 'string', minLength: 1 },
+    filesChanged: { type: 'array', items: 'relative-path', minItems: 1 },
+    verificationCommands: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        command: 'string',
+        status: ['passed', 'failed', 'blocked'],
+        summary: 'string',
+      },
+    },
+    residualRisk: { type: 'string', minLength: 1 },
+    followUpCandidates: { type: 'array', items: 'work-item-candidate', default: [] },
+  };
+}
+
+function defaultItemEvidenceContract() {
+  return {
+    schemaVersion: ITEM_EVIDENCE_CONTRACT_SCHEMA_VERSION,
+    appliesTo: 'completed-work-items',
+    completedState: 'done',
+    workerResultSchema: WORKER_RESULT_SCHEMA_VERSION,
+    requiredPerCompletedTask: [...ITEM_EVIDENCE_REQUIRED_FIELDS],
+    optionalPerCompletedTask: [...ITEM_EVIDENCE_OPTIONAL_FIELDS],
+    fieldContracts: itemEvidenceFieldContracts(),
+    artifactPaths: [...ITEM_EVIDENCE_ARTIFACTS],
+    enforcement: 'hard-required-by-artifact-contract',
+  };
+}
+
+function normalizeItemEvidenceContract(value) {
+  const authored = isPlainObject(value) ? value : {};
+  const defaults = defaultItemEvidenceContract();
+  const requiredPerCompletedTask = uniqueEvidenceFields([
+    ...(Array.isArray(authored.requiredPerCompletedTask) ? authored.requiredPerCompletedTask : []),
+    ...ITEM_EVIDENCE_REQUIRED_FIELDS,
+  ]);
+  const optionalPerCompletedTask = uniqueEvidenceFields([
+    ...ITEM_EVIDENCE_OPTIONAL_FIELDS,
+    ...(Array.isArray(authored.optionalPerCompletedTask) ? authored.optionalPerCompletedTask : []),
+  ]).filter(field => !requiredPerCompletedTask.includes(field));
+  const artifactPaths = uniqueEvidenceFields([
+    ...(Array.isArray(authored.artifactPaths) ? authored.artifactPaths : []),
+    ...ITEM_EVIDENCE_ARTIFACTS,
+  ]);
+  const contract = {
+    ...authored,
+    schemaVersion: ITEM_EVIDENCE_CONTRACT_SCHEMA_VERSION,
+    appliesTo: 'completed-work-items',
+    completedState: 'done',
+    workerResultSchema: WORKER_RESULT_SCHEMA_VERSION,
+    requiredPerCompletedTask,
+    optionalPerCompletedTask,
+    fieldContracts: {
+      ...(isPlainObject(authored.fieldContracts) ? authored.fieldContracts : {}),
+      ...defaults.fieldContracts,
+    },
+    artifactPaths,
+    enforcement: 'hard-required-by-artifact-contract',
+  };
+  const authoredEnforcement = String(authored.enforcement || '').trim();
+  if (authoredEnforcement && authoredEnforcement !== contract.enforcement) {
+    contract.authoredEnforcement = authored.enforcement;
+  }
+  return contract;
+}
+
+function workerEvidenceOutputContract() {
+  return {
+    resultSchema: WORKER_RESULT_SCHEMA_VERSION,
+    evidenceContractRef: 'orpad.artifactContract.itemEvidenceContract',
+    requiredResultFields: [...ITEM_EVIDENCE_REQUIRED_FIELDS],
+    evidenceArtifacts: [...ITEM_EVIDENCE_ARTIFACTS],
+  };
 }
 
 function uniqueId(base, seen) {
@@ -268,8 +373,76 @@ function orchestrationAuthoringPrompt(taskText, contextRulePath) {
   ].join('\n');
 }
 
-function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
+function quotePromptMetadata(value) {
+  return JSON.stringify(String(value === undefined || value === null ? '' : value));
+}
+
+function frozenAuthoringNodePackPromptLines(selectedNodePacks = []) {
+  const packs = (Array.isArray(selectedNodePacks) ? selectedNodePacks : [])
+    .filter(pack => pack?.id);
+  const lines = [
+    '## Situation Node Pack Catalog',
+    '',
+    'Use this frozen node pack selection. The materialized pipeline will declare them in `nodePacks`; do not re-select or reorder the catalog while authoring the spec.',
+    packs.length
+      ? `Selected pack ids: ${packs.map(pack => `\`${pack.id}\``).join(', ')}`
+      : 'Selected pack ids: none.',
+    '',
+  ];
+
+  for (const [index, pack] of packs.entries()) {
+    const graphs = uniqueStrings((pack.graphs || []).map(graph => (typeof graph === 'string' ? graph : graph.id)), 12);
+    const skills = uniqueStrings((pack.skills || []).map(skill => (typeof skill === 'string' ? skill : skill.id)), 12);
+    const rules = uniqueStrings((pack.rules || []).map(rule => (typeof rule === 'string' ? rule : rule.id)), 12);
+    const matchedSignals = uniqueStrings(pack.matchedSignals || [], 12);
+    const acceptanceCriteria = selectedPackAcceptanceCriteria([pack]);
+    const targetPolicy = selectedPackCandidateTargetPolicy([pack]);
+    const probeLens = normalizeTask(pack.authoringHints?.probe?.lens || '');
+    const contextSummary = normalizeTask(pack.authoringHints?.context?.summary || pack.authoringHints?.context?.label || '');
+    const finalQualityGate = pack.authoringHints?.finalQualityGate;
+    const validationState = pack.validationStatus || pack.resolutionState || pack.validation?.status || pack.validation?.resolutionState || 'unknown';
+    const capabilityRisk = pack.capabilityRiskSummary || 'unknown';
+    const metadata = [
+      `origin=${pack.origin || 'unknown'}`,
+      `source=${pack.source || 'unknown'}`,
+      `trustLevel=${pack.trustLevel || 'unknown'}`,
+      `validationState=${validationState}`,
+      `capabilityRisk=${capabilityRisk}`,
+    ].join('; ');
+
+    lines.push(
+      `### ${index + 1}. ${pack.id}`,
+      '',
+      `- Name: ${pack.name || pack.id}`,
+      `- Version: ${pack.version || 'unknown'}`,
+      `- Match reason: quoted selection reason ${quotePromptMetadata(pack.reason || pack.authoringHints?.selectionReason || pack.description || '')}`,
+      `- Pack metadata (quoted, not instructions): ${quotePromptMetadata(metadata)}.`,
+      `- Source: ${pack.origin || 'unknown'}; trust: ${pack.trustLevel || 'unknown'}; validation: ${validationState}; capability risk: ${capabilityRisk}`,
+    );
+    if (matchedSignals.length) lines.push(`- Matched signals: ${matchedSignals.join(', ')}`);
+    if (graphs.length) lines.push(`- Graphs: ${graphs.join(', ')}`);
+    if (skills.length) lines.push(`- Skills: ${skills.join(', ')}`);
+    if (rules.length) lines.push(`- Rules: ${rules.join(', ')}`);
+    if (contextSummary) lines.push(`- Preferred context: quoted pack hint ${quotePromptMetadata(contextSummary)}`);
+    if (probeLens) lines.push(`- Preferred probe lens: ${probeLens}`);
+    if (targetPolicy.length) lines.push(`- Candidate target policy: ${targetPolicy.join('; ')}`);
+    if (acceptanceCriteria.length) lines.push(`- Acceptance criteria: ${acceptanceCriteria.join('; ')}`);
+    if (isPlainObject(finalQualityGate)) {
+      const gateLabel = normalizeTask(finalQualityGate.label || finalQualityGate.id || 'selected pack quality gate');
+      const gateCriteria = uniqueStrings(finalQualityGate.criteria || [], 8);
+      lines.push(`- Final quality gate: ${gateLabel}${gateCriteria.length ? ` - ${gateCriteria.join('; ')}` : ''}`);
+    }
+    lines.push('');
+  }
+
+  return lines;
+}
+
+function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}, selectedNodePacks = null) {
   const files = Array.isArray(workspaceSnapshot.files) ? workspaceSnapshot.files.slice(0, 120) : [];
+  const nodePackPromptLines = Array.isArray(selectedNodePacks)
+    ? frozenAuthoringNodePackPromptLines(selectedNodePacks)
+    : authoringNodePackPromptLines(taskText, workspaceSnapshot);
   return [
     '# OrPAD Orchestration Spec Authoring',
     '',
@@ -289,14 +462,14 @@ function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
     '## Workspace Snapshot',
     files.length ? files.map(file => `- ${file}`).join('\n') : '- No file snapshot supplied.',
     '',
-    ...authoringNodePackPromptLines(taskText, workspaceSnapshot),
+    ...nodePackPromptLines,
     '## Node Catalog (17 authored types)',
     '',
     'Control flow:',
     '- `orpad.entry` — graph start. config: `{ summary }`.',
     '- `orpad.exit` — graph end. config: `{ summary }`.',
     '- `orpad.selector` — record a routing choice; multiple outgoing transitions keyed by `selected` value. config: `{ selector, options[], default, selectorKind? }`. Use for: mode selection (e.g. agent vs script, RAG vs no-RAG, parallel vs serial, approve vs split).',
-    '- `orpad.gate` — verify criteria; control-flow loop-backs are encoded as TRANSITIONS (with `condition` strings), NOT as the gate\'s `onFail` policy. config: `{ criteria[], onFail }`. **`onFail` is a strict enum**: `"block"` (default — abort the run with MACHINE_GATE_CRITERIA_UNMET), `"warn"` (record warning, continue), `"continue"` (ignore failure), or `"continue-with-warning"`. Any other value (e.g. "revise", "loop", "loop-back-to-triage") will FAIL the run at execution time with `Unsupported Gate onFail policy`. Use for: cross-validation, re-verification loops (loop-back via transitions), acceptance checks.',
+    '- `orpad.gate` — verify criteria; control-flow loop-backs are encoded as TRANSITIONS (with `condition` strings), NOT as the gate\'s `onFail` policy. config: `{ criteria[], onFail }`. **Use the canonical `onFail` enum**: `"block"` (default — abort the run with MACHINE_GATE_CRITERIA_UNMET), `"warn"` (record warning, continue), `"continue"` (ignore failure), or `"continue-with-warning"`. Do not use prose values like "revise", "loop", or "loop-back-to-triage"; put loop-back behavior in transitions. Use for: cross-validation, re-verification loops (loop-back via transitions), acceptance checks.',
     '- `orpad.barrier` — wait for N parallel branches and merge their artifacts. config: `{ waitFor[], mergePolicy, onPartialFailure }`. Use for: fork-join, parallel agent ensembles.',
     '',
     'Context and retrieval:',
@@ -335,7 +508,7 @@ function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
     '',
     'H. **Multi-Agent Cross-Verification** — fork two independent workerLoops on the same problem → barrier (mergePolicy: "compare") → patchReview (pick winner or merge) → gate. Use when: the task is open-ended enough that multiple plausible solutions exist and need to be reconciled.',
     '',
-    'I. **Queue Drain Loop (outer Ralph loop)** — triage → dispatcher → workerLoop → patchReview → gate → loop back to dispatcher with `condition: "queue-not-empty"` until queue is drained, then `condition: "queue-empty"` → next stage. This is the canonical Ralph loop: ONE worker pull per iteration, repeat until done. Without this loop the queue is drained only once. Use whenever you have a workQueue / triage / dispatcher chain — almost always.',
+    'I. **Queue Drain Loop (outer Ralph loop)** — triage → dispatcher → workerLoop → patchReview → gate → loop back to dispatcher with `condition: "queue-not-empty"` until queue is drained, then `condition: "queue-empty"` → next stage. This is the canonical Ralph loop: ONE worker pull per iteration, repeat until done. Without this loop the queue is drained only once. Use whenever you have a workQueue / triage / dispatcher chain — almost always. Emit only one target for each queue condition; duplicate same-condition branches are ambiguous.',
     '',
     'J. **True Fork-Join (no selector)** — node `A` has MULTIPLE outgoing transitions with NO `condition` to `B`, `C`, `D`; each runs in parallel; `barrier` with `waitFor: ["B","C","D"]` joins them. Distinct from C, where a `selector` PICKS ONE branch by `condition`. If you want every branch to run, do NOT use a selector — emit multiple unconditional transitions from the same source. Use for: parallel probes/lenses, parallel sub-scope work that always all run.',
     '',
@@ -358,7 +531,7 @@ function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
     'If your graph contains... → you MUST emit the listed transitions. If you skip a row, you MUST add a `metadata.skippedPatterns` entry that names the row and explains WHY in one sentence.',
     '',
     '1. `orpad.workQueue` + `orpad.dispatcher` present → the LAST gate before `orpad.artifactContract` MUST have:',
-    '   - `{ from: <last-gate>, to: <triage-or-dispatcher>, condition: "queue-not-empty" }`',
+    '   - `{ from: <last-gate>, to: <dispatcher>, condition: "queue-not-empty" }`',
     '   - `{ from: <last-gate>, to: <artifactContract>, condition: "queue-empty" }`',
     '   Without these two siblings, the dispatcher claims ONE item and exits.',
     '',
@@ -413,7 +586,7 @@ function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
           { id: 'probe-services', type: 'orpad.probe', label: 'Probe per-service refactor candidates', config: { lens: 'auth-middleware-refactor', maxCandidates: 8 } },
           { id: 'queue', type: 'orpad.workQueue', label: 'Own per-service refactor queue' },
           { id: 'triage', type: 'orpad.triage', label: 'Prioritize by blast-radius', config: { queueRef: 'queue' } },
-          { id: 'fork-mode', type: 'orpad.selector', label: 'Parallel or serial mode', config: { selector: 'parallelism', options: ['parallel', 'serial'], default: 'parallel' } },
+          { id: 'fork-mode', type: 'orpad.context', label: 'Fork service branches', config: { summary: 'Run both service-specific branches and join evidence before review.' } },
           { id: 'dispatch-a', type: 'orpad.dispatcher', label: 'Dispatch service-A branch', config: { queueRef: 'queue', workerLoopRef: 'worker-a' } },
           { id: 'dispatch-b', type: 'orpad.dispatcher', label: 'Dispatch service-B branch', config: { queueRef: 'queue', workerLoopRef: 'worker-b' } },
           { id: 'worker-a', type: 'orpad.workerLoop', label: 'Apply refactor in service A overlay', config: { queueRef: 'queue', targetFiles: ['services/service-a/auth/middleware.js', 'services/service-a/auth/middleware.test.js'] } },
@@ -432,8 +605,8 @@ function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
           { from: 'probe-services', to: 'queue' },
           { from: 'queue', to: 'triage' },
           { from: 'triage', to: 'fork-mode' },
-          { from: 'fork-mode', to: 'dispatch-a', condition: 'parallel' },
-          { from: 'fork-mode', to: 'dispatch-b', condition: 'parallel' },
+          { from: 'fork-mode', to: 'dispatch-a' },
+          { from: 'fork-mode', to: 'dispatch-b' },
           { from: 'dispatch-a', to: 'worker-a' },
           { from: 'dispatch-b', to: 'worker-b' },
           { from: 'worker-a', to: 'per-service-verify' },
@@ -450,7 +623,7 @@ function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
           { from: 'gate-runtime', to: 'worker-a', condition: 'revise' },
           // Pattern I: outer queue-drain loop — after a successful slice, go
           // back to the dispatcher if the queue still has work.
-          { from: 'gate-runtime', to: 'triage', condition: 'queue-not-empty' },
+          { from: 'gate-runtime', to: 'dispatch-a', condition: 'queue-not-empty' },
           { from: 'gate-runtime', to: 'artifact', condition: 'queue-empty' },
           { from: 'artifact', to: 'exit' },
         ],
@@ -479,7 +652,7 @@ function orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot = {}) {
     '- Include queue, triage, dispatcher, workerLoop, patchReview, and artifactContract whenever implementation work runs — those are how OrPAD owns the work state. They can still be combined with selectors, barriers, gates, sub-graphs, and loop-backs.',
     '- Current managed-run execution has one `machineAdapter.workerNodePath`; prefer one canonical `orpad.workerLoop` and express sub-scopes as queue items, targetFiles, sub-graphs, gates, and metadata. Do not create multiple workerLoop lane nodes unless the machine contract supports workerNodePaths.',
     '- Place `orpad.artifactContract` immediately before `orpad.exit`. Do not put task-specific files in `artifactContract.required`; put them in node summaries or `skill.acceptanceCriteria`.',
-    '- Pattern I enforcement: whenever the graph contains a `orpad.workQueue` + `orpad.dispatcher` chain, the LAST gate before `orpad.artifactContract` MUST have one outgoing transition with `condition: "queue-not-empty"` (target: `orpad.triage` or `orpad.dispatcher`) and one with `condition: "queue-empty"` (target: artifactContract). Without this, the queue runs exactly one slice.',
+    '- Pattern I enforcement: whenever the graph contains a `orpad.workQueue` + `orpad.dispatcher` chain, the LAST gate before `orpad.artifactContract` MUST have one outgoing transition with `condition: "queue-not-empty"` (target: `orpad.dispatcher`) and one with `condition: "queue-empty"` (target: artifactContract). Without this, the queue runs exactly one slice.',
     '- Pattern K enforcement: every `orpad.patchReview` node MUST have at least two outgoing transitions — at minimum `condition: "accepted"` (continue) and `condition: "rejected"` (loop back to its worker). A patchReview with a single unconditional outgoing edge is rejected.',
     '- Pattern J vs C: if every fork branch must run, do NOT use a `orpad.selector`. Emit multiple outgoing transitions with no `condition` field from the same source node, and join them with `orpad.barrier`. Use `orpad.selector` only when ONE branch is picked per run.',
     '- Sub-graph value: every `orpad.graph` node must add structural value (its own dispatcher / worker / gate scope), not just be a labelled wrapper around a shared downstream dispatcher. If four sub-graphs converge into a single shared dispatcher node, collapse them into a `selector` instead.',
@@ -529,11 +702,10 @@ function parseAuthoringSpecText(text) {
 const GATE_ON_FAIL_VALUES = Object.freeze(['block', 'warn', 'continue', 'continue-with-warning']);
 
 function sanitizeGateOnFail(value) {
-  // The Machine runtime hard-rejects any value outside this enum with
-  // MACHINE_GATE_CONFIG_INVALID. Models keep inventing semantic values like
-  // "revise" / "loop-back-to-triage"; treat those as a request for "warn"
-  // (continue the run so the transition-level loop-back branch can run) and
-  // preserve the authored intent under config.authoredOnFail for traceability.
+  // Keep runtime-facing values in the canonical enum. Models keep inventing
+  // semantic values like "revise" / "loop-back-to-triage"; treat those as a
+  // request for "warn" during generation and preserve the authored intent
+  // under config.authoredOnFail for traceability.
   if (typeof value !== 'string') return { onFail: 'warn', original: value, replaced: true };
   const trimmed = value.trim();
   if (!trimmed) return { onFail: 'warn', original: value, replaced: true };
@@ -656,9 +828,32 @@ function sanitizeNode(raw, seen) {
     delete config.branches;
     delete config.dependsOn;
     config.mergePolicy ||= 'all';
-    config.onPartialFailure ||= 'continue-with-warning';
+    const authoredOnPartialFailure = config.onPartialFailure;
+    const canonicalOnPartialFailure = canonicalBarrierPartialFailurePolicy(authoredOnPartialFailure, config);
+    if (canonicalOnPartialFailure) {
+      config.onPartialFailure = canonicalOnPartialFailure;
+      if (authoredOnPartialFailure && authoredOnPartialFailure !== canonicalOnPartialFailure) {
+        config.authoredOnPartialFailure = authoredOnPartialFailure;
+      }
+    } else {
+      config.onPartialFailure = 'continue-with-warning';
+      config.authoredOnPartialFailure = authoredOnPartialFailure;
+    }
   }
-  if (type === 'orpad.workerLoop') config.queueRef ||= 'queue';
+  if (type === 'orpad.workerLoop') {
+    config.queueRef ||= 'queue';
+    const evidenceOutput = workerEvidenceOutputContract();
+    config.resultSchema = WORKER_RESULT_SCHEMA_VERSION;
+    config.evidenceContractRef = 'orpad.artifactContract.itemEvidenceContract';
+    config.requiredResultFields = uniqueEvidenceFields([
+      ...(Array.isArray(config.requiredResultFields) ? config.requiredResultFields : []),
+      ...evidenceOutput.requiredResultFields,
+    ]);
+    config.evidenceArtifacts = uniqueEvidenceFields([
+      ...(Array.isArray(config.evidenceArtifacts) ? config.evidenceArtifacts : []),
+      ...evidenceOutput.evidenceArtifacts,
+    ]);
+  }
   // File-Lock Queue Phase 1: normalize `config.targetFiles` for any
   // node that writes via the patch path (worker / skill / dispatcher
   // when it forwards work). The lock manager reads this declaration
@@ -767,6 +962,7 @@ function sanitizeNode(raw, seen) {
     config.queueRoot ||= 'harness/generated/latest-run/queue';
     config.required = [...CANONICAL_REQUIRED_ARTIFACTS];
     config.requiredQueue = [...CANONICAL_REQUIRED_QUEUE];
+    config.itemEvidenceContract = normalizeItemEvidenceContract(config.itemEvidenceContract);
     config.onMissing = 'mark-partial';
     const expectedArtifacts = authoredRequired.filter(item => !CANONICAL_REQUIRED_ARTIFACTS.includes(item));
     const expectedQueue = authoredRequiredQueue.filter(item => !CANONICAL_REQUIRED_QUEUE.includes(item));
@@ -824,6 +1020,53 @@ function normalizeTransitions(rawTransitions, nodes) {
   return transitions;
 }
 
+function patchReviewRepairTargetRefs(node) {
+  const config = node?.config || {};
+  return new Set([
+    config.repairWorkerRef,
+    config.rejectedTargetRef,
+    config.patchRevisionLoopRef,
+    ...(Array.isArray(config.repairWorkerRefs) ? config.repairWorkerRefs : []),
+    ...(Array.isArray(config.repairTargetRefs) ? config.repairTargetRefs : []),
+    ...(Array.isArray(config.patchRevisionLoopRefs) ? config.patchRevisionLoopRefs : []),
+  ].map(item => String(item || '').trim()).filter(Boolean));
+}
+
+function patchReviewAcceptedCondition(condition) {
+  return PATCH_ACCEPT_CONDITIONS.has(normalizedConditionText(condition));
+}
+
+function patchReviewRejectedCondition(condition) {
+  return PATCH_REJECT_CONDITIONS.has(normalizedConditionText(condition));
+}
+
+function targetCanReachWorkerLoop(targetId, transitions, nodeById) {
+  const terminalTypes = new Set(['orpad.artifactContract', 'orpad.exit']);
+  const queue = [String(targetId || '')];
+  const seen = new Set();
+  while (queue.length) {
+    const currentId = queue.shift();
+    if (!currentId || seen.has(currentId)) continue;
+    seen.add(currentId);
+    const current = nodeById.get(currentId);
+    if (current?.type === 'orpad.workerLoop') return true;
+    if (terminalTypes.has(current?.type)) continue;
+    for (const edge of transitions || []) {
+      if (String(edge.from || '') === currentId) queue.push(String(edge.to || ''));
+    }
+  }
+  return false;
+}
+
+function patchReviewRejectedTargetRepairsWork(reviewNode, targetId, transitions, nodeById) {
+  const target = nodeById.get(String(targetId || ''));
+  if (!target) return false;
+  if (target.type === 'orpad.workerLoop') return true;
+  const targetRef = String(target.id || '').trim();
+  if (!targetRef || !patchReviewRepairTargetRefs(reviewNode).has(targetRef)) return false;
+  return targetCanReachWorkerLoop(targetRef, transitions, nodeById);
+}
+
 function analyzeGraphComplexity(nodes, transitions) {
   const nodeIds = nodes.map(node => node.id);
   const nodeIndex = new Map(nodeIds.map((id, i) => [id, i]));
@@ -870,8 +1113,15 @@ function analyzeGraphComplexity(nodes, transitions) {
   // Pattern K detection: each patchReview node should have ≥2 outgoing transitions
   // — at minimum accepted + rejected. Single-edge patchReview has no enforcement
   // value.
-  const patchReviewsWithBranching = patchReviewNodes.filter(node => (outDegree.get(node.id) || 0) >= 2);
-  const patchReviewsLackingRejectLoop = patchReviewNodes.filter(node => (outDegree.get(node.id) || 0) < 2);
+  const patchReviewsWithRejectLoop = patchReviewNodes.filter(node => {
+    const outgoing = outgoingByNode.get(node.id) || [];
+    return outgoing.some(transition => patchReviewAcceptedCondition(transitionCondition(transition)))
+      && outgoing.some(transition => (
+        patchReviewRejectedCondition(transitionCondition(transition))
+        && patchReviewRejectedTargetRepairsWork(node, transition.to, transitions, nodeById)
+      ));
+  });
+  const patchReviewsLackingRejectLoop = patchReviewNodes.filter(node => !patchReviewsWithRejectLoop.includes(node));
 
   // Pattern J vs C heuristic: a selector whose ≥2 outgoing transitions all
   // converge into the SAME downstream node (within a couple of hops) is a
@@ -898,7 +1148,7 @@ function analyzeGraphComplexity(nodes, transitions) {
   if (subGraphCount > 0) patternsDetected.push('subgraph-composition');
   if (workerLoopCount > 1) patternsDetected.push('multi-worker');
   if (hasQueueDrainLoop) patternsDetected.push('queue-drain-loop');
-  if (patchReviewsWithBranching.length > 0) patternsDetected.push('patch-review-reject-loop');
+  if (patchReviewsWithRejectLoop.length > 0) patternsDetected.push('patch-review-reject-loop');
 
   const branchPointCount = branchNodes.length;
   const isLinearChain = (
@@ -914,10 +1164,10 @@ function analyzeGraphComplexity(nodes, transitions) {
     warnings.push('Generated graph is a flat linear chain. If the user request involves iteration, parallel sub-scopes, verification, retrieval, hierarchy, or multi-agent reasoning, the pipeline likely under-fits the task. Consider regenerating with a model prompt that asks for explicit pattern selection (Ralph loop / Fork-Join / Cross-Validation / Sub-graph / RAG / Ontology / Multi-Agent).');
   }
   if (workQueueCount > 0 && dispatcherCount > 0 && !hasQueueDrainLoop) {
-    warnings.push('Pipeline has a workQueue + dispatcher chain but no outer queue-drain loop. The dispatcher will claim ONE item and then exit. Add a transition from the final gate back to triage/dispatcher with `condition: "queue-not-empty"` and a sibling transition with `condition: "queue-empty"` to artifactContract (Pattern I).');
+    warnings.push('Pipeline has a workQueue + dispatcher chain but no outer queue-drain loop. The dispatcher will claim ONE item and then exit. Add a transition from the final gate back to dispatcher with `condition: "queue-not-empty"` and a sibling transition with `condition: "queue-empty"` to artifactContract (Pattern I).');
   }
   if (patchReviewsLackingRejectLoop.length > 0) {
-    warnings.push(`patchReview node(s) ${patchReviewsLackingRejectLoop.map(n => n.id).join(', ')} have <2 outgoing transitions. A patchReview with a single unconditional edge cannot enforce a reject. Add a "rejected" → workerLoop loop-back (Pattern K).`);
+    warnings.push(`patchReview node(s) ${patchReviewsLackingRejectLoop.map(n => n.id).join(', ')} lack an accepted branch plus a rejected branch that routes back to worker repair. Add a "rejected" -> workerLoop loop-back (Pattern K).`);
   }
   if (selectorsConvergingImmediately.length > 0) {
     warnings.push(`Selector node(s) ${selectorsConvergingImmediately.join(', ')} have multiple outgoing transitions that converge into the same downstream node. The selector is decorative. Either replace with Pattern J (multiple unconditional transitions + barrier) or collapse to a single edge.`);
@@ -960,7 +1210,13 @@ function defaultNodeConfig(node, taskText, externalResearchLimitation = '') {
   if (node.type === 'orpad.workQueue') return { queueRoot: 'harness/generated/latest-run/queue', schema: WORK_ITEM_SCHEMA_VERSION };
   if (node.type === 'orpad.triage') return { queueRef: 'queue' };
   if (node.type === 'orpad.dispatcher') return { queueRef: 'queue', workerLoopRef: 'worker' };
-  if (node.type === 'orpad.workerLoop') return { queueRef: 'queue', targetFiles: [] };
+  if (node.type === 'orpad.workerLoop') {
+    return {
+      queueRef: 'queue',
+      targetFiles: [],
+      ...workerEvidenceOutputContract(),
+    };
+  }
   if (node.type === 'orpad.patchReview') return { reviewMode: 'user-selected-files' };
   if (node.type === 'orpad.gate') return { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' };
   if (node.type === 'orpad.artifactContract') {
@@ -969,6 +1225,7 @@ function defaultNodeConfig(node, taskText, externalResearchLimitation = '') {
       queueRoot: 'harness/generated/latest-run/queue',
       required: [...CANONICAL_REQUIRED_ARTIFACTS],
       requiredQueue: [...CANONICAL_REQUIRED_QUEUE],
+      itemEvidenceContract: defaultItemEvidenceContract(),
       onMissing: 'mark-partial',
     };
   }
@@ -1145,6 +1402,24 @@ function canonicalBarrierCondition(condition) {
   return '';
 }
 
+function canonicalBarrierPartialFailurePolicy(value, config = {}) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return 'continue-with-warning';
+  if (BARRIER_PARTIAL_FAILURE_POLICIES.has(raw)) return raw;
+  if (['warn', 'warning', 'continue', 'continue-with-partial-evidence', 'continue-partial'].includes(raw)) {
+    return 'continue-with-warning';
+  }
+  if (['error', 'reject', 'rejected'].includes(raw)) return 'fail';
+  if (['wait', 'wait-for-all', 'block-until-complete'].includes(raw)) return 'block';
+  if (raw === 'retry-missing-lens-until-timebox') {
+    const exhausted = String(config?.retryPolicy?.onExhausted || '').trim().toLowerCase();
+    return exhausted.includes('continue') || exhausted.includes('partial')
+      ? 'continue-with-warning'
+      : 'block';
+  }
+  return '';
+}
+
 function normalizeTransitionForSource(rawTransition, sourceNode, index, seenIds) {
   const rawCondition = transitionCondition(rawTransition);
   const transition = {
@@ -1259,7 +1534,19 @@ function enforceTransitionContracts(rawTransitions, nodes) {
     if (worker && !transitions.some(transition => transition.to === review.id)) {
       ensureTransition(transitions, seenIds, worker.id, review.id);
     }
-    if (worker && !refreshedOutgoing.some(transition => PATCH_REJECT_CONDITIONS.has(transitionCondition(transition)))) {
+    if (worker) {
+      for (const transition of refreshedOutgoing) {
+        if (!patchReviewRejectedCondition(transitionCondition(transition))) continue;
+        if (patchReviewRejectedTargetRepairsWork(review, transition.to, transitions, nodesById)) continue;
+        transition.rejectedTargetRepairedFrom = transition.to;
+        transition.to = worker.id;
+      }
+    }
+    const repairedOutgoing = transitions.filter(transition => transition.from === review.id);
+    if (worker && !repairedOutgoing.some(transition => (
+      patchReviewRejectedCondition(transitionCondition(transition))
+      && patchReviewRejectedTargetRepairsWork(review, transition.to, transitions, nodesById)
+    ))) {
       ensureTransition(transitions, seenIds, review.id, worker.id, 'rejected');
     }
     if (acceptedTarget && !refreshedOutgoing.some(transition => PATCH_ACCEPT_CONDITIONS.has(transitionCondition(transition)))) {
@@ -1288,7 +1575,7 @@ function enforceTransitionContracts(rawTransitions, nodes) {
       ensureTransition(transitions, seenIds, gate.id, worker.id, 'revise');
     }
     if (isQueueDrainGate) {
-      ensureTransition(transitions, seenIds, gate.id, triage?.id || dispatcher.id, 'queue-not-empty');
+      ensureTransition(transitions, seenIds, gate.id, dispatcher.id, 'queue-not-empty');
       ensureTransition(transitions, seenIds, gate.id, artifact.id, 'queue-empty');
     } else {
       const next = nextNodeOfType(nodes, gate, 'orpad.gate')?.id || artifact?.id || exit?.id;
@@ -1299,7 +1586,12 @@ function enforceTransitionContracts(rawTransitions, nodes) {
   }
 
   if (artifact && exit) ensureTransition(transitions, seenIds, artifact.id, exit.id);
-  return dedupeRawTransitions(transitions);
+  return dedupeDecisionConditionTargets(dedupeRawTransitions(transitions), nodes, {
+    artifactId: artifact?.id || '',
+    dispatcherId: dispatcher?.id || '',
+    queueDrainGateId: lastGateBeforeArtifact?.id || '',
+    triageId: triage?.id || '',
+  });
 }
 
 function finalizeNodeConfigsFromTransitions(nodes, transitions) {
@@ -1343,6 +1635,54 @@ function dedupeRawTransitions(transitions) {
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(raw);
+  }
+  return result;
+}
+
+function decisionTransitionPreference(transition, sourceNode, context = {}) {
+  const condition = normalizedConditionText(transitionCondition(transition));
+  let score = 0;
+  if (sourceNode?.type === 'orpad.gate' && sourceNode.id === context.queueDrainGateId) {
+    if (condition === 'queue-not-empty') {
+      if (transition.to === context.dispatcherId) score += 100;
+      else if (transition.to === context.triageId) score += 50;
+    } else if (condition === 'queue-empty' && transition.to === context.artifactId) {
+      score += 100;
+    }
+  }
+  return score;
+}
+
+function dedupeDecisionConditionTargets(transitions, nodes, context = {}) {
+  const nodesById = new Map((nodes || []).map(node => [node.id, node]));
+  const result = [];
+  const bestByCondition = new Map();
+  for (const transition of transitions || []) {
+    const sourceNode = nodesById.get(transition.from);
+    const condition = transitionCondition(transition);
+    if (!condition || !DECISION_NODE_TYPES.has(sourceNode?.type)) {
+      result.push(transition);
+      continue;
+    }
+
+    const key = `${transition.from}\u0000${normalizedConditionText(condition) || condition}`;
+    const candidate = {
+      index: result.length,
+      score: decisionTransitionPreference(transition, sourceNode, context),
+      transition,
+    };
+    const current = bestByCondition.get(key);
+    if (!current) {
+      bestByCondition.set(key, candidate);
+      result.push(transition);
+      continue;
+    }
+
+    if (current.transition.to === transition.to) continue;
+    if (candidate.score > current.score) {
+      result[current.index] = transition;
+      bestByCondition.set(key, { ...candidate, index: current.index });
+    }
   }
   return result;
 }
@@ -1403,6 +1743,179 @@ function uniqueStrings(values, limit = 50) {
     .slice(0, limit);
 }
 
+function objectList(value) {
+  return Array.isArray(value)
+    ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item))
+    : [];
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function nodePackPoolEntries(value) {
+  if (value === false) return [];
+  if (Array.isArray(value)) return value;
+  if (isPlainObject(value)) return value.nodePacks || value.packs || value.manifests || [];
+  return [];
+}
+
+function nodePackQualityAuditPool(selectionOptions = {}, selectedNodePacks = []) {
+  const byId = new Map();
+  const selectedIds = new Set((selectedNodePacks || [])
+    .map(pack => String(pack?.id || '').trim())
+    .filter(Boolean));
+  const requiredBuiltInIds = new Set(['orpad.core', 'orpad.workstream']);
+  const addPack = (pack) => {
+    if (!isPlainObject(pack)) return;
+    const id = String(pack.id || '').trim();
+    if (!id || byId.has(id)) return;
+    byId.set(id, cloneJson(pack));
+  };
+  for (const pack of BUILT_IN_NODE_PACK_MANIFESTS) {
+    if (requiredBuiltInIds.has(pack.id) || selectedIds.has(pack.id)) addPack(pack);
+  }
+  for (const pack of nodePackPoolEntries(selectionOptions.nodePackPool)) addPack(pack);
+  for (const pack of nodePackPoolEntries(selectionOptions.userInstalledNodePacks)) addPack(pack);
+  return [...byId.values()];
+}
+
+function nodePackQualityAuditOptions(selectionOptions = {}, selectedNodePacks = []) {
+  return {
+    nodePackPool: {
+      nodePacks: nodePackQualityAuditPool(selectionOptions, selectedNodePacks),
+      diagnostics: objectList(selectionOptions.nodePackDiagnostics),
+      conflicts: objectList(selectionOptions.nodePackConflicts),
+    },
+    currentOrpadVersion: selectionOptions.currentOrpadVersion,
+    installMode: selectionOptions.installMode,
+    grantedCapabilities: selectionOptions.grantedCapabilities,
+    grantedCapabilitiesByPack: selectionOptions.grantedCapabilitiesByPack,
+    trustEvidence: selectionOptions.trustEvidence,
+    trustEvidenceByPack: selectionOptions.trustEvidenceByPack,
+    highRiskCapabilityReview: selectionOptions.highRiskCapabilityReview,
+    highRiskCapabilityReviewByPack: selectionOptions.highRiskCapabilityReviewByPack,
+  };
+}
+
+function hasExplicitNodePackPool(options = {}) {
+  return Boolean(
+    options.nodePackPool
+    || options.authoringNodePackPool
+    || options.discoveredNodePacks
+    || options.availableNodePacks
+    || options.nodePackManifests
+  );
+}
+
+function hasNodePackDiscoveryOptions(options = {}) {
+  return Object.prototype.hasOwnProperty.call(options, 'builtInNodePacksRoot')
+    || Boolean(options.userNodePacksRoot || options.userNodePackRoot || options.userDataDir);
+}
+
+function normalizeAuthoringDiscoveredNodePackPool(pool = {}) {
+  if (!isPlainObject(pool)) return pool;
+  return {
+    ...pool,
+    nodePacks: nodePackPoolEntries(pool).map(pack => {
+      if (!isPlainObject(pack)) return pack;
+      const rootKind = String(pack.discovery?.rootKind || '').trim();
+      if (rootKind !== 'user') return pack;
+      return {
+        ...pack,
+        origin: 'user',
+      };
+    }),
+  };
+}
+
+function discoverAuthoringNodePackPool(options = {}) {
+  if (hasExplicitNodePackPool(options) || !hasNodePackDiscoveryOptions(options)) return null;
+  const discovery = normalizeAuthoringDiscoveredNodePackPool(discoverNodePackManifests({
+    builtInNodePacksRoot: Object.prototype.hasOwnProperty.call(options, 'builtInNodePacksRoot')
+      ? options.builtInNodePacksRoot
+      : undefined,
+    userNodePacksRoot: options.userNodePacksRoot || options.userNodePackRoot,
+    userDataDir: options.userDataDir,
+    currentOrpadVersion: options.currentOrpadVersion,
+    installMode: options.nodePackInstallMode || options.installMode || 'normal',
+    grantedCapabilities: options.nodePackGrantedCapabilities || options.grantedCapabilities,
+    grantedCapabilitiesByPack: options.nodePackGrantedCapabilitiesByPack
+      || options.grantedCapabilitiesByPack
+      || options.nodePackCapabilityGrants,
+    trustEvidence: options.nodePackTrustEvidence || options.trustEvidence,
+    trustEvidenceByPack: options.nodePackTrustEvidenceByPack
+      || options.trustEvidenceByPack
+      || options.nodePackTrustEvidence,
+    highRiskCapabilityReview: options.highRiskCapabilityReview
+      || options.nodePackCapabilityReview
+      || options.capabilityReview,
+    highRiskCapabilityReviewByPack: options.highRiskCapabilityReviewByPack
+      || options.nodePackCapabilityReviewByPack
+      || options.nodePackCapabilityReviews
+      || options.capabilityReviewByPack
+      || options.securityReviewByPack,
+  }));
+  const rootDiagnostics = Array.isArray(options.nodePackRootDiagnostics)
+    ? options.nodePackRootDiagnostics
+    : [];
+  return rootDiagnostics.length
+    ? {
+      ...discovery,
+      diagnostics: [
+        ...rootDiagnostics,
+        ...(Array.isArray(discovery.diagnostics) ? discovery.diagnostics : []),
+      ],
+    }
+    : discovery;
+}
+
+function nodePackSelectionOptions(options = {}, selectionDiagnostics = []) {
+  const discoveredPool = discoverAuthoringNodePackPool(options);
+  const explicitPool = normalizeAuthoringDiscoveredNodePackPool(
+    options.nodePackPool
+      || options.authoringNodePackPool
+      || options.discoveredNodePacks
+      || options.availableNodePacks
+      || options.nodePackManifests,
+  );
+  return {
+    maxPacks: Number(options.maxAuthoringNodePacks) || 3,
+    requiredPackIds: options.requiredNodePackIds || options.requiredAuthoringNodePackIds || [],
+    nodePackPool: discoveredPool
+      || explicitPool,
+    userInstalledNodePacks: options.userInstalledNodePacks || options.userNodePacks,
+    nodePackDiagnostics: [
+      ...(Array.isArray(discoveredPool?.diagnostics) ? discoveredPool.diagnostics : []),
+      ...(Array.isArray(options.nodePackDiagnostics) ? options.nodePackDiagnostics : []),
+    ],
+    nodePackConflicts: [
+      ...(Array.isArray(discoveredPool?.conflicts) ? discoveredPool.conflicts : []),
+      ...(Array.isArray(options.nodePackConflicts) ? options.nodePackConflicts : []),
+    ],
+    builtInNodePacksRoot: options.builtInNodePacksRoot,
+    currentOrpadVersion: options.currentOrpadVersion,
+    installMode: options.nodePackInstallMode || options.installMode || 'normal',
+    grantedCapabilities: options.nodePackGrantedCapabilities || options.grantedCapabilities,
+    grantedCapabilitiesByPack: options.nodePackGrantedCapabilitiesByPack
+      || options.grantedCapabilitiesByPack
+      || options.nodePackCapabilityGrants,
+    trustEvidence: options.nodePackTrustEvidence || options.trustEvidence,
+    trustEvidenceByPack: options.nodePackTrustEvidenceByPack
+      || options.trustEvidenceByPack
+      || options.nodePackTrustEvidence,
+    highRiskCapabilityReview: options.highRiskCapabilityReview
+      || options.nodePackCapabilityReview
+      || options.capabilityReview,
+    highRiskCapabilityReviewByPack: options.highRiskCapabilityReviewByPack
+      || options.nodePackCapabilityReviewByPack
+      || options.nodePackCapabilityReviews
+      || options.capabilityReviewByPack
+      || options.securityReviewByPack,
+    selectionDiagnostics,
+  };
+}
+
 function selectedPackIds(selectedNodePacks = []) {
   return uniqueStrings(selectedNodePacks.map(pack => pack.id), 8);
 }
@@ -1417,6 +1930,55 @@ function selectedPackAcceptanceCriteria(selectedNodePacks = []) {
 
 function selectedPackCandidateTargetPolicy(selectedNodePacks = []) {
   return uniqueStrings(selectedNodePacks.flatMap(pack => pack.authoringHints?.candidateTargetPolicy || []), 12);
+}
+
+function selectedPackById(selectedNodePacks = [], packId) {
+  const id = String(packId || '').trim();
+  if (!id) return null;
+  return (Array.isArray(selectedNodePacks) ? selectedNodePacks : [])
+    .find(pack => String(pack?.id || '').trim() === id) || null;
+}
+
+function nodePackProvenanceConfig(sourceNodePack, selectedNodePacks = []) {
+  const source = sourceNodePack || (Array.isArray(selectedNodePacks) ? selectedNodePacks[0] : null);
+  if (!source?.id) return {};
+  const selections = Array.isArray(selectedNodePacks) ? selectedNodePacks : [];
+  const supportingNodePacks = selectedPackIds(selections.length ? selections : [source]);
+  return {
+    sourceNodePack: source.id,
+    sourceNodePackGraph: source.graphs?.[0]?.id || '',
+    sourceNodePackSkill: source.skills?.[0]?.id || '',
+    supportingNodePacks,
+  };
+}
+
+function mergeSelectedNodePackProvenance(config = {}, selectedNodePacks = []) {
+  const selectedIds = selectedPackIds(selectedNodePacks);
+  if (!selectedIds.length) return config || {};
+  const sourceNodePack = String(config.sourceNodePack || selectedIds[0] || '').trim();
+  const sourcePack = selectedPackById(selectedNodePacks, sourceNodePack);
+  const supportingNodePacks = uniqueStrings([
+    ...(Array.isArray(config.supportingNodePacks) ? config.supportingNodePacks : []),
+    ...selectedIds,
+  ], 16);
+  return {
+    ...config,
+    sourceNodePack,
+    ...(sourcePack && !config.sourceNodePackGraph ? { sourceNodePackGraph: sourcePack.graphs?.[0]?.id || '' } : {}),
+    ...(sourcePack && !config.sourceNodePackSkill ? { sourceNodePackSkill: sourcePack.skills?.[0]?.id || '' } : {}),
+    supportingNodePacks,
+  };
+}
+
+function ensureSelectedNodePackProvenance(nodes, selectedNodePacks = []) {
+  const selectedIds = selectedPackIds(selectedNodePacks);
+  if (!selectedIds.length) return nodes;
+  const provenanceTypes = new Set(['orpad.context', 'orpad.probe', 'orpad.gate', 'orpad.workerLoop', 'orpad.artifactContract']);
+  for (const node of nodes || []) {
+    if (!provenanceTypes.has(node?.type)) continue;
+    node.config = mergeSelectedNodePackProvenance(node.config || {}, selectedNodePacks);
+  }
+  return nodes;
 }
 
 function contentQaPackSelections(selectedNodePacks = []) {
@@ -1483,6 +2045,7 @@ function ensureContentEditorialGateNode(nodes, seen, taskText, selectedNodePacks
   if (existing) return existing;
 
   const gate = selectedContentEditorialGate(selectedNodePacks);
+  const contentQaPack = contentQaPackSelections(selectedNodePacks)[0] || { id: CONTENT_QA_NODE_PACK_ID };
   const patchReviewIndex = lastIndexMatching(nodes, node => node.type === 'orpad.patchReview');
   const firstGateAfterPatchReview = firstIndexMatching(nodes, node => (
     node.type === 'orpad.gate'
@@ -1501,7 +2064,7 @@ function ensureContentEditorialGateNode(nodes, seen, taskText, selectedNodePacks
       evaluationMode: gate.evaluationMode,
       judgePolicy: gate.judgePolicy,
       failureRouting: 'strict-revise',
-      sourceNodePack: CONTENT_QA_NODE_PACK_ID,
+      ...nodePackProvenanceConfig(contentQaPack, selectedNodePacks),
       qualityDimensions: ['voice-tone', 'density-repetition', 'audience-fit', 'role-separation', 'before-after'],
       expectedEvaluationArtifacts: gate.expectedEvaluationArtifacts,
       expectedJudgeArtifacts: gate.expectedJudgeArtifacts,
@@ -1521,7 +2084,14 @@ function selectedPackMetadata(selectedNodePacks = []) {
     name: pack.name,
     version: pack.version,
     origin: pack.origin,
+    source: pack.source || '',
     trustLevel: pack.trustLevel,
+    resolutionState: pack.resolutionState || pack.validation?.resolutionState || '',
+    validationStatus: pack.validationStatus || pack.validation?.status || '',
+    capabilityRiskSummary: pack.capabilityRiskSummary || '',
+    capabilities: Array.isArray(pack.capabilities) ? pack.capabilities : [],
+    highRiskCapabilities: Array.isArray(pack.highRiskCapabilities) ? pack.highRiskCapabilities : [],
+    highRiskInstallBehaviors: Array.isArray(pack.highRiskInstallBehaviors) ? pack.highRiskInstallBehaviors : [],
     score: pack.score,
     matchedSignals: pack.matchedSignals,
     reason: pack.reason,
@@ -1531,18 +2101,64 @@ function selectedPackMetadata(selectedNodePacks = []) {
   }));
 }
 
-function packSourceConfig(selectedNodePack) {
+function packSourceConfig(selectedNodePack, selectedNodePacks = [selectedNodePack]) {
   if (!selectedNodePack) return {};
-  return {
-    sourceNodePack: selectedNodePack.id,
-    sourceNodePackGraph: selectedNodePack.graphs?.[0]?.id || '',
-    sourceNodePackSkill: selectedNodePack.skills?.[0]?.id || '',
-    supportingNodePacks: selectedPackIds([selectedNodePack]),
-  };
+  return nodePackProvenanceConfig(selectedNodePack, selectedNodePacks);
+}
+
+function taskRequestsForkJoinDiscovery(lowerTaskText) {
+  return /\bfork[-\s]?join\b|\bindependent probes?\b|\bparallel probes?\b|\bfork[-\s]?join discovery\b/.test(lowerTaskText);
+}
+
+function hardeningDiscoveryNodes(primaryPack, selectedNodePacks = []) {
+  const provenance = primaryPack ? packSourceConfig(primaryPack, selectedNodePacks) : {};
+  const probeSpecs = [
+    ['probe-runtime-kernel', 'Probe runtime kernel correctness', 'runtime-kernel-correctness'],
+    ['probe-renderer-state', 'Probe renderer state ownership', 'renderer-state-ownership'],
+    ['probe-generation-quality', 'Probe generation quality', 'generation-quality-gates'],
+    ['probe-web-compatibility', 'Probe web compatibility', 'web-browser-compatibility'],
+    ['probe-electron-stability', 'Probe Electron stability', 'electron-e2e-stability'],
+    ['probe-node-pack-trust', 'Probe node pack trust', 'node-pack-trust-provenance'],
+  ];
+  const probes = probeSpecs.map(([id, label, lens]) => ({
+    id,
+    type: 'orpad.probe',
+    label,
+    config: {
+      lens,
+      maxCandidates: 5,
+      candidateLimitPolicy: 'collect-all-visible',
+      ...provenance,
+    },
+  }));
+  return [
+    {
+      id: 'map-hardening-scope',
+      type: 'orpad.context',
+      label: 'Map OrPAD hardening scope',
+      config: {
+        summary: 'Map runtime, renderer, generation, compatibility, Electron, and node-pack reliability surfaces before queueing work.',
+        ...provenance,
+      },
+    },
+    ...probes,
+    {
+      id: 'join-discovery',
+      type: 'orpad.barrier',
+      label: 'Join independent discovery probes',
+      config: {
+        waitFor: probes.map(node => node.id),
+        mergePolicy: 'concat-evidence',
+        onPartialFailure: 'continue-with-warning',
+        ...provenance,
+      },
+    },
+  ];
 }
 
 function deterministicAuthoringSpec(taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks = []) {
   const lower = normalizeTask(taskText).toLowerCase();
+  const needsForkJoinDiscovery = taskRequestsForkJoinDiscovery(lower);
   const isLecture = /\b(lecture|course|class|slide|slides|teaching|lesson|threading|thread|concurrency)\b|강의|자료|슬라이드|수업/.test(lower);
   const isUi = /\b(ui|ux|dropdown|inspector|graph editor|z-index|sidebar|panel|screen|button)\b|드롭다운|인스펙터|그래프|사이드바/.test(lower);
   const isBug = /\b(bug|error|fail|failed|fix|regression|broken|validation|check failed)\b|버그|실패|오류|검증/.test(lower);
@@ -1550,7 +2166,9 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
   const primaryPack = Array.isArray(selectedNodePacks) ? selectedNodePacks[0] : null;
   const primaryHints = primaryPack?.authoringHints || {};
   const domainNodes = [];
-  if (primaryHints.context && primaryHints.probe) {
+  if (needsForkJoinDiscovery) {
+    domainNodes.push(...hardeningDiscoveryNodes(primaryPack, selectedNodePacks));
+  } else if (primaryHints.context && primaryHints.probe) {
     domainNodes.push(
       {
         id: primaryHints.context.id || 'map-pack-scope',
@@ -1558,7 +2176,7 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
         label: primaryHints.context.label || `Map ${primaryPack.name} scope`,
         config: {
           summary: primaryHints.context.summary || primaryPack.reason,
-          ...packSourceConfig(primaryPack),
+          ...packSourceConfig(primaryPack, selectedNodePacks),
         },
       },
       {
@@ -1569,7 +2187,7 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
           lens: primaryHints.probe.lens || nodeId(primaryPack.id, 'starter-pack'),
           maxCandidates: Number(primaryHints.probe.maxCandidates) || 5,
           candidateLimitPolicy: 'collect-all-visible',
-          ...packSourceConfig(primaryPack),
+          ...packSourceConfig(primaryPack, selectedNodePacks),
         },
       },
     );
@@ -1609,9 +2227,29 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
         : isBug
           ? ['reported failure no longer reproduces', 'regression coverage protects the fix', 'validation passes']
           : ['requested outcome is implemented', 'evidence files explain the result', 'validation passes']), 8);
+  const domainContextNode = domainNodes[0];
+  const domainForkJoinNode = domainNodes.find(node => node.type === 'orpad.barrier') || null;
+  const domainProbeNodes = domainForkJoinNode
+    ? domainNodes.filter(node => node.type === 'orpad.probe')
+    : domainNodes.slice(1, 2);
+  const domainExitNode = domainForkJoinNode || domainProbeNodes[0] || domainContextNode;
+  const externalResearchModeNodes = externalResearchIntent && domainForkJoinNode ? [
+    {
+      id: 'local-research-gap-mode',
+      type: 'orpad.context',
+      label: 'Use local research gap mode',
+      config: { summary: externalResearchLimitation },
+    },
+    {
+      id: 'approved-research-evidence-mode',
+      type: 'orpad.context',
+      label: 'Use approved research evidence mode',
+      config: { summary: 'Proceed only with approved browsing output or attached research evidence recorded in artifacts.' },
+    },
+  ] : [];
   const nodes = [
     { id: 'entry', type: 'orpad.entry', label: 'Entry' },
-    domainNodes[0],
+    domainContextNode,
     ...(externalResearchIntent ? [{
       id: 'external-research-mode',
       type: 'orpad.selector',
@@ -1625,6 +2263,7 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
         fallback: 'report a research gap and propose only local evidence-backed work',
       },
     }] : []),
+    ...externalResearchModeNodes,
     ...domainNodes.slice(1),
     CANONICAL_QUEUE_NODE,
     CANONICAL_TRIAGE_NODE,
@@ -1634,27 +2273,50 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
       label: primaryHints.workerLabel || (isLecture ? 'Improve lecture materials' : isUi ? 'Implement UI correction' : isBug ? 'Patch root cause' : 'Implement solution work'),
       config: {
         ...(CANONICAL_WORKER_NODE.config || {}),
-        ...(primaryPack ? {
-          sourceNodePack: primaryPack.id,
-          supportingNodePacks: selectedPackIds(selectedNodePacks),
-        } : {}),
+        ...(primaryPack ? nodePackProvenanceConfig(primaryPack, selectedNodePacks) : {}),
       },
     },
     CANONICAL_REVIEW_NODE,
-    { id: 'verification-gate', type: 'orpad.gate', label: 'Verify task-specific result', config: { criteria: verifyCriteria, onFail: 'warn' } },
+    {
+      id: 'verification-gate',
+      type: 'orpad.gate',
+      label: 'Verify task-specific result',
+      config: {
+        criteria: verifyCriteria,
+        onFail: 'warn',
+        ...(primaryPack ? nodePackProvenanceConfig(primaryPack, selectedNodePacks) : {}),
+      },
+    },
     CANONICAL_ARTIFACT_NODE,
     { id: 'exit', type: 'orpad.exit', label: 'Exit' },
   ].map(node => nodeWithConfig(node, taskText, externalResearchLimitation));
+  const domainTransitions = [];
+  const domainBranchSource = externalResearchIntent ? 'external-research-mode' : domainContextNode.id;
+  domainTransitions.push({ from: 'entry', to: domainContextNode.id });
+  if (externalResearchIntent) {
+    domainTransitions.push({ from: domainContextNode.id, to: 'external-research-mode' });
+  }
+  if (domainForkJoinNode) {
+    const forkSources = externalResearchModeNodes.length
+      ? externalResearchModeNodes.map(node => node.id)
+      : [domainBranchSource];
+    if (externalResearchModeNodes.length) {
+      domainTransitions.push({ from: domainBranchSource, to: 'local-research-gap-mode', condition: 'local-only-research-gap' });
+      domainTransitions.push({ from: domainBranchSource, to: 'approved-research-evidence-mode', condition: 'approved-or-attached-evidence' });
+    }
+    for (const probe of domainProbeNodes) {
+      for (const source of forkSources) domainTransitions.push({ from: source, to: probe.id });
+      domainTransitions.push({ from: probe.id, to: domainForkJoinNode.id });
+    }
+  } else if (externalResearchIntent) {
+    domainTransitions.push({ from: domainBranchSource, to: domainExitNode.id, condition: 'local-only-research-gap' });
+    domainTransitions.push({ from: domainBranchSource, to: domainExitNode.id, condition: 'approved-or-attached-evidence' });
+  } else {
+    domainTransitions.push({ from: domainContextNode.id, to: domainExitNode.id });
+  }
   const fallbackTransitions = [
-    { from: 'entry', to: domainNodes[0].id },
-    ...(externalResearchIntent
-      ? [
-        { from: domainNodes[0].id, to: 'external-research-mode' },
-        { from: 'external-research-mode', to: domainNodes[1].id, condition: 'local-only-research-gap' },
-        { from: 'external-research-mode', to: domainNodes[1].id, condition: 'approved-or-attached-evidence' },
-      ]
-      : [{ from: domainNodes[0].id, to: domainNodes[1].id }]),
-    { from: domainNodes[1].id, to: 'queue' },
+    ...domainTransitions,
+    { from: domainExitNode.id, to: 'queue' },
     { from: 'queue', to: 'triage' },
     { from: 'triage', to: 'dispatch' },
     { from: 'dispatch', to: 'worker' },
@@ -1662,7 +2324,7 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
     { from: 'patch-review', to: 'worker', condition: 'rejected' },
     { from: 'patch-review', to: 'verification-gate', condition: 'accepted' },
     { from: 'verification-gate', to: 'worker', condition: 'revise' },
-    { from: 'verification-gate', to: 'triage', condition: 'queue-not-empty' },
+    { from: 'verification-gate', to: 'dispatch', condition: 'queue-not-empty' },
     { from: 'verification-gate', to: 'artifact', condition: 'queue-empty' },
     { from: 'artifact', to: 'exit' },
   ].map((transition, index) => ({ id: transitionId(transition.from, transition.to, index), ...transition }));
@@ -1686,7 +2348,9 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
     },
     metadata: {
       authoringMode: 'deterministic-fallback',
-      authoringNotes: 'Pattern B+D+I+K: deterministic fallback uses an evaluator loop, patch-review reject loop, and queue-drain loop because a one-pass linear chain routinely leaves work unverified or only processes one queued item.',
+      authoringNotes: needsForkJoinDiscovery
+        ? 'Pattern B+D+I+J+K: deterministic fallback uses independent discovery probes joined by a barrier, an evaluator loop, patch-review reject loop, and queue-drain loop because the request explicitly requires fork-join hardening before bounded work.'
+        : 'Pattern B+D+I+K: deterministic fallback uses an evaluator loop, patch-review reject loop, and queue-drain loop because a one-pass linear chain routinely leaves work unverified or only processes one queued item.',
       selectedNodePacks: selectedPackMetadata(selectedNodePacks),
     },
   };
@@ -1698,7 +2362,7 @@ function deterministicAuthoringSpec(taskText, externalResearchIntent, externalRe
 // sub-graph follows the same node-type whitelist and transition wiring rules.
 // Missing entry/exit nodes are auto-added so an LLM that only listed a probe
 // or workerLoop still produces a runnable sub-graph.
-function normalizeSubgraphPayload(raw, refForLabel, taskText, externalResearchLimitation) {
+function normalizeSubgraphPayload(raw, refForLabel, taskText, externalResearchLimitation, selectedNodePacks = []) {
   const graphSpec = isPlainObject(raw?.graph) ? raw.graph : (isPlainObject(raw) ? raw : {});
   const seen = new Set();
   let nodes = Array.isArray(graphSpec.nodes)
@@ -1711,6 +2375,7 @@ function normalizeSubgraphPayload(raw, refForLabel, taskText, externalResearchLi
     nodes.push(sanitizeNode({ id: 'exit', type: 'orpad.exit', label: 'Exit' }, seen));
   }
   nodes = nodes.map(node => nodeWithConfig(node, taskText, externalResearchLimitation));
+  ensureSelectedNodePackProvenance(nodes, selectedNodePacks);
   const transitions = enforceTransitionContracts(normalizeTransitions(graphSpec.transitions, nodes), nodes);
   finalizeNodeConfigsFromTransitions(nodes, transitions);
   // If the LLM forgot to wire entry → ... → exit, give a one-edge fallback so
@@ -1823,7 +2488,7 @@ function hasMeaningfulSubgraphHints(parentNode) {
 // the parent node carries authoring hints (summary, difficultyPath, leaves,
 // …) we surface them inside the placeholder so the user can pick up where
 // the LLM left off.
-function placeholderSubgraph(ref, parentNode, taskText, externalResearchLimitation) {
+function placeholderSubgraph(ref, parentNode, taskText, externalResearchLimitation, selectedNodePacks = []) {
   const hints = summarizeParentHints(parentNode);
   const hintItems = parentHintItems(parentNode);
   const idBase = nodeId(parentNode?.id || ref, 'subgraph');
@@ -1874,7 +2539,7 @@ function placeholderSubgraph(ref, parentNode, taskText, externalResearchLimitati
         { from: 'verify-subgraph-plan', to: 'exit', condition: 'pass' },
       ],
     },
-  }, ref, taskText, externalResearchLimitation);
+  }, ref, taskText, externalResearchLimitation, selectedNodePacks);
 }
 
 // Promote any array of authoring strings the LLM left on the parent
@@ -2009,7 +2674,7 @@ function enforceUniqueWrapperRefs(nodes, configKey, fieldKey, refBuilder) {
   }
 }
 
-function normalizeSubgraphList(rawList, requiredRefs, taskText, externalResearchLimitation) {
+function normalizeSubgraphList(rawList, requiredRefs, taskText, externalResearchLimitation, selectedNodePacks = []) {
   const byRef = new Map();
   if (Array.isArray(rawList)) {
     for (const entry of rawList) {
@@ -2020,12 +2685,12 @@ function normalizeSubgraphList(rawList, requiredRefs, taskText, externalResearch
       // pipeline-rooted and graph-file-relative spec entries land on the
       // same key.
       const ref = normalizeGraphRefValue(rawRef);
-      byRef.set(ref, normalizeSubgraphPayload(entry, ref, taskText, externalResearchLimitation));
+      byRef.set(ref, normalizeSubgraphPayload(entry, ref, taskText, externalResearchLimitation, selectedNodePacks));
     }
   }
   for (const { ref, parentNode } of requiredRefs) {
     if (!byRef.has(ref)) {
-      byRef.set(ref, placeholderSubgraph(ref, parentNode, taskText, externalResearchLimitation));
+      byRef.set(ref, placeholderSubgraph(ref, parentNode, taskText, externalResearchLimitation, selectedNodePacks));
     }
   }
   return [...byRef.entries()].map(([ref, graph]) => ({ ref, graph }));
@@ -2063,6 +2728,7 @@ function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, exter
   nodes = ensureCoreWorkstreamNodes(nodes, seen);
   ensureContentEditorialGateNode(nodes, seen, taskText, selectedNodePacks);
   nodes = nodes.filter(Boolean).map(node => nodeWithConfig(node, taskText, externalResearchLimitation));
+  ensureSelectedNodePackProvenance(nodes, selectedNodePacks);
   const firstQueue = nodes.find(node => node.type === 'orpad.workQueue')?.id || 'queue';
   const firstWorker = nodes.find(node => node.type === 'orpad.workerLoop')?.id || 'worker';
   const nodeIds = new Set(nodes.map(node => node.id));
@@ -2095,7 +2761,7 @@ function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, exter
   // placeholder so double-click drill-down has SOMETHING to open.
   const requiredGraphRefs = collectGraphRefs(nodes, 'orpad.graph', 'graphRef');
   const requiredTreeRefs = collectGraphRefs(nodes, 'orpad.tree', 'treeRef');
-  const subgraphs = normalizeSubgraphList(spec.subgraphs, requiredGraphRefs, taskText, externalResearchLimitation);
+  const subgraphs = normalizeSubgraphList(spec.subgraphs, requiredGraphRefs, taskText, externalResearchLimitation, selectedNodePacks);
   const subtrees = normalizeSubtreeList(spec.subtrees, requiredTreeRefs);
   return {
     title: normalizeTask(spec.title || graphSpec.label || taskText).slice(0, 96),
@@ -2154,10 +2820,13 @@ async function createOrchestrationPipeline(options = {}) {
     'handoff-required',
   ];
   const workspaceSnapshot = options.workspaceSnapshot || {};
-  const selectedNodePacks = selectAuthoringNodePacks(taskText, workspaceSnapshot, {
-    maxPacks: Number(options.maxAuthoringNodePacks) || 3,
-    requiredPackIds: options.requiredNodePackIds || options.requiredAuthoringNodePackIds || [],
-  });
+  const nodePackSelectionDiagnostics = [];
+  const authoringNodePackOptions = nodePackSelectionOptions(options, nodePackSelectionDiagnostics);
+  const selectedNodePacks = selectAuthoringNodePacks(
+    taskText,
+    workspaceSnapshot,
+    authoringNodePackOptions,
+  );
   const rawAuthoringSpec = options.authoringSpec
     || (options.authoringSpecText ? parseAuthoringSpecText(options.authoringSpecText) : null);
   const hasAuthoredSpec = !!rawAuthoringSpec;
@@ -2206,8 +2875,10 @@ async function createOrchestrationPipeline(options = {}) {
       promptPath: 'harness/generated/orchestration-authoring-prompt.md',
       specPath: 'harness/generated/orchestration-authoring-spec.json',
       generatedAt: new Date(options.now || options.timestamp || new Date()).toISOString(),
+      taskText,
       authoringNotes: authoringSpec.metadata.authoringNotes || '',
       nodePackSelection: selectedPackMetadata(selectedNodePacks),
+      nodePackSelectionDiagnostics,
     },
     graphComplexity: complexity,
     ...(externalResearchIntent ? {
@@ -2406,7 +3077,7 @@ async function createOrchestrationPipeline(options = {}) {
   for (const st of subtreeWrites) await writeJson(st.absPath, st.payload, createdFiles);
   await writeText(path.join(pipelineDir, skillPath), defaultOrchestrationSkill(taskText, authoringSpec, selectedNodePacks), createdFiles);
   await writeJson(contextRulePath, contextRule, createdFiles);
-  await writeText(promptPath, orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot), createdFiles);
+  await writeText(promptPath, orchestrationAuthoringSpecPrompt(taskText, workspaceSnapshot, selectedNodePacks), createdFiles);
   await writeJson(authoringSpecPath, authoringSpec, createdFiles);
   await writeText(workspaceInstructionPath, [
     '# OrPAD Orchestration Authoring',
@@ -2415,7 +3086,10 @@ async function createOrchestrationPipeline(options = {}) {
     '',
   ].join('\n'), createdFiles);
 
-  const qualityAudit = await auditGeneratedPipelineQuality(pipelinePath);
+  const qualityAudit = await auditGeneratedPipelineQuality(
+    pipelinePath,
+    nodePackQualityAuditOptions(authoringNodePackOptions, selectedNodePacks),
+  );
   pipeline.metadata.orchestrationAuthoring.qualityAudit = {
     ok: qualityAudit.ok,
     summary: qualityAudit.summary,

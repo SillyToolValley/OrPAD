@@ -100,6 +100,50 @@ test('gate onFail=warn routes through pass family while preserving warning reaso
   assert.equal(warned.find(e => e.condition === 'revise').reason, 'gate-warning-skip-revise');
 });
 
+test('gate warningDoesNotPass prevents warn failures from taking pass edges', () => {
+  const node = { nodeType: 'orpad.gate' };
+  const edges = [
+    { from: 'gate', to: 'queue', condition: 'pass' },
+    { from: 'gate', to: 'final', condition: 'continue' },
+    { from: 'gate', to: 'worker', condition: 'revise' },
+  ];
+  const strictWarning = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, {
+    valid: false,
+    onFail: 'warn',
+    warningDoesNotPass: true,
+  }));
+  assert.equal(strictWarning.find(e => e.condition === 'pass').fired, false);
+  assert.equal(strictWarning.find(e => e.condition === 'pass').reason, 'gate-warning-does-not-pass-failed');
+  assert.equal(strictWarning.find(e => e.condition === 'continue').fired, false);
+  assert.equal(strictWarning.find(e => e.condition === 'revise').fired, true);
+  assert.equal(strictWarning.find(e => e.condition === 'revise').reason, 'gate-warning-does-not-pass-revise');
+});
+
+test('gate failureRouting makes warn failures take revise and retry edges', () => {
+  const node = { nodeType: 'orpad.gate' };
+  const edges = [
+    { from: 'evidence-gate', to: 'exit', condition: 'pass' },
+    { from: 'evidence-gate', to: 'final', condition: 'continue' },
+    { from: 'evidence-gate', to: 'worker', condition: 'revise' },
+    { from: 'evidence-gate', to: 'dispatcher', condition: 'retry' },
+  ];
+  const routedFailure = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, {
+    valid: false,
+    onFail: 'warn',
+    failureRouting: {
+      action: 'revise',
+      target: 'main/bounded-hardening-worker',
+      reason: 'deterministic gate failed',
+    },
+  }));
+  assert.equal(routedFailure.find(e => e.condition === 'pass').fired, false);
+  assert.equal(routedFailure.find(e => e.condition === 'pass').reason, 'gate-failure-routing-failed');
+  assert.equal(routedFailure.find(e => e.condition === 'continue').fired, false);
+  assert.equal(routedFailure.find(e => e.condition === 'revise').fired, true);
+  assert.equal(routedFailure.find(e => e.condition === 'revise').reason, 'gate-failure-routing-revise');
+  assert.equal(routedFailure.find(e => e.condition === 'retry').fired, true);
+});
+
 test('strict gate failures do not pass through onFail=warn', () => {
   const node = { nodeType: 'orpad.gate' };
   const edges = [
@@ -161,31 +205,75 @@ test('gate queue-state conditions (Pattern I) consult the real summarizeQueueInv
   assert.equal(stillWorkFlat.find(e => e.condition === 'queue-not-empty').fired, true);
 });
 
+test('condition matching canonicalizes case, spaces, and underscores before routing', () => {
+  const gateNode = { nodeType: 'orpad.gate' };
+  const gateEdges = [
+    { from: 'drain-gate', to: 'dispatcher', condition: 'Queue Not Empty' },
+    { from: 'drain-gate', to: 'exit', condition: 'QUEUE_EMPTY' },
+  ];
+  const gate = summarizeEdgeEvaluation(evaluateOutgoingEdges(gateNode, gateEdges, {
+    valid: true,
+    inventory: { activeCount: 3 },
+  }));
+  assert.equal(gate.find(e => e.condition === 'queue-not-empty').fired, true);
+  assert.equal(gate.find(e => e.condition === 'queue-empty').fired, false);
+
+  const selector = summarizeEdgeEvaluation(evaluateOutgoingEdges(
+    { nodeType: 'orpad.selector' },
+    [{ from: 'select', to: 'approved', condition: 'Approved Research' }],
+    { selectedRoute: 'approved_research' },
+  ));
+  assert.equal(selector[0].fired, true);
+
+  const review = summarizeEdgeEvaluation(evaluateOutgoingEdges(
+    { nodeType: 'orpad.patchReview' },
+    [{ from: 'review', to: 'gate', condition: 'ACCEPTED' }],
+    { status: 'reviewed' },
+  ));
+  assert.equal(review[0].fired, true);
+});
+
 test('patchReview accepted/rejected edges read the executePatchReviewNode result status', () => {
   const node = { nodeType: 'orpad.patchReview' };
   const edges = [
     { from: 'review', to: 'gate', condition: 'accepted' },
     { from: 'review', to: 'worker', condition: 'rejected' },
   ];
-  // status: 'reviewed' (patches applied) -> accepted branch fires.
+  // status: 'reviewed' (patches applied or intentionally skipped) -> accepted branch fires.
   const accepted = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { status: 'reviewed' }));
   assert.equal(accepted.find(e => e.condition === 'accepted').fired, true);
-  // rejected edge today does NOT fire — executePatchReviewNode does
-  // not emit a 'rejected' resolution. Phase 3 adds that semantics;
-  // Phase 2's job is to surface the gap as a diagnostic.
+  // The accepted result must not also fire the rejected loop.
   const rejectedDecision = accepted.find(e => e.condition === 'rejected');
   assert.equal(rejectedDecision.fired, false);
-  assert.equal(rejectedDecision.reason, 'patch-review-rejected-not-yet-emitted');
+  assert.equal(rejectedDecision.reason, 'patch-review-not-rejected');
 
   // status: 'not-required' (no patches authored) -> still accepted.
   const noPatches = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { status: 'not-required' }));
   assert.equal(noPatches.find(e => e.condition === 'accepted').fired, true);
+  const autoApplied = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { status: 'applied' }));
+  assert.equal(autoApplied.find(e => e.condition === 'accepted').fired, true);
+
+  // status: 'rejected' and renderer follow-up decisions route to the rejected branch.
+  const rejected = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { status: 'rejected' }));
+  assert.equal(rejected.find(e => e.condition === 'accepted').fired, false);
+  assert.equal(rejected.find(e => e.condition === 'rejected').fired, true);
+  assert.equal(rejected.find(e => e.condition === 'rejected').reason, 'patch-review-rejected');
+  const followUp = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { status: 'blocked', decision: 'follow-up' }));
+  assert.equal(followUp.find(e => e.condition === 'accepted').fired, false);
+  assert.equal(followUp.find(e => e.condition === 'rejected').fired, true);
+  const revisionRequested = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, [
+    { from: 'review', to: 'gate', condition: 'accepted' },
+    { from: 'review', to: 'worker', condition: 'revise' },
+  ], { status: 'blocked', decision: 'revision_requested' }));
+  assert.equal(revisionRequested.find(e => e.condition === 'accepted').fired, false);
+  assert.equal(revisionRequested.find(e => e.condition === 'revise').fired, true);
 
   // status: 'blocked' -> neither edge fires (the for-loop would have
   // stopped before evaluating outgoing edges anyway, but the
   // evaluator must not lie about it).
   const blocked = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { status: 'blocked' }));
   assert.equal(blocked.find(e => e.condition === 'accepted').fired, false);
+  assert.equal(blocked.find(e => e.condition === 'rejected').fired, false);
 });
 
 test('barrier pass/partial edges reflect validateBarrierNode valid bit', () => {

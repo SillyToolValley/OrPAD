@@ -259,6 +259,17 @@ function optionalPatchReviewMode(options) {
   return mode;
 }
 
+function normalizePatchReviewDecision(value) {
+  const decision = String(value || 'skipped').trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (!decision || decision === 'skip' || decision === 'skipped') return 'skipped';
+  if (decision === 'followup' || decision === 'follow-up') return 'follow-up';
+  if (decision === 'reject' || decision === 'rejected' || decision === 'revise') return 'rejected';
+  throw machineError(
+    'MACHINE_PATCH_REVIEW_DECISION_INVALID',
+    'Patch review decision must be skipped, follow-up, or rejected.',
+  );
+}
+
 function hasExplicitOption(options, key) {
   return options && options[key] != null && options[key] !== '';
 }
@@ -834,6 +845,18 @@ async function approvePatchHandler(event, authority, request) {
     const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
     const reviewState = patchReviewStateFromEvents(snapshot.events);
     const review = reviewState.reviews.find(item => item.patchArtifact === patchArtifact);
+    if (review?.status === 'rejected') {
+      return {
+        success: false,
+        ok: false,
+        code: 'MACHINE_PATCH_REVIEW_REJECTED',
+        error: 'This patch was already marked for follow-up and cannot be approved as accepted.',
+        runId,
+        patchArtifact,
+        decision: review.status,
+        ...snapshotResponseFields(snapshot),
+      };
+    }
     if (review?.status === 'applied' || review?.status === 'skipped') {
       return {
         success: true,
@@ -1082,48 +1105,116 @@ async function reviewPatchHandler(event, authority, request) {
   const context = await resolveMachinePipelineContext(event, authority, request);
   const runId = assertRunId(request.runId);
   const patchArtifact = requiredString(request.patchArtifact, 'patchArtifact').trim();
-  const decision = optionalString(request.decision, 'decision').trim() || 'skipped';
-  if (!['skipped', 'follow-up'].includes(decision)) {
-    throw machineError('MACHINE_PATCH_REVIEW_DECISION_INVALID', 'Patch review decision must be skipped or follow-up.');
-  }
+  const decision = normalizePatchReviewDecision(optionalString(request.decision, 'decision'));
   const runRoot = await resolveMachineRunRoot(context, runId);
-  const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
-  const reviewedEvent = await appendMachineEvent(runRoot, {
-    runId,
-    actor: 'renderer',
-    eventType: 'patch.review_skipped',
-    reason: 'machine-ui.patch-review.skip',
-    artifactRefs: [patchArtifact],
-    payload: {
+  return withBatchApplyMutex(runRoot, async () => {
+    const snapshot = await readRunSnapshot(runRoot);
+    if (!snapshot) {
+      throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+    }
+    const patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+    const reviewState = patchReviewStateFromEvents(snapshot.events);
+    const review = reviewState.reviews.find(item => item.patchArtifact === patchArtifact);
+    const eventType = decision === 'skipped' ? 'patch.review_skipped' : 'patch.review_rejected';
+    const reason = decision === 'skipped' ? 'machine-ui.patch-review.skip' : 'machine-ui.patch-review.follow-up';
+    if (['applied', 'skipped', 'rejected'].includes(review?.status)) {
+      const requestedStatus = decision === 'skipped' ? 'skipped' : 'rejected';
+      if (review.status !== requestedStatus) {
+        return {
+          success: false,
+          ok: false,
+          code: 'MACHINE_PATCH_REVIEW_ALREADY_RESOLVED',
+          error: `This patch review is already resolved as ${review.status}.`,
+          runId,
+          patchArtifact,
+          decision,
+          ...snapshotResponseFields(snapshot),
+          exported: null,
+        };
+      }
+      return {
+        success: true,
+        ok: true,
+        runId,
+        patchArtifact,
+        decision,
+        idempotent: true,
+        ...snapshotResponseFields(snapshot),
+        exported: null,
+      };
+    }
+    let requeuedItemId = '';
+    let requeuedFromState = '';
+    if (decision !== 'skipped') {
+      const itemId = String(review?.itemId || '').trim();
+      if (itemId) {
+        const currentItem = await findQueueItem(runRoot, itemId);
+        const currentState = String(currentItem?.state || '').trim();
+        if (['blocked', 'done', 'rejected'].includes(currentState)) {
+          await transitionQueueItem(runRoot, {
+            runId,
+            itemId,
+            toState: 'queued',
+            expectedFromState: currentState,
+            reason: 'patch-review.follow-up-requeued',
+            transitionId: `patch-review-follow-up:${itemId}:${crypto.createHash('sha256').update(patchArtifact).digest('hex').slice(0, 12)}`,
+            now: new Date().toISOString(),
+            itemPatch: {
+              claimedBy: undefined,
+              claimedAt: undefined,
+              claimId: undefined,
+              claimLeaseExpiresAt: undefined,
+              writeSetLockId: undefined,
+              closedByClaimId: undefined,
+              workerResultStatus: undefined,
+              closedAt: undefined,
+            },
+            payload: {
+              patchArtifact,
+              decision,
+            },
+          });
+          requeuedItemId = itemId;
+          requeuedFromState = currentState;
+        }
+      }
+    }
+    const reviewedEvent = await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'renderer',
+      eventType,
+      reason,
+      artifactRefs: [patchArtifact],
+      payload: {
+        patchArtifact,
+        decision,
+        changeCount: Array.isArray(patch.changes) ? patch.changes.length : 0,
+        itemId: review?.itemId || '',
+        requeuedItemId,
+        requeuedFromState,
+      },
+    });
+    const updated = await readRunSnapshot(runRoot) || snapshot;
+    const exported = request.exportLatestRun === false
+      ? null
+      : await exportLatestRun({
+        runRoot,
+        pipelineDir: context.pipelineDir,
+        allowOverwrite: true,
+      });
+    return {
+      success: true,
+      ok: true,
+      runId,
       patchArtifact,
       decision,
-      changeCount: Array.isArray(patch.changes) ? patch.changes.length : 0,
-    },
+      reviewedEvent,
+      requeuedItemId,
+      requeuedFromState,
+      ...snapshotResponseFields(updated),
+      exported,
+    };
   });
-  const updated = await readRunSnapshot(runRoot);
-  const exported = request.exportLatestRun === false
-    ? null
-    : await exportLatestRun({
-      runRoot,
-      pipelineDir: context.pipelineDir,
-      allowOverwrite: true,
-    });
-  return {
-    success: true,
-    ok: true,
-    runId,
-    patchArtifact,
-    decision,
-    reviewedEvent,
-    runState: updated.runState,
-    events: updated.events,
-    candidateInventory: updated.candidateInventory,
-    worker: updated.worker,
-    approvals: updated.approvals,
-    activeClaims: updated.activeClaims,
-    activeWriteSets: updated.activeWriteSets,
-    exported,
-  };
 }
 
 async function decideApprovalHandler(event, authority, request) {
@@ -1193,6 +1284,7 @@ async function resumeRunHandler(event, authority, request) {
         runId,
         now: optionalString(request.now, 'now') || undefined,
         recoverStaleClaims,
+        emitNodeCancelledForInflight,
       });
       const updated = await readRunSnapshot(runRoot);
       const exported = request.exportLatestRun === false
@@ -1216,6 +1308,7 @@ async function resumeRunHandler(event, authority, request) {
         resume: {
           queueRepair: resumed.queueRepair,
           staleClaimCount: resumed.staleClaims.length,
+          cancelledNodeCount: resumed.cancelledNodes.length,
           inventory: resumed.inventory,
         },
         exported,

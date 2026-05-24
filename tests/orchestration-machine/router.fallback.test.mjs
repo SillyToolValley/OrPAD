@@ -230,7 +230,7 @@ test('dispatchAdapter falls back from anthropic → codex-cli on KEY_MISSING (ke
   assert.equal(result.summary, 'codex-cli-ok');
 });
 
-test('dispatchAdapter falls back from anthropic → openai on RATE_LIMIT', async () => {
+test('dispatchAdapter skips openai stub and falls back to codex-cli on RATE_LIMIT', async () => {
   const calls = [];
   const result = await dispatchAdapter({
     pipelineAdapter: v2WithFallback,
@@ -245,9 +245,103 @@ test('dispatchAdapter falls back from anthropic → openai on RATE_LIMIT', async
       return workerResult({ summary: `${req.providerSelection.providerId}-ok` });
     },
   });
-  assert.deepEqual(calls, ['anthropic', 'openai']);
-  assert.equal(result.routingDecision.providerId, 'openai');
-  assert.equal(result.routingDecision.fallbackChainConsumed, 1);
+  assert.deepEqual(calls, ['anthropic', 'codex-cli']);
+  assert.equal(result.routingDecision.providerId, 'codex-cli');
+  assert.equal(result.routingDecision.fallbackChainConsumed, 2);
+});
+
+test('dispatchAdapter repeatedly records diagnostics when skipping openai stub fallback', async () => {
+  for (let iteration = 0; iteration < 5; iteration += 1) {
+    const calls = [];
+    const beforeEvents = [];
+    const fallbackEvents = [];
+    const result = await dispatchAdapter({
+      pipelineAdapter: v2WithFallback,
+      request: buildAdapterRequest({
+        adapterCallId: `adapter_call_rate_${iteration}`,
+        attemptId: `attempt_rate_${iteration}`,
+        idempotencyKey: `run_20260506_fallback:probe:attempt_rate_${iteration}`,
+      }),
+      beforeAttempt: e => beforeEvents.push(e),
+      onFallback: e => fallbackEvents.push(e),
+      invoker: async (req) => {
+        calls.push(req.providerSelection.providerId);
+        if (req.providerSelection.providerId === 'anthropic') {
+          const err = new Error('rate-limited');
+          err.code = 'RATE_LIMIT';
+          throw err;
+        }
+        if (req.providerSelection.providerId === 'openai') {
+          assert.fail('stub openai provider must not be invoked as a fallback candidate');
+        }
+        return workerResult({ summary: `${req.providerSelection.providerId}-ok` });
+      },
+    });
+    assert.deepEqual(calls, ['anthropic', 'codex-cli']);
+    assert.equal(result.routingDecision.providerId, 'codex-cli');
+    assert.equal(result.routingDecision.fallbackChainConsumed, 2);
+
+    const skipped = beforeEvents.find(e => e.eventType === 'adapter.attempt.skipped');
+    assert.equal(skipped?.payload?.providerId, 'openai');
+    assert.equal(skipped?.payload?.reason, 'provider-implementation-status-stub');
+    assert.equal(skipped?.payload?.nextAction.includes('runnable provider'), true);
+
+    assert.equal(fallbackEvents.length, 1);
+    assert.equal(fallbackEvents[0].payload.requestedProviderId, 'openai');
+    assert.equal(fallbackEvents[0].payload.toProviderId, 'codex-cli');
+    assert.deepEqual(fallbackEvents[0].payload.skippedProviderIds, ['openai']);
+  }
+});
+
+test('dispatchAdapter surfaces stub diagnostic when no runnable fallback successor exists', async () => {
+  const calls = [];
+  const beforeEvents = [];
+  await assert.rejects(
+    dispatchAdapter({
+      pipelineAdapter: {
+        ...v2WithFallback,
+        fallback: [{ family: 'api', providerId: 'openai', model: 'gpt-4o-mini', reason: 'cost' }],
+      },
+      request: buildAdapterRequest(),
+      beforeAttempt: e => beforeEvents.push(e),
+      invoker: async (req) => {
+        calls.push(req.providerSelection.providerId);
+        if (req.providerSelection.providerId === 'anthropic') {
+          const err = new Error('rate-limited');
+          err.code = 'RATE_LIMIT';
+          throw err;
+        }
+        assert.fail('stub-only fallback chain should not invoke a successor');
+      },
+    }),
+    error => error?.code === 'MACHINE_API_PLUGIN_STUB'
+      && error?.providerId === 'openai'
+      && /fallback chain/.test(error?.nextAction || ''),
+  );
+  assert.deepEqual(calls, ['anthropic']);
+  const skipped = beforeEvents.find(e => e.eventType === 'adapter.attempt.skipped');
+  assert.equal(skipped?.payload?.providerId, 'openai');
+  assert.equal(skipped?.payload?.reason, 'provider-implementation-status-stub');
+});
+
+test('dispatchAdapter direct openai stub selection fails before invoking or falling back', async () => {
+  let invokerCalls = 0;
+  await assert.rejects(
+    dispatchAdapter({
+      pipelineAdapter: {
+        ...v2WithFallback,
+        default: { family: 'api', providerId: 'openai', model: 'gpt-4o-mini' },
+        fallback: [{ family: 'cli', providerId: 'codex-cli', model: 'codex', reason: 'keyless-local' }],
+      },
+      request: buildAdapterRequest(),
+      invoker: async () => {
+        invokerCalls += 1;
+        return workerResult();
+      },
+    }),
+    error => error?.code === 'MACHINE_API_PLUGIN_STUB' && error?.providerId === 'openai',
+  );
+  assert.equal(invokerCalls, 0);
 });
 
 test('dispatchAdapter retries the same candidate on RETRYABLE before falling back', async () => {
@@ -292,11 +386,16 @@ test('dispatchAdapter self-repairs OUTPUT_VIOLATES_CONTRACT once before falling 
     onSelfRepair: e => events.push(e),
     onFallback: e => events.push(e),
   });
-  // anthropic primary → 1 self-repair → fallback to openai
+  // anthropic primary, 1 self-repair, then openai stub is skipped for codex-cli.
   assert.equal(calls.filter(p => p === 'anthropic').length, 2);
-  assert.equal(calls.includes('openai'), true);
+  assert.equal(calls.includes('openai'), false);
+  assert.equal(calls.includes('codex-cli'), true);
   assert.equal(events.filter(e => e.eventType === 'adapter.attempt.self-repair').length, 1);
   assert.equal(events.filter(e => e.eventType === 'adapter.attempt.fallback').length, 1);
+  assert.deepEqual(
+    events.find(e => e.eventType === 'adapter.attempt.fallback')?.payload?.skippedProviderIds,
+    ['openai'],
+  );
 });
 
 test('dispatchAdapter throws BUDGET_EXCEEDED instead of falling back', async () => {
@@ -334,10 +433,12 @@ test('dispatchAdapter throws FATAL without consuming fallback', async () => {
 
 test('dispatchAdapter exhausts the fallback chain and surfaces the last error if all fail', async () => {
   const calls = [];
+  const beforeEvents = [];
   await assert.rejects(
     dispatchAdapter({
       pipelineAdapter: v2WithFallback,
       request: buildAdapterRequest(),
+      beforeAttempt: e => beforeEvents.push(e),
       invoker: async (req) => {
         calls.push(req.providerSelection.providerId);
         const err = new Error('rate');
@@ -347,8 +448,11 @@ test('dispatchAdapter exhausts the fallback chain and surfaces the last error if
     }),
     error => error?.classification === 'RATE_LIMIT',
   );
-  // Tries each candidate exactly once because RATE_LIMIT goes straight to fallback.
-  assert.deepEqual(calls, ['anthropic', 'openai', 'codex-cli']);
+  assert.deepEqual(calls, ['anthropic', 'codex-cli']);
+  assert.equal(
+    beforeEvents.find(e => e.eventType === 'adapter.attempt.skipped')?.payload?.providerId,
+    'openai',
+  );
 });
 
 test('per-fallback budget guard halts the chain when concurrent ledger growth blows the cap', async () => {
@@ -362,7 +466,7 @@ test('per-fallback budget guard halts the chain when concurrent ledger growth bl
       schemaVersion: 'orpad.machineAdapter.v2',
       enabled: true,
       default: { family: 'api', providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
-      fallback: [{ family: 'api', providerId: 'openai', model: 'gpt-4o-mini', reason: 'cost' }],
+      fallback: [{ family: 'cli', providerId: 'codex-cli', model: 'codex', reason: 'keyless-local' }],
       budget: { perCallUsd: 5, perRunUsd: 1, hardStop: true },
     };
     let invokerCalls = 0;

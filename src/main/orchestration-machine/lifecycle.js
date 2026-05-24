@@ -170,9 +170,16 @@ function summaryStatusFromInventory(inventory) {
 function workerResultIsPatchReviewEligible(payload = {}) {
   const status = String(payload.status || '').trim().toLowerCase();
   const toState = String(payload.toState || '').trim().toLowerCase();
+  if ((status === 'blocked' || toState === 'blocked') && payload.patchArtifact) return true;
   if (status && status !== 'done') return false;
   if (toState && toState !== 'done') return false;
   return true;
+}
+
+function workerResultRequiresManualPatchReview(payload = {}) {
+  const status = String(payload.status || '').trim().toLowerCase();
+  const toState = String(payload.toState || '').trim().toLowerCase();
+  return Boolean(payload.patchArtifact) && (status === 'blocked' || toState === 'blocked');
 }
 
 function patchReviewResumeStateFromEvents(events = []) {
@@ -191,6 +198,7 @@ function patchReviewResumeStateFromEvents(events = []) {
       patchArtifact,
       changedFiles,
       lockTargetFiles: Array.isArray(event?.payload?.lockTargetFiles) ? event.payload.lockTargetFiles : [],
+      reviewRequired: workerResultRequiresManualPatchReview(event.payload || {}),
       sourceEvent: event,
     });
   }
@@ -243,6 +251,7 @@ function patchReviewResumeStateFromEvents(events = []) {
     const classification = shouldRequestPatchReview(entry.sourceEvent, {
       decision,
       reviewRequest,
+      reviewRequired: entry.reviewRequired,
       lockTargetFiles: entry.lockTargetFiles,
     });
     return {
@@ -368,13 +377,21 @@ async function repairDerivedQueueFilesFromEvents(runRoot) {
 }
 
 async function resumeMachineRun(runRoot, options = {}) {
-  const { runId, now = new Date().toISOString(), recoverStaleClaims } = options;
+  const {
+    runId,
+    now = new Date().toISOString(),
+    recoverStaleClaims,
+    emitNodeCancelledForInflight,
+  } = options;
   if (!runId) throw new Error('runId is required.');
   await assertRunLifecycleCanTransition(runRoot, 'waiting', 'lifecycle.resume');
   await assertNoPendingApprovalsForResume(runRoot);
   const queueRepair = await repairDerivedQueueFilesFromEvents(runRoot);
   const staleClaims = recoverStaleClaims
     ? await recoverStaleClaims(runRoot, { runId, now })
+    : [];
+  const cancelledNodes = staleClaims.length && typeof emitNodeCancelledForInflight === 'function'
+    ? await emitNodeCancelledForInflight(runRoot, runId, 'lifecycle.resume.stale-claim')
     : [];
   await appendRunLifecycleStatus(runRoot, {
     runId,
@@ -383,6 +400,7 @@ async function resumeMachineRun(runRoot, options = {}) {
     payload: {
       queueRepair,
       staleClaimCount: staleClaims.length,
+      cancelledNodeCount: cancelledNodes.length,
     },
   });
   const inventory = await summarizeQueueInventory(runRoot);
@@ -397,11 +415,13 @@ async function resumeMachineRun(runRoot, options = {}) {
       patchReview,
       queueRepair,
       staleClaimCount: staleClaims.length,
+      cancelledNodeCount: cancelledNodes.length,
     },
   });
   return {
     queueRepair,
     staleClaims,
+    cancelledNodes,
     inventory,
     patchReview,
     runState,

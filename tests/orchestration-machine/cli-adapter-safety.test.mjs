@@ -417,6 +417,147 @@ test('CLI overlay adapter blocks successful no-op when expected changed files ar
   assert.deepEqual(result.verification[0].missingExpectedChanges, ['src/allowed.txt']);
 });
 
+test('CLI overlay adapter preserves blocked stdout as blocked queue work', async () => {
+  const run = await makeRun('run_20260524_cli_stdout_blocked');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const claim = await queueAndClaim(run, 'claim-cli-stdout-blocked');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: claim.writeSet.paths,
+    adapterCallId: 'cli-stdout-blocked-call',
+    attemptId: 'cli-stdout-blocked-attempt-1',
+    idempotencyKey: 'cli-stdout-blocked-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const stdoutResult = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'blocked',
+    summary: 'Worker could not proceed because the target file was ambiguous.',
+    nextAction: 'clarify-target-file-and-requeue',
+    blockedReason: 'target-file-ambiguous',
+    artifacts: [],
+    changedFiles: [],
+  };
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', `process.stdout.write(${JSON.stringify(JSON.stringify(stdoutResult))})`],
+    cwd: overlayRoot,
+  };
+  const adapter = createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-stdout-blocked',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  });
+
+  const result = await adapter.invoke(request);
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.nextAction, 'clarify-target-file-and-requeue');
+
+  const applied = await applyWorkerResult(run.runRoot, {
+    runId: run.runId,
+    claimId: claim.claim.claimId,
+    itemId: claim.item.id,
+    request,
+    result,
+    now: '2026-04-30T00:00:30.000Z',
+  });
+
+  assert.equal(applied.toState, 'blocked');
+  const item = await findQueueItem(run.runRoot, claim.item.id);
+  assert.equal(item.state, 'blocked');
+  assert.equal(item.item.workerResultStatus, 'blocked');
+  assert.equal(item.item.nextAction, 'clarify-target-file-and-requeue');
+  const workerEvent = (await readMachineEvents(run.runRoot)).find(event => event.eventType === 'worker.result');
+  assert.equal(workerEvent.payload.status, 'blocked');
+  assert.equal(workerEvent.payload.toState, 'blocked');
+  assert.equal(workerEvent.payload.nextAction, 'clarify-target-file-and-requeue');
+});
+
+test('CLI overlay adapter extracts stdout evidence into canonical worker result fields', async () => {
+  const run = await makeRun('run_20260524_cli_stdout_evidence');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const claim = await queueAndClaim(run, 'claim-cli-stdout-evidence');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: claim.writeSet.paths,
+    adapterCallId: 'cli-stdout-evidence-call',
+    attemptId: 'cli-stdout-evidence-attempt-1',
+    idempotencyKey: 'cli-stdout-evidence-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.expectedChangedFiles = ['src/allowed.txt'];
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const stdoutResult = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'done',
+    summary: 'Worker fixed the allowed target.',
+    failingSymptom: 'The allowed target still contained stale text.',
+    rootCause: 'The worker result parser ignored structured stdout evidence.',
+    verificationCommands: ['node --test tests/orchestration-machine/cli-adapter-safety.test.mjs'],
+    residualRisk: 'Only the focused adapter path is covered here.',
+    artifacts: [],
+  };
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("src",{recursive:true});',
+    'fs.writeFileSync("src/allowed.txt","after evidence\\n");',
+    `process.stdout.write(${JSON.stringify(JSON.stringify(stdoutResult))});`,
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-stdout-evidence',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.equal(result.rootCause, stdoutResult.rootCause);
+  assert.deepEqual(result.filesChanged, ['src/allowed.txt']);
+  assert.deepEqual(result.verificationCommands, stdoutResult.verificationCommands);
+
+  await applyWorkerResult(run.runRoot, {
+    runId: run.runId,
+    claimId: claim.claim.claimId,
+    itemId: claim.item.id,
+    request,
+    result,
+    now: '2026-04-30T00:00:30.000Z',
+  });
+  const workerEvent = (await readMachineEvents(run.runRoot)).find(event => event.eventType === 'worker.result');
+  assert.equal(workerEvent.payload.rootCause, stdoutResult.rootCause);
+  assert.deepEqual(workerEvent.payload.filesChanged, ['src/allowed.txt']);
+  assert.deepEqual(workerEvent.payload.verificationCommands, stdoutResult.verificationCommands);
+});
+
 test('CLI overlay adapter copies source-of-truth files as read-only context', async () => {
   const run = await makeRun('run_20260430_cli_readonly_context');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });

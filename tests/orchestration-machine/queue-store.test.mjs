@@ -142,6 +142,28 @@ test('candidate proposal explicit targetFiles pass through normalized and dedupe
   ]);
 });
 
+test('candidate proposal expectedChangedFiles are explicit and separate from targetFiles', async () => {
+  const run = await makeRun();
+  const result = await ingestCandidateProposal(run.runRoot, proposal({
+    proposalId: 'proposal-explicit-expected-changes',
+    suggestedWorkItemId: 'explicit-expected-changes',
+    fingerprint: 'ux:explicit-expected-changes',
+    sourceOfTruthTargets: ['src/renderer/renderer.js'],
+    targetFiles: ['src/renderer/renderer.js', 'tests/renderer.test.mjs'],
+    expectedChangedFiles: ['src/./renderer/renderer.js', 'src\\renderer\\renderer.js'],
+  }), {
+    runId: run.runId,
+    now: '2026-04-30T00:00:01.000Z',
+    transitionId: 'ingest:explicit-expected-changes',
+  });
+
+  assert.deepEqual(result.item.targetFiles, [
+    'src/renderer/renderer.js',
+    'tests/renderer.test.mjs',
+  ]);
+  assert.deepEqual(result.item.expectedChangedFiles, ['src/renderer/renderer.js']);
+});
+
 test('candidate ingest dedupes by fingerprint without creating another canonical item', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {

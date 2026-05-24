@@ -35,6 +35,7 @@
         "done",
         "blocked",
         "queued",
+        "requeued",
         "failed",
         "approval-required",
         "rejected"

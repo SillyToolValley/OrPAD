@@ -54,6 +54,7 @@ function normalizeCandidateProposal(proposal, options = {}) {
   const targetFiles = Object.prototype.hasOwnProperty.call(proposal, 'targetFiles')
     ? normalizeTargetFiles(proposal.targetFiles)
     : normalizeTargetFiles(sourceOfTruthTargets);
+  const expectedChangedFiles = normalizeTargetFiles(proposal.expectedChangedFiles || []);
 
   const workItem = {
     schemaVersion: SCHEMA_VERSIONS.workItem,
@@ -74,6 +75,7 @@ function normalizeCandidateProposal(proposal, options = {}) {
     actualBehavior: proposal.actualBehavior || proposal.title,
     sourceOfTruthTargets: sourceOfTruthTargets.length ? sourceOfTruthTargets : ['unresolved-source-target'],
     targetFiles,
+    ...(expectedChangedFiles.length ? { expectedChangedFiles } : {}),
     verificationPlan: proposal.verificationPlan || 'Verify the accepted implementation against the candidate acceptance criteria.',
     coverageEvidenceIds: coverageEvidenceIds.length ? coverageEvidenceIds : [`${proposal.sourceNode}:proposal`],
     approvalRequired: proposal.approvalRequired === true,

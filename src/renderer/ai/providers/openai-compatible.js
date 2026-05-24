@@ -12,13 +12,64 @@ async function readError(res) {
   throw new Error(`Provider request failed (${res.status} ${res.statusText})${suffix}`);
 }
 
-async function* streamOpenAIResponse(res) {
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (signal?.reason) {
+    const err = new Error(String(signal.reason));
+    err.name = 'AbortError';
+    return err;
+  }
+  try {
+    return new DOMException('Aborted', 'AbortError');
+  } catch {
+    const err = new Error('Aborted');
+    err.name = 'AbortError';
+    return err;
+  }
+}
+
+function malformedStreamEvent(provider, data) {
+  return {
+    type: 'error',
+    code: 'PROVIDER_STREAM_MALFORMED_JSON',
+    message: `${provider} stream sent malformed JSON.`,
+    diagnostic: {
+      provider,
+      chunkLength: String(data || '').length,
+    },
+  };
+}
+
+async function readStreamChunk(reader, abortSignal) {
+  if (!abortSignal) return reader.read();
+  if (abortSignal.aborted) throw abortError(abortSignal);
+
+  let cleanup = null;
+  const aborted = new Promise((_, reject) => {
+    const onAbort = () => {
+      const err = abortError(abortSignal);
+      reject(err);
+      try { reader.cancel(err).catch(() => {}); } catch {}
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    cleanup = () => abortSignal.removeEventListener('abort', onAbort);
+  });
+
+  try {
+    return await Promise.race([reader.read(), aborted]);
+  } finally {
+    if (cleanup) cleanup();
+  }
+}
+
+async function* streamOpenAIResponse(res, abortSignal) {
   if (!res.ok) await readError(res);
   if (!res.body) throw new Error('Provider did not return a stream.');
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let malformedReported = false;
   const toolCalls = new Map();
 
   function captureToolCalls(deltas) {
@@ -37,7 +88,7 @@ async function* streamOpenAIResponse(res) {
   }
 
   while (true) {
-    const { value, done } = await reader.read();
+    const { value, done } = await readStreamChunk(reader, abortSignal);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const chunks = buffer.split(/\r?\n\r?\n/);
@@ -54,16 +105,21 @@ async function* streamOpenAIResponse(res) {
         yield { type: 'done' };
         return;
       }
+      let json = null;
       try {
-        const json = JSON.parse(data);
-        const choice = json.choices?.[0] || {};
-        const delta = choice.delta?.content || '';
-        if (delta) yield { type: 'text', delta };
-        captureToolCalls(choice.delta?.tool_calls);
-        if (json.usage) yield { type: 'usage', usage: json.usage };
+        json = JSON.parse(data);
       } catch {
-        // Ignore keep-alive or provider-specific events we do not understand yet.
+        if (!malformedReported) {
+          malformedReported = true;
+          yield malformedStreamEvent('OpenAI-compatible', data);
+        }
+        continue;
       }
+      const choice = json.choices?.[0] || {};
+      const delta = choice.delta?.content || '';
+      if (delta) yield { type: 'text', delta };
+      captureToolCalls(choice.delta?.tool_calls);
+      if (json.usage) yield { type: 'usage', usage: json.usage };
     }
   }
   for (const call of pendingToolCalls()) yield { type: 'tool_call', ...call };
@@ -93,7 +149,7 @@ export async function* streamOpenAICompatible({ endpoint, apiKey, messages, mode
     body: JSON.stringify(body),
     signal: abortSignal,
   });
-  yield* streamOpenAIResponse(res);
+  yield* streamOpenAIResponse(res, abortSignal);
 }
 
 export default {

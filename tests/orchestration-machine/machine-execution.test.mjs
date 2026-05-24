@@ -11,26 +11,38 @@ const {
   appendRunLifecycleStatus,
   createMachineRun,
   createContractValidator,
+  evaluateOutgoingEdges,
   executeMachineRunStep,
   findQueueItem,
+  ingestCandidateProposal,
   readMachineEvents,
   readActiveClaimLeases,
   readActiveWriteSetLocks,
   readRunState,
   registerArtifact,
+  registerCandidateInventoryArtifact,
   registerPatchArtifact,
   normalizeJudgeResult,
   runContentEditorialJudge,
+  summarizeEdgeEvaluation,
+  transitionQueueItem,
   validateArtifactContract,
   validateBarrierNode,
   validateGateNode,
   validateSelectorNode,
 } = require('../../src/main/orchestration-machine');
 const {
+  appendPatchReviewRejectedEvent,
   batchApplyStateFromEvents,
   buildLiveWorkerPrompt,
+  __test_artifactContractOnMissing,
+  __test_auditDiscoveryQueueProvenance,
+  __test_auditRequiredCompletionGates,
+  __test_canonicalGateOnFailPolicy,
   __test_configuredWorkerConcurrency,
   __test_machineConfigWithQueueProtocolClaimPolicy,
+  __test_requiredValidationCommandsForWorkerNode,
+  __test_sanitizeInnerFailurePolicy,
   __test_workerCommandGrantTtlMs,
   effectiveProbeCandidateLimit,
   loadHarnessRuntimeContextForPipeline,
@@ -310,6 +322,44 @@ async function addPatchReviewAndExitNodes(pipelineDir) {
   await fs.writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf8');
 }
 
+async function addPatchReviewRejectLoopNodes(pipelineDir) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  const nodes = graph.graph.nodes;
+  const verificationIndex = nodes.findIndex(node => node.id === 'verification-gate');
+  nodes.splice(verificationIndex, 0, {
+    id: 'patch-review',
+    type: 'orpad.patchReview',
+    label: 'Review patch results',
+    config: { reviewMode: 'user-selected-files' },
+  });
+  nodes.push({
+    id: 'exit',
+    type: 'orpad.exit',
+    label: 'Exit',
+    config: { summary: 'Close after patch review and evidence checks.' },
+  });
+  graph.graph.transitions = graph.graph.transitions
+    .filter(edge => !(edge.from === 'worker' && edge.to === 'verification-gate'));
+  graph.graph.transitions.push(
+    { from: 'worker', to: 'patch-review' },
+    { from: 'patch-review', to: 'verification-gate', condition: 'accepted' },
+    { from: 'patch-review', to: 'worker', condition: 'rejected' },
+    { from: 'artifact', to: 'exit' },
+  );
+  await fs.writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf8');
+}
+
+async function addTangledCycleBackEdges(pipelineDir) {
+  const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
+  const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+  graph.graph.transitions.push(
+    { from: 'verification-gate', to: 'worker', condition: 'ambiguous-cycle' },
+    { from: 'verification-gate', to: 'dispatch', condition: 'also-ambiguous-cycle' },
+  );
+  await fs.writeFile(graphPath, JSON.stringify(graph, null, 2), 'utf8');
+}
+
 async function updateGraphNodeConfig(pipelineDir, nodeId, patch) {
   const graphPath = path.join(pipelineDir, 'graphs/main.or-graph');
   const graph = JSON.parse(await fs.readFile(graphPath, 'utf8'));
@@ -508,7 +558,8 @@ async function writeFakeCodexCliScript(dir) {
     '      fingerprint: "live-adapter:src/target.md",',
     '      evidence: [{ id: "live-target-before", file: "src/target.md" }],',
     '      acceptanceCriteria: ["Patch artifact records src/target.md."],',
-    '      sourceOfTruthTargets: ["src/target.md"]',
+    '      sourceOfTruthTargets: ["src/target.md"],',
+    '      targetFiles: ["src/target.md", "src/optional-follow-up.md"]',
     '    }]',
     '  };',
     '}',
@@ -893,10 +944,51 @@ test('live prompts include harness authoring context for project-specific execut
   assert.match(workerPrompt, /workspace-write/);
   assert.match(workerPrompt, /validation-command-runner/);
   assert.match(workerPrompt, /record blocked evidence/);
+  assert.match(workerPrompt, /validationCommands are recommended validation options/);
+  assert.match(workerPrompt, /"verification"/);
+  assert.match(workerPrompt, /"changedFiles"/);
   assert.match(workerPrompt, /validationPreflightSummary/);
   assert.match(workerPrompt, /incidentRunbook/);
   assert.match(workerPrompt, /securityRisk/);
   assert.match(workerPrompt, /ThreadProgramming\/Unit1\/Program\.cs/);
+});
+
+test('worker harness validation commands are advisory unless explicitly enforced', () => {
+  assert.deepEqual(
+    __test_requiredValidationCommandsForWorkerNode(
+      { config: {} },
+      { validationCommands: ['npm run build', 'npm test'] },
+    ),
+    [],
+  );
+  assert.deepEqual(
+    __test_requiredValidationCommandsForWorkerNode(
+      { config: { requiredValidationCommands: ['npm test'] } },
+      { validationCommands: ['npm run build'] },
+    ),
+    ['npm test'],
+  );
+  assert.deepEqual(
+    __test_requiredValidationCommandsForWorkerNode(
+      { config: { enforceHarnessValidationCommands: true } },
+      { validationCommands: ['npm run build'] },
+    ),
+    ['npm run build'],
+  );
+});
+
+test('runtime policy aliases degrade to executable canonical policies', () => {
+  assert.equal(__test_canonicalGateOnFailPolicy('agent decides'), 'block');
+  assert.equal(__test_canonicalGateOnFailPolicy('continue with warning'), 'continue-with-warning');
+  assert.equal(__test_canonicalGateOnFailPolicy('always_continue'), 'continue');
+
+  assert.equal(__test_artifactContractOnMissing('continue with partial evidence'), 'mark-partial');
+  assert.equal(__test_artifactContractOnMissing('strict'), 'fail-run');
+  assert.equal(__test_artifactContractOnMissing('agent decides'), 'mark-partial');
+
+  assert.equal(__test_sanitizeInnerFailurePolicy('continue with warning'), 'continue');
+  assert.equal(__test_sanitizeInnerFailurePolicy('continue_with_partial_evidence'), 'partial');
+  assert.equal(__test_sanitizeInnerFailurePolicy('unknown policy'), 'block');
 });
 
 test('worker concurrency defaults to serial and parallelism must be explicit', () => {
@@ -1099,6 +1191,66 @@ test('graph-driven execute step runs probe, triage, dispatcher, and worker nodes
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCountAfterCompletion);
 });
 
+test('graph-driven execute step rejects tangled multi-back-edge cycles before scheduling', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260524_tangled_cycle_reject');
+  await addTangledCycleBackEdges(pipelineDir);
+  const eventsBefore = await readMachineEvents(run.runRoot);
+
+  await assert.rejects(
+    executeMachineRunStep({
+      workspaceRoot,
+      pipelinePath,
+      pipelineDir,
+      runRoot: run.runRoot,
+      runId: run.runId,
+      exportLatestRunAfterStep: false,
+      nodeExecutable: process.execPath,
+    }),
+    error => {
+      assert.equal(error?.code, 'MACHINE_GRAPH_TANGLED_CYCLE');
+      assert.match(error.message, /tangled non-clean cycle/);
+      assert.equal(error.payload?.graphKey, 'main');
+      assert.deepEqual(error.payload?.tangledCycleNodeIds, ['dispatch', 'verification-gate', 'worker']);
+      assert.deepEqual(
+        error.payload?.backEdges.map(edge => `${edge.from}->${edge.to}`).sort(),
+        ['verification-gate->dispatch', 'verification-gate->worker'],
+      );
+      assert.deepEqual(error.payload?.graphs?.map(graph => graph.graphKey), ['main']);
+      return true;
+    },
+  );
+
+  assert.deepEqual(await readMachineEvents(run.runRoot), eventsBefore);
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test('graph-driven execute step accepts clean single-back-edge loop-back cycles', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260524_clean_loopback_accept');
+  await updateGraphNodeConfig(pipelineDir, 'worker', { targetFiles: ['src/target.md'] });
+  await addPatchReviewRejectLoopNodes(pipelineDir);
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  const mainCycles = executed.graphPlan.graphPlans.find(graph => graph.graphKey === 'main').cycles;
+  assert.deepEqual(mainCycles.tangledCycleNodeIds, []);
+  const cleanLoop = mainCycles.cyclicSCCs.find(scc => scc.nodeIds.includes('patch-review'));
+  assert.equal(cleanLoop.isCleanLoopBack, true);
+  assert.deepEqual(cleanLoop.backEdges.map(edge => `${edge.from}->${edge.to}`), ['patch-review->worker']);
+  assert.equal(executed.finalization.summaryStatus, 'done');
+  assert.equal(executed.events.some(event => event.eventType === 'patch.applied'), true);
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/target.md'), 'utf8'), 'after from graph harness\n');
+
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
 test('graph-driven execute step waits at patch review before exit', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_patch_review_exit');
   await updateGraphNodeConfig(pipelineDir, 'worker', { reviewRequired: true });
@@ -1148,6 +1300,86 @@ test('graph-driven execute step waits at patch review before exit', async () => 
   assert.equal(second.events.filter(event => event.eventType === 'worker.result').length, 1);
   assert.equal(second.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/patch-review'), true);
   assert.equal(second.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), true);
+
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test('patch review rejection records revision metadata and routes rejected edge back to worker', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260524_patch_review_rejected_loop');
+  await updateGraphNodeConfig(pipelineDir, 'worker', { reviewRequired: true });
+  await addPatchReviewRejectLoopNodes(pipelineDir);
+
+  const first = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  const workerEvent = first.events.find(event => event.eventType === 'worker.result');
+  const patchArtifact = workerEvent?.payload?.patchArtifact;
+  assert.equal(typeof patchArtifact, 'string');
+  assert.equal(first.finalization.summaryStatus, 'blocked');
+  assert.equal(first.finalization.supportBlocked.nodePath, 'main/patch-review');
+
+  await appendPatchReviewRejectedEvent(run.runRoot, {
+    runId: run.runId,
+    patchArtifact,
+    itemId: 'graph-harness-target',
+    reason: 'needs-deterministic-evidence',
+    selectedFiles: ['src/target.md'],
+    nextAction: 'revise',
+  });
+
+  const rejectedState = patchReviewStateFromEvents(await readMachineEvents(run.runRoot), {
+    reviewRequired: true,
+  });
+  assert.equal(rejectedState.required, false);
+  assert.equal(rejectedState.resolved, true);
+  assert.equal(rejectedState.rejectedCount, 1);
+  assert.equal(rejectedState.revisionRequests[0].patchArtifact, patchArtifact);
+  assert.equal(rejectedState.revisionRequests[0].itemId, 'graph-harness-target');
+  assert.equal(rejectedState.revisionRequests[0].reason, 'needs-deterministic-evidence');
+  assert.deepEqual(rejectedState.revisionRequests[0].selectedFiles, ['src/target.md']);
+  assert.equal(rejectedState.revisionRequests[0].nextAction, 'revise');
+
+  const second = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  const rejectedBlock = [...second.events].reverse().find(event => (
+    event.eventType === 'node.blocked'
+    && event.nodePath === 'main/patch-review'
+    && event.payload?.status === 'rejected'
+  ));
+  assert.ok(rejectedBlock, 'patchReview should surface rejected as the latest blocking state');
+  assert.equal(rejectedBlock.payload.reason, 'patch-review.rejected');
+  assert.equal(rejectedBlock.payload.nextAction, 'revise');
+  assert.equal(rejectedBlock.payload.revisionRequests[0].itemId, 'graph-harness-target');
+  assert.equal(second.finalization.summaryStatus, 'blocked');
+  assert.equal(second.finalization.supportBlocked.result.status, 'rejected');
+
+  const edgeEval = [...second.events].reverse().find(event => (
+    event.eventType === 'scheduler.edgeEvaluation'
+    && event.nodePath === 'main/patch-review'
+  ));
+  assert.ok(edgeEval, 'rejected patchReview should emit edge decisions');
+  assert.equal(edgeEval.payload.decisions.find(edge => edge.condition === 'accepted').fired, false);
+  assert.equal(edgeEval.payload.decisions.find(edge => edge.condition === 'rejected').fired, true);
+  const loopBack = [...second.events].reverse().find(event => event.eventType === 'scheduler.loopBackReset');
+  assert.equal(loopBack?.payload?.sourceNodePath, 'main/patch-review');
+  assert.equal(loopBack?.payload?.targetNodePath, 'main/worker');
+  assert.equal(second.events.filter(event => event.eventType === 'worker.result').length, 1);
+  assert.equal(second.events.some(event => event.eventType === 'patch.applied'), false);
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/target.md'), 'utf8'), 'before\n');
 
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });
@@ -1477,7 +1709,7 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
   assert.equal(workerTranscript.process.args.some(arg => String(arg).includes(taskText)), false);
   const workerVerification = executed.worker.result.event.payload.verification[0];
   assert.equal(workerVerification.cwdKind, 'overlay');
-  assert.equal(workerVerification.expectedChangedFiles.includes('src/target.md'), true);
+  assert.deepEqual(workerVerification.expectedChangedFiles, []);
   assert.equal(workerVerification.missingExpectedChanges.length, 0);
   const leaseCreated = executed.events.find(event => event.eventType === 'claim.lease-created');
   assert.equal(leaseCreated.payload.leaseMs, 123_456);
@@ -1794,6 +2026,286 @@ test('ArtifactContract rejects symlinked queue requirements before treating them
   );
 });
 
+test('ArtifactContract canonicalizes non-enum onMissing aliases to partial evidence', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_artifact_contract_onmissing_alias');
+
+  const result = await validateArtifactContract(run.runRoot, {
+    required: ['discovery/missing-inventory.json'],
+    onMissing: 'continue with partial evidence',
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.onMissing, 'mark-partial');
+  assert.equal(result.authoredOnMissing, 'continue with partial evidence');
+  assert.equal(result.missingArtifactCount, 1);
+});
+
+test('ArtifactContract reports required per-task evidence fields missing from done workers', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260524_artifact_contract_item_evidence_missing');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    nodePath: 'main/worker',
+    itemId: 'missing-evidence-worker',
+    payload: {
+      status: 'done',
+      summary: 'Worker closed without full evidence.',
+      failingSymptom: 'The runtime accepted incomplete worker proof.',
+      changedFiles: ['src/target.md'],
+      verification: [{ command: 'node --test tests/orchestration-machine/machine-execution.test.mjs', status: 'passed' }],
+    },
+  });
+
+  const contract = {
+    itemEvidenceContract: {
+      requiredPerCompletedTask: [
+        'failingSymptom',
+        'rootCause',
+        'filesChanged',
+        'verificationCommands',
+        'residualRisk',
+      ],
+    },
+  };
+  const partial = await validateArtifactContract(run.runRoot, {
+    ...contract,
+    onMissing: 'mark-partial',
+  });
+  assert.equal(partial.valid, false);
+  assert.equal(partial.missingItemEvidenceCount, 1);
+  assert.equal(partial.missingItemEvidence[0].itemId, 'missing-evidence-worker');
+  assert.deepEqual(partial.missingItemEvidence[0].missingFields, ['rootCause', 'residualRisk']);
+
+  await assert.rejects(
+    validateArtifactContract(run.runRoot, {
+      ...contract,
+      onMissing: 'fail-run',
+    }),
+    error => {
+      assert.equal(error?.code, 'MACHINE_ARTIFACT_CONTRACT_MISSING');
+      assert.deepEqual(error.contract.missingItemEvidence[0].missingFields, ['rootCause', 'residualRisk']);
+      return true;
+    },
+  );
+});
+
+test('ArtifactContract accepts complete required per-task evidence from done workers', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260524_artifact_contract_item_evidence_complete');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    nodePath: 'main/worker',
+    itemId: 'complete-evidence-worker',
+    payload: {
+      status: 'done',
+      summary: 'Worker closed with named contract evidence.',
+      failingSymptom: 'The runtime accepted incomplete worker proof.',
+      rootCause: 'ArtifactContract ignored itemEvidenceContract.requiredPerCompletedTask.',
+      residualRisk: 'No residual risk beyond blocked full-suite execution in this fixture.',
+      changedFiles: ['src/main/orchestration-machine/machine.js'],
+      verification: [{ command: 'node --check src/main/orchestration-machine/machine.js', status: 'passed' }],
+    },
+  });
+
+  const result = await validateArtifactContract(run.runRoot, {
+    itemEvidenceContract: {
+      requiredPerCompletedTask: [
+        'failingSymptom',
+        'rootCause',
+        'filesChanged',
+        'verificationCommands',
+        'residualRisk',
+      ],
+    },
+    onMissing: 'fail-run',
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.itemEvidenceContract.completedTaskCount, 1);
+  assert.equal(result.missingItemEvidenceCount, 0);
+});
+
+test('ArtifactContract ignores adapter transcript stdout for required per-task evidence', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260524_artifact_contract_transcript_only');
+  const transcript = await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath: 'artifacts/adapters/transcript-only.transcript.json',
+    producedBy: 'test.transcript',
+    content: `${JSON.stringify({
+      process: {
+        stdout: [
+          'failingSymptom: transcript-only symptom',
+          'rootCause: transcript-only root cause',
+          'residualRisk: transcript-only risk',
+        ].join('\n'),
+      },
+    }, null, 2)}\n`,
+    schemaVersion: 'orpad.adapterTranscript.v1',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    nodePath: 'main/worker',
+    itemId: 'transcript-only-evidence-worker',
+    artifactRefs: [transcript.file.path],
+    payload: {
+      status: 'done',
+      summary: 'Worker result only has evidence inside transcript stdout.',
+      changedFiles: ['src/target.md'],
+      verification: [{ command: 'node --test tests/orchestration-machine/machine-execution.test.mjs', status: 'passed' }],
+    },
+  });
+
+  const result = await validateArtifactContract(run.runRoot, {
+    itemEvidenceContract: {
+      requiredPerCompletedTask: ['failingSymptom', 'rootCause', 'filesChanged', 'verificationCommands', 'residualRisk'],
+    },
+    onMissing: 'mark-partial',
+  });
+
+  assert.equal(result.valid, false);
+  assert.deepEqual(result.missingItemEvidence[0].missingFields, ['failingSymptom', 'rootCause', 'residualRisk']);
+});
+
+test('ArtifactContract missing per-task evidence keeps graph run from completed', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260524_item_evidence_blocks_completion');
+  await updateMainArtifactContract(pipelineDir, {
+    itemEvidenceContract: {
+      requiredPerCompletedTask: ['failingSymptom', 'rootCause', 'filesChanged', 'verificationCommands', 'residualRisk'],
+    },
+    onMissing: 'mark-partial',
+  });
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    nodeExecutable: process.execPath,
+  });
+
+  assert.equal(executed.finalization.summaryStatus, 'partial');
+  assert.equal(executed.runState.lifecycleStatus, 'waiting');
+  assert.equal(executed.runState.summaryStatus, 'partial');
+  assert.equal(executed.finalization.artifactContracts.partial, true);
+  assert.equal(executed.events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
+});
+
+test('required completion gate audit treats warn failures as blocking final completion', async () => {
+  const nodes = [
+    { id: 'deterministic-preflight-gate', nodePath: 'main/deterministic-preflight-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'discovery-coverage-gate', nodePath: 'main/discovery-coverage-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'triage-priority-gate', nodePath: 'main/triage-priority-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'worker-evidence-gate', nodePath: 'main/worker-evidence-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+  ];
+  const events = nodes.map((node, index) => ({
+    sequence: index + 1,
+    eventType: 'node.completed',
+    nodePath: node.nodePath,
+    payload: {
+      nodeType: 'orpad.gate',
+      valid: false,
+      onFail: 'warn',
+      failed: [{ criterion: 'required evidence present', reason: 'missing-evidence' }],
+    },
+  }));
+
+  const audit = __test_auditRequiredCompletionGates(events, nodes);
+
+  assert.equal(audit.valid, false);
+  assert.deepEqual(audit.failedRequiredGates.map(gate => gate.nodePath), nodes.map(node => node.nodePath));
+  assert.equal(audit.nextAction, 'fix-required-gate-evidence-and-rerun');
+});
+
+test('worker-evidence gate valid=false with onFail warn blocks final run completion', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260524_worker_evidence_gate_blocks');
+  await updateGraphNodeConfig(pipelineDir, 'verification-gate', {
+    criteria: ['unsupported worker evidence proof'],
+    onFail: 'warn',
+    evidenceGate: true,
+  });
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    nodeExecutable: process.execPath,
+  });
+
+  assert.equal(executed.finalization.summaryStatus, 'blocked');
+  assert.equal(executed.finalization.completionBlocked.kind, 'required-gates');
+  assert.deepEqual(
+    executed.finalization.completionBlocked.failedRequiredGates.map(gate => gate.nodePath),
+    ['main/verification-gate'],
+  );
+  assert.equal(executed.runState.lifecycleStatus, 'waiting');
+  assert.equal(executed.runState.summaryStatus, 'blocked');
+  assert.equal(executed.events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
+  const gateEvent = executed.events.find(event => event.eventType === 'node.completed' && event.nodePath === 'main/verification-gate');
+  assert.equal(gateEvent.payload.valid, false);
+  assert.equal(gateEvent.payload.onFail, 'warn');
+});
+
+test('candidate inventory carries prior candidates forward and audits queued provenance', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260524_candidate_inventory_provenance');
+  const proposal = {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-provenance-item',
+    suggestedWorkItemId: 'provenance-item',
+    sourceNode: 'main/probe',
+    title: 'Exercise discovery-to-queue provenance',
+    fingerprint: 'provenance:item',
+    evidence: [{ id: 'provenance-before', file: 'src/target.md' }],
+    acceptanceCriteria: ['Queue item is linked to candidate inventory.'],
+    sourceOfTruthTargets: ['src/target.md'],
+  };
+
+  await registerCandidateInventoryArtifact(run.runRoot, {
+    runId: run.runId,
+    probes: [{ nodePath: 'main/probe', candidateProposals: [proposal], result: {} }],
+  });
+  await registerCandidateInventoryArtifact(run.runRoot, {
+    runId: run.runId,
+    probes: [{
+      nodePath: 'main/probe',
+      candidateProposals: [],
+      result: { emptyPass: { reason: 'Probe already resolved.', evidence: ['node:main/probe'] } },
+    }],
+  });
+  const carried = await readRunArtifactJson(run.runRoot, 'artifacts/discovery/candidate-inventory.json');
+  assert.equal(carried.candidateCount, 1);
+  assert.equal(carried.emptyPassCount, 1);
+  assert.equal(carried.items.some(item => item.suggestedWorkItemId === 'provenance-item'), true);
+
+  await ingestCandidateProposal(run.runRoot, {
+    ...proposal,
+    proposalId: 'proposal-orphan-provenance-item',
+    suggestedWorkItemId: 'orphan-provenance-item',
+    fingerprint: 'provenance:orphan',
+  }, {
+    runId: run.runId,
+    transitionId: 'ingest:orphan-provenance-item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'orphan-provenance-item',
+    toState: 'queued',
+    transitionId: 'triage:orphan-provenance-item',
+  });
+
+  const audit = await __test_auditDiscoveryQueueProvenance(run.runRoot);
+
+  assert.equal(audit.valid, false);
+  assert.deepEqual(audit.missingItemIds, ['orphan-provenance-item']);
+  assert.equal(audit.nextAction, 'repair-discovery-to-queue-provenance');
+});
+
 test('runtime support nodes reject non-string contract arrays before coercion', async () => {
   const { run } = await makeGraphHarnessWorkspace('run_20260430_support_array_type_invalid');
 
@@ -1882,6 +2394,57 @@ test('Barrier fail policy rejects when declared dependencies have not completed'
   assert.equal(events.some(event => event.nodePath === 'main/triage'), false);
 });
 
+test('Barrier retry-until-timebox policy degrades to partial-warning continuation', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_barrier_retry_timebox_policy');
+
+  const result = await validateBarrierNode(
+    run.runRoot,
+    { graphKey: 'main', nodePath: 'main/barrier', nodeType: 'orpad.barrier' },
+    {
+      waitFor: ['missing-probe'],
+      onPartialFailure: 'retry-missing-lens-until-timebox',
+      retryPolicy: {
+        maxBarrierRetries: 2,
+        timeboxMinutes: 30,
+        onExhausted: 'continue-with-partial-evidence',
+      },
+    },
+  );
+
+  assert.equal(result.valid, false);
+  assert.equal(result.onPartialFailure, 'continue-with-warning');
+  assert.equal(result.authoredOnPartialFailure, 'retry-missing-lens-until-timebox');
+  assert.equal(result.missing[0]?.nodePath, 'main/missing-probe');
+});
+
+test('Barrier unknown partial-failure policy degrades to safe blocking semantics', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_barrier_unknown_policy');
+
+  const completed = await validateBarrierNode(
+    run.runRoot,
+    { graphKey: 'main', nodePath: 'main/barrier', nodeType: 'orpad.barrier' },
+    {
+      waitFor: [],
+      onPartialFailure: 'agent-decides',
+    },
+  );
+  assert.equal(completed.valid, true);
+  assert.equal(completed.onPartialFailure, 'block');
+  assert.equal(completed.authoredOnPartialFailure, 'agent-decides');
+
+  await assert.rejects(
+    validateBarrierNode(
+      run.runRoot,
+      { graphKey: 'main', nodePath: 'main/barrier', nodeType: 'orpad.barrier' },
+      {
+        waitFor: ['missing-probe'],
+        onPartialFailure: 'agent-decides',
+      },
+    ),
+    error => error?.code === 'MACHINE_BARRIER_WAIT_INCOMPLETE',
+  );
+});
+
 test('Gate rejects unsupported or unmet criteria instead of passing by prompt text', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_gate_criteria_fail');
   await updateMainNodeConfig(pipelineDir, 'verification-gate', {
@@ -1905,6 +2468,42 @@ test('Gate rejects unsupported or unmet criteria instead of passing by prompt te
   const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/verification-gate');
   assert.equal(failed.payload.code, 'MACHINE_GATE_CRITERIA_UNMET');
   assert.equal(events.some(event => event.nodePath === 'main/artifact'), false);
+});
+
+test('Gate failureRouting on warn propagates strict routing for generated hardening gates', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260524_gate_warn_failure_routing');
+  const failureRouting = {
+    action: 'revise',
+    target: 'main/bounded-hardening-worker',
+    reason: 'deterministic verification failed',
+  };
+
+  const result = await validateGateNode(run.runRoot, {
+    criteria: ['unsupported deterministic verification'],
+    onFail: 'warn',
+    failureRouting,
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.onFail, 'warn');
+  assert.equal(result.strictFailure, false);
+  assert.equal(result.warningDoesNotPass, true);
+  assert.deepEqual(result.failureRouting, failureRouting);
+
+  const decisions = summarizeEdgeEvaluation(evaluateOutgoingEdges(
+    { nodeType: 'orpad.gate' },
+    [
+      { from: 'worker-evidence-gate', to: 'final-cross-validation-gate', condition: 'pass' },
+      { from: 'worker-evidence-gate', to: 'exit', condition: 'continue' },
+      { from: 'worker-evidence-gate', to: 'bounded-hardening-worker', condition: 'revise' },
+    ],
+    result,
+  ));
+
+  assert.equal(decisions.find(edge => edge.condition === 'pass').fired, false);
+  assert.equal(decisions.find(edge => edge.condition === 'continue').fired, false);
+  assert.equal(decisions.find(edge => edge.condition === 'revise').fired, true);
+  assert.equal(decisions.find(edge => edge.condition === 'revise').reason, 'gate-failure-routing-revise');
 });
 
 test('Content editorial gate writes OrPAD-owned rule evaluation artifacts from content diffs', async () => {
@@ -2240,29 +2839,28 @@ test('Content editorial gate does not require editorial proof for code-only work
   assert.equal(result.evaluations.some(item => item.reason === 'no-content-target-worker-result'), true);
 });
 
-test('Gate rejects unsupported onFail policy even when criteria pass', async () => {
+test('Gate canonicalizes unsupported onFail policy when criteria pass', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_gate_invalid_onfail');
   await updateMainNodeConfig(pipelineDir, 'verification-gate', {
     criteria: ['work result accepted', 'queue empty'],
     onFail: 'agent-decides',
   });
 
-  await assert.rejects(
-    executeMachineRunStep({
-      workspaceRoot,
-      pipelinePath,
-      pipelineDir,
-      runRoot: run.runRoot,
-      runId: run.runId,
-      nodeExecutable: process.execPath,
-    }),
-    error => error?.code === 'MACHINE_GATE_CONFIG_INVALID',
-  );
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    nodeExecutable: process.execPath,
+  });
 
   const events = await readMachineEvents(run.runRoot);
-  const failed = events.find(event => event.eventType === 'node.failed' && event.nodePath === 'main/verification-gate');
-  assert.equal(failed.payload.code, 'MACHINE_GATE_CONFIG_INVALID');
-  assert.equal(events.some(event => event.nodePath === 'main/artifact'), false);
+  const gateCompleted = events.find(event => event.eventType === 'node.completed' && event.nodePath === 'main/verification-gate');
+  assert.equal(gateCompleted.payload.onFail, 'block');
+  assert.equal(gateCompleted.payload.authoredOnFail, 'agent-decides');
+  assert.equal(events.some(event => event.eventType === 'node.failed' && event.nodePath === 'main/verification-gate'), false);
+  assert.equal(events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/artifact'), true);
 });
 
 test('ArtifactContract mark-partial keeps done queue work from becoming a completed run', async () => {

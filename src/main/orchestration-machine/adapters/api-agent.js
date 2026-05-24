@@ -12,17 +12,65 @@ function buildPluginProviderClient(plugin, options) {
   if (!plugin || typeof plugin.invokeApi !== 'function') return null;
   return {
     async invoke(invokeContext) {
-      return plugin.invokeApi({
-        ...invokeContext,
-        providerKey: options.providerKey,
-        fetchImpl: options.fetchImpl,
-        signal: options.signal,
-        onUsage: options.onUsage,
-        instructions: options.instructions,
-        maxTokens: options.maxTokens,
-      });
+      const signal = invokeContext.signal || options.signal;
+      try {
+        if (isAbortSignalAborted(signal)) throw createApiCancellationError(signal);
+        return await plugin.invokeApi({
+          ...invokeContext,
+          providerKey: options.providerKey,
+          fetchImpl: options.fetchImpl,
+          signal,
+          onUsage: options.onUsage,
+          instructions: options.instructions,
+          maxTokens: options.maxTokens,
+        });
+      } catch (err) {
+        throw normalizeApiCancellationError(err, signal);
+      }
     },
   };
+}
+
+function requestSignal(request, options) {
+  return request?.signal || request?.abortSignal || options.signal || null;
+}
+
+function isAbortSignalAborted(signal) {
+  return Boolean(signal && typeof signal === 'object' && signal.aborted === true);
+}
+
+function isAbortLikeError(err) {
+  let current = err;
+  let depth = 0;
+  while (current && depth < 5) {
+    const code = String(current.code || '');
+    const name = String(current.name || '');
+    if (code === 'ABORT_ERR' || code === 'AbortError' || name === 'AbortError') return true;
+    current = current.cause;
+    depth += 1;
+  }
+  return false;
+}
+
+function createApiCancellationError(signal, cause = null) {
+  const err = new Error('API provider request was cancelled before completion.');
+  err.code = 'MACHINE_RUN_CANCELLED';
+  err.classification = 'CANCELLED';
+  err.cancelled = true;
+  err.retryable = false;
+  err.fallbackAllowed = false;
+  err.selfRepairAllowed = false;
+  err.terminal = true;
+  if (cause) err.cause = cause;
+  if (signal?.reason) err.abortReason = String(signal.reason?.message || signal.reason).slice(0, 500);
+  return err;
+}
+
+function normalizeApiCancellationError(err, signal) {
+  if (isAbortSignalAborted(signal) || isAbortLikeError(err)) {
+    return createApiCancellationError(signal, err);
+  }
+  return err;
 }
 
 function buildApiAdapterPrompt(input = {}) {
@@ -73,6 +121,8 @@ function createApiAgentAdapter(options = {}) {
         adapterCallId: request.adapterCallId,
         ...options.session,
       });
+      const signal = requestSignal(request, options);
+      if (isAbortSignalAborted(signal)) throw createApiCancellationError(signal);
       const prompt = buildApiAdapterPrompt({
         request,
         instructions: options.instructions || '',
@@ -85,11 +135,16 @@ function createApiAgentAdapter(options = {}) {
         providerClient = buildPluginProviderClient(plugin, options);
       }
 
-      const rawResponse = providerClient?.invoke
-        ? await providerClient.invoke({ request, prompt, selection, telemetry, session, keyAccess })
-        : (typeof options.fixtureResponse === 'function'
-          ? await options.fixtureResponse({ request, prompt, selection, telemetry, session, keyAccess })
-          : options.fixtureResponse);
+      let rawResponse;
+      try {
+        rawResponse = providerClient?.invoke
+          ? await providerClient.invoke({ request, prompt, selection, telemetry, session, keyAccess, signal })
+          : (typeof options.fixtureResponse === 'function'
+            ? await options.fixtureResponse({ request, prompt, selection, telemetry, session, keyAccess, signal })
+            : options.fixtureResponse);
+      } catch (err) {
+        throw normalizeApiCancellationError(err, signal);
+      }
       if (!rawResponse) throw new Error('API adapter did not return a structured response.');
 
       const result = parseStructuredAdapterResult(rawResponse, request);

@@ -289,6 +289,169 @@ function validateWorkQueueSchema(node, currentPath, diagnostics) {
   ));
 }
 
+function graphNodePackRef(node) {
+  const config = node?.config && typeof node.config === 'object' && !Array.isArray(node.config)
+    ? node.config
+    : {};
+  const metadata = node?.metadata && typeof node.metadata === 'object' && !Array.isArray(node.metadata)
+    ? node.metadata
+    : {};
+  return [
+    node?.nodePack,
+    node?.nodePackId,
+    node?.packId,
+    config.nodePack,
+    config.nodePackId,
+    config.packId,
+    metadata.nodePack,
+    metadata.nodePackId,
+    metadata.packId,
+  ]
+    .map(value => String(value || '').trim())
+    .find(Boolean) || '';
+}
+
+function nodePackByIdFromOptions(options, packId) {
+  if (!packId) return null;
+  const byId = options.nodePackById;
+  if (byId instanceof Map) return byId.get(packId) || null;
+  if (byId && typeof byId === 'object' && !Array.isArray(byId)) return byId[packId] || null;
+  const packs = Array.isArray(options.nodePackValidation?.nodePacks)
+    ? options.nodePackValidation.nodePacks
+    : [];
+  return packs.find(pack => String(pack?.id || pack?.packId || '') === packId) || null;
+}
+
+function nodePackTypeDeclarationFromOptions(options, nodeType) {
+  const directMap = options.nodePackTypeMap || options.nodePackValidation?.nodeTypeMap;
+  if (directMap instanceof Map) return directMap.get(nodeType) || null;
+  if (directMap && typeof directMap === 'object' && !Array.isArray(directMap) && directMap[nodeType]) {
+    return directMap[nodeType];
+  }
+
+  const packs = Array.isArray(options.nodePackValidation?.nodePacks)
+    ? options.nodePackValidation.nodePacks
+    : [];
+  for (const pack of packs) {
+    const nodeTypeMap = pack?.nodeTypeMap || {};
+    if (nodeTypeMap[nodeType]) {
+      return {
+        ...nodeTypeMap[nodeType],
+        packId: pack.id || pack.packId,
+        packVersion: pack.version || pack.packVersion || '',
+        resolutionState: pack.resolutionState || 'missing',
+      };
+    }
+  }
+  return null;
+}
+
+function graphNodePackResolutionFromDeclaration(nodeType, declaration) {
+  if (!declaration) return null;
+  return {
+    state: declaration.resolutionState || 'resolved',
+    nodeType,
+    packId: declaration.packId || '',
+    packVersion: declaration.packVersion || '',
+    declaration,
+  };
+}
+
+function graphNodePackResolutionFromPack(nodeType, pack) {
+  if (!pack) return null;
+  return {
+    state: pack.resolutionState || 'missing',
+    nodeType,
+    packId: pack.id || pack.packId || '',
+    packVersion: pack.version || pack.packVersion || '',
+    declaration: pack.nodeTypeMap?.[nodeType] || null,
+  };
+}
+
+function graphNodePackDiagnosticCode(resolutionState) {
+  switch (resolutionState) {
+    case 'missing':
+      return 'GRAPH_NODE_PACK_MISSING';
+    case 'disabled':
+      return 'GRAPH_NODE_PACK_DISABLED';
+    case 'incompatible':
+      return 'GRAPH_NODE_PACK_INCOMPATIBLE';
+    case 'conflict':
+      return 'GRAPH_NODE_PACK_CONFLICT';
+    case 'capability-denied':
+      return 'GRAPH_NODE_PACK_CAPABILITY_DENIED';
+    case 'approval-required':
+      return 'GRAPH_NODE_PACK_APPROVAL_REQUIRED';
+    case 'untrusted':
+      return 'GRAPH_NODE_PACK_UNTRUSTED';
+    default:
+      return 'GRAPH_NODE_PACK_UNRESOLVED';
+  }
+}
+
+function graphNodePackDiagnosticMessage(resolutionState) {
+  switch (resolutionState) {
+    case 'missing':
+      return 'Graph node references a node pack that is not available.';
+    case 'disabled':
+      return 'Graph node references a disabled node pack.';
+    case 'incompatible':
+      return 'Graph node references a node pack that is not launch-compatible.';
+    case 'conflict':
+      return 'Graph node references a node pack with unresolved duplicate node type conflicts.';
+    case 'capability-denied':
+      return 'Graph node references a node pack with denied capabilities.';
+    case 'approval-required':
+      return 'Graph node references a node pack that requires approved high-risk capability review.';
+    case 'untrusted':
+      return 'Graph node references a node pack that requires trust review before execution.';
+    default:
+      return 'Graph node references a node pack that is not resolved for execution.';
+  }
+}
+
+function pushGraphNodePackError(diagnostics, resolution, nodeId, currentPath) {
+  const resolutionState = resolution?.state || 'missing';
+  diagnostics.push(diagnostic(
+    'error',
+    graphNodePackDiagnosticCode(resolutionState),
+    graphNodePackDiagnosticMessage(resolutionState),
+    {
+      nodeId: nodeId || undefined,
+      path: currentPath,
+      nodeType: resolution?.nodeType || undefined,
+      packId: resolution?.packId || undefined,
+      packVersion: resolution?.packVersion || undefined,
+      resolutionState,
+      declaration: resolution?.declaration || undefined,
+    },
+  ));
+}
+
+function pushResolvedNodePackGraphNode(node, currentPath, state, diagnostics, resolution) {
+  const id = typeof node.id === 'string' ? node.id.trim() : '';
+  const type = typeof node.type === 'string' ? node.type.trim() : '';
+  if (!state.nodePackNodeTypes) state.nodePackNodeTypes = new Set();
+  state.nodeCount += 1;
+  state.nodeTypes.add(type);
+  state.nodePackNodeTypes.add(type);
+  state.renderOnlyNodeTypes.add(type);
+  diagnostics.push(diagnostic(
+    'warning',
+    'GRAPH_NODE_PACK_RENDER_VALIDATE_ONLY',
+    'Node pack graph nodes validate for rendering and compatibility, but the local MVP executor does not run community pack handlers.',
+    {
+      nodeId: id || undefined,
+      path: currentPath,
+      nodeType: type,
+      packId: resolution.packId || undefined,
+      packVersion: resolution.packVersion || undefined,
+      resolutionState: resolution.state,
+      runtimeHandlerKind: resolution.declaration?.runtimeHandlerKind || '',
+    },
+  ));
+}
+
 function validateNode(node, currentPath, state, options, diagnostics) {
   if (!node || typeof node !== 'object' || Array.isArray(node)) {
     diagnostics.push(diagnostic(
@@ -499,8 +662,35 @@ function validateGraphNode(node, currentPath, state, options, diagnostics) {
     diagnostics.push(diagnostic('error', 'GRAPH_NODE_TYPE_MISSING', 'Graph node must have a type.', { nodeId: id || undefined, path: currentPath }));
     return;
   }
+  const requestedPackId = graphNodePackRef(node);
+  const requestedPack = nodePackByIdFromOptions(options, requestedPackId);
+  const requestedPackResolution = graphNodePackResolutionFromPack(type, requestedPack);
+  if (requestedPackResolution && requestedPackResolution.state !== 'resolved') {
+    pushGraphNodePackError(diagnostics, requestedPackResolution, id, currentPath);
+    return;
+  }
   if (!GRAPH_NODE_TYPES.has(type)) {
-    diagnostics.push(diagnostic('error', 'GRAPH_NODE_TYPE_UNKNOWN', `Unknown graph node type: ${type}.`, { nodeId: id || undefined, path: currentPath, nodeType: type }));
+    const nodePackDeclaration = nodePackTypeDeclarationFromOptions(options, type);
+    const nodePackResolution = graphNodePackResolutionFromDeclaration(type, nodePackDeclaration);
+    if (nodePackResolution) {
+      if (nodePackResolution.state === 'resolved') {
+        pushResolvedNodePackGraphNode(node, currentPath, state, diagnostics, nodePackResolution);
+        return;
+      }
+      pushGraphNodePackError(diagnostics, nodePackResolution, id, currentPath);
+      return;
+    }
+    diagnostics.push(diagnostic(
+      'error',
+      'GRAPH_NODE_TYPE_UNKNOWN',
+      `Unknown graph node type: ${type}.`,
+      {
+        nodeId: id || undefined,
+        path: currentPath,
+        nodeType: type,
+        packId: requestedPackId || undefined,
+      },
+    ));
     return;
   }
 
@@ -575,6 +765,8 @@ function mergeNestedValidation(result, state, diagnostics, refPath) {
   state.nodeCount = (state.nodeCount || 0) + (result.nodeCount || 0);
   for (const type of result.nodeTypes || []) state.nodeTypes.add(type);
   for (const type of result.renderOnlyNodeTypes || []) state.renderOnlyNodeTypes.add(type);
+  if (!state.nodePackNodeTypes) state.nodePackNodeTypes = new Set();
+  for (const type of result.nodePackNodeTypes || []) state.nodePackNodeTypes.add(type);
   for (const item of result.diagnostics || []) {
     diagnostics.push({
       ...item,
@@ -778,6 +970,7 @@ function validateGraphRunbookObject(runbook, options, trustLevel, schemaVersion,
     nodeCount: 0,
     nodeTypes: new Set(),
     renderOnlyNodeTypes: new Set(),
+    nodePackNodeTypes: new Set(),
   };
 
   if (!graph || typeof graph !== 'object' || Array.isArray(graph)) {
@@ -843,6 +1036,7 @@ function validateGraphRunbookObject(runbook, options, trustLevel, schemaVersion,
     nodeTypes: [...state.nodeTypes].sort(),
     executableNodeTypes: [...state.nodeTypes].filter(type => GRAPH_EXECUTABLE_NODE_TYPES.has(type)).sort(),
     renderOnlyNodeTypes: [...state.renderOnlyNodeTypes].sort(),
+    nodePackNodeTypes: [...state.nodePackNodeTypes].sort(),
     diagnostics,
   };
 }
@@ -980,6 +1174,9 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
   if (!entryGraph) diagnostics.push(diagnostic('error', 'PIPELINE_ENTRY_GRAPH_MISSING', 'Pipeline must include an entryGraph file reference.'));
   validatePipelineQueueProtocol(pipeline, diagnostics);
   const nodePackValidation = validatePipelineNodePacks(pipeline.nodePacks, options);
+  const nodePackById = new Map((nodePackValidation.nodePacks || [])
+    .map(pack => [String(pack.id || pack.packId || ''), pack])
+    .filter(([packId]) => packId));
   diagnostics.push(...nodePackValidation.diagnostics);
   if (entryGraph && graphRefs.length && !graphRefs.some(item => splitRefAnchor(item.file).file === splitRefAnchor(entryGraph).file)) {
     diagnostics.push(diagnostic(
@@ -996,6 +1193,7 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
     nodeCount: 0,
     nodeTypes: new Set(),
     renderOnlyNodeTypes: new Set(),
+    nodePackNodeTypes: new Set(),
   };
   const pipelineSkills = new Map();
 
@@ -1023,6 +1221,9 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
           filePath: resolvedEntry,
           pipeline,
           pipelineSkills,
+          nodePackValidation,
+          nodePackById,
+          nodePackTypeMap: nodePackValidation.nodeTypeMap || {},
           suppressTrustWarning: true,
           validationStack: new Set([realpathIfExists(resolvedEntry) || path.resolve(resolvedEntry)]),
         });
@@ -1073,8 +1274,11 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
     nodeTypes: [...state.nodeTypes].sort(),
     executableNodeTypes: [...state.nodeTypes].filter(type => GRAPH_EXECUTABLE_NODE_TYPES.has(type) || MVP_EXECUTABLE_NODE_TYPES.has(type)).sort(),
     renderOnlyNodeTypes: [...state.renderOnlyNodeTypes].sort(),
+    nodePackNodeTypes: [...state.nodePackNodeTypes].sort(),
     entryGraph,
     nodePacks: nodePackValidation.nodePacks,
+    nodePackPoolSource: nodePackValidation.nodePackPoolSource,
+    nodePackDiscovery: nodePackValidation.nodePackDiscovery,
     skillCount: skillRefs.length,
     ruleCount: ruleRefs.length,
     diagnostics,

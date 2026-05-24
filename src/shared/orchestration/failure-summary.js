@@ -81,10 +81,10 @@ function extractArtifactRefs(event) {
   };
 }
 
-function acceptedProposalOnlyProgress(event, status) {
+function proposalOnlyApprovalProgress(event, status) {
   if (event?.eventType !== 'adapter.result') return false;
   if (status !== 'approval-required') return false;
-  if (event.reason !== 'proposal-only-result.accepted') return false;
+  if (!String(event.reason || '').startsWith('proposal-only-result.')) return false;
   const proposalCount = Number(event.payload?.proposalCount) || 0;
   const triageTransitionCount = Number(event.payload?.triageTransitionCount) || 0;
   return proposalCount > 0 || triageTransitionCount > 0;
@@ -127,6 +127,32 @@ function failedAdapterCallsFromRecord(record) {
     return resolvedAt > (Number(sequence) || 0);
   }
 
+  function eventMessage(event) {
+    const payload = event?.payload || {};
+    return String(payload.summary || payload.message || payload.errorMessage || payload.error || '').trim();
+  }
+
+  function resultSummaryMessage(event, eventIndex) {
+    const direct = eventMessage(event);
+    if (direct) return direct;
+    const adapterCallId = String(event?.payload?.adapterCallId || '');
+    const nodePath = event?.nodePath || '';
+    const eventSequence = Number(event?.sequence) || 0;
+    for (let j = eventIndex + 1; j < events.length; j += 1) {
+      const candidate = events[j];
+      if (!candidate || candidate.eventType !== 'run.summary') continue;
+      const candidateSequence = Number(candidate.sequence) || 0;
+      if (eventSequence && candidateSequence && candidateSequence < eventSequence) continue;
+      const payload = candidate.payload || {};
+      const matchesAdapter = adapterCallId && String(payload.adapterCallId || '') === adapterCallId;
+      const matchesNode = !adapterCallId && nodePath && candidate.nodePath === nodePath;
+      if (!matchesAdapter && !matchesNode) continue;
+      const message = eventMessage(candidate);
+      if (message) return message;
+    }
+    return '';
+  }
+
   // Pass 1: explicit adapter/worker/probe result events with failure status.
   // worker.result statuses that classify a work item (blocked / rejected /
   // approval-required / queued) are normal queue transitions, not system
@@ -137,7 +163,7 @@ function failedAdapterCallsFromRecord(record) {
     const status = String(event.payload?.status || '').toLowerCase();
     if (!FAILED_STATUSES_SET.has(status)) continue;
     if (event.eventType === 'worker.result' && WORKER_CLASSIFICATION_STATUSES_SET.has(status)) continue;
-    if (acceptedProposalOnlyProgress(event, status)) continue;
+    if (proposalOnlyApprovalProgress(event, status)) continue;
     if (isResolvedAfter(event.nodePath, event.sequence)) continue;
     const key = failureKeyFor(event);
     if (seen.has(key)) continue;
@@ -148,8 +174,10 @@ function failedAdapterCallsFromRecord(record) {
       itemId: event.itemId || event.payload?.itemId || '',
       adapterCallId: event.payload?.adapterCallId || '',
       attemptId: event.payload?.attemptId || '',
+      taskKind: event.payload?.taskKind || '',
       status,
       reason: event.reason || '',
+      message: resultSummaryMessage(event, i),
       adapter: event.payload?.adapter || event.eventType,
       eventType: event.eventType,
       timestamp: event.timestamp || '',
@@ -183,8 +211,10 @@ function failedAdapterCallsFromRecord(record) {
       itemId: event.itemId || event.payload?.itemId || '',
       adapterCallId: prior?.payload?.adapterCallId || event.payload?.adapterCallId || '',
       attemptId: prior?.payload?.attemptId || event.payload?.attemptId || '',
+      taskKind: prior?.payload?.taskKind || event.payload?.taskKind || '',
       status: event.eventType === 'node.blocked' ? 'blocked' : 'failed',
       reason: event.payload?.reason || event.reason || '',
+      message: eventMessage(event) || eventMessage(prior),
       adapter: prior?.payload?.adapter || event.eventType,
       eventType: event.eventType,
       nodeType,

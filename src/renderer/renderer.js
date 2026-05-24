@@ -271,6 +271,7 @@ const backlinksContentEl = document.getElementById('backlinks-content');
 const runbooksContentEl = document.getElementById('runbooks-content');
 const btnOrchestrationEl = document.getElementById('btn-orchestration');
 const orchestrationRunbarSlotEl = document.getElementById('orchestration-runbar-slot');
+const contextReturnBarEl = document.getElementById('context-return-bar');
 const APP_SEARCH_PARAMS = new URLSearchParams(window.location.search || '');
 const IS_ORCHESTRATION_WINDOW = APP_SEARCH_PARAMS.get('mode') === 'orchestration';
 if (IS_ORCHESTRATION_WINDOW) {
@@ -453,6 +454,14 @@ const machineRunReplayStickDefault = true;
 const machineRunReplayPosition = new Map();
 const machineApprovalPromptSeen = new Set();
 const machineBlockedDecisionPromptSeen = new Set();
+
+function machineRunTransientScopeKey(runbookPath, runId) {
+  const normalizedRunId = String(runId || '');
+  if (!normalizedRunId) return '';
+  const normalizedWorkspace = normalizeComparablePath(workspacePath || '');
+  const normalizedRunbook = runbookNormalizePath(runbookPath || selectedRunbookPath || '').toLowerCase();
+  return `${normalizedWorkspace}::${normalizedRunbook}::${normalizedRunId}`;
+}
 // Breakpoints — Phase 3.7:
 //   per-pipeline (NOT per-run) Set<nodePath>. Persists across runs in
 //   localStorage so the user does not have to re-mark them each time.
@@ -1632,6 +1641,7 @@ function createTab(filePath, dirPath, content, savedContent, options = {}) {
     title: options.title || null,
     source: options.source || null,
     sourceUrl: options.sourceUrl || null,
+    returnContext: normalizeTabReturnContext(options.returnContext),
     viewType,
     pinned: false,
     lastSavedContent: normSaved,
@@ -1674,6 +1684,7 @@ function switchToTab(tabId) {
   switchingTabs = false;
   applyEditorUxCompartments();
   newTab.editorState = editor.state;
+  updateContextReturnBar();
 
   // The rAF scroll restore below will fire a preview scroll event. Without
   // this block the capture-phase listener would treat it as user intent and
@@ -2105,6 +2116,7 @@ let suppressOrchContextMenuUntil = 0;
 let suppressOrchContextMenuPoint = null;
 const orchGraphMetaCache = new Map();
 let orchNodePackCatalogCache = null;
+let orchNodePackCatalogMetadataCache = null;
 let currentDiffPanel = null; // { el, recompute } - valid while diff panel is mounted
 // Set when the left diff textarea echoes into CodeMirror - the debounced renderPreview
 // would otherwise trigger a second recompute for the same keystroke.
@@ -2690,7 +2702,14 @@ function hasOrchNodeOpenTarget(path, doc = null, baseFilePath = getActiveTab()?.
 async function openOrchNodeFile(path, doc = null, baseFilePath = getActiveTab()?.filePath) {
   const target = orchNodeFileTarget(path, doc, baseFilePath);
   if (!target?.filePath) return false;
-  await openFileFromQuickOpen(target.filePath, { symbol: target.anchor });
+  const baseContext = pipelineContextForPath(baseFilePath);
+  await openFileFromQuickOpen(target.filePath, {
+    symbol: target.anchor,
+    returnContext: createPipelineReturnContext(baseContext?.pipelinePath || selectedRunbookPath, {
+      graphPath: baseContext?.isGraph ? baseContext.activePath : '',
+      source: 'graph-node-file',
+    }),
+  });
   return true;
 }
 
@@ -2723,6 +2742,137 @@ function pipelineContextForPath(filePath = getActiveTab()?.filePath) {
     isManifest: normalized.toLowerCase() === pipelinePath.toLowerCase(),
     isGraph: normalized.toLowerCase().startsWith((pipelineDir + '/graphs/').toLowerCase()) && /\.or-graph$/i.test(normalized),
   };
+}
+
+function sameNormalizedRunbookPath(left, right) {
+  const a = runbookNormalizePath(left).toLowerCase();
+  const b = runbookNormalizePath(right).toLowerCase();
+  return !!a && !!b && a === b;
+}
+
+function normalizeTabReturnContext(context) {
+  if (!context || context === false || typeof context !== 'object') return null;
+  const pipelinePath = normalizeRunbookFilePath(context.pipelinePath || '');
+  if (!pipelinePath) return null;
+  const graphPath = context.graphPath ? normalizeRunbookFilePath(context.graphPath) : '';
+  return {
+    kind: 'pipeline-flow',
+    pipelinePath,
+    graphPath,
+    label: String(context.label || '').trim(),
+    source: String(context.source || '').trim(),
+  };
+}
+
+function pipelineReturnContextLabel(pipelinePath) {
+  const item = runbookSummaryItemForPath(pipelinePath);
+  if (item) return runbookListItemTitle(item);
+  return runbookPipelineDisplayName(runbookDirname(pipelinePath).split('/').pop() || 'Pipeline');
+}
+
+function createPipelineReturnContext(runbookPath = selectedRunbookPath, options = {}) {
+  const activeTab = getActiveTab();
+  const activeContext = pipelineContextForPath(activeTab?.filePath);
+  const pipelinePath = normalizeRunbookFilePath(
+    runbookPath
+      || activeTab?.returnContext?.pipelinePath
+      || activeContext?.pipelinePath
+      || selectedRunbookPath
+      || '',
+  );
+  if (!pipelinePath) return null;
+  const graphPath = options.graphPath
+    ? normalizeRunbookFilePath(options.graphPath)
+    : (activeContext?.isGraph && sameNormalizedRunbookPath(activeContext.pipelinePath, pipelinePath)
+      ? activeContext.activePath
+      : (activeTab?.returnContext?.graphPath || ''));
+  return normalizeTabReturnContext({
+    pipelinePath,
+    graphPath,
+    label: options.label || activeTab?.returnContext?.label || pipelineReturnContextLabel(pipelinePath),
+    source: options.source || 'context-open',
+  });
+}
+
+function returnContextForFileOpen(filePath, options = {}) {
+  if (Object.prototype.hasOwnProperty.call(options, 'returnContext')) {
+    return normalizeTabReturnContext(options.returnContext);
+  }
+  const activeReturnContext = normalizeTabReturnContext(getActiveTab()?.returnContext);
+  if (activeReturnContext) {
+    const targetContext = pipelineContextForPath(filePath);
+    if (
+      targetContext?.isGraph
+      && sameNormalizedRunbookPath(targetContext.pipelinePath, activeReturnContext.pipelinePath)
+    ) {
+      return null;
+    }
+    if (sameNormalizedRunbookPath(filePath, activeReturnContext.pipelinePath)) return null;
+    return activeReturnContext;
+  }
+  const activeContext = pipelineContextForPath(getActiveTab()?.filePath);
+  if (!activeContext?.pipelinePath) return null;
+  const targetContext = pipelineContextForPath(filePath);
+  if (
+    targetContext?.isGraph
+    && sameNormalizedRunbookPath(targetContext.pipelinePath, activeContext.pipelinePath)
+  ) {
+    return null;
+  }
+  if (!activeContext.isGraph && !activeContext.isManifest) return null;
+  return createPipelineReturnContext(activeContext.pipelinePath, { source: 'open-file' });
+}
+
+function shouldShowTabReturnContext(tab = getActiveTab()) {
+  const context = normalizeTabReturnContext(tab?.returnContext);
+  if (!context) return false;
+  if (tab?.filePath && context.graphPath && sameNormalizedRunbookPath(tab.filePath, context.graphPath)) return false;
+  if (tab?.filePath && sameNormalizedRunbookPath(tab.filePath, context.pipelinePath)) return false;
+  return true;
+}
+
+function updateContextReturnBar() {
+  if (!contextReturnBarEl) return;
+  const tab = getActiveTab();
+  const context = normalizeTabReturnContext(tab?.returnContext);
+  if (!shouldShowTabReturnContext(tab) || !context) {
+    contextReturnBarEl.classList.add('hidden');
+    contextReturnBarEl.innerHTML = '';
+    return;
+  }
+  const label = context.label || pipelineReturnContextLabel(context.pipelinePath);
+  const activeName = getTabDisplayName(tab);
+  contextReturnBarEl.innerHTML = `
+    <div class="context-return-bar-inner">
+      <button class="context-return-primary" data-context-return-action="flow" title="Return to the graph editor for this pipeline.">${orchToolIcon('M3 8h9M7 4 3 8l4 4')}</button>
+      <div class="context-return-text">
+        <strong>${escapeHtml(label)}</strong>
+        <span>Viewing ${escapeHtml(activeName)} from this pipeline</span>
+      </div>
+      <button data-context-return-action="details" title="Open the pipeline manifest details.">Details</button>
+    </div>
+  `;
+  contextReturnBarEl.classList.remove('hidden');
+}
+
+async function openPipelineReturnTarget(context, action = 'flow') {
+  const normalized = normalizeTabReturnContext(context);
+  if (!normalized?.pipelinePath) return;
+  selectedRunbookPath = normalized.pipelinePath;
+  selectedRunbookValidation = getRunbookCache(runbookValidationCache, normalized.pipelinePath);
+  lastRunRecord = getRunbookCache(runbookRecordCache, normalized.pipelinePath);
+  lastMachineRunRecord = getRunbookCache(machineRunRecordCache, normalized.pipelinePath);
+  renderRunbooksPanel();
+  if (action === 'details') {
+    await openFileInTab(normalized.pipelinePath, { returnContext: false });
+  } else {
+    await openPipelineEntryOrFile(normalized.pipelinePath, {
+      returnContext: false,
+      graphPath: normalized.graphPath,
+    });
+  }
+  void validateSelectedRunbook(normalized.pipelinePath);
+  void hydrateLatestMachineRunForSelection(normalized.pipelinePath);
 }
 
 function pipelineEditorGraphPathFromDoc(doc, context = pipelineContextForPath()) {
@@ -2766,6 +2916,17 @@ function pipelineDiagnosticDetailText(issue) {
     refPath: 'ref path',
     nodeId: 'node',
     id: 'id',
+    packId: 'pack',
+    nodePackId: 'pack',
+    requestedVersion: 'requested version',
+    resolvedVersion: 'resolved version',
+    actualVersion: 'actual version',
+    version: 'version',
+    requestedOrigin: 'requested origin',
+    resolvedOrigin: 'resolved origin',
+    actualOrigin: 'actual origin',
+    origin: 'origin',
+    resolutionState: 'state',
     skillRef: 'skill',
     schema: 'schema',
   };
@@ -2800,7 +2961,7 @@ function pipelineDiagnosticStatusText(validation) {
 
 function pipelineValidationDiagnostics(validation) {
   return (Array.isArray(validation?.diagnostics) ? validation.diagnostics : [])
-    .filter(issue => isDiagnosticError(issue) || isEntryGraphDeclarationWarning(issue));
+    .filter(issue => isDiagnosticError(issue) || isEntryGraphDeclarationWarning(issue) || isPipelineNodePackDiagnostic(issue));
 }
 
 function pipelineInlineDiagnosticText(issue) {
@@ -2818,7 +2979,7 @@ function isEntryGraphDeclarationWarning(issue) {
 function renderPipelineInlineDiagnostic(issue) {
   const text = pipelineInlineDiagnosticText(issue);
   if (!text) return '';
-  const warning = isEntryGraphDeclarationWarning(issue);
+  const warning = isEntryGraphDeclarationWarning(issue) || (!isDiagnosticError(issue) && (issue?.level === 'warning' || issue?.severity === 'warning'));
   return `<div class="pipeline-inline-diagnostic ${warning ? 'warning' : 'error'}" role="${warning ? 'status' : 'alert'}">${escapeHtml(text)}</div>`;
 }
 
@@ -2941,6 +3102,20 @@ function machineQueueInventoryFromEvents(record) {
   };
 }
 
+function machineLatestQueueStateForItem(record, itemId) {
+  const targetItemId = String(itemId || '').trim();
+  if (!targetItemId) return '';
+  let latestState = '';
+  for (const event of record?.events || []) {
+    if (event?.eventType !== 'queue.transition') continue;
+    const eventItemId = String(event.itemId || event.payload?.itemId || '').trim();
+    if (eventItemId !== targetItemId) continue;
+    const toState = String(event.toState || event.payload?.toState || '').trim();
+    if (ORPAD_WORK_ITEM_STATES.includes(toState)) latestState = toState;
+  }
+  return latestState;
+}
+
 function machineLatestQueueInventory(record) {
   if (!record) return null;
   const summary = latestMachineEvent(record.events, 'run.summary', event => event?.payload?.inventory?.counts);
@@ -3004,14 +3179,20 @@ function machineLatestBlockedWorkDetails(record) {
   const patchReview = patchArtifact
     ? machineWorkerReviewInfos(record).find(review => review.patchArtifact === patchArtifact)
     : null;
+  const patchReviewEligible = patchReview?.patchReviewEligible === true
+    || (!patchReview && Boolean(patchArtifact && changedFiles.length));
   const patchReviewStatus = patchReview?.patchReviewStatus || '';
   const itemId = event.itemId || transitionEvent?.itemId || payload.itemId || '';
+  const currentQueueState = machineLatestQueueStateForItem(record, itemId);
+  if (currentQueueState && currentQueueState !== 'blocked') return null;
   let reason = 'Worker stopped without an applicable workspace patch.';
   if (patchArtifact && changedFiles.length) {
     if (patchReviewStatus === 'approved') {
       reason = `${machineCountLabel(changedFiles.length, 'changed file')} approved but not applied to the workspace yet.`;
     } else if (patchReview?.patchReviewResolved) {
-      reason = `${machineCountLabel(changedFiles.length, 'changed file')} ${patchReviewStatus === 'applied' ? 'applied to the workspace' : 'kept as review-only evidence'}.`;
+      reason = patchReviewStatus === 'rejected'
+        ? `${machineCountLabel(changedFiles.length, 'changed file')} marked for follow-up; the patch was not accepted.`
+        : `${machineCountLabel(changedFiles.length, 'changed file')} ${patchReviewStatus === 'applied' ? 'applied to the workspace' : 'kept as review-only evidence'}.`;
     } else if (['conflict', 'failed'].includes(patchReviewStatus)) {
       reason = `${machineCountLabel(changedFiles.length, 'changed file')} needs patch follow-up after ${patchReviewStatus}.`;
     } else if (patchReview && !patchReview.patchReviewEligible) {
@@ -3028,6 +3209,7 @@ function machineLatestBlockedWorkDetails(record) {
     itemId,
     reason,
     patchArtifact,
+    patchReviewEligible,
     patchReviewStatus,
     changedFiles,
     missingExpectedChanges,
@@ -3061,6 +3243,62 @@ function machineBlockedQueueExhaustedDetails(record) {
     blockedText: machineBlockedWorkInlineText(record),
     countText: machineCountLabel(queue.blockedCount, 'blocked work item'),
   };
+}
+
+function machineBlockedQueueItemSummaries(record) {
+  const latestByItem = new Map();
+  for (const event of record?.events || []) {
+    if (event?.eventType !== 'queue.transition') continue;
+    const itemId = String(event.itemId || event.payload?.itemId || '').trim();
+    if (!itemId) continue;
+    const toState = String(event.toState || event.payload?.toState || '').trim();
+    latestByItem.set(itemId, {
+      itemId,
+      state: toState,
+      reason: event.reason || event.payload?.reason || event.payload?.message || '',
+      artifactRefs: event.artifactRefs || [],
+      sequence: machineEventSequence(event),
+    });
+  }
+  return [...latestByItem.values()]
+    .filter(item => item.state === 'blocked')
+    .sort((a, b) => a.itemId.localeCompare(b.itemId));
+}
+
+function machineBlockedRunFollowUpPrompt(record) {
+  const runState = record?.runState || {};
+  const runId = runState.runId || record?.runId || '';
+  const taskText = normalizeRunbookTask(runState.metadata?.taskText || record?.metadata?.taskText || '');
+  const queueInventory = machineLatestQueueInventory(record);
+  const queueText = machineQueueInventorySummary(queueInventory);
+  const blockedItems = machineBlockedQueueItemSummaries(record);
+  const conflictEvents = (record?.events || [])
+    .filter(event => event?.eventType === 'patch.apply_conflict' || event?.eventType === 'patch.apply_failed')
+    .slice(-8);
+  const lines = [
+    'Start a follow-up Machine run for unresolved blocked work from the previous run.',
+    '',
+    runId ? `Previous run: ${runId}` : '',
+    queueText ? `Previous queue state: ${queueText}` : '',
+    taskText ? `Original objective: ${taskText}` : '',
+    '',
+    blockedItems.length ? 'Blocked work items to re-evaluate:' : 'Blocked work items remain; inspect previous run evidence and re-evaluate unresolved work.',
+    ...blockedItems.map(item => `- ${item.itemId}${item.reason ? `: ${item.reason}` : ''}`),
+    conflictEvents.length ? '' : '',
+    conflictEvents.length ? 'Patch/apply issues to account for:' : '',
+    ...conflictEvents.map(event => {
+      const artifact = event.payload?.patchArtifact || event.artifactRefs?.[0] || 'unknown patch';
+      const message = event.payload?.message || event.payload?.code || event.reason || 'patch issue';
+      const files = machineUniqueNonEmptyStrings([
+        ...(event.payload?.selectedFiles || []),
+        ...(event.payload?.mismatches || []).map(item => item?.path),
+      ]);
+      return `- ${artifact}: ${message}${files.length ? ` (${files.slice(0, 4).join(', ')}${files.length > 4 ? ', ...' : ''})` : ''}`;
+    }),
+    '',
+    'Do not continue the previous run as if it were still active. Preserve current workspace content, re-check the blocked items against the current codebase, implement only still-needed changes, and record fresh verification evidence.',
+  ];
+  return lines.filter(line => line !== '').join('\n');
 }
 
 function machineSkipBlockReason(record, nodePath, nodeType = '') {
@@ -3309,8 +3547,9 @@ function renderMachineBudgetIndicatorHtml(pipelineDoc) {
   return `<span class="pipeline-runbar-status pipe-budget-chip" title="Pipeline budget config (estimate, not provider invoice). hardStop=true는 router가 perCall/perRun 초과 attempt를 즉시 거부.">Budget · ${escapeHtml(parts.join(' · '))}</span>`;
 }
 
-function renderMachineLifecycleEventNoticesHtml(record, runbookPathArg = '') {
+function renderMachineLifecycleEventNoticesHtml(record, runbookPathArg = '', options = {}) {
   if (!record) return '';
+  const actionRecord = options.actionRecord || record;
   const runId = record?.runState?.runId || record?.runId || '';
   const runRoot = record?.runRoot || record?.runState?.runRoot || '';
   const runbookPath = runbookPathArg || record?.runbookPath || record?.pipelinePath || '';
@@ -3341,8 +3580,8 @@ function renderMachineLifecycleEventNoticesHtml(record, runbookPathArg = '') {
     const latest = patchRequests[patchRequests.length - 1];
     const payload = latest.payload || {};
     const files = Array.isArray(payload.changedFiles) ? payload.changedFiles : [];
-    const pendingPatchReviewCount = machinePendingPatchReviewInfos(record).length;
-    const approvedPatchReviewCount = machineApprovedPatchReviewInfos(record).length;
+    const pendingPatchReviewCount = machinePendingPatchReviewInfos(actionRecord).length;
+    const approvedPatchReviewCount = machineApprovedPatchReviewInfos(actionRecord).length;
     const reviewPatchesBtn = (runId && runbookPath && pendingPatchReviewCount > 0)
       ? `<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-probe-action="review-patches" data-run-id="${escapeHtml(runId)}" data-runbook-path="${escapeHtml(runbookPath)}">Review patches</button>`
       : '';
@@ -3417,21 +3656,23 @@ function renderMachineLifecycleEventNoticesHtml(record, runbookPathArg = '') {
     `).join('');
 }
 
-function renderMachineLifecycleBannerHtml(record, runbookPathArg = '') {
+function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options = {}) {
+  const actionRecord = options.actionRecord || record;
   const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
   const summary = String(record?.runState?.summaryStatus || '').toLowerCase();
   const runId = record?.runState?.runId || record?.runId || '';
   const runRoot = record?.runRoot || record?.runState?.runRoot || '';
   const runbookPath = runbookPathArg || record?.runbookPath || record?.pipelinePath || '';
   const patchOutcome = machinePatchReviewOutcome(record);
-  const pendingPatchReviewCount = machinePendingPatchReviewInfos(record).length;
-  const approvedPatchReviewCount = machineApprovedPatchReviewInfos(record).length;
-  const patchReviewComplete = Boolean(patchOutcome?.patchCount)
-    && Number(patchOutcome?.pendingCount || 0) === 0
-    && Number(patchOutcome?.approvedCount || 0) === 0
-    && Number(patchOutcome?.conflictCount || 0) === 0
-    && Number(patchOutcome?.failedCount || 0) === 0;
-  const eventNotices = renderMachineLifecycleEventNoticesHtml(record, runbookPath);
+  const actionPatchOutcome = machinePatchReviewOutcome(actionRecord);
+  const pendingPatchReviewCount = machinePendingPatchReviewInfos(actionRecord).length;
+  const approvedPatchReviewCount = machineApprovedPatchReviewInfos(actionRecord).length;
+  const patchReviewComplete = Boolean(actionPatchOutcome?.patchCount)
+    && Number(actionPatchOutcome?.pendingCount || 0) === 0
+    && Number(actionPatchOutcome?.approvedCount || 0) === 0
+    && Number(actionPatchOutcome?.conflictCount || 0) === 0
+    && Number(actionPatchOutcome?.failedCount || 0) === 0;
+  const eventNotices = renderMachineLifecycleEventNoticesHtml(record, runbookPath, { actionRecord });
 
   // Surface gate-style blocked nodes (exit / barrier / artifactContract /
   // patchReview / gate / workQueue) here even while the run is still
@@ -3711,17 +3952,24 @@ function renderProbeActionButtons(f, runIdAttr, nodePathAttr, record = null) {
     // malformed output, timeout). retrySelectedMachineNode chains
     // executeRunStep so the user does not need a separate Continue.
     const nodeKindLabel = (() => {
-      const t = String(f?.nodeType || '').toLowerCase();
+      const t = String(f?.taskKind || f?.nodeType || f?.nodePath || '').toLowerCase();
       if (t.includes('probe')) return 'probe';
       if (t.includes('worker')) return 'worker';
       if (t.includes('triage')) return 'triage';
       return 'node';
     })();
+    const runbookPath = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+    const runBusy = isMachineRunInProgress(record, runbookPath);
+    const busyTitle = `A worker is currently running in this run. Wait for it to finish, or stop the active work before retrying/skipping this ${nodeKindLabel}.`;
     const skipBlockReason = machineSkipBlockReason(record, nodePathAttr, f?.nodeType || '');
-    buttons.push(`<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" data-item-id="${escapeHtml(f?.itemId || '')}" title="Re-run this ${nodeKindLabel} at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output, timeout) — Continue is dispatched automatically afterwards.">Retry ${nodeKindLabel}</button>`);
-    buttons.push(skipBlockReason
+    buttons.push(runBusy
+      ? `<button class="pipe-failed-probe-link pipe-failed-probe-retry" disabled title="${escapeHtml(busyTitle)}">Retry ${nodeKindLabel}</button>`
+      : `<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" data-item-id="${escapeHtml(f?.itemId || '')}" title="Re-run this ${nodeKindLabel} at attempt N+1. Use when the previous attempt failed for transient reasons (LLM error, malformed output, timeout) - Continue is dispatched automatically afterwards.">Retry ${nodeKindLabel}</button>`);
+    buttons.push(runBusy
+      ? `<button class="pipe-failed-probe-link pipe-failed-probe-skip" disabled title="${escapeHtml(busyTitle)}">Skip ${nodeKindLabel}</button>`
+      : (skipBlockReason
       ? `<button class="pipe-failed-probe-link pipe-failed-probe-skip" disabled title="${escapeHtml(skipBlockReason)}">Skip ${nodeKindLabel}</button>`
-      : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this ${nodeKindLabel}. Use only when its work is genuinely not required for this run.">Skip ${nodeKindLabel}</button>`);
+      : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runIdAttr)}" data-node-path="${escapeHtml(nodePathAttr)}" data-node-type="${escapeHtml(f?.nodeType || '')}" title="Append node.skipped event so the run lifecycle can move past this ${nodeKindLabel}. Use only when its work is genuinely not required for this run.">Skip ${nodeKindLabel}</button>`));
   }
   return buttons.join('');
 }
@@ -3731,6 +3979,10 @@ function renderMachineFailedAdaptersHtml(record) {
   const runRoot = record?.runRoot || record?.runState?.runRoot || '';
   const lifecycleStatus = String(record?.runState?.lifecycleStatus || '').toLowerCase();
   const summaryStatus = String(record?.runState?.summaryStatus || '').toLowerCase();
+  const queueInventory = machineLatestQueueInventory(record);
+  const queue = machineQueueInventoryCounts(queueInventory);
+  const runHasLiveWork = ['running', 'created', 'cancelling'].includes(lifecycleStatus)
+    && (queue.activeCount > 0 || queue.queuedCount > 0 || queue.candidateCount > 0);
   // Cancelled / created / running 상태에서는 사용자 의도된 상태이므로 fallback
   // 표시 안 함. 실제 실패한 adapter 카드(failures.length>0)는 그대로 표시.
   const lifecycleHidesFallback = sharedLifecycleSuppressesFallback(lifecycleStatus);
@@ -3751,6 +4003,14 @@ function renderMachineFailedAdaptersHtml(record) {
     : '';
 
   const runIdAttr = String(record?.runState?.runId || record?.runId || '');
+  const title = failures.length
+    ? (runHasLiveWork
+      ? `Failed adapter calls (${failures.length}) - run still has live work`
+      : `Failed adapter calls (${failures.length})`)
+    : 'Run is in a failed/blocked state';
+  const liveWorkHint = failures.length && runHasLiveWork
+    ? `<div class="pipe-failed-probe-reason">A previous adapter call failed, but the run still has active queue work: ${escapeHtml(machineQueueInventorySummary(queueInventory))}. Retry only if this failed node's output is still needed; skip only if it is optional for this run.</div>`
+    : '';
   const items = failures.map(f => {
     const transcriptAbs = machineRunArtifactAbsPath(record, f.transcriptRef);
     const lastMessageAbs = machineRunArtifactAbsPath(record, f.lastMessageRef);
@@ -3778,7 +4038,8 @@ function renderMachineFailedAdaptersHtml(record) {
           <span class="pipe-failed-probe-status status-${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>
           ${f.adapter ? `<span class="pipe-failed-probe-adapter">${escapeHtml(f.adapter)}</span>` : ''}
         </div>
-        ${f.reason ? `<div class="pipe-failed-probe-reason">${escapeHtml(f.reason)}</div>` : ''}
+        ${f.message ? `<div class="pipe-failed-probe-reason"><strong>Reason</strong> ${escapeHtml(f.message)}</div>` : ''}
+        ${f.reason ? `<div class="pipe-failed-probe-reason"><strong>Event</strong> ${escapeHtml(f.reason)}</div>` : ''}
         ${links.length ? `<div class="pipe-failed-probe-actions">${links.join('')}</div>` : `<div class="pipe-failed-probe-reason">No transcript artifact attached. Open events.jsonl from the run root.</div>`}
         ${actions && f.nodePath ? `<div class="pipe-failed-probe-actions">${actions}</div>` : ''}
       </div>
@@ -3810,15 +4071,26 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   // cards. To bring an inspected run into this panel the user must
   // press Recover from the sidebar History detail.
   const previewRunRecord = getActiveMachineRunRecord(runbookPath);
-  const previewRunInProgress = isMachineRunInProgress(previewRunRecord, runbookPath);
+  const previewLiveRunRecord = getLiveMachineRunRecord(runbookPath);
   const previewRunId = previewRunRecord?.runState?.runId || previewRunRecord?.runId || '';
-  const cancelPending = isMachineRunCancelPending(runbookPath, previewRunId);
+  const previewLiveRunId = previewLiveRunRecord?.runState?.runId || previewLiveRunRecord?.runId || '';
+  const previewLiveMatchesSnapshot = previewRunId && previewLiveRunId && previewRunId === previewLiveRunId;
+  const previewActionRecord = previewLiveMatchesSnapshot ? previewLiveRunRecord : previewRunRecord;
+  const previewActionRunId = previewActionRecord?.runState?.runId || previewActionRecord?.runId || previewRunId || '';
+  const previewRunInProgress = isMachineRunInProgress(previewActionRecord, runbookPath);
+  const previewVisualRunInProgress = isMachineRunVisualProjectionInProgress(previewRunRecord, runbookPath);
+  const cancelPending = isMachineRunCancelPending(runbookPath, previewActionRunId);
   const startPending = machineRunStartPendingPaths.has(runbookKey);
   const harnessPending = pipelineHarnessImplementationPendingPaths.has(runbookKey);
+  const harnessState = getHarnessImplementationState(runbookPath);
+  const harnessStatus = String(harnessState?.status || '').toLowerCase();
+  const harnessRunning = harnessPending || harnessStatus === 'running';
+  const harnessBlocked = harnessStatus === 'blocked';
   const externalResearchLimitation = pipelineDoc?.metadata?.externalResearch?.limitation || pipelineDoc?.run?.externalResearchLimitation || '';
   const harnessImplementedAt = pipelineDocHarnessImplementedAt(pipelineDoc, runbookKey);
   const harnessAuthoringBadge = pipelineDocHarnessAuthoringBadge(pipelineDoc, harnessImplementedAt, runbookKey);
   const harnessProgress = harnessImplementationProgressForPath(runbookPath);
+  const harnessSupersedesRunDetails = harnessImplementationSupersedesRunDetails(previewRunRecord, harnessState, harnessPending);
   const requiresHarnessBeforeRun = pipelineRequiresHarnessBeforeRun(runbookPath, pipelineDoc, harnessImplementedAt);
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = requiresHarnessBeforeRun
@@ -3828,21 +4100,28 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
     : 'Check this pipeline, then start and track its work state, progress, and evidence files.');
   const machineStartable = isMachineStartablePipeline(validation) || requiresHarnessBeforeRun;
   const machineCompatible = isMachineCompatiblePipeline(validation);
-  const machineDisabled = startPending || previewRunInProgress || (checked && !machineStartable);
+  const machineDisabled = harnessRunning || startPending || previewRunInProgress || (checked && !machineStartable);
+  const machineActionTitle = harnessRunning
+    ? 'Harness implementation is in progress.'
+    : (previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start autonomous Machine run and stop at patch review.'));
   const defaultAction = machineCompatible && previewRunInProgress ? 'machine-cancel-run' : 'default';
   const defaultTitle = machineCompatible
-    ? (previewRunInProgress ? (cancelPending ? 'Cancel requested...' : 'Stop Run') : (startPending ? 'Starting run...' : (machineStartable ? 'Start Run' : (machineReason || 'Start Run'))))
+    ? (harnessRunning
+      ? 'Harness implementation is in progress.'
+      : (previewRunInProgress ? (cancelPending ? 'Cancel requested...' : 'Stop Run') : (startPending ? 'Starting run...' : (machineStartable ? 'Start Run' : (machineReason || 'Start Run')))))
     : (agentReady ? 'Prepare Handoff' : 'Run this pipeline');
   const defaultDisabled = machineCompatible
-    ? (startPending || (!previewRunInProgress && checked && !machineStartable) || (previewRunInProgress && (cancelPending || !window.orpad?.machine?.cancelRun)))
+    ? (harnessRunning || startPending || (!previewRunInProgress && checked && !machineStartable) || (previewRunInProgress && (cancelPending || !window.orpad?.machine?.cancelRun)))
     : false;
   const defaultDangerClass = machineCompatible && previewRunInProgress ? ' danger' : '';
   const defaultIcon = machineCompatible && previewRunInProgress
     ? orchToolIcon('M5 5h8v8H5z')
     : orchToolIcon('M5 3l7 5-7 5V3z');
-  const runStatus = cancelPending
+  const runStatus = harnessSupersedesRunDetails
+    ? pipelinePreviewHarnessRunStatus(harnessState, harnessPending, harnessProgress)
+    : cancelPending
     ? { state: 'warn', text: 'Cancel requested...' }
-    : pipelinePreviewRunStatus(validation, runtimeBlockReason, previewRunInProgress, previewRunRecord);
+    : pipelinePreviewRunStatus(validation, runtimeBlockReason, previewVisualRunInProgress, previewRunRecord);
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
   const activePathTitle = runbookRelativePath(context.activePath || runbookPath);
@@ -3852,7 +4131,10 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   // Aggregate progress metrics for the sticky run-bar — current node,
   // X/N completed, elapsed since run.created. All derive from the
   // active record's events; no new IPC.
-  const runHeaderMetrics = pipelinePreviewRunHeaderMetrics(previewRunRecord);
+  const runHeaderMetrics = harnessSupersedesRunDetails
+    ? { currentNode: '', progressLabel: '', progressTitle: '', elapsed: '', startedAt: '' }
+    : pipelinePreviewRunHeaderMetrics(previewRunRecord);
+  const replayNoticeHtml = machineReplayLiveActionNoticeHtml(previewRunRecord, previewLiveRunRecord, runbookPath, { compact: true });
   const titleControlHtml = IS_ORCHESTRATION_WINDOW
     ? renderOrchestrationPipelineSelectControl(runbookPath, displayTitle)
     : `<strong>${escapeHtml(displayTitle)}</strong>`;
@@ -3867,13 +4149,14 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         ${runHeaderMetrics.elapsed ? `<span class="pipeline-runbar-elapsed" title="${escapeHtml(`Started ${runHeaderMetrics.startedAt}`)}">${escapeHtml(runHeaderMetrics.elapsed)}</span>` : ''}
         ${harnessProgress ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(harnessProgress.title)}">${escapeHtml(harnessProgress.label)}</span>` : ''}
         ${harnessPending && !harnessProgress ? '<span class="pipeline-runbar-status warn" title="Harness implementation request is starting.">Starting harness</span>' : ''}
+        ${harnessBlocked ? `<span class="pipeline-runbar-status danger" title="${escapeHtml(harnessState?.message || 'Harness provisioning blocked.')}">Harness blocked</span>` : ''}
         ${harnessImplementedAt ? `<span class="pipeline-runbar-status done" title="${escapeHtml(`Harness implemented at ${harnessImplementedAt}`)}">Harness ready</span>` : ''}
         ${harnessAuthoringBadge ? `<span class="pipeline-runbar-status ${escapeHtml(harnessAuthoringBadge.state)}" title="${escapeHtml(harnessAuthoringBadge.title)}">${escapeHtml(harnessAuthoringBadge.label)}</span>` : ''}
         ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
         ${renderMachineBudgetIndicatorHtml(pipelineDoc)}
       </div>
       <div class="pipeline-runbar-actions">
-        <button class="pipeline-run-primary${defaultDangerClass}" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
+        <button class="pipeline-run-primary${defaultDangerClass}" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewActionRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
           ${defaultIcon}
         </button>
         <details class="pipeline-run-menu-wrap">
@@ -3881,21 +4164,28 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
             ${orchToolIcon('M4 6l4 4 4-4')}
           </summary>
           <div class="pipeline-run-menu" role="menu">
-            <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled ? 'disabled' : ''} title="${escapeHtml(localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.')}">Run locally</button>
-            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress && !harnessPending ? '' : 'disabled'} title="Create or refresh the Machine harness scaffold for this pipeline.">Implement Harness</button>
-            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start autonomous Machine run and stop at patch review.'))}">Start Run</button>
-            <button data-pipeline-run-action="managed-ask" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="Debug mode: ask before LLM CLI permission bypass instead of auto-driving to patch review.">Start Run (Ask Permissions)</button>
-            <button data-pipeline-run-action="managed-auto-apply" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="Fully autonomous: auto-approve and apply every patch the worker produces. No human gate at patchReview. Use only for trusted pipelines.">Start Run (Auto-Apply Patches)</button>
-            <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled ? 'disabled' : ''} title="${escapeHtml(handoffDisabled ? 'No handoff is required for this pipeline.' : 'Prepare instructions for running this pipeline with an external agent.')}">Prepare Handoff</button>
-            <button data-pipeline-run-action="choose-adapter" data-path="${escapeHtml(runbookPath)}" title="Choose AI provider and model for this pipeline.">Choose AI Provider…</button>
-            <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}">Check</button>
+            <button data-pipeline-run-action="open-flow" data-path="${escapeHtml(runbookPath)}" title="Return to the graph editor for this pipeline.">Open Flow</button>
+            <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled || harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : (localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.'))}">Run locally</button>
+            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress && !harnessRunning ? '' : 'disabled'} title="${escapeHtml(harnessRunning ? 'Harness implementation is already running.' : 'Create or refresh the Machine harness scaffold for this pipeline.')}">${harnessRunning ? 'Implementing Harness...' : 'Implement Harness'}</button>
+            <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineActionTitle)}">Start Run</button>
+            <button data-pipeline-run-action="managed-ask" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Debug mode: ask before LLM CLI permission bypass instead of auto-driving to patch review.')}">Start Run (Ask Permissions)</button>
+            <button data-pipeline-run-action="managed-auto-apply" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Fully autonomous: auto-approve and apply every patch the worker produces. No human gate at patchReview. Use only for trusted pipelines.')}">Start Run (Auto-Apply Patches)</button>
+            <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled || harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : (handoffDisabled ? 'No handoff is required for this pipeline.' : 'Prepare instructions for running this pipeline with an external agent.'))}">Prepare Handoff</button>
+            <button data-pipeline-run-action="choose-adapter" data-path="${escapeHtml(runbookPath)}" ${harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Choose AI provider and model for this pipeline.')}">Choose AI Provider…</button>
+            <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}" ${harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Check this pipeline.')}">Check</button>
           </div>
         </details>
       </div>
     </div>
   `;
-  const runDetailsHtml = `
-    ${renderMachineLifecycleBannerHtml(previewRunRecord, runbookPath)}
+  const harnessDetailsHtml = harnessSupersedesRunDetails
+    ? renderHarnessImplementationBannerHtml(runbookPath, harnessState, pipelineDoc, harnessPending)
+    : '';
+  const runDetailsHtml = harnessSupersedesRunDetails
+    ? harnessDetailsHtml
+    : `
+    ${replayNoticeHtml}
+    ${renderMachineLifecycleBannerHtml(previewRunRecord, runbookPath, { actionRecord: previewLiveRunRecord })}
     ${renderMachineFailedAdaptersHtml(previewRunRecord)}
   `;
   if (IS_ORCHESTRATION_WINDOW) {
@@ -4272,6 +4562,232 @@ function renderPipelineJsonSection(doc, key, label, description, readwrite) {
       ` : hasValue ? `
         <pre class="runbook-context-preview">${escapeHtml(json)}</pre>
       ` : '<div class="runbook-empty">No value declared.</div>'}
+    </section>
+  `;
+}
+
+function isPipelineNodePackDiagnostic(issue) {
+  return String(issue?.code || '').startsWith('PIPELINE_NODE_PACK_');
+}
+
+function pipelineNodePackDiagnosticState(issue) {
+  const code = String(issue?.code || '').toUpperCase();
+  if (code.includes('UNKNOWN') || code.includes('MISSING')) return 'missing';
+  if (code.includes('VERSION_INCOMPATIBLE')) return 'version incompatible';
+  if (code.includes('ORIGIN_MISMATCH')) return 'origin mismatch';
+  if (code.includes('DISABLED')) return 'disabled';
+  if (code.includes('INCOMPATIBLE')) return 'incompatible';
+  if (isDiagnosticError(issue)) return 'invalid';
+  if (issue?.level === 'warning' || issue?.severity === 'warning') return 'review';
+  return 'diagnostic';
+}
+
+function normalizePipelineNodePackStatus(value) {
+  const text = pipelineValueText(value).trim().toLowerCase();
+  if (!text) return '';
+  if (['resolved', 'valid', 'ok'].includes(text)) return 'valid';
+  if (text === 'unknown') return 'missing';
+  return text.replace(/_/g, ' ');
+}
+
+function pipelineNodePackEntryId(entry = {}) {
+  return pipelineValueText(entry.id || entry.packId || entry.nodePackId || '').trim();
+}
+
+function pipelineNormalizeNodePackEntry(item, fallbackId = '', index = 0) {
+  if (typeof item === 'string') {
+    return {
+      id: item.trim(),
+      requestedVersion: '',
+      origin: '',
+      index,
+      raw: item,
+    };
+  }
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    return {
+      id: fallbackId || `node-pack-${index + 1}`,
+      requestedVersion: '',
+      origin: '',
+      index,
+      raw: item,
+    };
+  }
+  const id = pipelineValueText(item.id || item.packId || item.nodePackId || fallbackId || `node-pack-${index + 1}`);
+  return {
+    ...item,
+    id,
+    requestedVersion: pipelineValueText(item.version || item.requestedVersion || item.versionRange || item.range),
+    origin: pipelineValueText(item.origin || item.source || item.rootKind),
+    index,
+    raw: item,
+  };
+}
+
+function pipelineNodePackEntries(doc) {
+  const value = doc?.nodePacks;
+  if (Array.isArray(value)) {
+    return value.map((item, index) => pipelineNormalizeNodePackEntry(item, '', index));
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value)
+      .map(([id, item], index) => pipelineNormalizeNodePackEntry(typeof item === 'string' ? { id, version: item } : item, id, index));
+  }
+  return [];
+}
+
+function pipelineNodePackValidationRecords(validation) {
+  return Array.isArray(validation?.nodePacks) ? validation.nodePacks : [];
+}
+
+function pipelineNodePackRecordId(record = {}) {
+  return pipelineValueText(record.id || record.packId || record.nodePackId || record.requested?.id || record.declared?.id).trim();
+}
+
+function pipelineNodePackRecordForEntry(validation, entry) {
+  const entryId = pipelineNodePackEntryId(entry).toLowerCase();
+  if (!entryId) return null;
+  return pipelineNodePackValidationRecords(validation)
+    .find(record => pipelineNodePackRecordId(record).toLowerCase() === entryId) || null;
+}
+
+function pipelineNodePackDiagnosticPackId(issue = {}) {
+  return pipelineValueText(issue.packId || issue.nodePackId || issue.id || issue.ref || issue.pack || '').trim();
+}
+
+function pipelineNodePackDiagnosticsForEntry(diagnostics = [], entry = {}) {
+  const entryId = pipelineNodePackEntryId(entry).toLowerCase();
+  const entryIndex = Number(entry.index);
+  return diagnostics.filter((issue) => {
+    if (!isPipelineNodePackDiagnostic(issue)) return false;
+    const issuePackId = pipelineNodePackDiagnosticPackId(issue).toLowerCase();
+    if (entryId && issuePackId && issuePackId === entryId) return true;
+    if (entryId && issuePackId && issuePackId.includes(entryId)) return true;
+    const issuePath = pipelineValueText(issue.path || issue.refPath || '').toLowerCase();
+    if (Number.isFinite(entryIndex) && issuePath.includes(`nodepacks[${entryIndex}]`)) return true;
+    if (Number(issue.index) === entryIndex) return true;
+    return false;
+  });
+}
+
+function pipelineUnmatchedNodePackDiagnostics(diagnostics = [], entries = []) {
+  const matched = new Set();
+  entries.forEach(entry => {
+    pipelineNodePackDiagnosticsForEntry(diagnostics, entry).forEach(issue => matched.add(issue));
+  });
+  return diagnostics.filter(issue => isPipelineNodePackDiagnostic(issue) && !matched.has(issue));
+}
+
+function pipelineNodePackStatusForEntry(validation, entry, diagnostics = []) {
+  const issues = pipelineNodePackDiagnosticsForEntry(diagnostics, entry);
+  const primaryIssue = issues.find(isDiagnosticError) || issues[0];
+  if (primaryIssue) {
+    return {
+      label: pipelineNodePackDiagnosticState(primaryIssue),
+      tone: isDiagnosticError(primaryIssue) ? 'danger' : 'warn',
+      issues,
+    };
+  }
+  const record = pipelineNodePackRecordForEntry(validation, entry);
+  const status = normalizePipelineNodePackStatus(
+    record?.resolutionState
+    || record?.validationStatus
+    || record?.status
+    || record?.state
+    || record?.validation?.status
+    || record?.validation?.resolutionState,
+  );
+  if (status) {
+    const dangerStates = new Set(['missing', 'disabled', 'incompatible', 'version incompatible', 'origin mismatch', 'capability denied', 'approval required', 'untrusted', 'invalid']);
+    return {
+      label: status,
+      tone: dangerStates.has(status) ? 'danger' : (status === 'valid' ? 'good' : 'warn'),
+      issues,
+    };
+  }
+  if (validation && Array.isArray(validation.diagnostics)) return { label: 'valid', tone: 'good', issues };
+  return { label: 'not checked', tone: 'warn', issues };
+}
+
+function pipelineNodePackNeedsManager(status = {}) {
+  return status.tone === 'danger' || ['missing', 'disabled', 'incompatible', 'version incompatible', 'origin mismatch'].includes(status.label);
+}
+
+function renderPipelineNodePackValue(label, value, options = {}) {
+  const text = pipelineValueText(value).trim();
+  return `
+    <div class="pipeline-node-pack-cell">
+      <span>${escapeHtml(label)}</span>
+      ${options.code ? `<code>${escapeHtml(text || 'not declared')}</code>` : `<strong>${escapeHtml(text || 'not declared')}</strong>`}
+    </div>
+  `;
+}
+
+function renderPipelineNodePackSummary(doc, validation, diagnostics = []) {
+  const entries = pipelineNodePackEntries(doc);
+  const unmatchedDiagnostics = pipelineUnmatchedNodePackDiagnostics(diagnostics, entries);
+  if (!entries.length && !unmatchedDiagnostics.length) {
+    return '<div class="runbook-empty">No node packs declared.</div>';
+  }
+  const rows = entries.map((entry) => {
+    const status = pipelineNodePackStatusForEntry(validation, entry, diagnostics);
+    const action = pipelineNodePackNeedsManager(status)
+      ? '<button data-node-pack-manager-open>Resolve in Pack Manager</button>'
+      : '';
+    return `
+      <div class="pipeline-node-pack-row ${status.issues.length ? 'has-inline-diagnostic' : ''}" data-pipeline-node-pack-id="${escapeHtml(pipelineNodePackEntryId(entry))}">
+        ${renderPipelineNodePackValue('Pack id', pipelineNodePackEntryId(entry), { code: true })}
+        ${renderPipelineNodePackValue('Requested version', entry.requestedVersion || 'any')}
+        ${renderPipelineNodePackValue('Origin', entry.origin || 'any')}
+        <div class="pipeline-node-pack-state">
+          <span>Validation</span>
+          <span class="runbook-chip ${escapeHtml(status.tone)}">${escapeHtml(status.label)}</span>
+        </div>
+        ${action ? `<div class="pipeline-node-pack-actions">${action}</div>` : ''}
+        ${status.issues.length ? `<div class="pipeline-node-pack-diagnostics">${status.issues.map(renderPipelineInlineDiagnostic).join('')}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+  const unmatched = unmatchedDiagnostics.length ? `
+    <div class="pipeline-node-pack-diagnostics pipeline-node-pack-diagnostics-unmatched">
+      ${unmatchedDiagnostics.map(renderPipelineInlineDiagnostic).join('')}
+    </div>
+  ` : '';
+  return `${rows}${unmatched}`;
+}
+
+function renderPipelineNodePacksSection(doc, readwrite, validation, diagnostics = []) {
+  const value = doc?.nodePacks;
+  const hasValue = value !== undefined;
+  const json = hasValue ? JSON.stringify(value, null, 2) : '';
+  const entries = pipelineNodePackEntries(doc);
+  const nodePackDiagnostics = diagnostics.filter(isPipelineNodePackDiagnostic);
+  const blocking = entries.some(entry => pipelineNodePackNeedsManager(pipelineNodePackStatusForEntry(validation, entry, diagnostics)))
+    || nodePackDiagnostics.some(isDiagnosticError);
+  return `
+    <section class="runbook-panel-section pipeline-node-packs-section" data-pipeline-node-packs-section>
+      <header class="pipeline-section-header">
+        <div>
+          <h3>Node Packs</h3>
+          <p>Built-in and custom node packs required by this pipeline.</p>
+        </div>
+        <span class="runbook-chip ${blocking ? 'danger' : (nodePackDiagnostics.length ? 'warn' : '')}">${entries.length ? machineCountLabel(entries.length, 'pack') : 'not set'}</span>
+        <button data-node-pack-manager-open>${blocking ? 'Resolve in Pack Manager' : 'Open Pack Manager'}</button>
+      </header>
+      <div class="pipeline-node-pack-list">
+        ${renderPipelineNodePackSummary(doc, validation, diagnostics)}
+      </div>
+      <details class="pipeline-json-advanced" ${readwrite ? 'open' : ''}>
+        <summary>${readwrite ? 'Advanced JSON edit' : 'Raw JSON'}</summary>
+        ${readwrite ? `
+          <label class="pipeline-field span-2">
+            <span>Node Packs JSON</span>
+            <textarea data-pipeline-json-section="nodePacks" rows="10">${escapeHtml(json)}</textarea>
+          </label>
+        ` : hasValue ? `
+          <pre class="runbook-context-preview">${escapeHtml(json)}</pre>
+        ` : '<div class="runbook-empty">No value declared.</div>'}
+      </details>
     </section>
   `;
 }
@@ -5574,7 +6090,8 @@ function canRunOrchContextMutation(baseFilePath = getActiveTab()?.filePath) {
 
 function ensureOrchContextMutationMode(baseFilePath = getActiveTab()?.filePath) {
   if (orchContextMutationLocked(baseFilePath)) {
-    notifyFormatError('Pipeline flow', new Error('Run in progress; editing is locked.'));
+    const context = pipelineContextForPath(baseFilePath);
+    notifyFormatError('Pipeline flow', new Error(pipelineEditLockMessage(context?.pipelinePath)));
     return false;
   }
   if (orchTreeGraphMode !== 'readwrite') orchTreeGraphMode = 'readwrite';
@@ -6038,17 +6555,756 @@ function fallbackOrchNodePackCatalog() {
   ];
 }
 
-async function loadOrchNodePackCatalog() {
-  if (orchNodePackCatalogCache) return orchNodePackCatalogCache;
+function buildOrchNodePackFallbackCatalog(reason = 'Node pack discovery failed.', code = 'NODE_PACK_DISCOVERY_FAILED') {
+  const message = reason
+    ? `Node pack discovery failed; Add Node is showing built-in fallback packs only. ${reason}`
+    : 'Node pack discovery failed; Add Node is showing built-in fallback packs only.';
+  const diagnostic = {
+    level: 'warning',
+    code,
+    message,
+    source: 'add-node-browser',
+  };
+  return normalizeOrchNodePackCatalogResponse({
+    success: false,
+    ok: false,
+    fallback: true,
+    fallbackReason: reason,
+    nodePacks: fallbackOrchNodePackCatalog().map(pack => ({
+      ...pack,
+      description: `${pack.description || 'Built-in OrPAD nodes.'} Shown from the fallback catalog because node pack discovery did not complete.`,
+      origin: 'built-in-fallback',
+      trustLevel: 'fallback',
+      validationStatus: 'fallback',
+      diagnostics: [diagnostic],
+    })),
+    diagnostics: [diagnostic],
+    conflicts: [],
+  });
+}
+
+function normalizeOrchNodePackCatalogResponse(response = {}) {
+  return {
+    success: response?.success !== false,
+    ok: response?.ok !== false,
+    fallback: response?.fallback === true,
+    fallbackReason: nodePackManagerString(response?.fallbackReason || response?.error, ''),
+    roots: Array.isArray(response?.roots) ? response.roots : [],
+    nodePacks: (Array.isArray(response?.nodePacks) ? response.nodePacks : [])
+      .filter(pack => pack && typeof pack === 'object'),
+    diagnostics: Array.isArray(response?.diagnostics) ? response.diagnostics : [],
+    conflicts: Array.isArray(response?.conflicts) ? response.conflicts : [],
+  };
+}
+
+function cacheOrchNodePackCatalog(catalog) {
+  orchNodePackCatalogMetadataCache = catalog;
+  orchNodePackCatalogCache = catalog.nodePacks;
+  return catalog;
+}
+
+function resolveOrchNodePackListPacks() {
+  const overrideCandidate = typeof window.__orpadNodePackListPacks === 'function'
+    ? window.__orpadNodePackListPacks
+    : (typeof window.__orpadNodePackManagerListPacks === 'function'
+      ? window.__orpadNodePackManagerListPacks
+      : null);
+  const allowTestOverride = overrideCandidate?.orpadTestOverride === true
+    || (!BUILD_TARGET_WEB && typeof process !== 'undefined' && process?.env?.ORPAD_TEST_USER_DATA);
+  if (overrideCandidate && allowTestOverride) return overrideCandidate;
+  return window.orpad?.orchestration?.listNodePacks;
+}
+
+async function loadOrchNodePackCatalog(options = {}) {
+  const listNodePacks = resolveOrchNodePackListPacks();
+  const bypassCache = options.forceRefresh === true
+    || (listNodePacks?.orpadTestOverride === true
+      && listNodePacks?.orpadBypassCatalogCache !== false);
+  if (orchNodePackCatalogCache && !bypassCache) return orchNodePackCatalogCache;
+  if (typeof listNodePacks !== 'function') {
+    return cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
+      'The OrPAD node pack list API is not available.',
+      'NODE_PACK_DISCOVERY_API_UNAVAILABLE',
+    )).nodePacks;
+  }
   try {
-    const response = await window.orpad?.orchestration?.listNodePacks?.({ workspacePath });
-    if (response?.success !== false && Array.isArray(response?.nodePacks)) {
-      orchNodePackCatalogCache = response.nodePacks;
-      return orchNodePackCatalogCache;
+    const response = await listNodePacks({ workspacePath });
+    if (response?.success === false) {
+      return cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
+        response.error || 'The OrPAD node pack discovery service returned an error.',
+        'NODE_PACK_DISCOVERY_FAILED',
+      )).nodePacks;
     }
-  } catch {}
-  orchNodePackCatalogCache = fallbackOrchNodePackCatalog();
-  return orchNodePackCatalogCache;
+    if (response?.success !== false && Array.isArray(response?.nodePacks)) {
+      return cacheOrchNodePackCatalog(normalizeOrchNodePackCatalogResponse(response)).nodePacks;
+    }
+    return cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
+      'The discovery response did not include a nodePacks array.',
+      'NODE_PACK_DISCOVERY_INVALID_RESPONSE',
+    )).nodePacks;
+  } catch (err) {
+    return cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
+      err?.message || String(err) || 'The OrPAD node pack discovery service threw an error.',
+      'NODE_PACK_DISCOVERY_EXCEPTION',
+    )).nodePacks;
+  }
+}
+
+function nodePackManagerString(value, fallback = '') {
+  if (value === undefined || value === null) return fallback;
+  if (Array.isArray(value)) {
+    const text = value.map(item => nodePackManagerString(item, '')).filter(Boolean).join(', ');
+    return text || fallback;
+  }
+  if (typeof value === 'object') {
+    try {
+      const text = JSON.stringify(value);
+      return text || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function nodePackManagerCapabilities(pack = {}) {
+  const capabilities = new Set();
+  for (const capability of (Array.isArray(pack.capabilities) ? pack.capabilities : [])) {
+    const text = nodePackManagerString(capability, '');
+    if (text) capabilities.add(text);
+  }
+  for (const node of (Array.isArray(pack.nodes) ? pack.nodes : [])) {
+    for (const capability of (Array.isArray(node?.capabilities) ? node.capabilities : [])) {
+      const text = nodePackManagerString(capability, '');
+      if (text) capabilities.add(text);
+    }
+  }
+  return [...capabilities].sort((a, b) => a.localeCompare(b));
+}
+
+function nodePackManagerOrigin(pack = {}) {
+  return nodePackManagerString(
+    pack.origin || pack.source || pack.repository || pack.author?.repository || pack.author?.github || pack.discovery?.rootKind,
+    'unknown source',
+  );
+}
+
+function nodePackManagerPackPath(pack = {}) {
+  return nodePackManagerString(pack.sourcePath || pack.discovery?.manifestPath || pack.manifestPath || pack.discovery?.packDir || pack.path, '');
+}
+
+const NODE_PACK_MANAGER_CONFLICT_CODES = new Set([
+  'NODE_PACK_DISCOVERY_DUPLICATE_ID',
+  'NODE_PACK_TYPE_CONFLICT',
+]);
+const NODE_PACK_MANAGER_INVALID_CODES = new Set([
+  'NODE_PACK_DISCOVERY_VALIDATION_FAILED',
+]);
+const NODE_PACK_MANAGER_HIGH_RISK_CODES = new Set([
+  'NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED',
+  'NODE_PACK_HIGH_RISK_CAPABILITY_REQUIRES_APPROVAL',
+]);
+const NODE_PACK_MANAGER_HIGH_RISK_CAPABILITIES = new Set([
+  'use.credentials',
+  'use.network',
+  'call.aiProvider',
+  'publish',
+  'sign',
+  'deploy',
+  'mcp.tool.sideEffect',
+  'terminal.execute',
+  'filesystem.destructive',
+  'git.destructive',
+]);
+const NODE_PACK_MANAGER_DETAIL_ORDER = [
+  'rootKind',
+  'root',
+  'packId',
+  'manifestPath',
+  'keptManifestPath',
+  'skippedManifestPath',
+  'nodeType',
+  'firstPackId',
+  'firstManifestPath',
+  'secondPackId',
+  'secondManifestPath',
+  'packPath',
+  'path',
+  'assetKind',
+  'assetId',
+  'capability',
+  'required',
+  'current',
+  'expected',
+  'actual',
+  'valueType',
+  'error',
+];
+const NODE_PACK_MANAGER_DETAIL_LABELS = {
+  rootKind: 'Root kind',
+  root: 'Root path',
+  packId: 'Pack id',
+  manifestPath: 'Manifest path',
+  keptManifestPath: 'Kept manifest',
+  skippedManifestPath: 'Skipped manifest',
+  nodeType: 'Node type',
+  firstPackId: 'First pack',
+  firstManifestPath: 'First manifest',
+  secondPackId: 'Second pack',
+  secondManifestPath: 'Second manifest',
+  packPath: 'Pack path',
+  path: 'Path',
+  assetKind: 'Asset kind',
+  assetId: 'Asset id',
+  capability: 'Capability',
+  required: 'Required',
+  current: 'Current',
+  expected: 'Expected',
+  actual: 'Actual',
+  valueType: 'Value type',
+  error: 'Error',
+  packDiagnostics: 'Pack diagnostics',
+};
+
+function nodePackManagerIssueCode(issue) {
+  if (!issue || typeof issue !== 'object') return 'diagnostic';
+  return nodePackManagerString(issue.code || issue.id || issue.type || issue.kind, 'diagnostic');
+}
+
+function nodePackManagerIssueSeverity(issue) {
+  const severity = nodePackManagerString(issue?.level || issue?.severity || issue?.status, '').toLowerCase();
+  if (severity.includes('error') || severity.includes('danger')) return 'error';
+  if (severity.includes('warn')) return 'warning';
+  if (NODE_PACK_MANAGER_CONFLICT_CODES.has(nodePackManagerIssueCode(issue))) return 'warning';
+  return severity || 'info';
+}
+
+function nodePackManagerIssueTone(issue) {
+  const code = nodePackManagerIssueCode(issue);
+  if (NODE_PACK_MANAGER_CONFLICT_CODES.has(code) || NODE_PACK_MANAGER_INVALID_CODES.has(code)) return 'danger';
+  const severity = nodePackManagerIssueSeverity(issue);
+  if (severity === 'error') return 'danger';
+  if (severity === 'warning') return 'warn';
+  return 'warn';
+}
+
+function nodePackManagerIssueMessage(issue) {
+  if (!issue) return '';
+  if (typeof issue === 'string') return issue;
+  if (typeof issue !== 'object') return nodePackManagerString(issue, '');
+  return nodePackManagerString(issue.message || issue.summary || issue.reason || issue.detail, '');
+}
+
+function nodePackManagerDetailValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => nodePackManagerDetailValue(item)).filter(Boolean).join(', ');
+  }
+  if (value && typeof value === 'object') {
+    return nodePackManagerIssueText(value);
+  }
+  return nodePackManagerString(value, '');
+}
+
+function nodePackManagerIssueDetails(issue) {
+  if (!issue || typeof issue !== 'object') return [];
+  const rows = [];
+  const seen = new Set();
+  const add = (key, value) => {
+    if (seen.has(key)) return;
+    const text = nodePackManagerDetailValue(value);
+    if (!text) return;
+    seen.add(key);
+    rows.push({ label: NODE_PACK_MANAGER_DETAIL_LABELS[key] || key, value: text });
+  };
+  for (const key of NODE_PACK_MANAGER_DETAIL_ORDER) add(key, issue[key]);
+  if (Array.isArray(issue.packDiagnostics) && issue.packDiagnostics.length) {
+    add('packDiagnostics', issue.packDiagnostics.slice(0, 4));
+  }
+  return rows;
+}
+
+function nodePackManagerIssueText(issue) {
+  if (!issue) return '';
+  if (typeof issue === 'string') return issue;
+  if (typeof issue !== 'object') return nodePackManagerString(issue, '');
+  const code = nodePackManagerIssueCode(issue);
+  const message = nodePackManagerIssueMessage(issue);
+  const details = nodePackManagerIssueDetails(issue)
+    .slice(0, 3)
+    .map(row => `${row.label}: ${row.value}`)
+    .join('; ');
+  return [code, message, details].filter(Boolean).join(' - ');
+}
+
+function nodePackManagerIssueMatchesPack(issue, pack = {}) {
+  const tokens = [
+    pack.id,
+    pack.name,
+    pack.discovery?.manifestPath,
+    pack.discovery?.packDir,
+  ].map(value => nodePackManagerString(value, '').toLowerCase()).filter(Boolean);
+  if (!tokens.length) return false;
+  let issueText = '';
+  try {
+    issueText = JSON.stringify(issue || {}).toLowerCase();
+  } catch {
+    issueText = nodePackManagerString(issue, '').toLowerCase();
+  }
+  return tokens.some(token => issueText.includes(token));
+}
+
+function nodePackManagerIssuesForPack(issues, pack = {}) {
+  return (Array.isArray(issues) ? issues : []).filter(issue => nodePackManagerIssueMatchesPack(issue, pack));
+}
+
+function nodePackManagerIssueKey(issue) {
+  try {
+    return JSON.stringify(issue || {});
+  } catch {
+    return nodePackManagerString(issue, '');
+  }
+}
+
+function nodePackManagerUniqueIssues(issues = []) {
+  const seen = new Set();
+  return (Array.isArray(issues) ? issues : []).filter(issue => {
+    const key = nodePackManagerIssueKey(issue);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function nodePackManagerConflictIssue(conflict) {
+  if (!conflict || typeof conflict !== 'object') return conflict;
+  if (conflict.code || conflict.message || conflict.level) return conflict;
+  return {
+    level: 'warning',
+    code: 'NODE_PACK_TYPE_CONFLICT',
+    message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+    ...conflict,
+  };
+}
+
+function nodePackManagerCatalogConflictIssues(catalog = {}) {
+  return (Array.isArray(catalog.conflicts) ? catalog.conflicts : []).map(nodePackManagerConflictIssue);
+}
+
+function nodePackManagerPackDiagnostics(pack = {}, catalog = {}) {
+  return nodePackManagerUniqueIssues([
+    ...nodePackManagerIssuesForPack(catalog.diagnostics, pack),
+    ...(Array.isArray(pack.diagnostics) ? pack.diagnostics : []),
+  ]);
+}
+
+function nodePackManagerPackConflicts(pack = {}, catalog = {}) {
+  return nodePackManagerUniqueIssues([
+    ...nodePackManagerIssuesForPack(nodePackManagerCatalogConflictIssues(catalog), pack),
+    ...(Array.isArray(pack.conflicts) ? pack.conflicts : []),
+    ...(Array.isArray(pack.conflictParticipation) ? pack.conflictParticipation : []),
+    ...(Array.isArray(pack.validation?.conflicts) ? pack.validation.conflicts : []),
+    ...(Array.isArray(pack.conflictInvolvement?.conflicts) ? pack.conflictInvolvement.conflicts : []),
+  ].map(nodePackManagerConflictIssue));
+}
+
+function nodePackManagerPackIssueCount(pack = {}, catalog = {}) {
+  const diagnostics = nodePackManagerPackDiagnostics(pack, catalog);
+  const conflicts = nodePackManagerPackConflicts(pack, catalog);
+  return {
+    diagnostics: diagnostics.length,
+    conflicts: conflicts.length,
+    total: diagnostics.length + conflicts.length,
+  };
+}
+
+function nodePackManagerAddCapability(target, value) {
+  const text = nodePackManagerString(value, '');
+  if (text) target.add(text);
+}
+
+function nodePackManagerAddCapabilities(target, values) {
+  if (!Array.isArray(values)) return;
+  for (const value of values) nodePackManagerAddCapability(target, value);
+}
+
+function nodePackManagerHighRiskCapabilities(pack = {}, catalog = {}) {
+  const highRiskCapabilities = new Set();
+  nodePackManagerAddCapabilities(highRiskCapabilities, pack.highRiskCapabilities);
+  nodePackManagerAddCapabilities(highRiskCapabilities, pack.validation?.highRiskCapabilities);
+  nodePackManagerAddCapabilities(highRiskCapabilities, pack.capabilityRisk?.highRiskCapabilities);
+  nodePackManagerAddCapabilities(highRiskCapabilities, pack.validation?.capabilityRisk?.highRiskCapabilities);
+  for (const capability of nodePackManagerCapabilities(pack)) {
+    if (NODE_PACK_MANAGER_HIGH_RISK_CAPABILITIES.has(capability)) highRiskCapabilities.add(capability);
+  }
+  const issues = [
+    ...nodePackManagerPackDiagnostics(pack, catalog),
+    ...nodePackManagerPackConflicts(pack, catalog),
+  ];
+  for (const issue of issues) {
+    const code = nodePackManagerIssueCode(issue);
+    if (!NODE_PACK_MANAGER_HIGH_RISK_CODES.has(code) && !code.includes('HIGH_RISK')) continue;
+    nodePackManagerAddCapability(highRiskCapabilities, issue?.capability);
+    nodePackManagerAddCapabilities(highRiskCapabilities, issue?.capabilities);
+  }
+  return [...highRiskCapabilities].sort((a, b) => a.localeCompare(b));
+}
+
+function nodePackManagerCatalogIssueCounts(catalog = {}) {
+  const diagnostics = Array.isArray(catalog.diagnostics) ? catalog.diagnostics : [];
+  const conflicts = nodePackManagerCatalogConflictIssues(catalog);
+  return {
+    diagnostics: diagnostics.length,
+    conflicts: conflicts.length,
+    conflictDiagnostics: diagnostics.filter(issue => NODE_PACK_MANAGER_CONFLICT_CODES.has(nodePackManagerIssueCode(issue))).length,
+  };
+}
+
+function nodePackManagerStatusForPack(pack = {}, catalog = {}) {
+  const explicitStatus = nodePackManagerString(pack.validationStatus || pack.status || pack.validation?.status, '').toLowerCase();
+  const resolutionState = nodePackManagerString(pack.resolutionState || pack.validation?.resolutionState || pack.validation?.state, '').toLowerCase();
+  const packConflicts = nodePackManagerPackConflicts(pack, catalog);
+  const packDiagnostics = nodePackManagerPackDiagnostics(pack, catalog);
+  const hasConflictDiagnostic = packDiagnostics.some(issue => NODE_PACK_MANAGER_CONFLICT_CODES.has(nodePackManagerIssueCode(issue)));
+  if (packConflicts.length || hasConflictDiagnostic || explicitStatus.includes('conflict')) return { label: 'conflict', tone: 'danger' };
+  if (explicitStatus.includes('fallback')) return { label: 'fallback', tone: 'warn' };
+  if (explicitStatus.includes('degraded')) return { label: 'degraded', tone: 'warn' };
+  if (explicitStatus.includes('validation-error') || explicitStatus.includes('invalid') || explicitStatus.includes('error')) {
+    return { label: 'validation-error', tone: 'danger' };
+  }
+  const hasErrorDiagnostic = packDiagnostics.some(issue => (
+    nodePackManagerIssueTone(issue) === 'danger'
+    || /error|invalid|fail/i.test(nodePackManagerIssueText(issue))
+  ));
+  if (hasErrorDiagnostic) return { label: 'validation-error', tone: 'danger' };
+  const hasHighRiskReviewDiagnostic = packDiagnostics.some(issue => NODE_PACK_MANAGER_HIGH_RISK_CODES.has(nodePackManagerIssueCode(issue)));
+  if (hasHighRiskReviewDiagnostic) return { label: 'approval-required', tone: 'danger' };
+  if (resolutionState && !['resolved', 'valid', 'ok'].includes(resolutionState)) {
+    const dangerStates = new Set(['disabled', 'incompatible', 'capability-denied', 'approval-required', 'missing']);
+    return { label: resolutionState, tone: dangerStates.has(resolutionState) ? 'danger' : 'warn' };
+  }
+  if (packDiagnostics.length || explicitStatus.includes('warn') || explicitStatus.includes('review')) return { label: 'review', tone: 'warn' };
+  if (catalog.ok === false && !(Array.isArray(catalog.diagnostics) && catalog.diagnostics.length)) return { label: 'review', tone: 'warn' };
+  return { label: explicitStatus || 'valid', tone: 'good' };
+}
+
+function renderNodePackManagerButton() {
+  return '<button class="orch-toolbar-button" data-node-pack-manager-open>Node Packs</button>';
+}
+
+function renderNodePackManagerMetaRow(label, value, options = {}) {
+  const text = nodePackManagerString(value, 'Not declared');
+  const valueHtml = options.code
+    ? `<code>${escapeHtml(text)}</code>`
+    : `<span>${escapeHtml(text)}</span>`;
+  return `<dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd>`;
+}
+
+function renderNodePackManagerCapabilities(capabilities = []) {
+  if (!capabilities.length) return '<span class="node-pack-manager-muted">No capabilities declared.</span>';
+  return capabilities.map(capability => `<span class="node-pack-manager-capability">${escapeHtml(capability)}</span>`).join('');
+}
+
+function renderNodePackManagerIssueCards(title, issues = [], options = {}) {
+  const visibleIssues = (Array.isArray(issues) ? issues : []).filter(issue => nodePackManagerIssueText(issue));
+  if (!visibleIssues.length) return '';
+  const maxVisible = options.maxVisible || 12;
+  const cards = visibleIssues.slice(0, maxVisible).map(issue => {
+    const tone = nodePackManagerIssueTone(issue);
+    const chipTone = tone === 'danger' ? 'danger' : (tone === 'warn' ? 'warn' : 'good');
+    const severity = nodePackManagerIssueSeverity(issue);
+    const code = nodePackManagerIssueCode(issue);
+    const message = nodePackManagerIssueMessage(issue) || nodePackManagerIssueText(issue);
+    const details = nodePackManagerIssueDetails(issue);
+    const detailsHtml = details.length ? `
+      <dl class="node-pack-manager-issue-details">
+        ${details.map(row => `
+          <dt>${escapeHtml(row.label)}</dt>
+          <dd>${escapeHtml(row.value)}</dd>
+        `).join('')}
+      </dl>
+    ` : '';
+    return `
+      <article class="node-pack-manager-issue-card ${tone}" data-node-pack-diagnostic-code="${escapeHtml(code)}">
+        <div class="node-pack-manager-issue-head">
+          <span class="runbook-chip ${chipTone}">${escapeHtml(severity)}</span>
+          <code>${escapeHtml(code)}</code>
+        </div>
+        <p class="node-pack-manager-issue-message">${escapeHtml(message)}</p>
+        ${detailsHtml}
+      </article>
+    `;
+  }).join('');
+  const hiddenCount = visibleIssues.length - Math.min(visibleIssues.length, maxVisible);
+  return `
+    <section class="node-pack-manager-issues ${escapeHtml(options.className || '')}">
+      <h4>${escapeHtml(title)} <span>${escapeHtml(String(visibleIssues.length))}</span></h4>
+      <div class="node-pack-manager-issue-list">
+        ${cards}
+        ${hiddenCount > 0 ? `<div class="node-pack-manager-muted">${escapeHtml(String(hiddenCount))} more diagnostics not shown.</div>` : ''}
+      </div>
+    </section>
+  `;
+}
+
+function renderNodePackManagerRoots(roots = []) {
+  const visibleRoots = (Array.isArray(roots) ? roots : []).filter(root => root && typeof root === 'object');
+  if (!visibleRoots.length) return '';
+  return `
+    <section class="node-pack-manager-roots">
+      <h4>Discovery roots</h4>
+      <div class="node-pack-manager-root-list">
+        ${visibleRoots.map(root => `
+          <span class="node-pack-manager-root">
+            <span>${escapeHtml(nodePackManagerString(root.kind, 'root'))}</span>
+            <code>${escapeHtml(nodePackManagerString(root.root, 'path not reported'))}</code>
+          </span>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderNodePackManagerCatalogDiagnostics(catalog = {}) {
+  const diagnostics = Array.isArray(catalog.diagnostics) ? catalog.diagnostics : [];
+  const conflicts = nodePackManagerCatalogConflictIssues(catalog);
+  return [
+    renderNodePackManagerRoots(catalog.roots),
+    renderNodePackManagerIssueCards('Discovery diagnostics', diagnostics, { className: 'node-pack-manager-discovery-issues' }),
+    renderNodePackManagerIssueCards('Conflict states', conflicts, { className: 'node-pack-manager-conflict-issues' }),
+  ].filter(Boolean).join('');
+}
+
+function renderNodePackManagerNodeAsset(node = {}, packConflicts = []) {
+  const nodeType = nodePackManagerString(node.type, '');
+  const nodeConflicts = nodePackManagerUniqueIssues([
+    ...(Array.isArray(node.conflicts) ? node.conflicts : []),
+    ...packConflicts.filter(issue => nodePackManagerString(issue?.nodeType, '') === nodeType),
+  ].map(nodePackManagerConflictIssue));
+  const nodeState = nodePackManagerString(node.validationStatus || node.resolutionState || (node.disabled ? 'disabled' : ''), '');
+  const nodeStatus = nodeConflicts.length ? 'conflict' : nodeState;
+  return `
+    <div class="node-pack-manager-asset ${nodeStatus === 'conflict' ? 'has-conflict' : ''}">
+      <strong>${escapeHtml(nodePackManagerString(node.label || node.type, 'Node'))}</strong>
+      <code>${escapeHtml(nodePackManagerString(node.type, 'missing-node-type'))}</code>
+      ${nodeStatus ? `<span class="runbook-chip ${nodeStatus === 'conflict' ? 'danger' : 'warn'}">${escapeHtml(nodeStatus)}</span>` : ''}
+    </div>
+  `;
+}
+
+function renderNodePackManagerDetail(pack = null, catalog = {}) {
+  if (!pack) {
+    return '<div class="node-pack-manager-empty">Select a node pack to inspect its metadata.</div>';
+  }
+  const capabilities = nodePackManagerCapabilities(pack);
+  const highRiskCapabilities = nodePackManagerHighRiskCapabilities(pack, catalog);
+  const status = nodePackManagerStatusForPack(pack, catalog);
+  const nodes = Array.isArray(pack.nodes) ? pack.nodes : [];
+  const packDiagnostics = nodePackManagerPackDiagnostics(pack, catalog);
+  const packConflicts = nodePackManagerPackConflicts(pack, catalog);
+  const issueCount = nodePackManagerPackIssueCount(pack, catalog);
+  const conflictNote = status.label === 'conflict'
+    ? '<div class="node-pack-manager-conflict-note">Conflict state: this pack matches a duplicate pack id or duplicate node type diagnostic and needs review before activation.</div>'
+    : '';
+  return `
+    <div class="node-pack-manager-detail-header ${status.label === 'conflict' ? 'has-conflict' : ''}">
+      <div>
+        <h3>${escapeHtml(nodePackManagerString(pack.name || pack.id, 'Node Pack'))}</h3>
+        <code>${escapeHtml(nodePackManagerString(pack.id, 'missing-pack-id'))}</code>
+      </div>
+      <span class="runbook-chip ${status.tone}">${escapeHtml(status.label)}</span>
+    </div>
+    ${conflictNote}
+    <section class="node-pack-manager-section">
+      <h4>Trusted Discovery Metadata</h4>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Name', pack.name || pack.id)}
+        ${renderNodePackManagerMetaRow('Pack id', pack.id, { code: true })}
+        ${renderNodePackManagerMetaRow('Version', pack.version || 'unversioned', { code: true })}
+        ${renderNodePackManagerMetaRow('Origin / source', nodePackManagerOrigin(pack))}
+        ${renderNodePackManagerMetaRow('Trust level', pack.trustLevel || 'unknown')}
+        ${renderNodePackManagerMetaRow('Validation status', status.label)}
+        ${renderNodePackManagerMetaRow('High-risk capabilities', highRiskCapabilities.length ? highRiskCapabilities.join(', ') : 'None reported')}
+        ${renderNodePackManagerMetaRow('Diagnostic count', issueCount.total ? `${issueCount.total} issue${issueCount.total === 1 ? '' : 's'}` : '0 diagnostics')}
+        ${renderNodePackManagerMetaRow('Source path', nodePackManagerPackPath(pack), { code: true })}
+        ${renderNodePackManagerMetaRow('Manifest path', pack.discovery?.manifestPath || pack.manifestPath, { code: true })}
+        ${renderNodePackManagerMetaRow('Pack path', pack.discovery?.packDir || pack.path, { code: true })}
+      </dl>
+    </section>
+    <section class="node-pack-manager-section">
+      <h4>Capabilities</h4>
+      <div class="node-pack-manager-capabilities">${renderNodePackManagerCapabilities(capabilities)}</div>
+    </section>
+    <section class="node-pack-manager-section">
+      <h4>High-Risk Capability Review</h4>
+      <div class="node-pack-manager-capabilities">${highRiskCapabilities.length ? renderNodePackManagerCapabilities(highRiskCapabilities) : '<span class="node-pack-manager-muted">No high-risk capabilities reported.</span>'}</div>
+    </section>
+    <section class="node-pack-manager-section node-pack-manager-untrusted">
+      <h4>Pack-Provided Prose (Untrusted)</h4>
+      <p>${escapeHtml(nodePackManagerString(pack.description, 'No description declared.'))}</p>
+    </section>
+    <section class="node-pack-manager-section">
+      <h4>Nodes</h4>
+      <div class="node-pack-manager-assets">
+        ${nodes.length ? nodes.map(node => renderNodePackManagerNodeAsset(node, packConflicts)).join('') : '<span class="node-pack-manager-muted">No node entries declared.</span>'}
+      </div>
+    </section>
+    ${renderNodePackManagerIssueCards('Pack diagnostics', packDiagnostics)}
+    ${renderNodePackManagerIssueCards('Pack conflicts', packConflicts, { className: 'node-pack-manager-conflict-issues' })}
+  `;
+}
+
+async function listNodePacksForManager(request = {}) {
+  const listNodePacks = resolveOrchNodePackListPacks();
+  if (typeof listNodePacks !== 'function') {
+    throw new Error('The OrPAD node pack list API is not available.');
+  }
+  const response = await listNodePacks(request);
+  if (response?.success === false) {
+    throw new Error(response.error || 'Node pack discovery failed.');
+  }
+  const catalog = normalizeOrchNodePackCatalogResponse(response || { success: true, ok: true, nodePacks: [] });
+  return cacheOrchNodePackCatalog(catalog);
+}
+
+function openOrchNodePackManager() {
+  const body = document.createElement('div');
+  body.className = 'node-pack-manager';
+  body.innerHTML = `
+    <div class="node-pack-manager-status" data-node-pack-manager-status>Loading node packs...</div>
+    <div class="node-pack-manager-diagnostics" data-node-pack-manager-diagnostics></div>
+    <div class="node-pack-manager-shell">
+      <div class="node-pack-manager-list" data-node-pack-manager-list role="listbox" aria-label="Installed node packs"></div>
+      <div class="node-pack-manager-detail" data-node-pack-manager-detail></div>
+    </div>
+  `;
+  const statusEl = body.querySelector('[data-node-pack-manager-status]');
+  const diagnosticsEl = body.querySelector('[data-node-pack-manager-diagnostics]');
+  const listEl = body.querySelector('[data-node-pack-manager-list]');
+  const detailEl = body.querySelector('[data-node-pack-manager-detail]');
+  const state = {
+    status: 'loading',
+    packs: [],
+    selectedIndex: 0,
+    catalog: { ok: true, roots: [], diagnostics: [], conflicts: [] },
+    error: '',
+  };
+
+  const render = () => {
+    body.dataset.nodePackManagerState = state.status;
+    if (state.status === 'loading') {
+      statusEl.textContent = 'Loading installed node packs...';
+      diagnosticsEl.innerHTML = '';
+      listEl.innerHTML = '<div class="node-pack-manager-empty">Loading node packs...</div>';
+      detailEl.innerHTML = '<div class="node-pack-manager-empty">Discovery metadata will appear here.</div>';
+      return;
+    }
+    if (state.status === 'error') {
+      statusEl.textContent = 'Node pack discovery failed.';
+      diagnosticsEl.innerHTML = '';
+      listEl.innerHTML = '<div class="node-pack-manager-empty">No packs could be loaded.</div>';
+      detailEl.innerHTML = `<div class="node-pack-manager-error">${escapeHtml(state.error || 'Unknown node pack discovery error.')}</div>`;
+      return;
+    }
+    if (state.status === 'empty') {
+      statusEl.textContent = 'No installed node packs were reported by the OrPAD discovery service.';
+      diagnosticsEl.innerHTML = renderNodePackManagerCatalogDiagnostics(state.catalog);
+      listEl.innerHTML = '<div class="node-pack-manager-empty">No node packs are installed.</div>';
+      detailEl.innerHTML = '<div class="node-pack-manager-empty">Install or enable a built-in/user pack to inspect its metadata.</div>';
+      return;
+    }
+    const packs = state.packs;
+    if (state.selectedIndex < 0 || state.selectedIndex >= packs.length) state.selectedIndex = 0;
+    const selectedPack = packs[state.selectedIndex];
+    const counts = nodePackManagerCatalogIssueCounts(state.catalog);
+    const issueCount = counts.diagnostics + counts.conflicts;
+    const catalogTone = counts.conflicts || counts.conflictDiagnostics
+      ? 'danger'
+      : (issueCount || state.catalog.ok === false ? 'warn' : 'good');
+    const catalogLabel = counts.conflicts
+      ? `${counts.conflicts} conflict${counts.conflicts === 1 ? '' : 's'}`
+      : (counts.conflictDiagnostics
+        ? `${counts.conflictDiagnostics} conflict diagnostic${counts.conflictDiagnostics === 1 ? '' : 's'}`
+        : (counts.diagnostics ? `${counts.diagnostics} diagnostic${counts.diagnostics === 1 ? '' : 's'}` : 'catalog valid'));
+    statusEl.innerHTML = `
+      <span>${escapeHtml(String(packs.length))} node pack${packs.length === 1 ? '' : 's'} discovered.</span>
+      <span class="runbook-chip ${catalogTone}">${escapeHtml(catalogLabel)}</span>
+      ${counts.diagnostics && counts.conflicts ? `<span class="runbook-chip warn">${escapeHtml(String(counts.diagnostics))} diagnostic${counts.diagnostics === 1 ? '' : 's'}</span>` : ''}
+    `;
+    diagnosticsEl.innerHTML = renderNodePackManagerCatalogDiagnostics(state.catalog);
+    listEl.innerHTML = packs.map((pack, index) => {
+      const status = nodePackManagerStatusForPack(pack, state.catalog);
+      const capabilities = nodePackManagerCapabilities(pack);
+      const highRiskCapabilities = nodePackManagerHighRiskCapabilities(pack, state.catalog);
+      const pathText = nodePackManagerPackPath(pack);
+      const issueCount = nodePackManagerPackIssueCount(pack, state.catalog);
+      const selected = index === state.selectedIndex;
+      const statusClass = [
+        status.tone ? `node-pack-manager-pack-${status.tone}` : '',
+        status.label === 'conflict' ? 'has-conflict' : '',
+      ].filter(Boolean).join(' ');
+      return `
+        <button class="node-pack-manager-pack ${statusClass} ${selected ? 'active' : ''}" data-node-pack-manager-pack-index="${index}" data-node-pack-validation="${escapeHtml(status.label)}" role="option" aria-selected="${selected ? 'true' : 'false'}">
+          <span class="node-pack-manager-pack-title">
+            <strong>${escapeHtml(nodePackManagerString(pack.name || pack.id, 'Node Pack'))}</strong>
+            <code>${escapeHtml(nodePackManagerString(pack.id, 'missing-pack-id'))}</code>
+          </span>
+          <span class="node-pack-manager-pack-chips">
+            <span class="runbook-chip">${escapeHtml(nodePackManagerString(pack.trustLevel, 'unknown trust'))}</span>
+            <span class="runbook-chip ${status.tone}">${escapeHtml(status.label)}</span>
+            ${highRiskCapabilities.length ? `<span class="runbook-chip danger">${escapeHtml(highRiskCapabilities.length)} high-risk</span>` : ''}
+            <span class="runbook-chip node-pack-manager-pack-diagnostic-count ${issueCount.conflicts ? 'danger' : (issueCount.diagnostics ? 'warn' : '')}">${escapeHtml(issueCount.total ? `${issueCount.total} issue${issueCount.total === 1 ? '' : 's'}` : '0 diagnostics')}</span>
+          </span>
+          <span class="node-pack-manager-pack-meta">${escapeHtml(nodePackManagerString(pack.version, 'unversioned'))} - ${escapeHtml(nodePackManagerOrigin(pack))}</span>
+          <span class="node-pack-manager-pack-meta">${escapeHtml(capabilities.length ? capabilities.join(', ') : 'no capabilities declared')}</span>
+          ${highRiskCapabilities.length ? `<span class="node-pack-manager-pack-meta">high-risk: ${escapeHtml(highRiskCapabilities.join(', '))}</span>` : ''}
+          ${pathText ? `<code class="node-pack-manager-pack-path">${escapeHtml(pathText)}</code>` : '<span class="node-pack-manager-pack-meta">No manifest or pack path reported.</span>'}
+        </button>
+      `;
+    }).join('');
+    listEl.querySelectorAll('[data-node-pack-manager-pack-index]').forEach(button => {
+      button.addEventListener('click', () => {
+        state.selectedIndex = Number(button.dataset.nodePackManagerPackIndex) || 0;
+        render();
+      });
+    });
+    detailEl.innerHTML = renderNodePackManagerDetail(selectedPack, state.catalog);
+  };
+
+  const load = async () => {
+    state.status = 'loading';
+    state.error = '';
+    render();
+    try {
+      const response = await listNodePacksForManager({ workspacePath });
+      state.catalog = response;
+      state.packs = response.nodePacks;
+      state.selectedIndex = 0;
+      state.status = state.packs.length ? 'success' : 'empty';
+    } catch (err) {
+      state.status = 'error';
+      state.error = err?.message || String(err);
+      state.packs = [];
+      state.catalog = { ok: false, roots: [], diagnostics: [], conflicts: [] };
+    }
+    render();
+  };
+
+  openFmtModal({
+    title: 'Node Packs',
+    body,
+    footer: [
+      { label: 'Refresh', onClick: load },
+      { label: 'Close', onClick: closeFmtModal },
+    ],
+  });
+  load();
+}
+
+function bindNodePackManagerOpenControls(root = contentEl) {
+  root.querySelectorAll('[data-node-pack-manager-open]').forEach(button => {
+    button.addEventListener('click', openOrchNodePackManager);
+  });
 }
 
 function orchNodeBrowserSurface() {
@@ -6063,12 +7319,105 @@ function orchNodeBrowserPackLabel(pack = {}) {
   return pack.name || pack.id || 'Node Pack';
 }
 
-function orchNodeBrowserItemFromNode(pack, node, surface) {
+const NODE_PACK_BROWSER_SAFE_RESOLUTION_STATES = new Set(['', 'resolved', 'valid', 'ok']);
+const NODE_PACK_BROWSER_BLOCKING_STATUS_LABELS = new Set([
+  'conflict',
+  'invalid',
+  'validation-error',
+  'disabled',
+  'incompatible',
+  'capability-denied',
+  'approval-required',
+  'missing',
+]);
+
+function orchNodeBrowserPackResolutionState(pack = {}) {
+  return nodePackManagerString(pack.resolutionState || pack.validation?.resolutionState || pack.validation?.state, '').toLowerCase();
+}
+
+function orchNodeBrowserPackSafety(pack = {}, catalog = {}) {
+  const status = nodePackManagerStatusForPack(pack, catalog);
+  const resolutionState = orchNodeBrowserPackResolutionState(pack);
+  const trustLevel = nodePackManagerString(pack.trustLevel || pack.trust || pack.validation?.trustLevel, 'unknown trust');
+  let label = status.label || 'valid';
+  let tone = status.tone || 'good';
+  let blocksNodes = false;
+  let reason = '';
+
+  if (resolutionState && !NODE_PACK_BROWSER_SAFE_RESOLUTION_STATES.has(resolutionState)) {
+    label = resolutionState;
+    if (tone === 'good') tone = 'warn';
+    blocksNodes = true;
+    reason = `Pack resolution is ${resolutionState}; resolve validation, trust, or capability review before adding nodes.`;
+  } else if (NODE_PACK_BROWSER_BLOCKING_STATUS_LABELS.has(label)) {
+    blocksNodes = true;
+    reason = label === 'conflict'
+      ? 'Pack has a duplicate id or node type conflict; choose one owner before activation.'
+      : `Pack status is ${label}; resolve validation before adding nodes.`;
+  }
+
+  return { label, tone, trustLevel, resolutionState, blocksNodes, reason };
+}
+
+function orchNodeBrowserPackIdMatchesIssue(issue, pack = {}) {
+  const packId = nodePackManagerString(pack.id, '');
+  if (!packId) return nodePackManagerIssueMatchesPack(issue, pack);
+  const issueIds = [
+    issue?.packId,
+    issue?.firstPackId,
+    issue?.secondPackId,
+    issue?.id,
+  ].map(value => nodePackManagerString(value, ''));
+  return issueIds.includes(packId) || nodePackManagerIssueMatchesPack(issue, pack);
+}
+
+function orchNodeBrowserTypeConflictIssuesForNode(pack = {}, node = {}, catalog = {}) {
+  const type = nodePackManagerString(node?.type, '');
+  if (!type) return [];
+  const issues = [
+    ...nodePackManagerCatalogConflictIssues(catalog),
+    ...(Array.isArray(catalog.diagnostics) ? catalog.diagnostics : []),
+    ...(Array.isArray(pack.conflicts) ? pack.conflicts : []),
+    ...(Array.isArray(pack.conflictParticipation) ? pack.conflictParticipation : []),
+    ...(Array.isArray(pack.validation?.conflicts) ? pack.validation.conflicts : []),
+    ...(Array.isArray(pack.conflictInvolvement?.conflicts) ? pack.conflictInvolvement.conflicts : []),
+    ...(Array.isArray(node.conflicts) ? node.conflicts : []),
+    ...(Array.isArray(node.validation?.conflicts) ? node.validation.conflicts : []),
+  ].map(nodePackManagerConflictIssue);
+  return issues.filter(issue => (
+    nodePackManagerIssueCode(issue) === 'NODE_PACK_TYPE_CONFLICT'
+    && nodePackManagerString(issue.nodeType, '') === type
+    && orchNodeBrowserPackIdMatchesIssue(issue, pack)
+  ));
+}
+
+function orchNodeBrowserConflictReason(issue = {}, fallbackType = '') {
+  const type = nodePackManagerString(issue.nodeType, fallbackType || 'this node type');
+  const owners = [issue.firstPackId, issue.secondPackId]
+    .map(value => nodePackManagerString(value, ''))
+    .filter(Boolean);
+  const ownerText = owners.length ? ` by ${owners.join(' and ')}` : '';
+  return `Node type ${type} is declared${ownerText}; choose one owner before activation.`;
+}
+
+function orchNodeBrowserItemFromNode(pack, node, surface, catalog = {}, packSafety = orchNodeBrowserPackSafety(pack, catalog)) {
   const type = String(node?.type || '').trim();
   if (!type || !orchNodeBrowserAllowedTypes(surface).has(type)) return null;
   const label = node?.label || orchNodeTypeLabel(type) || type;
   const packName = orchNodeBrowserPackLabel(pack);
   const description = node?.description || node?.runtimeHandlerKind || `${label} from ${packName}.`;
+  const conflictIssues = orchNodeBrowserTypeConflictIssuesForNode(pack, node, catalog);
+  const conflictReason = conflictIssues.length ? orchNodeBrowserConflictReason(conflictIssues[0], type) : '';
+  const nodeState = nodePackManagerString(node.validationStatus || node.resolutionState || (node.disabled ? 'disabled' : ''), '').toLowerCase();
+  const nodeBlocks = node.disabled === true
+    || (nodeState && !NODE_PACK_BROWSER_SAFE_RESOLUTION_STATES.has(nodeState));
+  const disabled = packSafety.blocksNodes || conflictIssues.length > 0 || nodeBlocks;
+  const safetyLabel = conflictIssues.length ? 'conflict' : (nodeBlocks ? nodeState : packSafety.label);
+  const safetyTone = conflictIssues.length || nodeState === 'conflict' ? 'danger' : (nodeBlocks ? 'warn' : packSafety.tone);
+  const nodeReason = nodeBlocks && nodeState
+    ? `Node type ${type} is ${nodeState}; resolve the node pack before activation.`
+    : '';
+  const safetyReason = conflictReason || nodeReason || (disabled ? packSafety.reason : '');
   return {
     id: `${pack.id || packName}:node:${type}`,
     kind: 'Node',
@@ -6077,7 +7426,13 @@ function orchNodeBrowserItemFromNode(pack, node, surface) {
     packId: pack.id || '',
     packName,
     description,
-    searchText: `${label} ${type} ${packName} ${description}`.toLowerCase(),
+    disabled,
+    safetyLabel,
+    safetyTone,
+    safetyReason,
+    trustLevel: packSafety.trustLevel,
+    resolutionState: packSafety.resolutionState || nodeState,
+    searchText: `${label} ${type} ${packName} ${description} ${safetyLabel} ${safetyReason}`.toLowerCase(),
     template: {
       type,
       idStem: orchNodeTypeStem(type),
@@ -6087,10 +7442,13 @@ function orchNodeBrowserItemFromNode(pack, node, surface) {
   };
 }
 
-function buildOrchNodeBrowserPacks(rawPacks = [], surface = orchNodeBrowserSurface()) {
+function buildOrchNodeBrowserPacks(rawPacks = [], surface = orchNodeBrowserSurface(), catalog = orchNodePackCatalogMetadataCache || {}) {
   const packs = [];
   const sourcePacks = Array.isArray(rawPacks) && rawPacks.length ? rawPacks : fallbackOrchNodePackCatalog();
   if (surface === 'tree') {
+    const behaviorTreeSafety = catalog?.fallback
+      ? { label: 'fallback', tone: 'warn', trustLevel: 'fallback', resolutionState: 'resolved' }
+      : { label: 'valid', tone: 'good', trustLevel: 'official', resolutionState: 'resolved' };
     packs.push({
       id: 'orpad.behavior-tree',
       name: 'Behavior Tree',
@@ -6103,6 +7461,12 @@ function buildOrchNodeBrowserPacks(rawPacks = [], surface = orchNodeBrowserSurfa
         packId: 'orpad.behavior-tree',
         packName: 'Behavior Tree',
         description: `${orchNodeTypeLabel(type) || type} node for tree layers.`,
+        disabled: false,
+        safetyLabel: behaviorTreeSafety.label,
+        safetyTone: behaviorTreeSafety.tone,
+        safetyReason: '',
+        trustLevel: behaviorTreeSafety.trustLevel,
+        resolutionState: behaviorTreeSafety.resolutionState,
         searchText: `${type} ${orchNodeTypeLabel(type) || ''} Behavior Tree`.toLowerCase(),
         template: {
           type,
@@ -6111,11 +7475,16 @@ function buildOrchNodeBrowserPacks(rawPacks = [], surface = orchNodeBrowserSurfa
           config: orchNodeDefaultConfig(type),
         },
       })),
+      safetyLabel: behaviorTreeSafety.label,
+      safetyTone: behaviorTreeSafety.tone,
+      trustLevel: behaviorTreeSafety.trustLevel,
+      blockedCount: 0,
     });
   }
   for (const pack of sourcePacks) {
+    const packSafety = orchNodeBrowserPackSafety(pack, catalog);
     const items = (Array.isArray(pack?.nodes) ? pack.nodes : [])
-      .map(node => orchNodeBrowserItemFromNode(pack, node, surface))
+      .map(node => orchNodeBrowserItemFromNode(pack, node, surface, catalog, packSafety))
       .filter(Boolean)
       .sort((a, b) => a.label.localeCompare(b.label));
     if (!items.length) continue;
@@ -6123,6 +7492,10 @@ function buildOrchNodeBrowserPacks(rawPacks = [], surface = orchNodeBrowserSurfa
       id: pack.id || pack.name || `pack-${packs.length + 1}`,
       name: orchNodeBrowserPackLabel(pack),
       description: pack.description || '',
+      safetyLabel: packSafety.label,
+      safetyTone: packSafety.tone,
+      trustLevel: packSafety.trustLevel,
+      blockedCount: items.filter(item => item.disabled).length,
       items,
     });
   }
@@ -6144,6 +7517,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
     <div class="orch-node-browser-search">
       <input data-orch-node-search type="text" placeholder="Search nodes">
     </div>
+    <div class="orch-node-browser-alert" data-orch-node-browser-alert hidden></div>
     <div class="orch-node-browser-tabs" data-orch-node-tabs role="tablist"></div>
     <div class="orch-node-browser-list" data-orch-node-list role="listbox"></div>
     <div class="orch-node-browser-empty" data-orch-node-empty hidden>No nodes match this search.</div>
@@ -6152,18 +7526,54 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
   const listEl = body.querySelector('[data-orch-node-list]');
   const emptyEl = body.querySelector('[data-orch-node-empty]');
   const searchEl = body.querySelector('[data-orch-node-search]');
+  const alertEl = body.querySelector('[data-orch-node-browser-alert]');
   let packs = [];
   let activePackId = '';
+  let loadCatalog = () => {};
 
   const addTemplate = (item) => {
     if (!item?.template) return;
+    if (item.disabled) {
+      notifyFormatError('Node pack', new Error(item.safetyReason || 'This node pack must be resolved before its nodes can be added.'));
+      return;
+    }
     if (!ensureOrchContextMutationMode(baseFilePath)) return;
     const position = !path && isOrchGraphStateLayer() ? contextPoint : null;
     applyOrchTreeMutation((draft) => addOrchLinkedNodeFromTemplate(draft, path, item.template, position));
     closeFmtModal();
   };
 
+  const renderCatalogAlert = () => {
+    const catalog = orchNodePackCatalogMetadataCache || {};
+    const isDegraded = catalog.fallback === true || catalog.ok === false || catalog.success === false;
+    if (!isDegraded) {
+      alertEl.hidden = true;
+      alertEl.innerHTML = '';
+      return;
+    }
+    const reason = nodePackManagerString(catalog.fallbackReason, '');
+    const title = catalog.fallback ? 'Degraded node pack catalog' : 'Node pack discovery needs review';
+    const message = catalog.fallback
+      ? 'Showing built-in fallback packs only. User-installed packs may be missing until discovery succeeds.'
+      : 'The discovery service did not report a fully valid node pack catalog.';
+    alertEl.hidden = false;
+    alertEl.innerHTML = `
+      <div class="orch-node-browser-alert-copy">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(message)}</span>
+        ${reason ? `<code>${escapeHtml(reason)}</code>` : ''}
+      </div>
+      <div class="orch-node-browser-alert-actions">
+        <button type="button" data-orch-node-browser-retry>Retry discovery</button>
+        <button type="button" data-node-pack-manager-open>Open Pack Manager</button>
+      </div>
+    `;
+    alertEl.querySelector('[data-orch-node-browser-retry]')?.addEventListener('click', () => loadCatalog({ forceRefresh: true }));
+    bindNodePackManagerOpenControls(alertEl);
+  };
+
   const render = () => {
+    renderCatalogAlert();
     if (!packs.length) {
       tabsEl.innerHTML = '';
       listEl.innerHTML = '';
@@ -6173,9 +7583,15 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
     }
     if (!packs.some(pack => pack.id === activePackId)) activePackId = packs[0].id;
     tabsEl.innerHTML = packs.map(pack => `
-      <button class="orch-node-browser-tab ${pack.id === activePackId ? 'active' : ''}" data-orch-node-pack-tab="${escapeHtml(pack.id)}" role="tab" aria-selected="${pack.id === activePackId ? 'true' : 'false'}">
-        <strong>${escapeHtml(pack.name)}</strong>
-        <span>${pack.items.length}</span>
+      <button class="orch-node-browser-tab ${pack.id === activePackId ? 'active' : ''} ${pack.blockedCount ? 'has-blocked' : ''} ${pack.safetyTone ? `is-${escapeHtml(pack.safetyTone)}` : ''}" data-orch-node-pack-tab="${escapeHtml(pack.id)}" data-orch-node-pack-status="${escapeHtml(pack.safetyLabel || 'valid')}" role="tab" aria-selected="${pack.id === activePackId ? 'true' : 'false'}" title="${escapeHtml(`${pack.name}: ${pack.safetyLabel || 'valid'}; ${pack.trustLevel || 'unknown trust'}`)}">
+        <span class="orch-node-browser-tab-main">
+          <strong>${escapeHtml(pack.name)}</strong>
+          <small>${escapeHtml(pack.trustLevel || 'unknown trust')}</small>
+        </span>
+        <span class="orch-node-browser-tab-meta">
+          <span class="orch-node-browser-tab-status ${escapeHtml(pack.safetyTone || 'good')}">${escapeHtml(pack.safetyLabel || 'valid')}</span>
+          <span>${pack.blockedCount ? `${pack.items.length - pack.blockedCount}/${pack.items.length}` : pack.items.length}</span>
+        </span>
       </button>
     `).join('');
     tabsEl.querySelectorAll('[data-orch-node-pack-tab]').forEach(button => {
@@ -6190,15 +7606,23 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
     listEl.innerHTML = '';
     items.forEach(item => {
       const button = document.createElement('button');
-      button.className = 'orch-node-browser-item';
+      button.className = `orch-node-browser-item ${item.disabled ? 'is-disabled' : ''} ${item.safetyTone ? `is-${item.safetyTone}` : ''}`;
       button.dataset.orchNodeTemplate = item.id;
+      button.dataset.orchNodePackStatus = item.safetyLabel || 'valid';
+      if (item.disabled) {
+        button.disabled = true;
+        button.setAttribute('aria-disabled', 'true');
+        button.title = item.safetyReason || 'This node pack must be resolved before adding nodes.';
+      }
       button.innerHTML = `
         <span class="orch-node-browser-item-main">
           <strong>${escapeHtml(item.label)}</strong>
           <small>${escapeHtml(item.description)}</small>
+          ${item.disabled ? `<span class="orch-node-browser-item-status ${escapeHtml(item.safetyTone || 'warn')}"><span>${escapeHtml(item.safetyLabel || 'review')}</span>${escapeHtml(item.safetyReason || 'Resolve this pack before adding nodes.')}</span>` : ''}
         </span>
         <span class="orch-node-browser-item-meta">
           <span class="orch-node-browser-pill">${escapeHtml(item.kind)}</span>
+          <span class="orch-node-browser-pill trust">${escapeHtml(item.trustLevel || 'unknown trust')}</span>
           <code>${escapeHtml(item.type)}</code>
         </span>
       `;
@@ -6214,20 +7638,30 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
     body,
     footer: [{ label: 'Close', onClick: closeFmtModal }],
   });
-  listEl.innerHTML = '<div class="orch-node-browser-loading">Loading node packs...</div>';
   searchEl?.addEventListener('input', render);
-  loadOrchNodePackCatalog()
-    .then(rawPacks => {
-      packs = buildOrchNodeBrowserPacks(rawPacks, orchNodeBrowserSurface());
-      activePackId = packs[0]?.id || '';
-      render();
-      setTimeout(() => searchEl?.focus(), 20);
-    })
-    .catch(err => {
-      packs = buildOrchNodeBrowserPacks(fallbackOrchNodePackCatalog(), orchNodeBrowserSurface());
-      render();
-      notifyFormatError('Node packs', err);
-    });
+  loadCatalog = (options = {}) => {
+    alertEl.hidden = true;
+    alertEl.innerHTML = '';
+    listEl.innerHTML = '<div class="orch-node-browser-loading">Loading node packs...</div>';
+    emptyEl.hidden = true;
+    return loadOrchNodePackCatalog(options)
+      .then(rawPacks => {
+        packs = buildOrchNodeBrowserPacks(rawPacks, orchNodeBrowserSurface());
+        activePackId = packs[0]?.id || '';
+        render();
+        setTimeout(() => searchEl?.focus(), 20);
+      })
+      .catch(err => {
+        const fallbackCatalog = cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
+          err?.message || String(err) || 'The Add Node catalog loader failed.',
+          'NODE_PACK_DISCOVERY_EXCEPTION',
+        ));
+        packs = buildOrchNodeBrowserPacks(fallbackCatalog.nodePacks, orchNodeBrowserSurface());
+        render();
+        notifyFormatError('Node packs', err);
+      });
+  };
+  loadCatalog();
 }
 
 function focusOrchInspectorEdit(field, path = selectedOrchNodePath) {
@@ -6947,7 +8381,7 @@ function renderOrchTreePreview(content) {
   const pipelineRunInProgress = isPipelineMachineRunInProgress(pipelineContext?.pipelinePath);
   if (pipelineRunInProgress && orchTreeGraphMode === 'readwrite') orchTreeGraphMode = 'readonly';
   const readwrite = orchTreeGraphMode === 'readwrite' && !pipelineRunInProgress;
-  const editLockTitle = pipelineRunInProgress ? 'Run in progress; editing is locked.' : 'Edit';
+  const editLockTitle = pipelineRunInProgress ? pipelineEditLockMessage(pipelineContext?.pipelinePath) : 'Edit';
   const treeEntries = orchTreeEntriesFromDoc(doc);
   const graphs = treeEntries.map(({ tree, index, rootPath }) => collectOrchGraph(tree, index, rootPath));
   if (!selectedOrchEdgeId || !graphs.some(graph => graph.edges.some(edge => edge.id === selectedOrchEdgeId))) {
@@ -6959,6 +8393,7 @@ function renderOrchTreePreview(content) {
       <div class="orch-toolbar">
         <strong>Tree setup</strong>
         <div class="orch-toolbar-actions">
+          ${pipelineContext ? renderNodePackManagerButton() : ''}
           <div class="jedit-seg">
             <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-orch-mode="readonly">View</button>
             <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-orch-mode="readwrite" title="${escapeHtml(editLockTitle)}" ${pipelineRunInProgress ? 'disabled' : ''}>Edit</button>
@@ -6974,6 +8409,7 @@ function renderOrchTreePreview(content) {
     </div>
   `;
 
+  bindNodePackManagerOpenControls();
   contentEl.querySelectorAll('[data-orch-mode]').forEach(button => {
     button.addEventListener('click', () => {
       if (button.dataset.orchMode === 'readwrite' && isPipelineMachineRunInProgress(pipelineContext?.pipelinePath)) {
@@ -7469,6 +8905,7 @@ function renderOrchTreePreview(content) {
 }
 
 function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFilePath = getActiveTab()?.filePath, pipelineContext = pipelineContextForPath()) {
+  bindNodePackManagerOpenControls();
   contentEl.querySelectorAll('[data-orch-layer-index]').forEach(button => {
     button.addEventListener('click', () => navigateOrchGraphLayer(Number(button.dataset.orchLayerIndex)));
   });
@@ -7866,20 +9303,22 @@ function renderOrchPipelinePreview(content) {
   const pipelineRunInProgress = isPipelineMachineRunInProgress(pipelineContext?.pipelinePath);
   if (pipelineRunInProgress && orchTreeGraphMode === 'readwrite') orchTreeGraphMode = 'readonly';
   const readwrite = orchTreeGraphMode === 'readwrite' && !pipelineRunInProgress;
-  const editLockTitle = pipelineRunInProgress ? 'Run in progress; editing is locked.' : 'Edit';
+  const editLockTitle = pipelineRunInProgress ? pipelineEditLockMessage(pipelineContext?.pipelinePath) : 'Edit';
   const graphRefs = pipelineRefEntries(doc, 'graphs').entries;
   const treeRefs = pipelineRefEntries(doc, 'trees').entries;
   const skillRefs = pipelineRefEntries(doc, 'skills').entries;
   const ruleRefs = pipelineRefEntries(doc, 'rules').entries;
   const entryGraph = doc.entryGraph || doc.entry?.graph || doc.graph?.file || graphRefs[0]?.file || '';
   const entryGraphPath = pipelineEditorGraphPathFromDoc(doc, pipelineContext);
-  const diagnostics = pipelineValidationDiagnostics(selectedPipelineValidation(pipelineContext?.pipelinePath));
+  const pipelineValidation = selectedPipelineValidation(pipelineContext?.pipelinePath);
+  const diagnostics = pipelineValidationDiagnostics(pipelineValidation);
   const externalResearchLimitation = doc.metadata?.externalResearch?.limitation || doc.run?.externalResearchLimitation || '';
   contentEl.innerHTML = `
     <div class="orch-preview">
       <div class="orch-toolbar">
         <strong>Pipeline setup</strong>
         <div class="orch-toolbar-actions">
+          ${renderNodePackManagerButton()}
           <span class="runbook-chip">Details</span>
           <span class="runbook-chip good">${escapeHtml(doc.trustLevel || 'local-authored')}</span>
           <span class="runbook-chip">${escapeHtml(doc.version || 'unversioned')}</span>
@@ -7930,7 +9369,7 @@ function renderOrchPipelinePreview(content) {
             </div>
           </section>
           ${ORCH_PIPELINE_REF_SECTIONS.map(section => renderPipelineRefSection(doc, section, readwrite, diagnostics)).join('')}
-          ${renderPipelineJsonSection(doc, 'nodePacks', 'Node Packs', 'Built-in and custom node packs required by this pipeline.', readwrite)}
+          ${renderPipelineNodePacksSection(doc, readwrite, pipelineValidation, diagnostics)}
           ${renderPipelineJsonSection(doc, 'run', 'Run Contract', 'Evidence storage, work-state protocol, coverage policy, and auditable latest run/cycle evidence.', readwrite)}
           ${renderPipelineJsonSection(doc, 'maintenancePolicy', 'Maintenance Cycle Policy', 'Repeatability, cadence, triggers, backlog carry-over, and latest-run cycle semantics.', readwrite)}
           ${renderPipelineExecutionPolicy(doc, readwrite)}
@@ -7961,6 +9400,7 @@ function renderOrchPipelinePreview(content) {
 }
 
 function bindOrchPipelineEditorInteractions(readwrite, pipelineContext = pipelineContextForPath()) {
+  bindNodePackManagerOpenControls();
   contentEl.querySelectorAll('[data-pipeline-mode]').forEach(button => {
     button.addEventListener('click', () => {
       if (button.dataset.pipelineMode === 'readwrite' && isPipelineMachineRunInProgress(pipelineContext?.pipelinePath)) {
@@ -8172,7 +9612,7 @@ function renderOrchGraphPreview(content) {
   const pipelineRunInProgress = isPipelineMachineRunInProgress(pipelineContext?.pipelinePath);
   if (pipelineRunInProgress && orchTreeGraphMode === 'readwrite') orchTreeGraphMode = 'readonly';
   const readwrite = orchTreeGraphMode === 'readwrite' && !pipelineRunInProgress;
-  const editLockTitle = pipelineRunInProgress ? 'Run in progress; editing is locked.' : 'Edit';
+  const editLockTitle = pipelineRunInProgress ? pipelineEditLockMessage(pipelineContext?.pipelinePath) : 'Edit';
   normalizeOrchGraphLayerStack(doc);
   const layerPath = activeOrchGraphLayerPath();
   const layerEntry = activeOrchGraphLayerEntry();
@@ -8212,6 +9652,7 @@ function renderOrchGraphPreview(content) {
       <div class="orch-toolbar">
         <strong>${pipelineContext ? 'Pipeline setup' : (linkedGraphLayer || !layerPath ? 'Flow setup' : 'Tree setup')}</strong>
         <div class="orch-toolbar-actions">
+          ${pipelineContext ? renderNodePackManagerButton() : ''}
           ${pipelineContext ? `<span class="runbook-chip">Flow</span>` : ''}
           <span class="runbook-chip good">${layerKindLabel}</span>
           <span class="runbook-chip">${layerSourceLabel}</span>
@@ -9473,6 +10914,10 @@ function clearWorkspacePipelineState() {
   machineRunListCache.clear();
   machineHistoryInspectionCache.clear();
   machineHistoryRecoverPending.clear();
+  machineRunHistoryFilter.clear();
+  machineRunReplayPosition.clear();
+  machineRunReplayStickRunIds.clear();
+  lastReplayRenderedSequence.clear();
   machineRunStartPendingPaths.clear();
   machineRunPendingActions.clear();
   machineRunExternalResearchDecisions.clear();
@@ -10907,6 +12352,8 @@ function machineEventLabel(event) {
       return 'Patch applied';
     case 'patch.review_skipped':
       return 'Patch kept as evidence';
+    case 'patch.review_rejected':
+      return 'Patch marked for follow-up';
     case 'patch.apply_failed':
       return 'Patch apply blocked';
     case 'patch.apply_conflict':
@@ -11034,20 +12481,27 @@ function machineWorkerReviewInfo(record) {
 const MACHINE_PATCH_DECISION_EVENT_TYPES = [
   'patch.applied',
   'patch.review_skipped',
+  'patch.review_rejected',
   'patch.approved',
   'patch.apply_conflict',
   'patch.apply_failed',
 ];
 
-const MACHINE_PATCH_RESOLVED_EVENT_TYPES = ['patch.applied', 'patch.review_skipped'];
+const MACHINE_PATCH_RESOLVED_EVENT_TYPES = ['patch.applied', 'patch.review_skipped', 'patch.review_rejected'];
 
 const MACHINE_PATCH_STATUS_BY_EVENT = {
   'patch.applied': 'applied',
   'patch.review_skipped': 'skipped',
+  'patch.review_rejected': 'rejected',
   'patch.approved': 'approved',
   'patch.apply_conflict': 'conflict',
   'patch.apply_failed': 'failed',
 };
+
+function machinePatchReviewStatusNeedsDecision(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  return !['applied', 'skipped', 'rejected', 'approved'].includes(normalized);
+}
 
 function machinePatchReviewDecisionForArtifact(record, patchArtifact) {
   const artifact = String(patchArtifact || '').trim();
@@ -11062,9 +12516,16 @@ function machineWorkerPatchReviewEligible(eventOrPayload = {}) {
   const payload = eventOrPayload?.payload || eventOrPayload || {};
   const status = String(payload.status || '').trim().toLowerCase();
   const toState = String(payload.toState || '').trim().toLowerCase();
+  if ((status === 'blocked' || toState === 'blocked') && payload.patchArtifact) return true;
   if (status && status !== 'done') return false;
   if (toState && toState !== 'done') return false;
   return true;
+}
+
+function machineReviewIsBlockedPatch(review = {}) {
+  const status = String(review.status || '').trim().toLowerCase();
+  const toState = String(review.toState || '').trim().toLowerCase();
+  return status === 'blocked' || toState === 'blocked';
 }
 
 function machinePatchBatchInFlight(record) {
@@ -11179,6 +12640,9 @@ function machinePatchReviewOutcome(record) {
   const skippedArtifacts = machineUniqueNonEmptyStrings(reviews
     .filter(review => review.patchReviewStatus === 'skipped')
     .map(review => review.patchArtifact));
+  const rejectedArtifacts = machineUniqueNonEmptyStrings(reviews
+    .filter(review => review.patchReviewStatus === 'rejected')
+    .map(review => review.patchArtifact));
   const unresolved = reviews.filter(review => (
     review.patchReviewEligible
     && !review.patchReviewResolved
@@ -11190,6 +12654,7 @@ function machinePatchReviewOutcome(record) {
     patchCount: reviews.length,
     appliedCount: statusCounts.applied || 0,
     skippedCount: statusCounts.skipped || 0,
+    rejectedCount: statusCounts.rejected || 0,
     approvedCount: statusCounts.approved || 0,
     conflictCount: statusCounts.conflict || 0,
     failedCount: statusCounts.failed || 0,
@@ -11199,8 +12664,10 @@ function machinePatchReviewOutcome(record) {
     appliedFiles,
     evidenceChangedFiles,
     skippedArtifacts,
+    rejectedArtifacts,
   };
   outcome.partial = outcome.skippedCount > 0
+    || outcome.rejectedCount > 0
     || outcome.pendingCount > 0
     || outcome.conflictCount > 0
     || outcome.failedCount > 0
@@ -11214,6 +12681,7 @@ function machinePatchOutcomeText(outcome) {
   if (!outcome) return '';
   const parts = [`${outcome.appliedCount}/${outcome.patchCount} patches applied`];
   if (outcome.skippedCount) parts.push(`${outcome.skippedCount} skipped/kept as evidence`);
+  if (outcome.rejectedCount) parts.push(`${outcome.rejectedCount} marked for follow-up`);
   if (outcome.pendingCount) parts.push(`${outcome.pendingCount} still pending review`);
   if (outcome.conflictCount) parts.push(`${outcome.conflictCount} still in conflict`);
   if (outcome.failedCount) parts.push(`${outcome.failedCount} apply failed`);
@@ -11232,6 +12700,7 @@ function renderMachinePatchOutcomeHtml(outcome) {
     ['Total patches', outcome.patchCount],
     ['Applied', outcome.appliedCount],
     ['Kept as evidence', outcome.skippedCount],
+    ['Follow-up', outcome.rejectedCount],
     ['Pending', outcome.pendingCount],
     ['Conflict events', outcome.historicalConflictCount],
   ].filter(([label, count]) => label === 'Total patches' || Number(count) > 0);
@@ -11240,6 +12709,7 @@ function renderMachinePatchOutcomeHtml(outcome) {
     .filter(file => !outcome.appliedFiles.includes(file))
     .slice(0, 6);
   const skippedArtifacts = outcome.skippedArtifacts.slice(0, 5);
+  const rejectedArtifacts = (outcome.rejectedArtifacts || []).slice(0, 5);
   return `
     <div class="pipe-patch-outcome">
       <div class="pipe-patch-outcome-counts">
@@ -11276,6 +12746,15 @@ function renderMachinePatchOutcomeHtml(outcome) {
           </div>
         </div>
       ` : ''}
+      ${rejectedArtifacts.length ? `
+        <div class="pipe-patch-outcome-row">
+          <span>Follow-up patches</span>
+          <div class="pipe-patch-outcome-files">
+            ${rejectedArtifacts.map(file => `<code title="${escapeHtml(file)}">${escapeHtml(file.split(/[\\/]/).pop() || file)}</code>`).join('')}
+            ${(outcome.rejectedArtifacts || []).length > rejectedArtifacts.length ? `<span>+${escapeHtml(String((outcome.rejectedArtifacts || []).length - rejectedArtifacts.length))} more</span>` : ''}
+          </div>
+        </div>
+      ` : ''}
     </div>
   `;
 }
@@ -11288,6 +12767,7 @@ function machineRunAttentionDetails(record) {
   const queueInventory = machineLatestQueueInventory(record);
   const queue = machineQueueInventoryCounts(queueInventory);
   const lifecycleStatus = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+  const runId = record?.runState?.runId || record?.runId || '';
   const lockWait = machineLatestActiveLockWait(record);
   if (lockWait) {
     const files = Array.isArray(lockWait.payload?.targetFiles) ? lockWait.payload.targetFiles : [];
@@ -11301,6 +12781,33 @@ function machineRunAttentionDetails(record) {
     });
   }
   const patchRequests = machinePendingPatchReviewRequiredEvents(record);
+  const pendingPatchReviews = machinePendingPatchReviewInfos(record);
+  const approvedPatchReviews = machineApprovedPatchReviewInfos(record);
+  if (lifecycleStatus === 'waiting' && pendingPatchReviews.length) {
+    const changedFiles = machineUniqueNonEmptyStrings(pendingPatchReviews.flatMap(review => review.changedFiles || []));
+    notices.push({
+      state: 'warning',
+      title: 'Waiting for your patch decision',
+      text: [
+        `${machineCountLabel(pendingPatchReviews.length, 'patch result')} need review.`,
+        'No worker is currently running.',
+        changedFiles.length ? `${machineCountLabel(changedFiles.length, 'changed file')} staged in run evidence.` : '',
+      ].filter(Boolean).join(' '),
+      actionHtml: runId
+        ? `<div class="runbook-action-row runbook-attention-actions"><button class="primary" data-runbook-action="machine-open-patch-review" data-run-id="${escapeHtml(runId)}" title="Open patch review and choose apply, skip, or follow-up.">Review patches</button></div>`
+        : '',
+    });
+  } else if (lifecycleStatus === 'waiting' && approvedPatchReviews.length) {
+    const approvedCount = approvedPatchReviews.length;
+    notices.push({
+      state: 'warning',
+      title: 'Waiting to apply approved patches',
+      text: `${machineCountLabel(approvedCount, 'approved patch selection')} ${approvedCount === 1 ? 'is' : 'are'} ready. No worker is currently running.`,
+      actionHtml: runId
+        ? `<div class="runbook-action-row runbook-attention-actions"><button class="primary" data-runbook-action="machine-apply-approved-patches" data-run-id="${escapeHtml(runId)}" title="Apply the approved patch selections after fresh base checks.">Apply approved patches</button></div>`
+        : '',
+    });
+  }
   if (patchRequests.length) {
     const latest = patchRequests[patchRequests.length - 1];
     const files = Array.isArray(latest.payload?.changedFiles) ? latest.payload.changedFiles : [];
@@ -11348,23 +12855,25 @@ function machineRunAttentionDetails(record) {
   }
   if (lifecycleStatus === 'waiting' && queue.totalCount > 0 && (queue.activeCount > 0 || queue.blockedCount > 0)) {
     const blockedText = machineBlockedWorkInlineText(record);
-    const runId = record?.runState?.runId || record?.runId || '';
+    const hasBlockedQueueWork = queue.blockedCount > 0 || Boolean(blockedText);
     const actionLabel = queue.activeCount > 0 ? 'Resolve Blocker' : 'Review Blocker';
     const actionTitle = queue.activeCount > 0
       ? 'Open blocker details, review evidence, or continue queued work when available.'
       : 'Open blocker details and review evidence. No queued work remains.';
     notices.push({
-      state: queue.blockedCount > 0 ? 'warning' : 'good',
-      title: queue.blockedCount > 0 ? 'Queue has blocked work' : 'Work queue still active',
+      state: hasBlockedQueueWork ? 'warning' : 'good',
+      title: hasBlockedQueueWork ? 'Queue has blocked work' : 'Work queue waiting',
       text: [
         machineQueueInventorySummary(queueInventory),
-        queue.activeCount > 0
-          ? 'Continue will claim the next queued item; it will not automatically fix the blocked item.'
-          : 'No queued work remains; review blocked items or start a follow-up run.',
+        hasBlockedQueueWork
+          ? (queue.activeCount > 0
+            ? 'Continue will claim the next queued item; it will not automatically fix the blocked item.'
+            : 'No runnable work remains. This run will not continue by itself; review blocked items or start a follow-up run.')
+          : 'Continue will claim the next queued item.',
         blockedText || '',
       ].filter(Boolean).join(' '),
-      actionHtml: runId
-        ? `<div class="runbook-action-row runbook-attention-actions"><button class="primary" data-runbook-action="machine-open-blocked-decision" data-run-id="${escapeHtml(runId)}" title="${escapeHtml(actionTitle)}">${escapeHtml(actionLabel)}</button></div>`
+      actionHtml: hasBlockedQueueWork && runId
+        ? `<div class="runbook-action-row runbook-attention-actions"><button class="primary" data-runbook-action="machine-open-blocked-decision" data-run-id="${escapeHtml(runId)}" title="${escapeHtml(actionTitle)}">${escapeHtml(actionLabel)}</button>${queue.activeCount <= 0 ? `<button data-runbook-action="machine-start-follow-up" data-run-id="${escapeHtml(runId)}" title="Start a fresh run with a prompt based on the blocked work.">Start Follow-up</button>` : ''}</div>`
         : '',
     });
   }
@@ -11547,12 +13056,16 @@ function machineDisplayStatus(record, runInProgress) {
     }
     if (needsReview || incompleteEvidence || ['partial', 'blocked'].includes(summaryValue)) {
       return {
-        lifecycleLabel: needsReview ? 'Review needed' : (incompleteEvidence ? 'Evidence incomplete' : 'Ready to continue'),
+        lifecycleLabel: needsReview ? 'Waiting for decision' : (incompleteEvidence ? 'Evidence incomplete' : 'Ready to continue'),
         lifecycleClass: 'warn',
-        lifecycleTitle: `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
-        summaryLabel: incompleteEvidence ? 'Evidence incomplete' : (needsReview ? 'Review required' : machineSummaryStatusLabel(runState.summaryStatus || 'partial')),
+        lifecycleTitle: needsReview
+          ? 'Lifecycle: Waiting - no worker is running; review action required.'
+          : `Lifecycle: ${machineLifecycleStatusLabel(lifecycleStatus)}`,
+        summaryLabel: needsReview ? 'Review action required' : (incompleteEvidence ? 'Evidence incomplete' : machineSummaryStatusLabel(runState.summaryStatus || 'partial')),
         summaryClass: 'warn',
-        summaryTitle: `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'partial')}`,
+        summaryTitle: needsReview
+          ? 'Summary: Review action required before this run can be treated as reflected in the workspace.'
+          : `Summary: ${machineSummaryStatusLabel(runState.summaryStatus || 'partial')}`,
       };
     }
     return {
@@ -11649,7 +13162,7 @@ function machinePendingPatchReviewRequiredEvents(record) {
   const events = record?.events || [];
   const terminalByArtifact = new Map();
   for (const event of events) {
-    if (!['patch.applied', 'patch.review_skipped'].includes(event?.eventType)) continue;
+    if (!['patch.applied', 'patch.review_skipped', 'patch.review_rejected'].includes(event?.eventType)) continue;
     const artifact = String(event.payload?.patchArtifact || '').trim();
     if (artifact) terminalByArtifact.set(artifact, machineEventSequence(event));
   }
@@ -11675,6 +13188,7 @@ function machineRunUsesAutoPatchApply(record) {
 
 function machineShouldSurfacePatchReview(record, review) {
   if (!review?.patchArtifact || !review.patchReviewEligible) return false;
+  if (machineReviewIsBlockedPatch(review)) return true;
   return !machineRunUsesAutoPatchApply(record);
 }
 
@@ -11743,6 +13257,110 @@ function machineNodeCompletionDetails(record) {
   return completed.length ? `${machineCountLabel(completed.length, 'step')} completed` : 'No steps completed yet';
 }
 
+function machineRunWaitingDecisionState(record, {
+  runInProgress = false,
+  queueInventoryDetails = '',
+  approvalDetails = '',
+} = {}) {
+  if (!record || runInProgress) return null;
+  const runState = record.runState || {};
+  const lifecycleValue = String(runState.lifecycleStatus || '').toLowerCase();
+  if (lifecycleValue !== 'waiting') return null;
+  const runId = runState.runId || record.runId || '';
+  const queueInventory = machineLatestQueueInventory(record);
+  const queue = machineQueueInventoryCounts(queueInventory);
+  const queueText = queueInventoryDetails || (queue.totalCount > 0 ? machineQueueInventorySummary(queueInventory) : '');
+  const button = (action, label, title = '', primary = false) => runId
+    ? `<button ${primary ? 'class="primary"' : ''} data-runbook-action="${escapeHtml(action)}" data-run-id="${escapeHtml(runId)}"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(label)}</button>`
+    : '';
+  const actions = (...buttons) => buttons.filter(Boolean).length
+    ? `<div class="runbook-latest-run-actions">${buttons.filter(Boolean).join('')}</div>`
+    : '';
+  const pendingApprovals = machinePendingApprovals(record);
+  if (pendingApprovals.length) {
+    return {
+      headline: 'Waiting for permission',
+      state: 'warn',
+      details: `${machineCountLabel(pendingApprovals.length, 'permission request')} need a decision. No worker is running.`,
+      meta: approvalDetails || queueText,
+      actionsHtml: '',
+    };
+  }
+  const pendingPatchReviews = machinePendingPatchReviewInfos(record);
+  const patchRequests = machinePendingPatchReviewRequiredEvents(record);
+  if (pendingPatchReviews.length || patchRequests.length) {
+    const patchCount = Math.max(pendingPatchReviews.length, patchRequests.length);
+    const changedFiles = machineUniqueNonEmptyStrings([
+      ...pendingPatchReviews.flatMap(review => review.changedFiles || []),
+      ...patchRequests.flatMap(event => event.payload?.changedFiles || []),
+    ]);
+    return {
+      headline: 'Waiting for patch review',
+      state: 'warn',
+      details: [
+        `${machineCountLabel(patchCount, 'patch result')} need your decision.`,
+        'No worker is running.',
+        changedFiles.length ? `${machineCountLabel(changedFiles.length, 'changed file')} staged in run evidence.` : '',
+      ].filter(Boolean).join(' '),
+      meta: queueText || 'Review patches to apply, skip, or start a follow-up.',
+      actionsHtml: actions(
+        button('machine-open-patch-review', 'Review patches', 'Open patch review and choose apply, skip, or follow-up.', true),
+        button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
+      ),
+    };
+  }
+  const approvedPatchReviews = machineApprovedPatchReviewInfos(record);
+  if (approvedPatchReviews.length) {
+    const approvedCount = approvedPatchReviews.length;
+    return {
+      headline: 'Waiting to apply approved patches',
+      state: 'warn',
+      details: `${machineCountLabel(approvedCount, 'approved patch selection')} ${approvedCount === 1 ? 'is' : 'are'} waiting for workspace apply. No worker is running.`,
+      meta: queueText || 'Approved selections still need fresh base checks before writing files.',
+      actionsHtml: actions(
+        button('machine-apply-approved-patches', 'Apply approved patches', 'Apply the approved patch selections after fresh base checks.', true),
+        button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
+      ),
+    };
+  }
+  const exhausted = machineBlockedQueueExhaustedDetails(record);
+  if (exhausted) {
+    return {
+      headline: 'Blocked - no runnable work',
+      state: 'warn',
+      details: [
+        `${exhausted.countText} recorded.`,
+        'No worker is running and no queued work remains. This run will not continue by itself.',
+        exhausted.blockedText || '',
+      ].filter(Boolean).join(' '),
+      meta: queueText || 'Review the blocker or start a follow-up run.',
+      actionsHtml: actions(
+        button('machine-open-blocked-decision', 'Review blocker', 'Open blocker details and review evidence.', true),
+        button('machine-start-follow-up', 'Start follow-up', 'Start a fresh run with a prompt based on the blocked work.'),
+        button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
+      ),
+    };
+  }
+  const blockedGates = sharedGateBlockedNodes(record) || [];
+  if (blockedGates.length) {
+    const gate = blockedGates[0];
+    return {
+      headline: 'Blocked gate - waiting for decision',
+      state: 'warn',
+      details: [
+        gate?.nodePath ? `${gate.nodePath} is blocked.` : 'A gate is blocked.',
+        'No worker is running.',
+      ].join(' '),
+      meta: queueText || gate?.reason || '',
+      actionsHtml: actions(
+        button('machine-open-blocked-decision', 'Review gate', 'Open gate details and available decisions.', true),
+        button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
+      ),
+    };
+  }
+  return null;
+}
+
 function machineLatestRunSummary(record, {
   runInProgress = false,
   displayStatus = {},
@@ -11760,11 +13378,19 @@ function machineLatestRunSummary(record, {
   const workerEvent = machineLatestWorkerEvent(record);
   const runState = record?.runState || {};
   const lifecycleValue = String(runState.lifecycleStatus || '').toLowerCase();
+  const waitingDecision = machineRunWaitingDecisionState(record, {
+    runInProgress,
+    queueInventoryDetails,
+    approvalDetails,
+  });
   let state = displayStatus.lifecycleClass || '';
   let headline = displayStatus.lifecycleLabel || machineLifecycleStatusLabel(runInProgress ? 'running' : (lifecycleValue || 'created'));
   if (record?.success === false) {
     headline = 'Run failed';
     state = 'danger';
+  } else if (waitingDecision) {
+    headline = waitingDecision.headline;
+    state = waitingDecision.state || 'warn';
   } else if (approvalPending) {
     headline = 'Permission needed';
     state = 'warn';
@@ -11783,15 +13409,17 @@ function machineLatestRunSummary(record, {
   }
 
   const detailParts = [
-    candidateDetails && candidateDetails !== 'No work discovery yet' ? candidateDetails : '',
-    workerProofDetails && workerProofDetails !== 'No work result yet' ? workerProofDetails : '',
+    waitingDecision?.details || '',
+    !waitingDecision && candidateDetails && candidateDetails !== 'No work discovery yet' ? candidateDetails : '',
+    !waitingDecision && workerProofDetails && workerProofDetails !== 'No work result yet' ? workerProofDetails : '',
   ].filter(Boolean);
   if (!detailParts.length && queueInventoryDetails) detailParts.push(queueInventoryDetails);
   if (!detailParts.length) detailParts.push(displayStatus.summaryLabel || machineSummaryStatusLabel(runState.summaryStatus || 'pending'));
 
   const metaParts = [
     runLabel,
-    (runInProgress || record?.success === false || ['running', 'waiting'].includes(lifecycleValue)) ? nodeCompletionDetails : '',
+    waitingDecision?.meta || '',
+    !waitingDecision && (runInProgress || record?.success === false || ['running', 'waiting'].includes(lifecycleValue)) ? nodeCompletionDetails : '',
     approvalPending ? approvalDetails : '',
     exported ? 'Snapshot saved' : '',
     ['warn', 'danger'].includes(auditDetails?.state) ? auditDetails.text : '',
@@ -11802,6 +13430,7 @@ function machineLatestRunSummary(record, {
     state: state || 'warn',
     details: detailParts.join(' - '),
     meta: metaParts.join(' - '),
+    actionsHtml: waitingDecision?.actionsHtml || '',
   };
 }
 
@@ -12078,8 +13707,22 @@ function isMachineRunActionPending(runbookPath, runId) {
 
 function machineActiveNodeExecutions(record) {
   const active = new Map();
+  const terminalTypes = new Set(['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled']);
+  const latestTerminalSeqByPath = new Map();
   for (const event of record?.events || []) {
     const type = String(event?.eventType || '');
+    if (!type.startsWith('node.')) continue;
+    if (!terminalTypes.has(type)) continue;
+    const nodePath = event?.nodePath || '';
+    if (!nodePath) continue;
+    const sequence = Number(event?.sequence) || 0;
+    if (sequence > (latestTerminalSeqByPath.get(nodePath) || 0)) {
+      latestTerminalSeqByPath.set(nodePath, sequence);
+    }
+  }
+  for (const event of record?.events || []) {
+    const type = String(event?.eventType || '');
+    if (!type.startsWith('node.')) continue;
     const nodeExecutionId = event?.payload?.nodeExecutionId
       || event?.nodeExecutionId
       || event?.nodePath
@@ -12087,8 +13730,17 @@ function machineActiveNodeExecutions(record) {
       || '';
     if (!nodeExecutionId) continue;
     if (type === 'node.started') {
-      active.set(nodeExecutionId, event);
-    } else if (['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'].includes(type)) {
+      active.set(nodeExecutionId, {
+        ...event,
+        startedSequence: Number(event?.sequence) || 0,
+      });
+    } else if (terminalTypes.has(type)) {
+      active.delete(nodeExecutionId);
+    }
+  }
+  for (const [nodeExecutionId, event] of [...active.entries()]) {
+    const terminalSequence = latestTerminalSeqByPath.get(event.nodePath || '') || 0;
+    if (terminalSequence > (Number(event.startedSequence) || 0)) {
       active.delete(nodeExecutionId);
     }
   }
@@ -12313,15 +13965,155 @@ function harnessImplementationProgressForPath(runbookPath) {
   const total = nodes.length;
   const done = nodes.filter(node => ['succeeded', 'ready', 'failed'].includes(String(node?.status || '').toLowerCase())).length;
   const running = nodes.find(node => String(node?.status || '').toLowerCase() === 'running');
+  const stageLabel = String(state.stageLabel || state.stage || '').trim();
+  if (!running && stageLabel) {
+    return {
+      label: `Harness: ${stageLabel}`,
+      title: state.message || stageLabel,
+    };
+  }
   return {
     label: `Implementing harness ${done}/${total}`,
     title: running?.nodePath ? `Currently implementing ${running.nodePath}` : 'Implementing pipeline harness',
   };
 }
 
-function harnessRuntimeStatusFromNode(node) {
+function timestampMaxMs(values) {
+  let max = 0;
+  for (const value of values) {
+    const parsed = Date.parse(String(value || ''));
+    if (Number.isFinite(parsed) && parsed > max) max = parsed;
+  }
+  return max;
+}
+
+function machineRunRecordLatestTimeMs(record) {
+  if (!record) return 0;
+  const events = Array.isArray(record.events) ? record.events : [];
+  return timestampMaxMs([
+    record?.runState?.createdAt,
+    record?.runState?.updatedAt,
+    record?.createdAt,
+    record?.updatedAt,
+    ...events.map(event => event?.timestamp || event?.createdAt || event?.updatedAt || event?.at),
+  ]);
+}
+
+function harnessImplementationLatestTimeMs(state) {
+  if (!state) return 0;
+  const nodes = Array.isArray(state.nodes) ? state.nodes : [];
+  return timestampMaxMs([
+    state.startedAt,
+    state.updatedAt,
+    state.implementedAt,
+    state.failedAt,
+    state.blockedAt,
+    ...nodes.flatMap(node => [node?.startedAt, node?.completedAt, node?.updatedAt]),
+  ]);
+}
+
+function harnessImplementationSupersedesRunDetails(record, state, pending = false) {
+  if (pending) return true;
+  const status = String(state?.status || '').toLowerCase();
+  if (!['running', 'blocked', 'failed', 'succeeded'].includes(status)) return false;
+  const harnessTime = harnessImplementationLatestTimeMs(state);
+  if (!record) return harnessTime > 0 || ['running', 'blocked', 'failed'].includes(status);
+  const runTime = machineRunRecordLatestTimeMs(record);
+  if (!harnessTime) return ['running', 'blocked', 'failed'].includes(status);
+  return !runTime || harnessTime >= runTime;
+}
+
+function pipelinePreviewHarnessRunStatus(state, pending = false, progress = null) {
+  const status = String(state?.status || '').toLowerCase();
+  if (pending && !status) return { state: 'warn', text: 'Starting harness implementation.' };
+  if (status === 'running') {
+    return { state: 'warn', text: progress?.label || state?.stageLabel || 'Implementing harness.' };
+  }
+  if (status === 'blocked') return { state: 'danger', text: 'Harness implementation blocked.' };
+  if (status === 'failed') return { state: 'danger', text: 'Harness implementation failed.' };
+  if (status === 'succeeded') return { state: 'good', text: 'Harness ready.' };
+  return { state: 'warn', text: 'Harness implementation pending.' };
+}
+
+function renderHarnessImplementationBannerHtml(runbookPath, state, pipelineDoc = null, pending = false) {
+  const status = String(state?.status || '').toLowerCase();
+  if (!pending && !status) return '';
+  const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
+  const countByStatus = needle => nodes.filter(node => String(node?.status || '').toLowerCase() === needle).length;
+  const readyCount = nodes.filter(node => ['succeeded', 'ready'].includes(String(node?.status || '').toLowerCase())).length;
+  const runningCount = countByStatus('running');
+  const failedCount = countByStatus('failed');
+  const pendingCount = nodes.length ? Math.max(0, nodes.length - readyCount - runningCount - failedCount) : 0;
+  const countText = nodes.length
+    ? `Nodes: ${readyCount}/${nodes.length} ready${runningCount ? `, ${runningCount} running` : ''}${failedCount ? `, ${failedCount} failed` : ''}${pendingCount ? `, ${pendingCount} pending` : ''}.`
+    : '';
+  const progress = harnessImplementationProgressForPath(runbookPath);
+  let kind = 'warn';
+  let title = 'Harness implementation';
+  let detail = state?.message || 'Preparing pipeline harness artifacts.';
+  let conclusion = countText;
+  if (pending && !status) {
+    title = 'Harness implementation starting';
+    detail = 'OrPAD is preparing the harness implementation request for this pipeline.';
+  } else if (status === 'running') {
+    title = progress?.label || state?.stageLabel || 'Implementing harness';
+    detail = state?.message || progress?.title || 'Writing harness contracts and operational artifacts.';
+  } else if (status === 'blocked') {
+    kind = 'error';
+    title = 'Harness implementation blocked';
+    detail = state?.message || 'Harness provisioning found a blocker that must be resolved before running this pipeline.';
+    const blockers = state?.provisioning?.blockers || [];
+    conclusion = blockers.length ? `Blockers: ${blockers.slice(0, 3).join(' | ')}` : countText;
+  } else if (status === 'failed') {
+    kind = 'error';
+    title = 'Harness implementation failed';
+    detail = state?.message || 'Harness artifacts could not be generated.';
+  } else if (status === 'succeeded') {
+    kind = 'success';
+    title = 'Harness ready';
+    detail = state?.message || 'Harness implementation completed.';
+    conclusion = countText || 'The pipeline harness is ready for a new run.';
+  }
+  const context = pipelineContextForPath(runbookPath);
+  const pipelineDir = context?.pipelineDir || runbookDirPath(runbookPath);
+  const harnessRoot = pipelineDoc?.harness?.path || 'harness/generated';
+  const artifactButton = (label, relativePath) => {
+    if (!pipelineDir || !relativePath) return '';
+    const abs = normalizeRunbookFilePath(`${pipelineDir}/${harnessRoot}/${relativePath}`);
+    return `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(abs)}" title="${escapeHtml(abs)}">${escapeHtml(label)}</button>`;
+  };
+  const actions = state ? [
+    artifactButton('implementation-state.json', 'implementation-state.json'),
+    artifactButton('README.md', 'README.md'),
+  ].filter(Boolean) : [];
+  return `
+    <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(kind)}" data-harness-implementation-banner>
+      <div class="pipe-lifecycle-banner-title">${escapeHtml(title)}</div>
+      <div class="pipe-lifecycle-banner-detail">${escapeHtml(detail)}</div>
+      ${conclusion ? `<div class="pipe-lifecycle-banner-conclusion">${escapeHtml(conclusion)}</div>` : ''}
+      ${actions.length ? `<div class="pipe-lifecycle-banner-actions">${actions.join('')}</div>` : ''}
+    </div>
+  `;
+}
+
+function harnessRuntimeStatusFromNode(node, implementationState = null) {
   const nodePath = node?.nodePath || '';
   const status = String(node?.status || '').toLowerCase();
+  const implementationStatus = String(implementationState?.status || '').toLowerCase();
+  if (implementationStatus === 'blocked' && (!status || status === 'pending')) {
+    const reason = implementationState?.message
+      || (implementationState?.provisioning?.blockers || []).slice(0, 3).join(' | ')
+      || 'Harness provisioning blocked before node contracts could be implemented.';
+    return {
+      state: 'failed',
+      label: 'Harness blocked',
+      nodePath,
+      title: reason,
+      source: 'harness',
+      reason,
+      artifact: node?.artifact || '',
+    };
+  }
   if (status === 'running') {
     return {
       state: 'running',
@@ -12371,7 +14163,7 @@ function harnessImplementationProjectionForGraph(context, graphDoc) {
   for (const node of nodes) {
     const nodePath = String(node?.nodePath || '').trim();
     if (!nodePath) continue;
-    statuses.set(nodePath, harnessRuntimeStatusFromNode(node));
+    statuses.set(nodePath, harnessRuntimeStatusFromNode(node, state));
   }
   if (!statuses.size) return null;
   return {
@@ -12390,7 +14182,7 @@ function harnessStatusForNodePath(nodePath, baseFilePath = getActiveTab()?.fileP
   const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
   const suffix = `/${nodePath.split('/').pop() || nodePath}`;
   const match = nodes.find(node => node?.nodePath === nodePath || String(node?.nodePath || '').endsWith(suffix));
-  return match ? harnessRuntimeStatusFromNode(match) : null;
+  return match ? harnessRuntimeStatusFromNode(match, state) : null;
 }
 
 function harnessFailureForNodePath(nodePath, baseFilePath = getActiveTab()?.filePath) {
@@ -12644,9 +14436,25 @@ function renderMachineNodeProgressBar(progress) {
   return `<div class="orch-node-progress-bar" aria-label="${escapeHtml(counter)}">${segments}</div>`;
 }
 
+function isHarnessImplementationRunningForPath(runbookPath) {
+  if (!runbookPath) return false;
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  if (pipelineHarnessImplementationPendingPaths.has(key)) return true;
+  const harnessState = getHarnessImplementationState(runbookPath);
+  return String(harnessState?.status || '').toLowerCase() === 'running';
+}
+
+function pipelineEditLockMessage(runbookPath) {
+  return isHarnessImplementationRunningForPath(runbookPath)
+    ? 'Harness implementation is in progress; editing is locked.'
+    : 'Run in progress; editing is locked.';
+}
+
 function isPipelineMachineRunInProgress(runbookPath) {
   if (!runbookPath) return false;
-  if (machineRunStartPendingPaths.has(runbookNormalizePath(runbookPath).toLowerCase())) return true;
+  const key = runbookNormalizePath(runbookPath).toLowerCase();
+  if (machineRunStartPendingPaths.has(key)) return true;
+  if (isHarnessImplementationRunningForPath(runbookPath)) return true;
   return isMachineRunInProgress(machineRunRecordForPipelinePath(runbookPath), runbookPath);
 }
 
@@ -12654,12 +14462,12 @@ function machineRuntimeProjectionForGraph(context, graphDoc) {
   if (!context?.pipelinePath) return null;
   const harnessProjection = harnessImplementationProjectionForGraph(context, graphDoc);
   if (harnessProjection?.runInProgress) return harnessProjection;
-  const record = machineRunRecordForPipelinePath(context.pipelinePath);
+  const record = getActiveMachineRunRecord(context.pipelinePath) || machineRunRecordForPipelinePath(context.pipelinePath);
   const statuses = machineRuntimeNodeProjection(record);
   if (!statuses.size) return harnessProjection;
   return {
     graphKeys: machineRuntimeGraphKeyCandidates(context, graphDoc),
-    runInProgress: isMachineRunInProgress(record, context.pipelinePath),
+    runInProgress: isMachineRunVisualProjectionInProgress(record, context.pipelinePath),
     statuses,
     record,
   };
@@ -12795,17 +14603,27 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
   // the node, not on a specific past attempt. Putting them once at
   // the top eliminates the duplicated rows the user reported.
   const runbookPathForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+  const liveRecordForActions = getLiveMachineRunRecord(runbookPathForBp);
+  const liveRunIdForActions = liveRecordForActions?.runState?.runId || liveRecordForActions?.runId || '';
+  const actionRecord = liveRunIdForActions && liveRunIdForActions === runId ? liveRecordForActions : record;
   const hasBreakpoint = runbookPathForBp ? getMachineBreakpoints(runbookPathForBp).has(machineNodePath) : false;
   const retryDisabled = !runId;
-  const skipBlockReason = machineSkipBlockReason(record, machineNodePath, node.type || '');
+  const nodeActionBusy = runId && isMachineRunInProgress(actionRecord, runbookPathForBp);
+  const nodeActionBusyTitle = 'A worker is currently running in this run. Wait for it to finish, or stop the active work before retrying/skipping this node.';
+  const replayActionTitle = record?.__replay ? ' This action uses the live run, not the replay snapshot.' : '';
+  const skipBlockReason = machineSkipBlockReason(actionRecord, machineNodePath, node.type || '');
   const nodeActions = (retryDisabled && !runbookPathForBp)
     ? ''
     : `
       <div class="orch-inspector-runtime-actions">
-        ${retryDisabled ? '' : `<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Re-run this node at attempt N+1. Appends a fresh node.scheduled event so the dispatcher re-runs it on the next Continue.">Retry node</button>`}
-        ${retryDisabled ? '' : (skipBlockReason
+        ${retryDisabled ? '' : (nodeActionBusy
+          ? `<button class="pipe-failed-probe-link pipe-failed-probe-retry" disabled title="${escapeHtml(nodeActionBusyTitle)}">Retry node</button>`
+          : `<button class="pipe-failed-probe-link pipe-failed-probe-retry" data-probe-action="retry-probe" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="${escapeHtml(`Re-run this node at attempt N+1. Appends a fresh node.scheduled event so the dispatcher re-runs it on the next Continue.${replayActionTitle}`)}">Retry node</button>`)}
+        ${retryDisabled ? '' : (nodeActionBusy
+          ? `<button class="pipe-failed-probe-link pipe-failed-probe-skip" disabled title="${escapeHtml(nodeActionBusyTitle)}">Skip node</button>`
+          : (skipBlockReason
           ? `<button class="pipe-failed-probe-link pipe-failed-probe-skip" disabled title="${escapeHtml(skipBlockReason)}">Skip node</button>`
-          : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="Mark this node as skipped (terminal). Use only when its work is genuinely not required.">Skip node</button>`)}
+          : `<button class="pipe-failed-probe-link pipe-failed-probe-skip" data-probe-action="skip-node" data-run-id="${escapeHtml(runId)}" data-node-path="${escapeHtml(machineNodePath)}" data-node-type="${escapeHtml(node.type || '')}" title="${escapeHtml(`Mark this node as skipped (terminal). Use only when its work is genuinely not required.${replayActionTitle}`)}">Skip node</button>`))}
         ${runbookPathForBp ? `<button class="pipe-failed-probe-link ${hasBreakpoint ? 'pipe-breakpoint-active' : 'pipe-breakpoint-inactive'}" data-probe-action="toggle-breakpoint" data-node-path="${escapeHtml(machineNodePath)}" title="${hasBreakpoint ? 'Breakpoint set. Click to clear. Continue will warn before dispatching past this node.' : 'Set a breakpoint. Continue will warn before dispatching past this node. Cleared by clicking again.'}">${hasBreakpoint ? 'Clear breakpoint' : 'Set breakpoint'}</button>` : ''}
       </div>
     `;
@@ -12864,19 +14682,27 @@ function isMachineRunInProgress(record, runbookPath = selectedRunbookPath) {
   const activeClaims = record?.activeClaims || [];
   const freshActiveClaims = activeClaims.length - machineStaleActiveClaims(record).length;
   if (isMachineRunActionPending(runbookPath, runId)) {
-    if (
-      !activeNodes.length
-      && freshActiveClaims <= 0
-      && ['waiting', 'approval-required', 'completed', 'cancelled', 'canceled', 'failed'].includes(String(runState.lifecycleStatus || '').toLowerCase())
-    ) {
-      return false;
-    }
+    // A human-decision run is one long IPC call that can briefly write
+    // lifecycle=waiting between autonomous driver steps. Treat the whole
+    // pending action as in progress so polling does not open stale blocker
+    // modals for those transient snapshots.
     return true;
+  }
+  if (activeNodes.length > 0 && activeClaims.length > 0 && freshActiveClaims <= 0) {
+    return false;
   }
   if (['running', 'cancelling'].includes(String(runState.lifecycleStatus || '').toLowerCase())) {
     return activeNodes.length > 0 || freshActiveClaims > 0;
   }
   return activeNodes.length > 0;
+}
+
+function isMachineRunVisualProjectionInProgress(record, runbookPath = selectedRunbookPath) {
+  if (record?.__replay) {
+    const lifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+    if (['running', 'cancelling'].includes(lifecycle)) return true;
+  }
+  return isMachineRunInProgress(record, runbookPath);
 }
 
 function machineUpdateRunRecord(runbookPath, record) {
@@ -13057,7 +14883,8 @@ function machineBlockedDecisionContext(record, options = {}) {
   const queue = machineQueueInventoryCounts(machineLatestQueueInventory(record));
   const gate = (sharedGateBlockedNodes(record) || [])[0] || null;
   const blockedWorkFromEvents = machineLatestBlockedWorkDetails(record);
-  const queueNeedsDecision = queue.totalCount > 0 && (queue.activeCount > 0 || queue.blockedCount > 0);
+  const queueHasBlockedWork = queue.blockedCount > 0 || Boolean(blockedWorkFromEvents);
+  const queueNeedsDecision = queue.totalCount > 0 && queueHasBlockedWork;
   const blockedWork = blockedWorkFromEvents || (queue.blockedCount > 0
     ? {
       itemId: '',
@@ -13079,6 +14906,56 @@ function machineBlockedDecisionContext(record, options = {}) {
     blockedPatchReviewNode,
     key: machineBlockedDecisionPromptKey(record, gate, blockedWork, queue),
   };
+}
+
+async function openMachineFollowUpPromptModal(runbookPath, record) {
+  const runId = record?.runState?.runId || record?.runId || '';
+  if (!runbookPath || !record) return false;
+  const body = document.createElement('div');
+  body.className = 'runbook-modal-body';
+  const prompt = machineBlockedRunFollowUpPrompt(record);
+  body.innerHTML = `
+    <section class="runbook-modal-section">
+      <h4>Start follow-up run</h4>
+      <p>The previous run has no runnable queue work left. Starting a follow-up creates a fresh run against the current workspace.</p>
+    </section>
+    <div class="runbook-diagnostic warning"><strong>Not an async wait</strong> No worker is running for ${escapeHtml(runId || 'this run')}. This action starts new work; it does not continue a hidden background job.</div>
+    <label class="runbook-modal-field">
+      Follow-up prompt
+      <textarea data-machine-follow-up-prompt rows="10">${escapeHtml(prompt)}</textarea>
+    </label>
+  `;
+  openFmtModal({
+    title: 'Start Follow-up',
+    body,
+    footer: [
+      { label: 'Cancel', onClick: closeFmtModal },
+      {
+        label: 'Start Follow-up Run',
+        primary: true,
+        onClick: async () => {
+          const nextPrompt = body.querySelector('[data-machine-follow-up-prompt]')?.value || prompt;
+          runbookDraftTask = nextPrompt.trim();
+          localStorage.setItem(RUNBOOK_TASK_STORAGE_KEY, runbookDraftTask);
+          closeFmtModal({ force: true });
+          const previousMode = String(record?.runState?.metadata?.patchReviewMode || record?.metadata?.patchReviewMode || '').toLowerCase();
+          const previousApproval = String(record?.runState?.metadata?.llmApprovalMode || record?.metadata?.llmApprovalMode || '').toLowerCase();
+          await startSelectedMachineRun(runbookPath, {
+            patchReviewMode: previousMode === 'auto-apply' ? 'auto-apply' : 'manual',
+            llmApprovalMode: previousApproval === 'ask' ? 'ask' : 'bypass',
+          });
+        },
+      },
+    ],
+  });
+  return true;
+}
+
+function syncMachineBlockedDecisionModal(runbookPath, record) {
+  if (!fmtModalEl || fmtModalEl.classList.contains('hidden')) return;
+  if (fmtModalEl.dataset.machineModalKind !== 'blocked-decision') return;
+  if (fmtModalEl.classList.contains('locked')) return;
+  if (!machineBlockedDecisionContext(record)) closeFmtModal({ force: true });
 }
 
 async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options = {}) {
@@ -13108,7 +14985,12 @@ async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options
     || pendingPatchReviews[0]?.patchArtifact
     || approvedPatchReviews[0]?.patchArtifact
     || '';
-  const hasPatchReview = pendingPatchReviews.length > 0 || Boolean(blockedWork?.patchArtifact && !blockedWork?.patchReviewStatus);
+  const blockedPatchNeedsReview = Boolean(
+    blockedWork?.patchArtifact
+    && blockedWork?.patchReviewEligible
+    && machinePatchReviewStatusNeedsDecision(blockedWork?.patchReviewStatus),
+  );
+  const hasPatchReview = pendingPatchReviews.length > 0 || blockedPatchNeedsReview;
   const hasApprovedPatch = approvedPatchReviews.length > 0;
   const heading = hasPatchReview
     ? 'Patch review required'
@@ -13142,9 +15024,10 @@ async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options
     ${hasPatchReview ? '<div class="runbook-diagnostic warning"><strong>Review Patch</strong> opens the patch modal with the changed files, base checks, and apply/skip decisions.</div>' : ''}
     ${hasApprovedPatch ? '<div class="runbook-diagnostic warning"><strong>Apply Approved Patches</strong> writes the approved file selections after fresh base SHA checks.</div>' : ''}
     ${canContinueQueue ? '<div class="runbook-diagnostic warning"><strong>Continue Queue</strong> keeps the run alive and dispatches the next queued item. Existing blocked items remain recorded for follow-up.</div>' : ''}
+    ${queueExhausted && !canContinueQueue ? '<div class="runbook-diagnostic warning"><strong>No runnable work</strong> No worker is running and no queued work remains. Use Start Follow-up to create a fresh run for the blocked items, or Review Evidence to inspect what happened.</div>' : ''}
     ${gate && !gateSkipBlockReason ? '<div class="runbook-diagnostic warning"><strong>Skip gate</strong> records an explicit skip decision for the blocked node and then resumes the run. Use it only when the missing evidence is intentionally not required.</div>' : ''}
     ${gateSkipBlockReason ? `<div class="runbook-diagnostic warning"><strong>Skip unavailable</strong> ${escapeHtml(gateSkipBlockReason)}</div>` : ''}
-    ${queueExhausted && !hasPatchReview && !hasApprovedPatch && !gate ? '<div class="runbook-diagnostic"><strong>No queued work remains</strong> This is a review/follow-up state, not an async pause. Cancel is hidden because there is no remaining work to cancel.</div>' : ''}
+    ${queueExhausted && !hasPatchReview && !hasApprovedPatch && !gate ? '<div class="runbook-diagnostic"><strong>No queued work remains</strong> This is a follow-up state, not an async pause. Cancel is hidden because there is no remaining work to cancel.</div>' : ''}
     ${canCancelRemaining ? '<div class="runbook-diagnostic"><strong>Cancel Remaining Work</strong> cancels only the unresolved run work instead of leaving it paused.</div>' : ''}
   `;
   const runBlockedDecisionAction = async (action, busyText = 'Working...') => {
@@ -13184,6 +15067,18 @@ async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options
           await finalizePatchReviewQueue(runbookPath, runId, record);
           closeFmtModal({ force: true });
         }, 'Applying approved patches...');
+      },
+    });
+  }
+  if (queueExhausted && !canContinueQueue) {
+    footer.push({
+      label: 'Start Follow-up',
+      primary: !hasPatchReview && !hasApprovedPatch,
+      onClick: async () => {
+        await runBlockedDecisionAction(async () => {
+          closeFmtModal({ force: true });
+          await openMachineFollowUpPromptModal(runbookPath, record);
+        }, 'Preparing follow-up prompt...');
       },
     });
   }
@@ -13238,16 +15133,22 @@ async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options
     body,
     footer,
   });
+  fmtModalEl.dataset.machineModalKind = 'blocked-decision';
+  fmtModalEl.dataset.machineBlockedDecisionKey = context.key;
+  fmtModalEl.dataset.machineBlockedRunId = runId;
   return true;
 }
 
-async function refreshMachineRunPanelSnapshot(runbookPath, runId) {
+async function refreshMachineRunPanelSnapshot(runbookPath, runId, options = {}) {
   const snapshot = await loadMachineRunRecord(runbookPath, runId);
   if (!snapshot) return null;
   const record = machineUpdateRunRecord(runbookPath, snapshot);
   machineNotifyNewFailures(record);
   renderRunbooksPanel();
   rerenderPipelinePreviewIfActive(runbookPath);
+  syncMachineBlockedDecisionModal(runbookPath, record);
+  if (options.suppressDecisionPrompts) return record;
+  if (isMachineRunInProgress(record, runbookPath)) return record;
   const openedApproval = await maybeOpenMachineLlmApprovalModal(runbookPath, record);
   if (!openedApproval) {
     const openedPatch = await maybeOpenMachinePatchReviewModal(runbookPath, record);
@@ -13261,7 +15162,7 @@ async function refreshVisibleMachineRunSnapshot() {
   const record = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, selectedRunbookPath);
   const runId = record?.runState?.runId || record?.runId || '';
   if (!runId) return;
-  await refreshMachineRunPanelSnapshot(selectedRunbookPath, runId);
+  await refreshMachineRunPanelSnapshot(selectedRunbookPath, runId, { suppressDecisionPrompts: true });
 }
 
 function scheduleMachineRunDecisionPrompts(runbookPath, record) {
@@ -13270,6 +15171,7 @@ function scheduleMachineRunDecisionPrompts(runbookPath, record) {
   setTimeout(async () => {
     try {
       const latest = getRunbookCache(machineRunRecordCache, runbookPath) || record;
+      if (isMachineRunInProgress(latest, runbookPath)) return;
       const openedApproval = await maybeOpenMachineLlmApprovalModal(runbookPath, latest);
       if (!openedApproval) {
         const openedPatch = await maybeOpenMachinePatchReviewModal(runbookPath, latest);
@@ -13563,6 +15465,21 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
 }
 
 function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = selectedRunbookPath) {
+  const harnessPending = runbookPath
+    ? pipelineHarnessImplementationPendingPaths.has(harnessImplementationKey(runbookPath))
+    : false;
+  const harnessState = runbookPath ? getHarnessImplementationState(runbookPath) : null;
+  if (runbookPath && harnessImplementationSupersedesRunDetails(record, harnessState, harnessPending)) {
+    const runState = record?.runState || {};
+    const runId = runState.runId || record?.runId || '';
+    return `
+      <section class="runbook-panel-section" data-runbook-section="harness-implementation">
+        <h3>Harness Implementation</h3>
+        ${renderHarnessImplementationBannerHtml(runbookPath, harnessState, null, harnessPending)}
+        ${renderMachineRunHistory(runbookPath, runId)}
+      </section>
+    `;
+  }
   if (!record) {
     // Latest-run hydration may fail or race (IPC error, stale cache,
     // pipeline validation error, machine IPC feature still disabled,
@@ -13594,14 +15511,24 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     return '';
   }
   const runState = record.runState || {};
+  const liveRecord = getLiveMachineRunRecord(runbookPath);
+  const recordRunId = runState.runId || record.runId || '';
+  const liveRunId = liveRecord?.runState?.runId || liveRecord?.runId || '';
+  const liveMatchesSnapshot = recordRunId && liveRunId && recordRunId === liveRunId;
+  const actionRecord = liveMatchesSnapshot ? liveRecord : record;
+  const actionRunState = actionRecord?.runState || {};
+  const actionRunId = actionRunState.runId || actionRecord?.runId || recordRunId || '';
   const events = record.events || [];
   const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
   const exported = record.exported || null;
-  const runTerminal = isMachineRunTerminal(runState);
+  const runTerminal = isMachineRunTerminal(actionRunState);
   const pendingApprovals = machinePendingApprovals(record);
   const approvalPending = pendingApprovals.length > 0;
+  const actionPendingApprovals = machinePendingApprovals(actionRecord);
+  const actionApprovalPending = actionPendingApprovals.length > 0;
   const activeClaims = record.activeClaims || [];
-  const firstActiveClaim = activeClaims[0] || null;
+  const actionActiveClaims = actionRecord?.activeClaims || [];
+  const firstActiveClaim = actionActiveClaims[0] || null;
   const candidateDetails = machineCandidateInventoryDetails(record);
   const workerProofDetails = machineWorkerProofDetails(record);
   const nodeCompletionDetails = machineNodeCompletionDetails(record);
@@ -13619,12 +15546,16 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const taskText = normalizeRunbookTask(runState.metadata?.taskText || record.metadata?.taskText || '');
   const validation = selectedPipelineValidation(runbookPath);
   const machineStepUnavailable = !!validation && !isMachineStartablePipeline(validation);
-  const runInProgress = isMachineRunInProgress(record, runbookPath);
-  const executeDetails = machineExecuteControlDetails(record, validation, runbookPath);
-  const resumeDetails = machineResumeControlDetails(record, runbookPath);
-  const cancellationDetails = machineCancellationControlDetails(record, runbookPath);
+  const runInProgress = isMachineRunVisualProjectionInProgress(record, runbookPath);
+  const actionRunInProgress = isMachineRunInProgress(actionRecord, runbookPath);
+  const executeDetails = machineExecuteControlDetails(actionRecord, validation, runbookPath);
+  const resumeDetails = machineResumeControlDetails(actionRecord, runbookPath);
+  const cancellationDetails = machineCancellationControlDetails(actionRecord, runbookPath);
+  const replayActionNoticeHtml = machineReplayLiveActionNoticeHtml(record, liveRecord, runbookPath);
   const attentionDetails = machineRunAttentionDetails(record);
-  const runId = runState.runId || record.runId || '';
+  const runId = recordRunId;
+  const replayScopeKey = machineRunTransientScopeKey(runbookPath, runId);
+  const replayStickEnabled = isReplayStickEnabled(runbookPath, runId);
   const runLabel = machineRunDisplayLabel({
     runId,
     createdAt: runState.createdAt || record.createdAt,
@@ -13647,11 +15578,11 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     auditDetails,
     runLabel,
   });
-  const hasActiveClaims = activeClaims.length > 0;
-  const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(record).length !== activeClaims.length;
-  const continueBlockedByExhaustedQueue = Boolean(machineBlockedQueueExhaustedDetails(record));
-  const executeDisabled = !runId || machineStepUnavailable || runTerminal || runInProgress || approvalPending || hasActiveClaims || continueBlockedByExhaustedQueue;
-  const resumeDisabled = !runId || runTerminal || runInProgress || approvalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
+  const hasActiveClaims = actionActiveClaims.length > 0;
+  const hasFreshActiveClaims = hasActiveClaims && machineStaleActiveClaims(actionRecord).length !== actionActiveClaims.length;
+  const continueBlockedByExhaustedQueue = Boolean(machineBlockedQueueExhaustedDetails(actionRecord));
+  const executeDisabled = !actionRunId || machineStepUnavailable || runTerminal || actionRunInProgress || actionApprovalPending || hasActiveClaims || continueBlockedByExhaustedQueue;
+  const resumeDisabled = !actionRunId || runTerminal || actionRunInProgress || actionApprovalPending || hasFreshActiveClaims || !window.orpad?.machine?.resumeRun;
   const cancelDisabled = runTerminal || (!window.orpad?.machine?.cancelRun && !window.orpad?.machine?.cancelClaim);
   const approvalActions = pendingApprovals.length ? `
         <div class="runbook-action-row">
@@ -13686,18 +15617,20 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(latestRunSummary.details)}</span>
         </div>
         ${latestRunSummary.meta ? `<div class="runbook-latest-run-meta">${escapeHtml(latestRunSummary.meta)}</div>` : ''}
+        ${latestRunSummary.actionsHtml || ''}
       </div>
       ${taskText ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(taskText)}</p>` : ''}
       ${machineFailureDetails(record)}
       ${attentionDetails}
       ${approvalPrompt}
       <div class="runbook-action-row">
-        ${runInProgress ? '' : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(runId)}" ${executeDisabled ? 'disabled' : ''} class="${executeDisabled ? '' : 'cta-ready'}" title="${escapeHtml(executeDetails)}">Continue</button>`}
-        <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(runId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
-        ${!runInProgress && firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(runId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Stop Work</button>` : ''}
+        ${actionRunInProgress ? '' : `<button data-runbook-action="machine-execute-step" data-run-id="${escapeHtml(actionRunId)}" ${executeDisabled ? 'disabled' : ''} class="${executeDisabled ? '' : 'cta-ready'}" title="${escapeHtml(executeDetails)}">Continue</button>`}
+        <button data-runbook-action="machine-resume-run" data-run-id="${escapeHtml(actionRunId)}" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeDetails.text)}">Recover</button>
+        ${!actionRunInProgress && firstActiveClaim ? `<button data-runbook-action="machine-cancel-claim" data-run-id="${escapeHtml(actionRunId)}" data-claim-id="${escapeHtml(firstActiveClaim.claimId || '')}" data-item-id="${escapeHtml(firstActiveClaim.itemId || '')}" ${cancelDisabled ? 'disabled' : ''} title="${escapeHtml(cancellationDetails.text)}">Stop Work</button>` : ''}
         <button data-runbook-action="machine-export" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Save a reviewable evidence snapshot.">Save Evidence</button>
         <button data-runbook-action="machine-view-artifacts" data-run-id="${escapeHtml(runId)}" ${runId ? '' : 'disabled'} title="Review evidence files for this run.">Review Evidence</button>
       </div>
+      ${replayActionNoticeHtml}
       ${renderMachineRunHistory(runbookPath, runId)}
       <details class="runbook-run-details" data-runbook-run-details>
         <summary>
@@ -13705,16 +15638,16 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           <span>${escapeHtml(machineCountLabel(events.length, 'event'))}</span>
         </summary>
         <div class="runbook-run-details-body">
-          ${renderReplayTimelineHtml(record, runId, events)}
+          ${renderReplayTimelineHtml(record, runbookPath, runId, events)}
           <div class="runbook-replay-events-bar">
             <span>Recent events (${events.length})</span>
-            <button class="runbook-replay-stick-toggle ${isReplayStickEnabled(runId) ? 'active' : ''}" data-runbook-action="toggle-replay-stick" data-run-id="${escapeHtml(runId)}" title="${isReplayStickEnabled(runId) ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.'}">${isReplayStickEnabled(runId) ? 'Auto-scroll' : 'Manual scroll'}</button>
+            <button class="runbook-replay-stick-toggle ${replayStickEnabled ? 'active' : ''}" data-runbook-action="toggle-replay-stick" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}" title="${replayStickEnabled ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.'}">${replayStickEnabled ? 'Auto-scroll' : 'Manual scroll'}</button>
           </div>
-          <div class="runbook-replay-events" data-runbook-replay-events data-run-id="${escapeHtml(runId)}">
+          <div class="runbook-replay-events" data-runbook-replay-events data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}">
             ${(events.length ? events : []).slice(-100).map(event => {
               const timeLabel = machineEventTimeLabel(event);
               const seq = event?.sequence != null ? Number(event.sequence) : -1;
-              const lastSeq = lastReplayRenderedSequence.get(runId) || 0;
+              const lastSeq = lastReplayRenderedSequence.get(replayScopeKey) || 0;
               const fresh = seq > lastSeq && lastSeq > 0;
               return `<div class="runbook-event${fresh ? ' runbook-event-fresh' : ''}" data-event-seq="${escapeHtml(String(seq))}">${timeLabel ? `${escapeHtml(timeLabel)} ` : ''}${escapeHtml(machineEventLabel(event))}</div>`;
             }).join('') || '<div class="runbook-event">No run events recorded.</div>'}
@@ -13930,7 +15863,6 @@ async function validateSelectedRunbook(runbookPath) {
       setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
       renderRunbooksPanel();
       rerenderPipelinePreviewIfActive(runbookPath);
-      scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
     }
   }
 }
@@ -14119,14 +16051,20 @@ async function openAdapterPickerDialog(runbookPath, options = {}) {
         if (!picker?.commit) return;
         confirmButton.disabled = true;
         confirmButton.textContent = 'Saving…';
-        const response = await picker.commit();
-        if (response?.success === false || response?.ok === false || !response) {
+        try {
+          const response = await picker.commit();
+          if (response?.success === false || response?.ok === false || !response) {
+            confirmButton.disabled = false;
+            confirmButton.textContent = confirmLabel;
+            return;
+          }
+          if (typeof options.onConfirm === 'function') await options.onConfirm(response);
+          finish(true);
+        } catch (err) {
+          notifyFormatError('Choose adapter', err);
           confirmButton.disabled = false;
           confirmButton.textContent = confirmLabel;
-          return;
         }
-        if (typeof options.onConfirm === 'function') await options.onConfirm(response);
-        finish(true);
       });
       actionRow.appendChild(cancelButton);
       actionRow.appendChild(confirmButton);
@@ -14796,6 +16734,26 @@ async function saveHarnessImplementationState(statePath, state) {
   if (!saved) throw new Error('Failed to save harness implementation state.');
 }
 
+async function saveHarnessImplementationStateForRunbook(runbookPath, state) {
+  if (!runbookPath || !state) return false;
+  try {
+    const pipelineRead = await window.orpad.readFile(runbookPath);
+    if (pipelineRead?.error) return false;
+    const pipelineDoc = JSON.parse(pipelineRead.content || '{}');
+    const context = pipelineContextForPath(runbookPath);
+    const pipelineDir = context?.pipelineDir || runbookDirPath(runbookPath);
+    const harnessRoot = pipelineDoc.harness?.path || 'harness/generated';
+    const harnessRootPath = normalizeRunbookFilePath(`${pipelineDir}/${harnessRoot}`);
+    const statePath = normalizeRunbookFilePath(`${harnessRootPath}/implementation-state.json`);
+    await window.orpad.createFolder(normalizeRunbookFilePath(`${pipelineDir}/harness`)).catch(() => {});
+    await window.orpad.createFolder(harnessRootPath).catch(() => {});
+    await saveHarnessImplementationState(statePath, state);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function harnessNodeImplementationContract(node, stateNode, pipelineDoc, profile, toolPlan, harnessAuthoring, harnessProvisioning) {
   const authoredContract = harnessSpecContractForNode(harnessAuthoring?.spec, stateNode.nodePath);
   return {
@@ -14869,6 +16827,19 @@ async function implementSelectedMachineHarness(runbookPath) {
   setHarnessImplementationPending(runbookPath, true);
   try {
     return await implementSelectedMachineHarnessInner(runbookPath);
+  } catch (err) {
+    const state = getHarnessImplementationState(runbookPath);
+    if (String(state?.status || '').toLowerCase() === 'running') {
+      state.status = 'failed';
+      state.stage = 'failed';
+      state.stageLabel = 'Harness failed';
+      state.failedAt = new Date().toISOString();
+      state.message = `Harness implementation failed: ${err?.message || String(err)}`;
+      setHarnessImplementationState(runbookPath, state);
+      await saveHarnessImplementationStateForRunbook(runbookPath, state);
+      renderHarnessImplementationViews(runbookPath);
+    }
+    throw err;
   } finally {
     setHarnessImplementationPending(runbookPath, false);
   }
@@ -14899,6 +16870,70 @@ async function implementSelectedMachineHarnessInner(runbookPath) {
   await window.orpad.createFolder(harnessRootPath).catch(() => {});
   await window.orpad.createFolder(harnessNodesPath).catch(() => {});
 
+  let state = {
+    schemaVersion: 'orpad.harnessImplementation.v1',
+    pipelineId: pipelineDoc.id || context?.pipelineName || '',
+    startedAt: now,
+    implementedAt: '',
+    source: 'electron-ui',
+    status: 'running',
+    stage: 'profile',
+    stageLabel: 'Building project profile',
+    message: 'Collecting workspace files and pipeline context for harness implementation.',
+    nodeCount: nodes.length,
+    projectProfile: {
+      path: 'project-profile.json',
+      stacks: [],
+      requiredTools: [],
+      validationCommandCount: 0,
+    },
+    toolPlan: {
+      path: 'tool-plan.json',
+      mcpRecommendations: [],
+    },
+    harnessAuthoring: {
+      path: 'harness-authoring-spec.json',
+      promptPath: 'harness-authoring-prompt.md',
+      mode: 'pending',
+      error: '',
+    },
+    provisioning: {
+      path: 'harness-provisioning.json',
+      toolHealthPath: 'tool-health.json',
+      validationPreflightPath: 'validation-preflight.json',
+      mcpPlanPath: 'mcp-plan.json',
+      agentReadinessPath: 'agent-readiness.json',
+      toolPolicyPath: 'tool-policy.json',
+      observabilityPlanPath: 'observability-plan.json',
+      evalPlanPath: 'eval-plan.json',
+      feedbackLoopPlanPath: 'feedback-loop.json',
+      llmOpsPlanPath: 'llmops-plan.json',
+      securityRiskPlanPath: 'security-risk-plan.json',
+      status: 'pending',
+      error: '',
+      blockers: [],
+      warnings: [],
+    },
+    nodes: nodes.map((node, index) => ({
+      nodePath: harnessNodePathForGraphNode(node, index),
+      id: node.id || '',
+      type: node.type || '',
+      label: node.label || node.id || node.type || '',
+      status: 'pending',
+      artifact: `nodes/${harnessNodeArtifactFileName(node, index)}`,
+    })),
+  };
+  const updateHarnessStage = async (stage, stageLabel, message) => {
+    state.stage = stage;
+    state.stageLabel = stageLabel;
+    state.message = message;
+    state.updatedAt = new Date().toISOString();
+    setHarnessImplementationState(runbookPath, state);
+    await saveHarnessImplementationState(statePath, state);
+    renderHarnessImplementationViews(runbookPath);
+  };
+  await updateHarnessStage('profile', 'Building project profile', 'Collecting workspace files and pipeline context for harness implementation.');
+
   const workspaceFiles = await collectHarnessWorkspaceFiles();
   const projectProfile = inferHarnessProjectProfile({
     pipelineDoc,
@@ -14907,6 +16942,17 @@ async function implementSelectedMachineHarnessInner(runbookPath) {
     generatedAt: now,
   });
   const toolPlan = harnessToolPlanFromProfile(projectProfile, pipelineDoc);
+  state.projectProfile = {
+    path: 'project-profile.json',
+    stacks: projectProfile.stacks.map(stack => stack.id),
+    requiredTools: projectProfile.requiredTools,
+    validationCommandCount: projectProfile.validationCommands.length,
+  };
+  state.toolPlan = {
+    path: 'tool-plan.json',
+    mcpRecommendations: projectProfile.mcpRecommendations,
+  };
+  await updateHarnessStage('authoring', 'Authoring harness spec', 'Building node contracts, tool policy, and protocol expectations for the pipeline.');
   const harnessAuthoring = await authorHarnessSpecForPipeline({
     runbookPath,
     pipelineDoc,
@@ -14916,10 +16962,17 @@ async function implementSelectedMachineHarnessInner(runbookPath) {
     nodes,
     harnessRootPath,
   });
+  state.harnessAuthoring = {
+    path: 'harness-authoring-spec.json',
+    promptPath: 'harness-authoring-prompt.md',
+    mode: harnessAuthoring.authoringMode,
+    error: harnessAuthoring.authoringError || '',
+  };
   await window.orpad.createFile(profilePath).catch(() => {});
   await window.orpad.createFile(toolPlanPath).catch(() => {});
   await window.orpad.saveFile(profilePath, JSON.stringify(projectProfile, null, 2));
   await window.orpad.saveFile(toolPlanPath, JSON.stringify(toolPlan, null, 2));
+  await updateHarnessStage('provisioning', 'Checking harness readiness', 'Checking tools, validation command candidates, MCP recommendations, and run blockers.');
   const harnessProvisioning = await provisionHarnessForPipeline({
     runbookPath,
     projectProfile,
@@ -14931,13 +16984,18 @@ async function implementSelectedMachineHarnessInner(runbookPath) {
   const provisioningBlocked = (harnessProvisioning.status || harnessProvisioning.report?.status || '') === 'blocked'
     || provisioningBlockers.length > 0;
 
-  const state = {
+  state = {
     schemaVersion: 'orpad.harnessImplementation.v1',
     pipelineId: pipelineDoc.id || context?.pipelineName || '',
     startedAt: now,
     implementedAt: '',
     source: 'electron-ui',
     status: provisioningBlocked ? 'blocked' : 'running',
+    stage: provisioningBlocked ? 'blocked' : 'nodes',
+    stageLabel: provisioningBlocked ? 'Provisioning blocked' : 'Implementing node contracts',
+    message: provisioningBlocked
+      ? `Harness provisioning blocked: ${provisioningBlockers.slice(0, 3).join(' | ') || harnessProvisioning.error || 'see harness-provisioning.json'}`
+      : 'Provisioning completed. Implementing per-node harness contracts.',
     nodeCount: nodes.length,
     projectProfile: {
       path: 'project-profile.json',
@@ -15106,7 +17164,10 @@ async function implementSelectedMachineHarnessInner(runbookPath) {
     }
   }
   state.status = 'succeeded';
+  state.stage = 'completed';
+  state.stageLabel = 'Harness ready';
   state.implementedAt = new Date().toISOString();
+  state.message = 'Harness implementation completed.';
   setHarnessImplementationState(runbookPath, state);
   await saveHarnessImplementationState(statePath, state);
   await window.orpad.saveFile(notesPath, [
@@ -15159,6 +17220,18 @@ async function implementSelectedMachineHarnessInner(runbookPath) {
 
 async function runPipelinePreviewAction(action, runbookPath) {
   if (!runbookPath) return;
+  const harnessKey = harnessImplementationKey(runbookPath);
+  const harnessState = getHarnessImplementationState(runbookPath);
+  const harnessBusy = pipelineHarnessImplementationPendingPaths.has(harnessKey)
+    || String(harnessState?.status || '').toLowerCase() === 'running';
+  if (action === 'open-flow') {
+    await openPipelineReturnTarget(createPipelineReturnContext(runbookPath, { source: 'runbar-open-flow' }), 'flow');
+    return;
+  }
+  if (harnessBusy && action !== 'implement-harness') {
+    notifyFormatError('Harness', new Error('Harness implementation is in progress for this pipeline.'));
+    return;
+  }
   if (action === 'check') {
     await validateSelectedRunbook(runbookPath);
     return;
@@ -15203,22 +17276,26 @@ async function runPipelinePreviewAction(action, runbookPath) {
   await startSelectedLocalRun(runbookPath);
 }
 
-async function openPipelineEntryOrFile(filePath) {
+async function openPipelineEntryOrFile(filePath, options = {}) {
   if (/\.or-pipeline$/i.test(filePath)) {
     try {
       const result = await window.orpad.readFile(filePath);
       const parsed = JSON.parse(result?.content || '{}');
       const entryGraph = parsed.entryGraph || parsed.entry?.graph || parsed.graph?.file || '';
+      if (options.graphPath) {
+        await openFileInTab(options.graphPath, options);
+        return;
+      }
       if (entryGraph) {
         const base = runbookDirname(filePath);
-        await openFileInTab(normalizeRunbookFilePath(`${base}/${entryGraph}`));
+        await openFileInTab(normalizeRunbookFilePath(`${base}/${entryGraph}`), options);
         return;
       }
     } catch {
       // Fall through and open the manifest when the entrypoint cannot be read.
     }
   }
-  await openFileInTab(filePath);
+  await openFileInTab(filePath, options);
 }
 
 async function toggleRunbookSlot(runbookPath) {
@@ -15253,7 +17330,6 @@ async function hydrateLatestMachineRunForSelection(runbookPath) {
     lastMachineRunRecord = record;
     setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
     renderRunbooksPanel();
-    scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
   } catch {
     // Latest run hydration is best-effort; failures stay silent so panel rendering proceeds.
   }
@@ -15358,21 +17434,54 @@ async function loadMachineRunRecord(runbookPath, runId) {
 
 // Phase 2.4: time travel state helpers. Replay position is a 1-based
 // index into the run's events array. null/unset = live view.
-function getReplayPosition(runId) {
-  if (!runId) return null;
-  const v = machineRunReplayPosition.get(runId);
+function getReplayPosition(runbookPath, runId) {
+  const key = machineRunTransientScopeKey(runbookPath, runId);
+  if (!key) return null;
+  const v = machineRunReplayPosition.get(key);
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
-function setReplayPosition(runId, position) {
-  if (!runId) return;
-  if (position == null) machineRunReplayPosition.delete(runId);
-  else machineRunReplayPosition.set(runId, Math.max(1, Math.floor(Number(position))));
+function setReplayPosition(runbookPath, runId, position) {
+  const key = machineRunTransientScopeKey(runbookPath, runId);
+  if (!key) return;
+  if (position == null) machineRunReplayPosition.delete(key);
+  else machineRunReplayPosition.set(key, Math.max(1, Math.floor(Number(position))));
 }
 
-function clearReplayPosition(runId) {
-  if (!runId) return;
-  machineRunReplayPosition.delete(runId);
+function clearReplayPosition(runbookPath, runId) {
+  const key = machineRunTransientScopeKey(runbookPath, runId);
+  if (!key) return;
+  machineRunReplayPosition.delete(key);
+}
+
+function machineReplayRunStateFromEvents(record, events) {
+  const base = record?.runState || {};
+  const runId = base.runId || record?.runId || '';
+  const next = {
+    ...base,
+    runId,
+    lifecycleStatus: 'created',
+    summaryStatus: 'pending',
+  };
+  for (const event of events || []) {
+    const payload = event?.payload || {};
+    if (event?.eventType === 'run.created') {
+      next.lifecycleStatus = payload.lifecycleStatus || event.lifecycleStatus || 'created';
+      next.createdAt = event.timestamp || next.createdAt;
+      next.updatedAt = event.timestamp || next.updatedAt;
+    } else if (event?.eventType === 'run.status') {
+      const status = event.toState || payload.toState || payload.lifecycleStatus || payload.status;
+      if (status) next.lifecycleStatus = status;
+      next.updatedAt = event.timestamp || next.updatedAt;
+    } else if (event?.eventType === 'run.summary') {
+      const status = payload.summaryStatus || event.summaryStatus || payload.toState || event.toState || payload.status;
+      if (status) next.summaryStatus = status;
+      next.updatedAt = event.timestamp || next.updatedAt;
+    }
+  }
+  if (!next.createdAt) next.createdAt = base.createdAt || record?.createdAt || '';
+  if (!next.updatedAt) next.updatedAt = base.updatedAt || record?.updatedAt || next.createdAt || '';
+  return next;
 }
 
 // Apply replay snapshot if a position is set for this record's runId.
@@ -15380,10 +17489,10 @@ function clearReplayPosition(runId) {
 // Other fields are passed through unchanged — the recompute happens in
 // the renderers (lifecycle banner / runtime projection / etc) which
 // derive from events.
-function applyReplaySnapshot(record) {
+function applyReplaySnapshot(record, runbookPath = selectedRunbookPath) {
   if (!record) return record;
   const runId = record.runState?.runId || record.runId || '';
-  const position = getReplayPosition(runId);
+  const position = getReplayPosition(runbookPath, runId);
   if (position == null) return record;
   const events = Array.isArray(record.events) ? record.events : [];
   if (position >= events.length) return record;
@@ -15391,14 +17500,56 @@ function applyReplaySnapshot(record) {
   return {
     ...record,
     events: truncated,
+    runState: machineReplayRunStateFromEvents(record, truncated),
+    activeClaims: [],
+    activeWriteSets: [],
+    approvals: undefined,
+    candidateInventory: undefined,
+    exported: null,
+    finalization: undefined,
+    inventory: machineQueueInventoryFromEvents({ events: truncated }),
+    resume: undefined,
+    worker: undefined,
     __replay: { position, total: events.length },
   };
+}
+
+function machineReplayLiveActionNoticeHtml(snapshotRecord, liveRecord, runbookPath, options = {}) {
+  if (!snapshotRecord?.__replay || !liveRecord) return '';
+  const runId = snapshotRecord.runState?.runId || snapshotRecord.runId || '';
+  const liveRunId = liveRecord.runState?.runId || liveRecord.runId || '';
+  if (!runId || !liveRunId || runId !== liveRunId) return '';
+  const liveRunInProgress = isMachineRunInProgress(liveRecord, runbookPath);
+  const liveLifecycle = liveRunInProgress
+    ? 'running'
+    : String(liveRecord.runState?.lifecycleStatus || 'created').toLowerCase();
+  const liveSummary = String(liveRecord.runState?.summaryStatus || 'pending').toLowerCase();
+  const liveLabel = [machineLifecycleStatusLabel(liveLifecycle), machineSummaryStatusLabel(liveSummary)]
+    .filter(Boolean)
+    .join(' / ');
+  const pendingPatchReviewCount = machinePendingPatchReviewInfos(liveRecord).length;
+  const approvedPatchReviewCount = machineApprovedPatchReviewInfos(liveRecord).length;
+  const patchButtons = [];
+  if (!liveRunInProgress && pendingPatchReviewCount > 0) {
+    patchButtons.push(`<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-probe-action="review-patches" data-runbook-action="machine-open-patch-review" data-run-id="${escapeHtml(liveRunId)}" data-runbook-path="${escapeHtml(runbookPath)}" data-path="${escapeHtml(runbookPath)}" title="Open the live run's pending patch review.">Review live patches</button>`);
+  }
+  if (!liveRunInProgress && !pendingPatchReviewCount && approvedPatchReviewCount > 0) {
+    patchButtons.push(`<button class="pipe-lifecycle-banner-link pipe-lifecycle-banner-link--cta" data-probe-action="apply-approved-patches" data-runbook-action="machine-apply-approved-patches" data-run-id="${escapeHtml(liveRunId)}" data-runbook-path="${escapeHtml(runbookPath)}" data-path="${escapeHtml(runbookPath)}" title="Apply the live run's approved patch selections.">Apply live patches</button>`);
+  }
+  const prefix = options.compact ? 'Replay' : 'Replay mode';
+  return `
+    <div class="runbook-diagnostic warning" data-machine-replay-live-actions>
+      <strong>${escapeHtml(prefix)}</strong>
+      Visuals show event ${escapeHtml(String(snapshotRecord.__replay.position))} of ${escapeHtml(String(snapshotRecord.__replay.total))}. Run controls use the live run (${escapeHtml(liveLabel)}).
+      ${patchButtons.length ? `<div class="pipe-lifecycle-banner-actions">${patchButtons.join('')}</div>` : ''}
+    </div>
+  `;
 }
 
 // Phase 2.4: time travel slider markup. Total event count comes from
 // the live record (preserved as record.__replay.total when a snapshot
 // is active). Renders only when there are events to scrub through.
-function renderReplayTimelineHtml(record, runId, events) {
+function renderReplayTimelineHtml(record, runbookPath, runId, events) {
   if (!runId) return '';
   const liveTotal = record?.__replay?.total ?? (events?.length || 0);
   if (liveTotal < 2) return ''; // nothing to scrub through
@@ -15412,27 +17563,30 @@ function renderReplayTimelineHtml(record, runId, events) {
         <span class="runbook-replay-timeline-label">${inReplay ? 'Replaying' : 'Time travel'}</span>
         <span class="runbook-replay-timeline-position">event ${replayPosition} of ${liveTotal}${positionLabel ? ` · ${escapeHtml(positionLabel)}` : ''}</span>
         ${inReplay
-          ? `<button class="runbook-replay-timeline-live" data-runbook-action="replay-live" data-run-id="${escapeHtml(runId)}" title="Return to the live view (latest events).">Live</button>`
+          ? `<button class="runbook-replay-timeline-live" data-runbook-action="replay-live" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}" title="Return to the live view (latest events).">Live</button>`
           : ''}
       </div>
-      <input type="range" class="runbook-replay-timeline-slider" min="1" max="${liveTotal}" value="${replayPosition}" data-runbook-replay-slider data-run-id="${escapeHtml(runId)}" aria-label="Time travel: drag to inspect a past event">
+      <input type="range" class="runbook-replay-timeline-slider" min="1" max="${liveTotal}" value="${replayPosition}" data-runbook-replay-slider data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}" aria-label="Time travel: drag to inspect a past event">
+      ${inReplay ? '<div class="runbook-replay-timeline-warning">Live action note: retry and patch review also use the live run.</div>' : ''}
       ${inReplay ? '<div class="runbook-replay-timeline-warning">Replay mode — Continue / Cancel / Stop Work act on the live run, not on this snapshot.</div>' : ''}
     </div>
   `;
 }
 
-function isReplayStickEnabled(runId) {
-  if (!runId) return machineRunReplayStickDefault;
+function isReplayStickEnabled(runbookPath, runId) {
+  const key = machineRunTransientScopeKey(runbookPath, runId);
+  if (!key) return machineRunReplayStickDefault;
   // Default ON: a runId is "stick-enabled" unless the user explicitly
   // disabled stick-to-bottom. Set membership inverted so we don't have
   // to seed the set on every new run.
-  return !machineRunReplayStickRunIds.has(`off:${runId}`);
+  return !machineRunReplayStickRunIds.has(`off:${key}`);
 }
 
-function setReplayStickEnabled(runId, enabled) {
-  if (!runId) return;
-  if (enabled) machineRunReplayStickRunIds.delete(`off:${runId}`);
-  else machineRunReplayStickRunIds.add(`off:${runId}`);
+function setReplayStickEnabled(runbookPath, runId, enabled) {
+  const key = machineRunTransientScopeKey(runbookPath, runId);
+  if (!key) return;
+  if (enabled) machineRunReplayStickRunIds.delete(`off:${key}`);
+  else machineRunReplayStickRunIds.add(`off:${key}`);
 }
 
 function applyReplayStickAfterRender() {
@@ -15444,6 +17598,8 @@ function applyReplayStickAfterRender() {
   const elements = document.querySelectorAll('[data-runbook-replay-events]');
   for (const el of elements) {
     const runId = el.getAttribute('data-run-id') || '';
+    const runbookPath = el.getAttribute('data-path') || selectedRunbookPath || '';
+    const scopeKey = machineRunTransientScopeKey(runbookPath, runId);
     if (!runId) continue;
     const eventNodes = el.querySelectorAll('[data-event-seq]');
     let maxSeq = 0;
@@ -15451,12 +17607,12 @@ function applyReplayStickAfterRender() {
       const seq = Number(ev.getAttribute('data-event-seq')) || 0;
       if (seq > maxSeq) maxSeq = seq;
     }
-    if (isReplayStickEnabled(runId)) {
+    if (isReplayStickEnabled(runbookPath, runId)) {
       // scrollIntoView would jump the parent; setting scrollTop
       // directly is contained to the events list.
       el.scrollTop = el.scrollHeight;
     }
-    if (maxSeq > 0) lastReplayRenderedSequence.set(runId, maxSeq);
+    if (maxSeq > 0 && scopeKey) lastReplayRenderedSequence.set(scopeKey, maxSeq);
     // Auto-disable stick when the user manually scrolls up — matches
     // the LangGraph Studio / terminal UX where any upward gesture is
     // an intent to inspect history. Re-enable when they scroll back
@@ -15467,12 +17623,13 @@ function applyReplayStickAfterRender() {
       el.addEventListener('scroll', () => {
         const tolerance = 8;
         const atBottom = el.scrollHeight - el.clientHeight - el.scrollTop <= tolerance;
-        const wasEnabled = isReplayStickEnabled(runId);
+        const wasEnabled = isReplayStickEnabled(runbookPath, runId);
         if (atBottom !== wasEnabled) {
-          setReplayStickEnabled(runId, atBottom);
+          setReplayStickEnabled(runbookPath, runId, atBottom);
           // Targeted DOM update — find the matching toggle button and
           // flip its class without triggering a full re-render.
-          const toggle = document.querySelector(`.runbook-replay-stick-toggle[data-run-id="${CSS.escape(runId)}"]`);
+          const toggle = document.querySelector(`.runbook-replay-stick-toggle[data-run-id="${CSS.escape(runId)}"][data-path="${CSS.escape(runbookPath)}"]`)
+            || document.querySelector(`.runbook-replay-stick-toggle[data-run-id="${CSS.escape(runId)}"]`);
           if (toggle) {
             toggle.classList.toggle('active', atBottom);
             toggle.textContent = atBottom ? 'Auto-scroll' : 'Manual scroll';
@@ -15527,10 +17684,10 @@ function setHistoryRecoverPending(runbookPath, runId, pending) {
 function getActiveMachineRunRecord(runbookPath) {
   if (!runbookPath) return null;
   const cached = getRunbookCache(machineRunRecordCache, runbookPath);
-  if (cached) return applyReplaySnapshot(cached);
+  if (cached) return applyReplaySnapshot(cached, runbookPath);
   const selectedMatches = selectedRunbookPath
     && runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
-  return selectedMatches ? applyReplaySnapshot(lastMachineRunRecord) : null;
+  return selectedMatches ? applyReplaySnapshot(lastMachineRunRecord, runbookPath) : null;
 }
 
 // For Latest Run panel renderer — returns the LIVE record (no snapshot)
@@ -15582,7 +17739,7 @@ async function requestMachineCapabilityToken() {
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      closeFmtModal();
+      closeFmtModal({ force: true });
       resolve(value || '');
     };
     openFmtModal({
@@ -15661,6 +17818,7 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOption
   }
   const token = await requestMachineCapabilityToken();
   if (!token) return;
+  machineCapabilityToken = token;
   const providerConfirmed = await confirmMachineRunProviderSelection(runbookPath);
   if (!providerConfirmed) return;
   const taskText = currentRunbookTaskText();
@@ -15714,11 +17872,16 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOption
     machineRunExternalResearchDecisions.set(externalResearchDecisionKey(runbookPath, created.runId), externalResearch);
   }
   setMachineRunActionPending(runbookPath, created.runId, true);
-  await refreshMachineRunList(runbookPath);
-  renderRunbooksPanel();
-  rerenderPipelinePreviewIfActive(runbookPath);
-  void refreshWorkspaceRunbookSummary();
+  try {
+    await refreshMachineRunList(runbookPath);
+    renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
+    void refreshWorkspaceRunbookSummary();
+  } finally {
+    setMachineRunActionPending(runbookPath, created.runId, false);
+  }
   await executeSelectedMachineRunStep(runbookPath, created.runId, externalResearch, {
+    capabilityToken: token,
     llmApprovalMode: runOptions.llmApprovalMode === 'ask' ? 'ask' : 'bypass',
     runUntil: runOptions.runUntil === 'step' ? 'step' : 'human-decision',
     patchReviewMode: runOptions.patchReviewMode === 'auto-apply' ? 'auto-apply' : 'manual',
@@ -15726,7 +17889,6 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOption
 }
 
 async function executeSelectedMachineRunStep(runbookPath, runId, providedExternalResearch = null, runOptions = {}) {
-  console.log('[execute-run-step] click', { runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep), workspacePath });
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) {
     console.warn('[execute-run-step] preconditions missing — silent return', { workspacePath, runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep) });
     if (!runId) alert('Continue ignored: no run is selected. Pick a run from history first.');
@@ -15784,13 +17946,14 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
     console.warn('[execute-run-step] ensureMachineRuntimeReady returned false');
     return;
   }
-  const token = await requestMachineCapabilityToken();
+  const providedToken = String(runOptions.capabilityToken || '').trim();
+  const token = providedToken || await requestMachineCapabilityToken();
   if (!token) {
     console.warn('[execute-run-step] capability token unavailable');
     alert('Continue ignored: capability token was not provided.');
     return;
   }
-  console.log('[execute-run-step] passed gates, will invoke executeRunStep');
+  machineCapabilityToken = token;
   const taskText = currentRunbookTaskText();
   const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText, runId, providedExternalResearch);
   if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
@@ -15814,7 +17977,6 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
         patchReviewMode: effectivePatchReviewMode,
       },
     });
-    console.log('[execute-run-step] IPC result', { success: executed?.success, code: executed?.code, error: executed?.error || executed?.message, lifecycle: executed?.runState?.lifecycleStatus, summary: executed?.runState?.summaryStatus });
   } catch (err) {
     console.error('[execute-run-step] IPC threw', err);
     setMachineRunActionPending(runbookPath, runId, false);
@@ -15844,9 +18006,10 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
   selectedRunbookPath = runbookPath;
   lastMachineRunRecord = machineUpdateRunRecord(runbookPath, executed);
   await refreshMachineRunList(runbookPath);
-  renderRunbooksPanel();
+  const refreshed = await refreshMachineRunPanelSnapshot(runbookPath, runId);
+  if (!refreshed) renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
-  scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
+  if (!refreshed) scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
 }
 
 async function resumeSelectedMachineRun(runbookPath, runId) {
@@ -16108,6 +18271,24 @@ async function cancelSelectedMachineRunInner(runbookPath, runId, options = {}) {
 // Continue afterwards.
 async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType = '', itemId = '') {
   if (!workspacePath || !runbookPath || !runId || !nodePath || !window.orpad?.machine?.retryNode) return;
+  const liveRecord = getLiveMachineRunRecord(runbookPath);
+  if (isMachineRunInProgress(liveRecord, runbookPath)) {
+    notifyFormatError('Retry probe', new Error('A worker is currently running in this run. Wait for it to finish, or stop the active work before retrying this node.'));
+    return;
+  }
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, runId);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Retry');
+    return;
+  }
+  try {
+    return await retrySelectedMachineNodeInner(runbookPath, runId, nodePath, nodeType, itemId);
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+async function retrySelectedMachineNodeInner(runbookPath, runId, nodePath, nodeType = '', itemId = '') {
   if (!await ensureMachineRuntimeReady()) return;
   const token = await requestMachineCapabilityToken();
   if (!token) return;
@@ -16129,7 +18310,7 @@ async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType =
   // node.scheduled event before we dispatch executeRunStep.
   await refreshVisibleMachineRunSnapshot().catch(() => {});
   try {
-    await executeSelectedMachineRunStep(runbookPath, runId);
+    await executeSelectedMachineRunStepInner(runbookPath, runId, null, {});
   } catch (err) {
     notifyFormatError('Resume after retry', err);
   }
@@ -16137,6 +18318,24 @@ async function retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType =
 
 async function skipSelectedMachineNodeAndContinue(runbookPath, runId, nodePath, nodeType = '', reason = 'user-skipped-from-failed-card') {
   if (!workspacePath || !runbookPath || !runId || !nodePath || !window.orpad?.machine?.skipNode) return false;
+  const liveRecord = getLiveMachineRunRecord(runbookPath);
+  if (isMachineRunInProgress(liveRecord, runbookPath)) {
+    notifyFormatError('Skip node', new Error('A worker is currently running in this run. Wait for it to finish, or stop the active work before skipping this node.'));
+    return false;
+  }
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, runId);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Skip');
+    return false;
+  }
+  try {
+    return await skipSelectedMachineNodeAndContinueInner(runbookPath, runId, nodePath, nodeType, reason);
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+async function skipSelectedMachineNodeAndContinueInner(runbookPath, runId, nodePath, nodeType = '', reason = 'user-skipped-from-failed-card') {
   const record = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || null;
   const skipBlockReason = machineSkipBlockReason(record, nodePath, nodeType);
   if (skipBlockReason) {
@@ -16161,7 +18360,7 @@ async function skipSelectedMachineNodeAndContinue(runbookPath, runId, nodePath, 
     return false;
   }
   await refreshVisibleMachineRunSnapshot().catch(() => {});
-  await executeSelectedMachineRunStep(runbookPath, runId);
+  await executeSelectedMachineRunStepInner(runbookPath, runId, null, {});
   return true;
 }
 
@@ -16660,33 +18859,43 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   const hasNextReview = pendingCount > 1;
   const criteria = (itemDetails?.acceptanceCriteria || []).slice(0, 3);
   const approvedFileOwners = machineApprovedPatchSelectedFileOwners(record, workerReview.patchArtifact);
+  const violationCount = Number(patchSummary.violationCount) || 0;
+  const hasWriteSetViolations = violationCount > 0;
   const conflictCount = patchSummary.changes.filter(change => change.baseMatches === false).length;
   const overlapCount = patchSummary.changes.filter(change => approvedFileOwners.has(change.path)).length;
-  const applicableCount = patchSummary.changes.filter(change => change.baseMatches !== false && !approvedFileOwners.has(change.path)).length;
+  const applicableCount = hasWriteSetViolations
+    ? 0
+    : patchSummary.changes.filter(change => change.baseMatches !== false && !approvedFileOwners.has(change.path)).length;
   const noSelectableFiles = applicableCount === 0;
-  const onlyOverlappingFiles = noSelectableFiles && overlapCount > 0 && conflictCount === 0;
-  const onlyBaseMismatchFiles = noSelectableFiles && conflictCount > 0 && overlapCount === 0;
-  const blockedByStaleBase = noSelectableFiles && conflictCount > 0;
+  const onlyUnsafeFiles = noSelectableFiles && hasWriteSetViolations;
+  const onlyOverlappingFiles = noSelectableFiles && !hasWriteSetViolations && overlapCount > 0 && conflictCount === 0;
+  const onlyBaseMismatchFiles = noSelectableFiles && !hasWriteSetViolations && conflictCount > 0 && overlapCount === 0;
+  const blockedByStaleBase = noSelectableFiles && !hasWriteSetViolations && conflictCount > 0;
+  const blockedByUnsafePatch = noSelectableFiles && hasWriteSetViolations;
   const reviewTitlePrefix = onlyBaseMismatchFiles
     ? 'Rebase Required'
-    : (onlyOverlappingFiles ? 'Batch Conflict' : 'Review Patch');
+    : (onlyUnsafeFiles ? 'Follow-up Required' : (onlyOverlappingFiles ? 'Batch Conflict' : 'Review Patch'));
   const reviewTitle = reviewCount > 1 ? `${reviewTitlePrefix} ${reviewIndex} of ${reviewCount}` : reviewTitlePrefix;
   const skipApplyLabel = onlyOverlappingFiles
     ? 'Skip This Patch & Apply Approved'
-    : (onlyBaseMismatchFiles ? 'Skip Stale Patch & Apply Approved' : 'Skip & Apply');
+    : (onlyUnsafeFiles ? 'Skip Unsafe Patch & Apply Approved' : (onlyBaseMismatchFiles ? 'Skip Stale Patch & Apply Approved' : 'Skip & Apply'));
   const skipReviewOnlyLabel = onlyBaseMismatchFiles
     ? 'Skip Stale Patch & Next'
-    : (onlyOverlappingFiles ? 'Skip Conflicting Patch & Next' : 'Skip This Patch & Next');
+    : (onlyUnsafeFiles ? 'Skip Unsafe Patch & Next' : (onlyOverlappingFiles ? 'Skip Conflicting Patch & Next' : 'Skip This Patch & Next'));
   const skipNoSelectableLabel = hasNextReview
     ? skipReviewOnlyLabel
     : skipApplyLabel;
-  const followUpButtonLabel = noSelectableFiles ? 'Start Follow-up with Prompt' : 'Continue with Prompt';
+  const followUpButtonLabel = noSelectableFiles
+    ? (hasNextReview ? 'Mark Follow-up & Next' : 'Start Follow-up with Prompt')
+    : (hasNextReview ? 'Mark Follow-up & Next' : 'Continue with Prompt');
   const totalFiles = patchSummary.changes.length;
   const defaultFollowUpPrompt = noSelectableFiles
     ? machinePatchFollowUpPrompt(workerReview, itemDetails, patchSummary)
     : '';
   const noSelectableReason = noSelectableFiles
-    ? (overlapCount
+    ? (hasWriteSetViolations
+      ? `No files are selectable because this patch artifact contains ${machineCountLabel(violationCount, 'out-of-write-set change')}. OrPAD will not apply any part of this artifact. Use "${followUpButtonLabel}" to rerun the same work with a safe write set, or "${skipNoSelectableLabel}" only if the change is no longer needed.`
+      : overlapCount
       ? `No files are selectable because every changed file is already owned by another approved patch in this run. This is a batch ordering conflict, not a content-risk review. Use "${skipNoSelectableLabel}" to keep this patch as review-only evidence, or "${followUpButtonLabel}" after the approved batch is applied if the work is still needed.`
       : `No files are selectable because this patch was generated from an older file base. This is a rebase-required state, not a content-risk human review. Use "${followUpButtonLabel}" to rerun the same work against the current workspace, or "${skipNoSelectableLabel}" only if the change is no longer needed.`)
     : '';
@@ -16696,12 +18905,13 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       + `<span title="Files whose base SHA still matches the workspace and are not owned by another approved patch">applicable <strong>${applicableCount}</strong></span>`
       + (overlapCount ? `, <span title="Files already selected by another approved patch in this run">approved-batch overlap <strong>${overlapCount}</strong></span>` : '')
       + (conflictCount ? `, <span title="Files whose base SHA no longer matches the workspace; safe apply requires a rebase/follow-up">rebase required <strong>${conflictCount}</strong></span>` : '')
-      + (applicableCount === 0 ? ` - no files can be selected safely. Use <strong>${escapeHtml(blockedByStaleBase ? followUpButtonLabel : skipNoSelectableLabel)}</strong>${blockedByStaleBase ? ` or ${escapeHtml(skipNoSelectableLabel)}` : ` or ${escapeHtml(followUpButtonLabel)}`} below.` : '')
+      + (hasWriteSetViolations ? `, <span title="The patch artifact includes paths outside the worker write set">write-set violation <strong>${violationCount}</strong></span>` : '')
+      + (applicableCount === 0 ? ` - no files can be selected safely. Use <strong>${escapeHtml((blockedByStaleBase || blockedByUnsafePatch) ? followUpButtonLabel : skipNoSelectableLabel)}</strong>${(blockedByStaleBase || blockedByUnsafePatch) ? ` or ${escapeHtml(skipNoSelectableLabel)}` : ` or ${escapeHtml(followUpButtonLabel)}`} below.` : '')
       + `</div>`
     : '';
   const changeRows = patchSummary.changes.map((change, index) => {
     const approvedOwner = approvedFileOwners.get(change.path) || '';
-    const blocked = change.baseMatches === false || Boolean(approvedOwner);
+    const blocked = hasWriteSetViolations || change.baseMatches === false || Boolean(approvedOwner);
     const warning = blocked && !change.alreadyApplied;
     return `
     <label class="runbook-diagnostic ${warning ? 'warning' : ''}" style="display:block; margin:8px 0;">
@@ -16709,6 +18919,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       <strong>${escapeHtml(change.path)}</strong><br>
       <span>${escapeHtml(String(change.action))}; ${escapeHtml(String(change.beforeLines))} -> ${escapeHtml(String(change.afterLines))} lines (${escapeHtml(String(change.deltaLabel))}); SHA ${escapeHtml(change.beforeSha || 'none')} -> ${escapeHtml(change.afterSha || 'none')}</span>
       ${change.baseMessage ? `<br><span>${escapeHtml(change.baseMessage)}${change.baseMatches === false ? ` Expected ${escapeHtml(change.expectedSha || 'none')}, current ${escapeHtml(change.currentSha || 'none')}.` : ''}</span>` : ''}
+      ${hasWriteSetViolations ? `<br><span>Disabled: this patch artifact contains ${escapeHtml(machineCountLabel(violationCount, 'out-of-write-set change'))}. OrPAD will not apply a partially unsafe patch artifact; start a follow-up run instead.</span>` : ''}
       ${change.baseMatches === false && !change.alreadyApplied ? `<br><span>Disabled: rebase required. This file changed after the patch was generated, so OrPAD will not apply the stale full-file patch.</span>` : ''}
       ${approvedOwner ? `<br><span>Disabled: this file is already selected by another approved patch (${escapeHtml(approvedOwner.split(/[\\/]/).pop() || approvedOwner)}). Apply the approved batch first, then use ${escapeHtml(followUpButtonLabel)} if this patch's change is still needed.</span>` : ''}
     </label>
@@ -16731,12 +18942,16 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
   };
   const introText = onlyBaseMismatchFiles
     ? `This patch still may be useful, but it was generated from an older file base. OrPAD blocked direct apply to avoid overwriting newer workspace changes. Start a follow-up to rebase the same goal onto the current workspace, or skip only if the change is no longer needed.`
+    : (onlyUnsafeFiles
+      ? `This patch still may be useful, but it contains changes outside the worker's allowed write set. OrPAD blocked direct apply to avoid writing unauthorized paths. Start a follow-up with a safe write set, or skip only if the change is no longer needed.`
     : (onlyOverlappingFiles
       ? `This patch changes files already selected by another approved patch in this batch. Apply the approved batch first, then start a follow-up if this work is still needed.`
-      : `The run produced a patch for ${title}. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.`);
+      : `The run produced a patch for ${title}. Choose the files to apply to the workspace, or cancel and keep it as review-only evidence.`));
   const batchReviewText = onlyBaseMismatchFiles
     ? `${reviewCount} patch results. This one is blocked by stale base SHA, so the decision is rebase/follow-up vs skip, not semantic human review.`
-    : `${reviewCount} patch results. Review each worker patch before treating the run as applied.`;
+    : (onlyUnsafeFiles
+      ? `${reviewCount} patch results. This one is blocked by write-set violations, so the decision is follow-up vs skip, not direct apply.`
+      : `${reviewCount} patch results. Review each worker patch before treating the run as applied.`);
   const workspaceStatusText = noSelectableFiles
     ? 'Workspace not changed. Direct apply is disabled for this patch; follow-up records this artifact as review-only evidence before rerunning the work.'
     : (reviewCount > 1
@@ -16752,10 +18967,11 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     ${summaryClassification}
     <div class="runbook-diagnostic warning" data-machine-patch-status ${noSelectableReason ? '' : 'hidden'}>${escapeHtml(noSelectableReason)}</div>
     ${conflictCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(conflictCount, 'file requiring rebase'))}</strong> The workspace file already changed, so its base SHA no longer matches this patch. OrPAD disables direct apply because the patch could overwrite newer work. Use <strong>${escapeHtml(followUpButtonLabel)}</strong> if this change is still needed.</div>` : ''}
+    ${hasWriteSetViolations ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(violationCount, 'write-set violation'))}</strong> The worker patch includes paths outside its declared write set. Direct apply is disabled; use <strong>${escapeHtml(followUpButtonLabel)}</strong> if this change is still needed.</div>` : ''}
     ${overlapCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(overlapCount, 'overlapping file'))}</strong> Another approved patch in this run already selected this file. Two patches cannot safely write the same file in one batch. Apply the approved batch first, then use <strong>${escapeHtml(followUpButtonLabel)}</strong> if this change is still needed.</div>` : ''}
     <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
     <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
-    <div style="max-height:280px; overflow:auto; margin-top:8px;">${changeRows}</div>
+    <div class="machine-patch-change-list">${changeRows}</div>
     <label style="display:block; margin-top:12px;">
       Follow-up prompt
       <textarea class="runbook-task-input" data-machine-patch-prompt rows="${defaultFollowUpPrompt ? 9 : 3}" placeholder="Optional: tell OrPAD what to do in the next Continue run.">${escapeHtml(defaultFollowUpPrompt)}</textarea>
@@ -16783,7 +18999,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
       },
       {
         label: followUpButtonLabel,
-        primary: blockedByStaleBase,
+        primary: blockedByStaleBase || blockedByUnsafePatch,
         onClick: () => runPatchReviewDecision(async () => {
           const prompt = body.querySelector('[data-machine-patch-prompt]')?.value || '';
           if (prompt.trim()) {
@@ -16794,8 +19010,12 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
           if (reviewed) {
             decisionCommitted = true;
             closeFmtModal({ force: true });
-            await applyAllApprovedMachinePatches(runbookPath, runId);
-            await executeSelectedMachineRunStep(runbookPath, runId);
+            if (hasNextReview) {
+              openNextReview();
+              return;
+            }
+            const applied = await applyAllApprovedMachinePatches(runbookPath, runId);
+            if (applied) await executeSelectedMachineRunStep(runbookPath, runId);
           }
         }),
       },
@@ -16803,7 +19023,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
         label: noSelectableFiles
           ? skipNoSelectableLabel
           : (hasNextReview ? 'Approve & Next' : 'Approve & Apply'),
-        primary: !blockedByStaleBase,
+        primary: !blockedByStaleBase && !blockedByUnsafePatch,
         disabled: false,
         onClick: () => {
           if (noSelectableFiles) {
@@ -16918,6 +19138,50 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     createdAt: runState.createdAt || record.createdAt,
     updatedAt: runState.updatedAt || record.updatedAt,
   });
+  const exhaustedQueue = machineBlockedQueueExhaustedDetails(record);
+  const pendingPatchReviews = machinePendingPatchReviewInfos(record);
+  const approvedPatchReviews = machineApprovedPatchReviewInfos(record);
+  const blockedItems = machineBlockedQueueItemSummaries(record);
+  const currentStateLines = [
+    `Run status: ${runState.lifecycleStatus || 'unknown'} / ${runState.summaryStatus || 'unknown'}`,
+    exhaustedQueue
+      ? `Decision: no runnable work remains. ${exhaustedQueue.countText} need review or a follow-up run.`
+      : '',
+    exhaustedQueue
+      ? 'Action: use Start Follow-up from Latest Run to create a fresh run for the blocked items.'
+      : '',
+    pendingPatchReviews.length
+      ? `Decision: ${machineCountLabel(pendingPatchReviews.length, 'patch result')} need patch review.`
+      : '',
+    pendingPatchReviews.length
+      ? 'Action: use Review patches from Latest Run to apply, skip, or mark follow-up for each patch.'
+      : '',
+    approvedPatchReviews.length
+      ? `Decision: ${machineCountLabel(approvedPatchReviews.length, 'approved patch selection')} need workspace apply.`
+      : '',
+    approvedPatchReviews.length
+      ? 'Action: use Apply approved patches from Latest Run.'
+      : '',
+    !exhaustedQueue && !pendingPatchReviews.length && !approvedPatchReviews.length
+      ? 'Decision: inspect the run status and event log for next action.'
+      : '',
+  ].filter(Boolean);
+  const blockedWorkSection = blockedItems.length ? [
+    '## Blocked Work',
+    '',
+    '| Item | Reason | Evidence |',
+    '| --- | --- | --- |',
+    ...blockedItems.map(item => [
+      '|',
+      machineMarkdownCell(item.itemId),
+      '|',
+      machineMarkdownCell(item.reason || 'blocked'),
+      '|',
+      machineMarkdownCell((item.artifactRefs || []).join(', ')),
+      '|',
+    ].join(' ')),
+    '',
+  ] : [];
   const artifactTitleLabel = actualRunLabel.replace(/[<>:"/\\|?*]+/g, '-');
   const table = files.length ? [
     '| Path | Size | Produced by | Registered by | SHA-256 |',
@@ -16971,6 +19235,11 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     '',
     ...metadataLines,
     '',
+    '## Current Decision',
+    '',
+    ...currentStateLines.map(line => `- ${line}`),
+    '',
+    ...blockedWorkSection,
     '## Audit',
     '',
     auditDetails.text,
@@ -16986,6 +19255,7 @@ async function openMachineArtifactViewer(runbookPath, runId) {
     title: `Run Evidence ${artifactTitleLabel}.md`,
     viewType: 'markdown',
     forceUnsaved: false,
+    returnContext: createPipelineReturnContext(runbookPath, { source: 'run-evidence' }),
   });
 }
 
@@ -18008,7 +20278,14 @@ contentEl?.addEventListener('click', async (event) => {
       const artifactPath = probeButton.dataset.artifactPath || '';
       if (artifactPath) {
         try {
-          const opened = await openFileInTab(artifactPath);
+          const runbookPath = probeButton.dataset.runbookPath
+            || probeButton.dataset.path
+            || pipelineContextForPath()?.pipelinePath
+            || selectedRunbookPath
+            || '';
+          const opened = await openFileInTab(artifactPath, {
+            returnContext: createPipelineReturnContext(runbookPath, { source: 'run-artifact' }),
+          });
           if (!opened) {
             // openFileInTab returns false (without throwing) when the
             // backend read fails — typically because the file doesn't
@@ -18161,6 +20438,7 @@ contentEl?.addEventListener('click', async (event) => {
         await skipSelectedMachineNodeAndContinue(runbookPath, runId, nodePath, nodeType, 'user-skipped-from-failed-card');
       } catch (err) {
         notifyFormatError('Skip node', err);
+      } finally {
         probeButton.disabled = false;
         probeButton.textContent = 'Skip node';
       }
@@ -18191,8 +20469,9 @@ contentEl?.addEventListener('click', async (event) => {
           llmApprovalMode: needsLlmBypass ? 'bypass' : '',
         });
       } catch (err) {
-        if (card) card.classList.remove('pipe-interrupt-card--deciding');
         notifyFormatError('Decide approval', err);
+      } finally {
+        if (card) card.classList.remove('pipe-interrupt-card--deciding');
       }
       return;
     }
@@ -18212,6 +20491,7 @@ contentEl?.addEventListener('click', async (event) => {
         await executeSelectedMachineRunStep(targetPath, runId);
       } catch (err) {
         notifyFormatError('Continue run', err);
+      } finally {
         inlineRunbookButton.disabled = false;
         inlineRunbookButton.textContent = previousLabel;
       }
@@ -18223,6 +20503,26 @@ contentEl?.addEventListener('click', async (event) => {
   event.preventDefault();
   event.stopPropagation();
   await handlePipelineRunButton(button);
+});
+
+contextReturnBarEl?.addEventListener('click', async (event) => {
+  const button = event.target.closest?.('[data-context-return-action]');
+  if (!button || !contextReturnBarEl.contains(button)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const previousLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = button.dataset.contextReturnAction === 'details' ? 'Opening...' : 'Returning...';
+  try {
+    await openPipelineReturnTarget(getActiveTab()?.returnContext, button.dataset.contextReturnAction || 'flow');
+  } catch (err) {
+    notifyFormatError('Return to pipeline', err);
+  } finally {
+    if (contextReturnBarEl.contains(button)) {
+      button.disabled = false;
+      button.textContent = previousLabel;
+    }
+  }
 });
 
 orchestrationRunbarSlotEl?.addEventListener('click', (event) => {
@@ -18321,12 +20621,39 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-resume-run') await resumeSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-cancel-run') await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-cancel-claim') await cancelSelectedMachineClaim(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.claimId || '', button.dataset.itemId || '');
+    else if (action === 'machine-open-patch-review') {
+      const runId = button.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const record = runId
+        ? (await refreshMachineRunPanelSnapshot(targetPath, runId, { suppressDecisionPrompts: true }) || lastMachineRunRecord)
+        : lastMachineRunRecord;
+      const opened = await maybeOpenMachinePatchReviewModal(targetPath, record, { force: true });
+      if (!opened) {
+        notifyFormatError('Review patches', new Error('No pending patch review could be opened. The run may have changed; refresh runs and check the Latest Run summary.'));
+      }
+    }
+    else if (action === 'machine-apply-approved-patches') {
+      const runId = button.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const record = runId
+        ? (await refreshMachineRunPanelSnapshot(targetPath, runId, { suppressDecisionPrompts: true }) || lastMachineRunRecord)
+        : lastMachineRunRecord;
+      await finalizePatchReviewQueue(targetPath, runId, record);
+    }
+    else if (action === 'machine-start-follow-up') {
+      const runId = button.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+      const record = runId
+        ? (await refreshMachineRunPanelSnapshot(targetPath, runId, { suppressDecisionPrompts: true }) || lastMachineRunRecord)
+        : lastMachineRunRecord;
+      const opened = await openMachineFollowUpPromptModal(targetPath, record);
+      if (!opened) {
+        notifyFormatError('Start follow-up', new Error('No run record is available for follow-up. Refresh runs and try again.'));
+      }
+    }
     else if (action === 'machine-open-blocked-decision') {
       const runId = button.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
-      const modalWasHidden = !fmtModalEl || fmtModalEl.classList.contains('hidden');
-      const record = runId ? (await refreshMachineRunPanelSnapshot(targetPath, runId) || lastMachineRunRecord) : lastMachineRunRecord;
-      const openedByRefresh = modalWasHidden && fmtModalEl && !fmtModalEl.classList.contains('hidden');
-      const opened = openedByRefresh || await maybeOpenMachineBlockedDecisionModal(targetPath, record, { force: true });
+      const record = runId
+        ? (await refreshMachineRunPanelSnapshot(targetPath, runId, { suppressDecisionPrompts: true }) || lastMachineRunRecord)
+        : lastMachineRunRecord;
+      const opened = await maybeOpenMachineBlockedDecisionModal(targetPath, record, { force: true });
       if (!opened) {
         notifyFormatError('Resolve blocker', new Error('No blocked-run decision could be opened. If another modal is open, close it first, then try Resolve Blocker again.'));
       }
@@ -18349,8 +20676,9 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     }
     else if (action === 'toggle-replay-stick') {
       const runId = button.dataset.runId || '';
+      const path = button.dataset.path || targetPath;
       if (runId) {
-        setReplayStickEnabled(runId, !isReplayStickEnabled(runId));
+        setReplayStickEnabled(path, runId, !isReplayStickEnabled(path, runId));
         renderRunbooksPanel();
       }
     }
@@ -18362,10 +20690,11 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'replay-live') {
       // Phase 2.4: exit time travel back to the live view.
       const runId = button.dataset.runId || '';
+      const path = button.dataset.path || targetPath;
       if (runId) {
-        clearReplayPosition(runId);
+        clearReplayPosition(path, runId);
         renderRunbooksPanel();
-        rerenderPipelinePreviewIfActive(targetPath);
+        rerenderPipelinePreviewIfActive(path);
       }
     }
     else if (action === 'enable-machine') {
@@ -18378,11 +20707,9 @@ runbooksContentEl?.addEventListener('click', async (event) => {
           setRunbookCache(machineRunRecordCache, targetPath, lastMachineRunRecord);
         }
         renderRunbooksPanel();
-        if (latest) scheduleMachineRunDecisionPrompts(targetPath, lastMachineRunRecord);
       }
     }
     else if (action === 'refresh-run-list') {
-      console.log('[refresh-run-list] start', { targetPath, workspacePath, hasListRuns: Boolean(window.orpad?.machine?.listRuns), enabled: machineRuntimeStatus?.enabled });
       if (!workspacePath) {
         notifyFormatError('Runbooks', new Error('Workspace path is not set. Open a workspace first.'));
         return;
@@ -18409,7 +20736,6 @@ runbooksContentEl?.addEventListener('click', async (event) => {
         notifyFormatError('Runbooks', e);
         return;
       }
-      console.log('[refresh-run-list] listRuns result', listed);
       if (!listed?.success) {
         notifyFormatError('Runbooks', new Error(`listRuns failed: ${listed?.code || 'unknown'} ${listed?.error || listed?.message || ''}`));
         return;
@@ -18424,7 +20750,6 @@ runbooksContentEl?.addEventListener('click', async (event) => {
       const latestId = runs[0]?.runId;
       try {
         const record = await loadMachineRunRecord(targetPath, latestId);
-        console.log('[refresh-run-list] loaded record', { runId: latestId, ok: Boolean(record), lifecycle: record?.runState?.lifecycleStatus });
         if (record) {
           lastMachineRunRecord = record;
           setRunbookCache(machineRunRecordCache, targetPath, lastMachineRunRecord);
@@ -18434,9 +20759,6 @@ runbooksContentEl?.addEventListener('click', async (event) => {
         notifyFormatError('Runbooks', e);
       }
       renderRunbooksPanel();
-      if (lastMachineRunRecord?.runState?.runId || lastMachineRunRecord?.runId) {
-        scheduleMachineRunDecisionPrompts(targetPath, lastMachineRunRecord);
-      }
     }
   } catch (err) {
     notifyFormatError('Runbooks', err);
@@ -18474,14 +20796,14 @@ runbooksContentEl?.addEventListener('input', (event) => {
     // (so the slider track reflects the new value) and debounce the
     // re-render so dragging is smooth.
     const runId = event.target.dataset.runId || '';
+    const path = event.target.dataset.path || selectedRunbookPath || '';
     const value = Number(event.target.value) || 1;
     if (!runId) return;
-    setReplayPosition(runId, value);
+    setReplayPosition(path, runId, value);
     if (machineReplaySliderDebounce) clearTimeout(machineReplaySliderDebounce);
     machineReplaySliderDebounce = setTimeout(() => {
       machineReplaySliderDebounce = null;
       renderRunbooksPanel();
-      const path = selectedRunbookPath;
       if (path) rerenderPipelinePreviewIfActive(path);
     }, 80);
   }
@@ -18698,15 +21020,24 @@ function renderSubTree(items, depth, container) {
 }
 
 function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-async function openFileInTab(filePath) {
+async function openFileInTab(filePath, options = {}) {
   const existing = findTabByPath(filePath);
-  if (existing) { switchToTab(existing.id); return true; }
+  const returnContext = returnContextForFileOpen(filePath, options);
+  if (existing) {
+    if (Object.prototype.hasOwnProperty.call(options, 'returnContext')) {
+      existing.returnContext = returnContext;
+    } else if (!existing.returnContext && returnContext) {
+      existing.returnContext = returnContext;
+    }
+    switchToTab(existing.id);
+    return true;
+  }
   const result = await window.orpad.readFile(filePath);
   if (result.error) return false;
-  createTab(result.filePath, result.dirPath, result.content);
+  createTab(result.filePath, result.dirPath, result.content, undefined, { returnContext });
   return true;
 }
 
@@ -19039,7 +21370,7 @@ function findSymbolLine(symbol) {
 }
 
 async function openFileFromQuickOpen(filePath, options = {}) {
-  const opened = await openFileInTab(filePath);
+  const opened = await openFileInTab(filePath, options);
   if (opened === false) return;
   requestAnimationFrame(() => {
     const line = options.line || findSymbolLine(options.symbol);
@@ -20151,6 +22482,9 @@ function openFmtModal({ title, body, footer, onClose }) {
     fmtModalOnClose = null;
     previousOnClose?.();
   }
+  delete fmtModalEl.dataset.machineModalKind;
+  delete fmtModalEl.dataset.machineBlockedDecisionKey;
+  delete fmtModalEl.dataset.machineBlockedRunId;
   fmtModalOnClose = typeof onClose === 'function' ? onClose : null;
   fmtModalTitleEl.textContent = title;
   fmtModalBodyEl.innerHTML = '';

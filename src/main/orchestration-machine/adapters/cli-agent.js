@@ -297,6 +297,103 @@ function resultStatusForProcess(processResult, patch, request = {}) {
   return 'done';
 }
 
+function normalizeWorkerResultStatus(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+  if (!normalized) return '';
+  if (normalized === 'done') return 'done';
+  if (['blocked', 'partial', 'incomplete', 'needs-action', 'needs-review'].includes(normalized)) return 'blocked';
+  if (['failed', 'failure', 'error'].includes(normalized)) return 'failed';
+  if (['approval-required', 'approvalrequired', 'requires-approval', 'permission-required'].includes(normalized)) {
+    return 'approval-required';
+  }
+  if (['queued', 'queue'].includes(normalized)) return 'queued';
+  if (['requeued', 're-queued', 'requeue'].includes(normalized)) return 'requeued';
+  if (['rejected', 'reject'].includes(normalized)) return 'rejected';
+  return '';
+}
+
+function workerResultDocumentFromValue(value, depth = 0, seen = new Set()) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 4) return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+  const status = normalizeWorkerResultStatus(value.status);
+  if (status && (
+    value.schemaVersion === 'orpad.workerResult.v1'
+    || value.summary !== undefined
+    || value.changedFiles !== undefined
+    || value.patchArtifact !== undefined
+  )) {
+    return value;
+  }
+  for (const key of ['workerResult', 'result', 'payload', 'data', 'message']) {
+    const nested = value[key];
+    const found = workerResultDocumentFromValue(nested, depth + 1, seen);
+    if (found) return found;
+  }
+  return null;
+}
+
+function workerResultDocumentFromProcessStdout(processResult = {}) {
+  for (const doc of parseJsonDocuments(processResult.stdout)) {
+    const result = workerResultDocumentFromValue(doc);
+    if (result) return result;
+  }
+  return null;
+}
+
+function mergeWorkerStatus(processStatus, parsedStatus) {
+  const normalizedProcess = normalizeWorkerResultStatus(processStatus) || 'failed';
+  const normalizedParsed = normalizeWorkerResultStatus(parsedStatus);
+  if (!normalizedParsed) return normalizedProcess;
+  if (normalizedProcess === 'approval-required' || normalizedProcess === 'failed') return normalizedProcess;
+  if (normalizedProcess !== 'done') return normalizedProcess;
+  return normalizedParsed;
+}
+
+function nonEmptyString(value) {
+  const text = String(value || '').trim();
+  return text || '';
+}
+
+function stringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(item => String(item || '').trim()).filter(Boolean);
+}
+
+function extractedWorkerEvidenceFields(parsed = {}, actualChangedFiles = []) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const evidence = {};
+  for (const field of [
+    'failingSymptom',
+    'failureSymptom',
+    'rootCause',
+    'rootCauses',
+    'verificationCommands',
+    'validationCommands',
+    'residualRisk',
+    'residualRisks',
+    'workerEvidence',
+    'itemEvidence',
+    'contractEvidence',
+    'evidence',
+    'blockedReason',
+    'deferredReason',
+    'nextAction',
+  ]) {
+    if (parsed[field] !== undefined) evidence[field] = parsed[field];
+  }
+  if (actualChangedFiles.length) {
+    evidence.filesChanged = actualChangedFiles;
+  } else if (parsed.filesChanged !== undefined) {
+    evidence.reportedFilesChanged = parsed.filesChanged;
+  }
+  if (parsed.status !== undefined) evidence.reportedStatus = String(parsed.status || '');
+  return evidence;
+}
+
 function createCliAgentAdapter(options = {}) {
   return {
     adapter: 'cli-agent-overlay',
@@ -399,8 +496,12 @@ function createCliAgentAdapter(options = {}) {
 
         const expectedChangedFiles = normalizeExpectedChangedFiles(request);
         const missingExpectedChanges = missingExpectedChangedFiles(patch, expectedChangedFiles);
-        const status = resultStatusForProcess(processResult, patch, request);
+        const parsedWorkerResult = workerResultDocumentFromProcessStdout(processResult);
+        const processStatus = resultStatusForProcess(processResult, patch, request);
+        const status = mergeWorkerStatus(processStatus, parsedWorkerResult?.status);
         const approvalRequired = status === 'approval-required';
+        const changedFiles = (patch.changes || []).map(change => change.path);
+        const parsedSummary = nonEmptyString(parsedWorkerResult?.summary);
         return {
           schemaVersion: 'orpad.workerResult.v1',
           adapterCallId: request.adapterCallId,
@@ -409,16 +510,23 @@ function createCliAgentAdapter(options = {}) {
           status,
           summary: approvalRequired
             ? 'CLI provider requested tool permission. Approve to retry this work item with the run bypass option, or decline to keep it blocked.'
-            : (status === 'done'
+            : (parsedSummary || (status === 'done'
               ? 'CLI adapter completed in overlay and produced a Machine-owned result.'
               : (
               processResult.spawnError
                 ? `CLI adapter process could not start: ${processResult.spawnError.message}`
                 : 'CLI adapter result requires Machine review before any canonical mutation.'
-              )),
+              ))),
           artifacts,
           patchArtifact: patchArtifactPath,
-          changedFiles: (patch.changes || []).map(change => change.path),
+          changedFiles,
+          ...extractedWorkerEvidenceFields(parsedWorkerResult, changedFiles),
+          ...(parsedWorkerResult?.verificationCommands !== undefined ? {
+            verificationCommands: parsedWorkerResult.verificationCommands,
+          } : {}),
+          ...(parsedWorkerResult?.validationCommands !== undefined ? {
+            validationCommands: parsedWorkerResult.validationCommands,
+          } : {}),
           ...(approvalRequired ? {
             requestedCapabilities: ['llm-cli-tool-permission', 'workspace-overlay-write'],
             approvalRequest: {
@@ -445,6 +553,10 @@ function createCliAgentAdapter(options = {}) {
             writeSetViolationCount: (patch.violations || []).length,
             expectedChangedFiles,
             missingExpectedChanges,
+            parsedWorkerStatus: parsedWorkerResult?.status || '',
+            parsedWorkerResultStatus: status,
+            parsedWorkerResultDetected: Boolean(parsedWorkerResult),
+            parsedWorkerResultSummary: parsedSummary,
           }],
         };
       } finally {
@@ -471,5 +583,6 @@ module.exports = {
   processLooksApprovalRequired,
   registerJsonArtifact,
   resultStatusForProcess,
+  workerResultDocumentFromProcessStdout,
   sameResolvedPath,
 };

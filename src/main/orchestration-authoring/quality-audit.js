@@ -20,11 +20,25 @@ const GATE_CONDITIONS = new Set([
   'queue-not-empty',
 ]);
 const PATCH_REVIEW_CONDITIONS = new Set(['accepted', 'accept', 'pass', 'continue', 'rejected', 'reject', 'revise']);
+const PATCH_ACCEPT_CONDITIONS = new Set(['accepted', 'accept', 'pass', 'continue']);
+const PATCH_REJECT_CONDITIONS = new Set(['rejected', 'reject', 'revise']);
 const BARRIER_CONDITIONS = new Set(['pass', 'continue', 'partial', 'fail']);
+const BARRIER_PARTIAL_FAILURE_POLICIES = new Set(['fail', 'continue-with-warning', 'block']);
 const DECISION_TYPES = new Set(['orpad.selector', 'orpad.gate', 'orpad.patchReview', 'orpad.barrier']);
 const PLACEHOLDER_PATTERN = /TODO\s*(?:\u2014|-)?\s*author|Placeholder created by generator|Placeholder leaf|TODO placeholder/i;
+const REQUIRED_NODE_PACK_UNAVAILABLE_CODE = 'NODE_PACK_AUTHORING_REQUIRED_UNAVAILABLE';
 const CONTENT_QA_NODE_PACK_ID = 'orpad.starter.content-qa';
+const WORKER_RESULT_SCHEMA_VERSION = 'orpad.workerResult.v1';
+const REQUIRED_ITEM_EVIDENCE_FIELDS = Object.freeze([
+  'failingSymptom',
+  'rootCause',
+  'filesChanged',
+  'verificationCommands',
+  'residualRisk',
+]);
+const HARD_ITEM_EVIDENCE_ENFORCEMENT = 'hard-required-by-artifact-contract';
 const CONTENT_GRAPH_INTENT_PATTERN = /\b(readme|docs?|documentation|markdown|content|tutorial|lesson|lecture|course|slides?|copy|localization|locale|onboarding|learning material|course material)\b|\uBB38\uC11C|\uAC15\uC758|\uC790\uB8CC|\uC2AC\uB77C\uC774\uB4DC|\uD559\uC2B5|\uAD50\uC721|\uC218\uC5C5|\uD29C\uD1A0\uB9AC\uC5BC|\uB9C8\uD06C\uB2E4\uC6B4|\uBC88\uC5ED|\uD604\uC9C0\uD654/i;
+const FORK_JOIN_DISCOVERY_INTENT_PATTERN = /\bfork[-\s]?join\b|\bindependent probes?\b|\bparallel probes?\b|\bfork[-\s]?join discovery\b/i;
 const EDITORIAL_GATE_PATTERN = /\b(editorial|voice|tone|style|density|readability|audience|duplicate|duplication|repetition|rewrite|polish|presentation|slide|role[-\s]?separat|human-authored|ai-sounding|model meta|over-explanation)\b/i;
 const EDITORIAL_DIMENSION_PATTERNS = {
   voice: /\b(voice|tone|style|human-authored|ai-sounding|model meta|generic model|summary phrases|copy)\b/i,
@@ -79,7 +93,10 @@ function nodeId(node) {
 }
 
 function transitionCondition(edge) {
-  return String(edge?.condition || '').trim();
+  return String(edge?.condition || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
 }
 
 function nodeText(node) {
@@ -121,6 +138,176 @@ function pipelineDeclaresNodePack(pipeline, packId) {
     .some(pack => String(pack?.id || '').trim() === packId);
 }
 
+function selectedNodePackIds(pipeline) {
+  const selection = Array.isArray(pipeline?.metadata?.orchestrationAuthoring?.nodePackSelection)
+    ? pipeline.metadata.orchestrationAuthoring.nodePackSelection
+    : [];
+  return [...new Set(selection
+    .map(pack => String(pack?.id || '').trim())
+    .filter(Boolean))];
+}
+
+function nodePackSelectionDiagnostics(pipeline) {
+  return Array.isArray(pipeline?.metadata?.orchestrationAuthoring?.nodePackSelectionDiagnostics)
+    ? pipeline.metadata.orchestrationAuthoring.nodePackSelectionDiagnostics
+    : [];
+}
+
+function auditRequiredNodePackSelectionDiagnostics(pipeline, diagnostics) {
+  const requiredUnavailable = nodePackSelectionDiagnostics(pipeline)
+    .filter(item => item?.code === REQUIRED_NODE_PACK_UNAVAILABLE_CODE);
+  for (const item of requiredUnavailable) {
+    const packId = String(item.packId || item.nodePackId || '').trim();
+    diagnostics.push(diagnostic(
+      'error',
+      REQUIRED_NODE_PACK_UNAVAILABLE_CODE,
+      packId
+        ? `Required node pack ${packId} was not available or eligible for Generate authoring.`
+        : 'A required node pack was not available or eligible for Generate authoring.',
+      {
+        ...(packId ? { packId } : {}),
+        selectionDiagnostic: item,
+      },
+    ));
+  }
+}
+
+function nodePackReferenceIds(node) {
+  const config = node?.config || {};
+  return [...new Set([
+    config.sourceNodePack,
+    ...(Array.isArray(config.supportingNodePacks) ? config.supportingNodePacks : []),
+  ].map(item => String(item || '').trim()).filter(Boolean))];
+}
+
+function nodeReferencesPack(node, packId) {
+  return nodePackReferenceIds(node).includes(String(packId || '').trim());
+}
+
+function nodeLocation(graph, node) {
+  return { graphRef: graph.graphRef, nodeId: node.id, nodeType: nodeType(node) };
+}
+
+function stringArray(value) {
+  return Array.isArray(value)
+    ? value.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+function artifactContractNodes(graphSet) {
+  const out = [];
+  for (const graph of graphSet.graphs || []) {
+    for (const node of graph.nodes || []) {
+      if (nodeType(node) === 'orpad.artifactContract') out.push({ graph, node });
+    }
+  }
+  return out;
+}
+
+function itemEvidenceContractForNode(node) {
+  const contract = node?.config?.itemEvidenceContract;
+  return contract && typeof contract === 'object' && !Array.isArray(contract) ? contract : null;
+}
+
+function auditItemEvidenceContracts(graphSet, diagnostics) {
+  const artifactNodes = artifactContractNodes(graphSet);
+  const hasWorkerLoop = (graphSet.graphs || [])
+    .some(graph => (graph.nodes || []).some(node => nodeType(node) === 'orpad.workerLoop'));
+  if (!artifactNodes.length && hasWorkerLoop) {
+    diagnostics.push(diagnostic(
+      'error',
+      'AUTHORING_ITEM_EVIDENCE_CONTRACT_MISSING',
+      'Pipelines with workerLoop nodes must include an artifactContract with config.itemEvidenceContract.',
+    ));
+    return;
+  }
+  for (const { graph, node } of artifactNodes) {
+    const contract = itemEvidenceContractForNode(node);
+    if (!contract) {
+      diagnostics.push(diagnostic(
+        'error',
+        'AUTHORING_ITEM_EVIDENCE_CONTRACT_MISSING',
+        'artifactContract nodes must declare config.itemEvidenceContract for completed worker task evidence.',
+        nodeLocation(graph, node),
+      ));
+      continue;
+    }
+    const requiredPerCompletedTask = stringArray(contract.requiredPerCompletedTask);
+    const missing = REQUIRED_ITEM_EVIDENCE_FIELDS.filter(field => !requiredPerCompletedTask.includes(field));
+    if (missing.length) {
+      diagnostics.push(diagnostic(
+        'error',
+        'AUTHORING_ITEM_EVIDENCE_CONTRACT_REQUIRED_FIELDS_MISSING',
+        'artifactContract config.itemEvidenceContract.requiredPerCompletedTask must hard-require completed task evidence fields.',
+        {
+          ...nodeLocation(graph, node),
+          missingFields: missing,
+          requiredFields: REQUIRED_ITEM_EVIDENCE_FIELDS,
+        },
+      ));
+    }
+    if (String(contract.enforcement || '').trim() !== HARD_ITEM_EVIDENCE_ENFORCEMENT) {
+      diagnostics.push(diagnostic(
+        'error',
+        'AUTHORING_ITEM_EVIDENCE_CONTRACT_ENFORCEMENT_WEAK',
+        'artifactContract config.itemEvidenceContract.enforcement must mark per-task evidence as hard-required by the artifact contract.',
+        {
+          ...nodeLocation(graph, node),
+          enforcement: contract.enforcement ?? null,
+          expected: HARD_ITEM_EVIDENCE_ENFORCEMENT,
+        },
+      ));
+    }
+    if (String(contract.workerResultSchema || '').trim() !== WORKER_RESULT_SCHEMA_VERSION) {
+      diagnostics.push(diagnostic(
+        'error',
+        'AUTHORING_ITEM_EVIDENCE_CONTRACT_SCHEMA_MISMATCH',
+        'artifactContract config.itemEvidenceContract.workerResultSchema must match the managed worker result schema.',
+        {
+          ...nodeLocation(graph, node),
+          workerResultSchema: contract.workerResultSchema ?? null,
+          expected: WORKER_RESULT_SCHEMA_VERSION,
+        },
+      ));
+    }
+  }
+
+  if (!artifactNodes.length) return;
+  const acceptableRefs = new Set([
+    'orpad.artifactContract.itemEvidenceContract',
+    ...artifactNodes.map(({ node }) => `${node.id}.itemEvidenceContract`),
+  ]);
+  const artifactRequiredFields = new Set(REQUIRED_ITEM_EVIDENCE_FIELDS);
+  for (const graph of graphSet.graphs || []) {
+    for (const node of graph.nodes || []) {
+      if (nodeType(node) !== 'orpad.workerLoop') continue;
+      const config = node.config || {};
+      const workerFields = stringArray(config.requiredResultFields);
+      const missing = REQUIRED_ITEM_EVIDENCE_FIELDS.filter(field => !workerFields.includes(field));
+      const evidenceContractRef = String(config.evidenceContractRef || '').trim();
+      if (
+        String(config.resultSchema || '').trim() !== WORKER_RESULT_SCHEMA_VERSION
+        || !acceptableRefs.has(evidenceContractRef)
+        || missing.some(field => artifactRequiredFields.has(field))
+      ) {
+        diagnostics.push(diagnostic(
+          'error',
+          'AUTHORING_WORKER_EVIDENCE_CONTRACT_MISMATCH',
+          'workerLoop output schema and requiredResultFields must match artifactContract itemEvidenceContract.',
+          {
+            ...nodeLocation(graph, node),
+            resultSchema: config.resultSchema ?? null,
+            expectedResultSchema: WORKER_RESULT_SCHEMA_VERSION,
+            evidenceContractRef: evidenceContractRef || null,
+            acceptedEvidenceContractRefs: [...acceptableRefs],
+            missingFields: missing,
+          },
+        ));
+      }
+    }
+  }
+}
+
 function nodePackPromptMatched(selection) {
   return (Array.isArray(selection?.matchedSignals) ? selection.matchedSignals : [])
     .some(signal => (
@@ -135,6 +322,7 @@ function pipelineIntentText(pipeline) {
     pipeline?.description,
     pipeline?.metadata?.orchestrationAuthoring?.prompt,
     pipeline?.metadata?.orchestrationAuthoring?.taskText,
+    pipeline?.metadata?.orchestrationAuthoring?.authoringNotes,
   ].map(item => String(item || '')).join('\n');
 }
 
@@ -230,6 +418,10 @@ function auditGraphRuntimeContracts(graph, graphSet, diagnostics) {
           diagnostics.push(diagnostic('error', 'AUTHORING_BARRIER_WAIT_FOR_UNKNOWN', 'Barrier waitFor entry must reference a node in the same graph.', { graphRef: graph.graphRef, nodeId: id, dependency: dep }));
         }
       }
+      const onPartialFailure = String(config.onPartialFailure || 'continue-with-warning').trim();
+      if (!BARRIER_PARTIAL_FAILURE_POLICIES.has(onPartialFailure)) {
+        diagnostics.push(diagnostic('error', 'AUTHORING_BARRIER_ON_PARTIAL_FAILURE_UNSUPPORTED', 'Barrier config.onPartialFailure must be one of fail, continue-with-warning, or block.', { graphRef: graph.graphRef, nodeId: id, onPartialFailure }));
+      }
     }
 
     if (type === 'orpad.graph') {
@@ -297,9 +489,47 @@ function auditGraphRuntimeContracts(graph, graphSet, diagnostics) {
       }));
     }
   }
+
+  const outgoingByDecisionCondition = new Map();
+  for (const edge of graph.transitions || []) {
+    const source = nodeById.get(String(edge.from || ''));
+    const sourceType = nodeType(source);
+    const condition = transitionCondition(edge);
+    if (!condition || !DECISION_TYPES.has(sourceType)) continue;
+    const key = `${edge.from}\u0000${condition}`;
+    if (!outgoingByDecisionCondition.has(key)) {
+      outgoingByDecisionCondition.set(key, {
+        condition,
+        edges: [],
+        nodeId: edge.from,
+        sourceType,
+        targets: new Set(),
+      });
+    }
+    const group = outgoingByDecisionCondition.get(key);
+    group.edges.push(edge);
+    group.targets.add(String(edge.to || ''));
+  }
+  for (const group of outgoingByDecisionCondition.values()) {
+    if (group.targets.size <= 1) continue;
+    diagnostics.push(diagnostic(
+      'error',
+      'AUTHORING_DECISION_CONDITION_AMBIGUOUS',
+      'Decision-emitting nodes must not route the same condition to multiple targets.',
+      {
+        graphRef: graph.graphRef,
+        nodeId: group.nodeId,
+        sourceType: group.sourceType,
+        condition: group.condition,
+        targets: [...group.targets].filter(Boolean),
+        transitionIds: group.edges.map(edge => String(edge.id || '')).filter(Boolean),
+      },
+    ));
+  }
 }
 
 function auditPatchReviewContracts(graph, diagnostics) {
+  const nodeById = new Map((graph.nodes || []).map(node => [nodeId(node), node]));
   for (const node of graph.nodes || []) {
     if (nodeType(node) !== 'orpad.patchReview') continue;
     const outgoing = (graph.transitions || []).filter(edge => edge.from === node.id);
@@ -311,7 +541,266 @@ function auditPatchReviewContracts(graph, diagnostics) {
         conditions: [...conditions].filter(Boolean),
       }));
     }
+    const rejectedEdges = outgoing.filter(edge => transitionCondition(edge) === 'rejected');
+    for (const edge of rejectedEdges) {
+      const target = nodeById.get(String(edge.to || ''));
+      if (patchReviewRejectedTargetRepairsWork(node, target, graph, nodeById)) continue;
+      diagnostics.push(diagnostic(
+        'error',
+        'AUTHORING_PATCH_REVIEW_REJECT_TARGET_UNSAFE',
+        'patchReview rejected branches must route back to a worker repair loop instead of artifact, exit, or non-repair flow.',
+        {
+          graphRef: graph.graphRef,
+          nodeId: node.id,
+          targetId: edge.to || null,
+          targetType: nodeType(target) || null,
+          acceptedTargets: [
+            'orpad.workerLoop',
+            'config.repairWorkerRef',
+            'config.repairTargetRefs',
+            'config.patchRevisionLoopRefs',
+          ],
+        },
+      ));
+    }
   }
+}
+
+function patchReviewRepairTargetRefs(node) {
+  const config = node?.config || {};
+  return new Set([
+    config.repairWorkerRef,
+    config.rejectedTargetRef,
+    config.patchRevisionLoopRef,
+    ...(Array.isArray(config.repairWorkerRefs) ? config.repairWorkerRefs : []),
+    ...(Array.isArray(config.repairTargetRefs) ? config.repairTargetRefs : []),
+    ...(Array.isArray(config.patchRevisionLoopRefs) ? config.patchRevisionLoopRefs : []),
+  ].map(item => String(item || '').trim()).filter(Boolean));
+}
+
+function targetCanReachWorkerLoop(target, graph, nodeById) {
+  const terminalTypes = new Set(['orpad.artifactContract', 'orpad.exit']);
+  const queue = [nodeId(target)];
+  const seen = new Set();
+  while (queue.length) {
+    const currentId = queue.shift();
+    if (!currentId || seen.has(currentId)) continue;
+    seen.add(currentId);
+    const current = nodeById.get(currentId);
+    const type = nodeType(current);
+    if (type === 'orpad.workerLoop') return true;
+    if (terminalTypes.has(type)) continue;
+    for (const edge of graph.transitions || []) {
+      if (String(edge.from || '') === currentId) queue.push(String(edge.to || ''));
+    }
+  }
+  return false;
+}
+
+function patchReviewRejectedTargetRepairsWork(reviewNode, target, graph, nodeById) {
+  if (!target) return false;
+  if (nodeType(target) === 'orpad.workerLoop') return true;
+  const targetId = nodeId(target);
+  if (!targetId || !patchReviewRepairTargetRefs(reviewNode).has(targetId)) return false;
+  return targetCanReachWorkerLoop(target, graph, nodeById);
+}
+
+function patchReviewAcceptedCondition(condition) {
+  return PATCH_ACCEPT_CONDITIONS.has(transitionCondition({ condition }));
+}
+
+function patchReviewRejectedCondition(condition) {
+  return PATCH_REJECT_CONDITIONS.has(transitionCondition({ condition }));
+}
+
+function analyzeGraphComplexity(nodes, transitions) {
+  const graphNodes = Array.isArray(nodes) ? nodes : [];
+  const graphTransitions = Array.isArray(transitions) ? transitions : [];
+  const nodeIds = graphNodes.map(node => nodeId(node));
+  const nodeIndex = new Map(nodeIds.map((id, index) => [id, index]));
+  const nodeById = new Map(graphNodes.map((node, index) => [nodeIds[index], node]));
+  const typesSet = new Set(graphNodes.map(node => nodeType(node)).filter(Boolean));
+  const outDegree = new Map();
+  const outgoingByNode = new Map();
+  for (const transition of graphTransitions) {
+    const from = String(transition?.from || '').trim();
+    if (!from) continue;
+    outDegree.set(from, (outDegree.get(from) || 0) + 1);
+    if (!outgoingByNode.has(from)) outgoingByNode.set(from, []);
+    outgoingByNode.get(from).push(transition);
+  }
+
+  const branchNodes = graphNodes.filter(node => (outDegree.get(nodeId(node)) || 0) > 1);
+  const loopBackCount = graphTransitions.filter(transition => {
+    const fromIdx = nodeIndex.get(String(transition?.from || '').trim());
+    const toIdx = nodeIndex.get(String(transition?.to || '').trim());
+    return typeof fromIdx === 'number' && typeof toIdx === 'number' && toIdx <= fromIdx;
+  }).length;
+  const subGraphCount = graphNodes.filter(node => ['orpad.graph', 'orpad.tree'].includes(nodeType(node))).length;
+  const barrierCount = graphNodes.filter(node => nodeType(node) === 'orpad.barrier').length;
+  const gateCount = graphNodes.filter(node => nodeType(node) === 'orpad.gate').length;
+  const selectorCount = graphNodes.filter(node => nodeType(node) === 'orpad.selector').length;
+  const workerLoopCount = graphNodes.filter(node => nodeType(node) === 'orpad.workerLoop').length;
+  const workQueueCount = graphNodes.filter(node => nodeType(node) === 'orpad.workQueue').length;
+  const dispatcherCount = graphNodes.filter(node => nodeType(node) === 'orpad.dispatcher').length;
+  const patchReviewNodes = graphNodes.filter(node => nodeType(node) === 'orpad.patchReview');
+  const patchReviewCount = patchReviewNodes.length;
+
+  const drainTargets = new Set(
+    graphNodes
+      .filter(node => ['orpad.dispatcher', 'orpad.triage', 'orpad.workQueue'].includes(nodeType(node)))
+      .map(node => nodeId(node)),
+  );
+  const hasQueueDrainLoop = graphTransitions.some(transition => {
+    const fromNode = nodeById.get(String(transition?.from || '').trim());
+    return nodeType(fromNode) === 'orpad.gate' && drainTargets.has(String(transition?.to || '').trim());
+  });
+
+  const patchReviewsWithRejectLoop = patchReviewNodes.filter(node => {
+    const outgoing = outgoingByNode.get(nodeId(node)) || [];
+    return outgoing.some(transition => patchReviewAcceptedCondition(transitionCondition(transition)))
+      && outgoing.some(transition => (
+        patchReviewRejectedCondition(transitionCondition(transition))
+        && patchReviewRejectedTargetRepairsWork(
+          node,
+          nodeById.get(String(transition?.to || '').trim()),
+          { transitions: graphTransitions },
+          nodeById,
+        )
+      ));
+  });
+  const patchReviewsLackingRejectLoop = patchReviewNodes.filter(node => !patchReviewsWithRejectLoop.includes(node));
+
+  const selectorsConvergingImmediately = graphNodes
+    .filter(node => nodeType(node) === 'orpad.selector')
+    .filter(node => {
+      const out = outgoingByNode.get(nodeId(node)) || [];
+      if (out.length < 2) return false;
+      const downstreamTargets = out.map(transition => {
+        const nextOut = outgoingByNode.get(String(transition?.to || '').trim()) || [];
+        return nextOut.length === 1 ? String(nextOut[0]?.to || '').trim() : String(transition?.to || '').trim();
+      });
+      return new Set(downstreamTargets).size === 1;
+    })
+    .map(node => nodeId(node));
+
+  const patternsDetected = [];
+  if (loopBackCount > 0) patternsDetected.push('ralph-loop');
+  if (barrierCount > 0 || (selectorCount > 0 && workerLoopCount > 1)) patternsDetected.push('fork-join');
+  if (gateCount >= 2 || (gateCount >= 1 && loopBackCount > 0)) patternsDetected.push('cross-validation');
+  if (subGraphCount > 0) patternsDetected.push('subgraph-composition');
+  if (workerLoopCount > 1) patternsDetected.push('multi-worker');
+  if (hasQueueDrainLoop) patternsDetected.push('queue-drain-loop');
+  if (patchReviewsWithRejectLoop.length > 0) patternsDetected.push('patch-review-reject-loop');
+
+  const branchPointCount = branchNodes.length;
+  const isLinearChain = (
+    graphNodes.length > 0
+    && branchPointCount === 0
+    && loopBackCount === 0
+    && subGraphCount === 0
+    && barrierCount === 0
+    && selectorCount === 0
+  );
+
+  const warnings = [];
+  if (isLinearChain) {
+    warnings.push('Generated graph is a flat linear chain. If the user request involves iteration, parallel sub-scopes, verification, retrieval, hierarchy, or multi-agent reasoning, the pipeline likely under-fits the task.');
+  }
+  if (workQueueCount > 0 && dispatcherCount > 0 && !hasQueueDrainLoop) {
+    warnings.push('Pipeline has a workQueue + dispatcher chain but no outer queue-drain loop.');
+  }
+  if (patchReviewsLackingRejectLoop.length > 0) {
+    warnings.push(`patchReview node(s) ${patchReviewsLackingRejectLoop.map(node => nodeId(node)).join(', ')} lack an accepted branch plus a rejected branch that routes back to worker repair.`);
+  }
+  if (selectorsConvergingImmediately.length > 0) {
+    warnings.push(`Selector node(s) ${selectorsConvergingImmediately.join(', ')} have multiple outgoing transitions that converge into the same downstream node.`);
+  }
+
+  return {
+    nodeCount: graphNodes.length,
+    uniqueNodeTypes: typesSet.size,
+    branchPointCount,
+    loopBackCount,
+    subGraphCount,
+    barrierCount,
+    gateCount,
+    selectorCount,
+    workerLoopCount,
+    workQueueCount,
+    dispatcherCount,
+    patchReviewCount,
+    hasQueueDrainLoop,
+    patternsDetected,
+    isLinearChain,
+    ...(warnings.length ? { warnings } : {}),
+    ...(isLinearChain ? { simplicityWarning: warnings[0] } : {}),
+  };
+}
+
+function analyzeGraphSetComplexity(graphSet) {
+  const graphs = Array.isArray(graphSet?.graphs) ? graphSet.graphs : [];
+  const graphAnalyses = graphs.map(graph => ({
+    graphRef: graph.graphRef,
+    ...analyzeGraphComplexity(graph.nodes || [], graph.transitions || []),
+  }));
+  const typeSet = new Set();
+  for (const graph of graphs) {
+    for (const node of graph.nodes || []) {
+      const type = nodeType(node);
+      if (type) typeSet.add(type);
+    }
+  }
+  const sum = key => graphAnalyses.reduce((total, item) => total + (Number(item[key]) || 0), 0);
+  const patternsDetected = [...new Set(graphAnalyses.flatMap(item => item.patternsDetected || []))];
+  const warnings = graphAnalyses.flatMap(item => (
+    Array.isArray(item.warnings)
+      ? item.warnings.map(message => `${item.graphRef || 'graph'}: ${message}`)
+      : []
+  ));
+  const linearGraphRefs = graphAnalyses
+    .filter(item => item.isLinearChain)
+    .map(item => item.graphRef)
+    .filter(Boolean);
+  const isLinearChain = graphAnalyses.length > 0 && graphAnalyses.every(item => item.isLinearChain);
+
+  return {
+    nodeCount: sum('nodeCount'),
+    uniqueNodeTypes: typeSet.size,
+    branchPointCount: sum('branchPointCount'),
+    loopBackCount: sum('loopBackCount'),
+    subGraphCount: sum('subGraphCount'),
+    barrierCount: sum('barrierCount'),
+    gateCount: sum('gateCount'),
+    selectorCount: sum('selectorCount'),
+    workerLoopCount: sum('workerLoopCount'),
+    workQueueCount: sum('workQueueCount'),
+    dispatcherCount: sum('dispatcherCount'),
+    patchReviewCount: sum('patchReviewCount'),
+    hasQueueDrainLoop: graphAnalyses.some(item => item.hasQueueDrainLoop),
+    patternsDetected,
+    isLinearChain,
+    graphCount: graphAnalyses.length,
+    linearGraphRefs,
+    ...(warnings.length ? { warnings } : {}),
+    ...(isLinearChain && warnings.length ? { simplicityWarning: warnings[0] } : {}),
+  };
+}
+
+function auditGraphComplexity(pipeline, graphSet, diagnostics) {
+  const graphComplexity = analyzeGraphSetComplexity(graphSet);
+  if (graphComplexity.isLinearChain) {
+    diagnostics.push(diagnostic(
+      'error',
+      'AUTHORING_GRAPH_LINEAR_UNDERFIT',
+      'Generated graph must not be a flat linear chain for managed orchestration.',
+      {
+        graphComplexity,
+        metadataGraphComplexity: pipeline?.metadata?.graphComplexity || null,
+      },
+    ));
+  }
+  return graphComplexity;
 }
 
 function auditQueueDrain(graph, diagnostics) {
@@ -330,6 +819,33 @@ function auditQueueDrain(graph, diagnostics) {
   const conditions = new Set(outgoing.map(transitionCondition));
   if (!conditions.has('queue-empty') || !conditions.has('queue-not-empty')) {
     diagnostics.push(diagnostic('error', 'AUTHORING_QUEUE_DRAIN_LOOP_MISSING', 'Final gate must branch on queue-empty and queue-not-empty.', { graphRef: graph.graphRef, nodeId: gate.id }));
+  }
+}
+
+function auditRequestedForkJoinDiscovery(pipeline, graphSet, diagnostics) {
+  if (!FORK_JOIN_DISCOVERY_INTENT_PATTERN.test(pipelineIntentText(pipeline))) return;
+  const barriers = [];
+  const probes = [];
+  for (const graph of graphSet.graphs || []) {
+    for (const node of graph.nodes || []) {
+      if (nodeType(node) === 'orpad.barrier') barriers.push({ graph, node });
+      if (nodeType(node) === 'orpad.probe') probes.push({ graph, node });
+    }
+  }
+  const discoveryBarrier = barriers.find(({ node }) => (
+    Array.isArray(node.config?.waitFor) && node.config.waitFor.length >= 2
+  ));
+  if (!discoveryBarrier || probes.length < 2) {
+    diagnostics.push(diagnostic(
+      'error',
+      'AUTHORING_REQUESTED_FORK_JOIN_MISSING',
+      'The task explicitly requested fork-join or independent probes, so the generated graph must include at least two probe branches joined by a barrier.',
+      {
+        barrierCount: barriers.length,
+        probeCount: probes.length,
+        requestedBy: 'pipeline intent text',
+      },
+    ));
   }
 }
 
@@ -386,11 +902,7 @@ function auditDeclaredNodePackReferences(pipeline, graphSet, diagnostics) {
   for (const graph of graphSet.graphs || []) {
     for (const node of graph.nodes || []) {
       const config = node.config || {};
-      const values = [
-        config.sourceNodePack,
-        ...(Array.isArray(config.supportingNodePacks) ? config.supportingNodePacks : []),
-      ].map(item => String(item || '').trim()).filter(Boolean);
-      for (const value of values) {
+      for (const value of nodePackReferenceIds({ config })) {
         if (!referenced.has(value)) referenced.set(value, []);
         referenced.get(value).push({ graphRef: graph.graphRef, nodeId: node.id });
       }
@@ -402,6 +914,65 @@ function auditDeclaredNodePackReferences(pipeline, graphSet, diagnostics) {
       nodePackId: packId,
       locations,
     }));
+  }
+}
+
+function graphVerificationGateNodes(graph) {
+  const nodes = graph.nodes || [];
+  const artifactIndex = nodes.findIndex(node => nodeType(node) === 'orpad.artifactContract');
+  const beforeArtifactLimit = artifactIndex >= 0 ? artifactIndex : nodes.length;
+  const gatesBeforeArtifact = nodes.filter((node, index) => (
+    nodeType(node) === 'orpad.gate'
+    && index < beforeArtifactLimit
+  ));
+  if (gatesBeforeArtifact.length) return [gatesBeforeArtifact[gatesBeforeArtifact.length - 1]];
+  return nodes.filter(node => nodeType(node) === 'orpad.gate');
+}
+
+function collectProvenanceSurfaceNodes(graphSet, surfaceType) {
+  const out = [];
+  for (const graph of graphSet.graphs || []) {
+    const nodes = surfaceType === 'verification-gate'
+      ? graphVerificationGateNodes(graph)
+      : (graph.nodes || []).filter(node => nodeType(node) === surfaceType);
+    for (const node of nodes) out.push({ graph, node });
+  }
+  return out;
+}
+
+function auditSelectedNodePackProvenance(pipeline, graphSet, diagnostics) {
+  const selectedIds = selectedNodePackIds(pipeline);
+  if (!selectedIds.length) return;
+  const declared = new Set((Array.isArray(pipeline?.nodePacks) ? pipeline.nodePacks : [])
+    .map(pack => String(pack?.id || '').trim())
+    .filter(Boolean));
+  for (const packId of selectedIds) {
+    if (!declared.has(packId)) {
+      diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_SELECTION_UNDECLARED', 'Selected node packs must be declared in pipeline.nodePacks.', {
+        nodePackId: packId,
+      }));
+    }
+  }
+
+  const surfaces = [
+    { key: 'context', type: 'orpad.context' },
+    { key: 'probe', type: 'orpad.probe' },
+    { key: 'verification-gate', type: 'verification-gate' },
+    { key: 'worker', type: 'orpad.workerLoop' },
+    { key: 'artifact', type: 'orpad.artifactContract' },
+  ];
+  for (const surface of surfaces) {
+    const entries = collectProvenanceSurfaceNodes(graphSet, surface.type);
+    for (const packId of selectedIds) {
+      const matching = entries.filter(({ node }) => nodeReferencesPack(node, packId));
+      if (matching.length) continue;
+      diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_PROVENANCE_MISSING', 'Selected node packs must be represented on context, probe, verification gate, worker, and artifact metadata.', {
+        nodePackId: packId,
+        surface: surface.key,
+        expectedFields: ['config.sourceNodePack', 'config.supportingNodePacks'],
+        inspectedLocations: entries.map(({ graph, node }) => nodeLocation(graph, node)),
+      }));
+    }
   }
 }
 
@@ -498,7 +1069,10 @@ async function auditGeneratedPipelineQuality(pipelinePath, options = {}) {
   const resolvedPipelinePath = path.resolve(String(pipelinePath || ''));
   let validation = null;
   try {
-    validation = await validateRunbookFile(resolvedPipelinePath, { trustLevel: 'local-authored' });
+    validation = await validateRunbookFile(resolvedPipelinePath, {
+      ...options,
+      trustLevel: options.trustLevel || 'local-authored',
+    });
     if (!validation.ok) {
       diagnostics.push(diagnostic('error', 'AUTHORING_VALIDATION_FAILED', 'Generated pipeline must validate without errors.', {
         errors: validation.diagnostics.filter(item => item.level === 'error').map(item => item.code),
@@ -515,24 +1089,27 @@ async function auditGeneratedPipelineQuality(pipelinePath, options = {}) {
 
   let graphSet = null;
   let orderedNodes = [];
+  let graphComplexity = null;
   try {
     graphSet = await loadPipelineGraphSet({ pipelinePath: resolvedPipelinePath });
     const plan = buildTraversalPlan(graphSet);
     orderedNodes = flattenTraversalNodes(plan);
     const pipeline = graphSet.pipeline || {};
+    auditRequiredNodePackSelectionDiagnostics(pipeline, diagnostics);
     if (/[,;:\-]$/.test(String(pipeline.description || '').trim())) {
       diagnostics.push(diagnostic('error', 'AUTHORING_DESCRIPTION_TRUNCATED', 'Pipeline description must not end with dangling punctuation.', { description: pipeline.description || '' }));
     }
-    if (pipeline.metadata?.graphComplexity?.isLinearChain === true) {
-      diagnostics.push(diagnostic('error', 'AUTHORING_GRAPH_LINEAR_UNDERFIT', 'Generated graph must not be a flat linear chain for managed orchestration.', { graphComplexity: pipeline.metadata.graphComplexity }));
-    }
+    graphComplexity = auditGraphComplexity(pipeline, graphSet, diagnostics);
     for (const graph of graphSet.graphs || []) {
       auditGraphRuntimeContracts(graph, graphSet, diagnostics);
       auditPatchReviewContracts(graph, diagnostics);
       auditQueueDrain(graph, diagnostics);
     }
+    auditRequestedForkJoinDiscovery(pipeline, graphSet, diagnostics);
     auditMachineAdapter(pipeline, orderedNodes, diagnostics);
     auditDeclaredNodePackReferences(pipeline, graphSet, diagnostics);
+    auditSelectedNodePackProvenance(pipeline, graphSet, diagnostics);
+    auditItemEvidenceContracts(graphSet, diagnostics);
     auditContentEditorialContract(pipeline, graphSet, diagnostics);
     await auditTreeFiles(graphSet, diagnostics);
     await auditPlaceholderText(graphSet, diagnostics);
@@ -551,6 +1128,7 @@ async function auditGeneratedPipelineQuality(pipelinePath, options = {}) {
       canMachineExecuteStep: validation?.canMachineExecuteStep === true,
       graphCount: graphSet?.graphs?.length || 0,
       flattenedNodeCount: orderedNodes.length,
+      graphComplexity,
     },
     ...(options.includeValidation ? { validation } : {}),
   };
@@ -560,7 +1138,11 @@ function assertGeneratedPipelineQuality(audit) {
   if (audit?.ok) return audit;
   const codes = (audit?.diagnostics || [])
     .filter(item => item.level === 'error')
-    .map(item => item.code)
+    .map(item => {
+      const code = String(item.code || '').trim() || 'unknown';
+      const packId = String(item.packId || item.nodePackId || item.selectionDiagnostic?.packId || '').trim();
+      return packId ? `${code}(${packId})` : code;
+    })
     .join(', ');
   const err = new Error(`Generated pipeline failed authoring quality audit: ${codes || 'unknown'}`);
   err.code = 'ORCHESTRATION_AUTHORING_QUALITY_FAILED';
@@ -569,6 +1151,8 @@ function assertGeneratedPipelineQuality(audit) {
 }
 
 module.exports = {
+  analyzeGraphComplexity,
+  analyzeGraphSetComplexity,
   auditGeneratedPipelineQuality,
   assertGeneratedPipelineQuality,
 };

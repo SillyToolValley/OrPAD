@@ -57,6 +57,8 @@ function decideActionForError({
   switch (classification) {
     case 'BUDGET_EXCEEDED':
       return { action: 'fail', classification, reason: 'budget-exceeded' };
+    case 'CANCELLED':
+      return { action: 'fail', classification, reason: 'cancelled' };
     case 'FATAL':
       return { action: 'fail', classification, reason: 'fatal' };
     case 'RETRYABLE':

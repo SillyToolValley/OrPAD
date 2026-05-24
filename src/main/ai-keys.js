@@ -142,6 +142,56 @@ function redactSecret(text, secret) {
   return output.replace(/\b(sk-[A-Za-z0-9_-]{8,})\b/g, '<redacted>');
 }
 
+function abortError(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (signal?.reason) {
+    const err = new Error(String(signal.reason));
+    err.name = 'AbortError';
+    return err;
+  }
+  try {
+    return new DOMException('Aborted', 'AbortError');
+  } catch {
+    const err = new Error('Aborted');
+    err.name = 'AbortError';
+    return err;
+  }
+}
+
+async function readStreamChunk(reader, abortSignal) {
+  if (!abortSignal) return reader.read();
+  if (abortSignal.aborted) throw abortError(abortSignal);
+
+  let cleanup = null;
+  const aborted = new Promise((_, reject) => {
+    const onAbort = () => {
+      const err = abortError(abortSignal);
+      reject(err);
+      try { reader.cancel(err).catch(() => {}); } catch {}
+    };
+    abortSignal.addEventListener('abort', onAbort, { once: true });
+    cleanup = () => abortSignal.removeEventListener('abort', onAbort);
+  });
+
+  try {
+    return await Promise.race([reader.read(), aborted]);
+  } finally {
+    if (cleanup) cleanup();
+  }
+}
+
+function malformedStreamEvent(provider, data) {
+  return {
+    type: 'error',
+    code: 'PROVIDER_STREAM_MALFORMED_JSON',
+    message: `${provider} stream sent malformed JSON.`,
+    diagnostic: {
+      provider,
+      chunkLength: String(data || '').length,
+    },
+  };
+}
+
 async function readError(res, label, secret) {
   let body = '';
   try { body = await res.text(); } catch {}
@@ -170,13 +220,15 @@ function toAnthropicTools(tools = []) {
   })).filter(tool => tool.name);
 }
 
-async function streamSse(res, onJson) {
+async function streamSse(res, onJson, options = {}) {
   if (!res.body) throw new Error('AI provider did not return a stream.');
   let buffer = '';
+  let malformedReported = false;
   const decoder = new TextDecoder();
   const reader = res.body.getReader();
+  const provider = options.provider || 'Provider';
   while (true) {
-    const { value, done } = await reader.read();
+    const { value, done } = await readStreamChunk(reader, options.signal);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const parts = buffer.split(/\r?\n\r?\n/);
@@ -192,12 +244,22 @@ async function streamSse(res, onJson) {
         await onJson({ done: true });
         return;
       }
-      try { await onJson(JSON.parse(data)); } catch {}
+      let json = null;
+      try {
+        json = JSON.parse(data);
+      } catch {
+        if (!malformedReported) {
+          malformedReported = true;
+          await options.onMalformed?.(malformedStreamEvent(provider, data));
+        }
+        continue;
+      }
+      await onJson(json);
     }
   }
 }
 
-async function streamOpenAICompatible({ endpoint, apiKey, messages, model, tools, signal, extraHeaders, emit }) {
+async function streamOpenAICompatible({ endpoint, apiKey, messages, model, tools, signal, extraHeaders, emit, providerLabel }) {
   const body = {
     model,
     messages,
@@ -249,6 +311,10 @@ async function streamOpenAICompatible({ endpoint, apiKey, messages, model, tools
     if (delta) emit({ type: 'text', delta });
     captureToolCalls(choice.delta?.tool_calls);
     if (json.usage) emit({ type: 'usage', usage: json.usage });
+  }, {
+    signal,
+    provider: providerLabel || 'OpenAI-compatible',
+    onMalformed: emit,
   });
 }
 
@@ -299,6 +365,10 @@ async function streamAnthropic({ apiKey, messages, model, tools, signal, emit })
       for (const call of toolCalls.values()) if (call.name) emit({ type: 'tool_call', ...call });
       emit({ type: 'done' });
     }
+  }, {
+    signal,
+    provider: 'Anthropic',
+    onMalformed: emit,
   });
 }
 
@@ -330,6 +400,7 @@ async function runProviderChat({ app, safeStorage, request, signal, emit }) {
       tools,
       signal,
       emit,
+      providerLabel: 'OpenAI',
     });
     return;
   }
@@ -347,6 +418,7 @@ async function runProviderChat({ app, safeStorage, request, signal, emit }) {
         'HTTP-Referer': 'https://orpad.local',
         'X-Title': 'OrPAD',
       },
+      providerLabel: 'OpenRouter',
     });
     return;
   }
@@ -367,6 +439,7 @@ async function runProviderChat({ app, safeStorage, request, signal, emit }) {
       tools,
       signal,
       emit,
+      providerLabel: 'OpenAI-compatible',
     });
   }
 }

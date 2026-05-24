@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { TextEncoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -25,6 +26,10 @@ function readFixture(fileName, root = fixtureRoot) {
   return JSON.parse(fs.readFileSync(path.join(root, fileName), 'utf8'));
 }
 
+function readTextFixture(fileName, root = fixtureRoot) {
+  return fs.readFileSync(path.join(root, fileName), 'utf8');
+}
+
 function jsonResponse(payload, { status = 200, statusText = 'OK', headers = {} } = {}) {
   return {
     ok: status >= 200 && status < 300,
@@ -40,6 +45,49 @@ function jsonResponse(payload, { status = 200, statusText = 'OK', headers = {} }
       },
     },
     async json() { return payload; },
+  };
+}
+
+function sseResponse(payload, { status = 200, statusText = 'OK', headers = {}, chunkSizes = [] } = {}) {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(payload);
+  const chunks = [];
+  const pattern = Array.isArray(chunkSizes) && chunkSizes.length ? chunkSizes : [bytes.length || 1];
+  let offset = 0;
+  let patternIndex = 0;
+  while (offset < bytes.length) {
+    const requestedSize = Number(pattern[patternIndex % pattern.length]);
+    const chunkSize = Math.max(1, Number.isFinite(requestedSize) ? Math.floor(requestedSize) : bytes.length);
+    chunks.push(bytes.slice(offset, Math.min(offset + chunkSize, bytes.length)));
+    offset += chunkSize;
+    patternIndex += 1;
+  }
+  let readIndex = 0;
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText,
+    headers: {
+      get(name) {
+        const lower = String(name || '').toLowerCase();
+        for (const [key, value] of Object.entries(headers)) {
+          if (key.toLowerCase() === lower) return value;
+        }
+        return null;
+      },
+    },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (readIndex >= chunks.length) return { done: true, value: undefined };
+            const value = chunks[readIndex];
+            readIndex += 1;
+            return { done: false, value };
+          },
+        };
+      },
+    },
   };
 }
 
@@ -70,6 +118,7 @@ test('anthropic plugin is registered with API family metadata', () => {
   assert.equal(typeof plugin.invokeApi, 'function');
   assert.equal(typeof plugin.parseUsage, 'function');
   assert.equal(typeof plugin.estimateCost, 'function');
+  assert.equal(plugin.capabilities.streaming, true);
   assert.deepEqual([...plugin.dangerousArgs], []);
   const entry = getProviderEntry('anthropic');
   assert.equal(plugin.displayName, entry.displayName);
@@ -79,6 +128,17 @@ test('anthropic plugin is registered with API family metadata', () => {
 test('parseUsage extracts input_tokens / output_tokens from Messages API', () => {
   const plugin = getProviderPlugin('anthropic');
   const usage = plugin.parseUsage({ usage: { input_tokens: 1200, output_tokens: 350 } });
+  assert.equal(usage.promptTokens, 1200);
+  assert.equal(usage.completionTokens, 350);
+  assert.equal(usage.totalTokens, 1550);
+});
+
+test('parseUsage merges streamed message_delta usage with message_start usage', () => {
+  const plugin = getProviderPlugin('anthropic');
+  const usage = plugin.parseUsage({
+    usage: { input_tokens: 1200, output_tokens: 0 },
+    message_delta: { usage: { output_tokens: 350 } },
+  });
   assert.equal(usage.promptTokens, 1200);
   assert.equal(usage.completionTokens, 350);
   assert.equal(usage.totalTokens, 1550);
@@ -145,6 +205,87 @@ test('invokeApi parses recorded Messages API response into structured adapter re
   assert.equal(out.usage.totalTokens, 1550);
   assert.equal(out.traceId, 'req_test_001');
   assert.equal(out.metadata.providerId, 'anthropic');
+});
+
+test('invokeApi normalizes streamed Messages API SSE chunks into structured adapter result', async () => {
+  const plugin = getProviderPlugin('anthropic');
+  const fixture = readTextFixture('messages-stream-success.sse');
+  const chunkPlans = [
+    [1],
+    [2, 3, 5, 7],
+    [11, 13, 17],
+    [64],
+    [fixture.length + 10],
+  ];
+  assert.equal(chunkPlans.length, 5);
+
+  for (const [index, chunkSizes] of chunkPlans.entries()) {
+    let capturedBody = null;
+    const usageEvents = [];
+    const out = await plugin.invokeApi({
+      request: buildAdapterRequest(),
+      prompt: { taskKind: 'workerLoop', allowedFiles: [] },
+      selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      providerKey: 'sk-ant-test-key',
+      stream: true,
+      fetchImpl: async (_url, init) => {
+        capturedBody = JSON.parse(init.body);
+        return sseResponse(fixture, {
+          headers: { 'anthropic-request-id': `req_stream_${index}` },
+          chunkSizes,
+        });
+      },
+      onUsage: usage => usageEvents.push(usage),
+    });
+    assert.equal(capturedBody.stream, true);
+    assert.equal(out.result.schemaVersion, 'orpad.workerResult.v1');
+    assert.equal(out.result.status, 'done');
+    assert.equal(out.result.summary, 'Stream fixture normalized by Anthropic Machine adapter.');
+    assert.equal(out.usage.promptTokens, 1200);
+    assert.equal(out.usage.completionTokens, 350);
+    assert.equal(out.usage.totalTokens, 1550);
+    assert.equal(out.traceId, `req_stream_${index}`);
+    assert.equal(out.metadata.stopReason, 'end_turn');
+    assert.equal(usageEvents.length, 1);
+    assert.deepEqual(usageEvents[0], out.usage);
+  }
+});
+
+test('invokeApi maps malformed streamed SSE data to stream parsing contract violation', async () => {
+  const plugin = getProviderPlugin('anthropic');
+  const fixture = readTextFixture('messages-stream-malformed.sse');
+  await assert.rejects(
+    plugin.invokeApi({
+      request: buildAdapterRequest(),
+      prompt: { taskKind: 'workerLoop' },
+      selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      providerKey: 'sk-ant-test-key',
+      stream: true,
+      fetchImpl: async () => sseResponse(fixture, { chunkSizes: [3, 1, 8] }),
+    }),
+    error => error?.code === 'OUTPUT_VIOLATES_CONTRACT'
+      && error?.phase === 'anthropic.stream.event-json'
+      && /Anthropic stream parsing failed/.test(error.message),
+  );
+});
+
+test('invokeApi maps incomplete streamed SSE data to stream parsing contract violation', async () => {
+  const plugin = getProviderPlugin('anthropic');
+  const fixture = readTextFixture('messages-stream-success.sse')
+    .replace(/event: message_stop[\s\S]*$/m, '');
+  await assert.rejects(
+    plugin.invokeApi({
+      request: buildAdapterRequest(),
+      prompt: { taskKind: 'workerLoop' },
+      selection: { providerId: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      providerKey: 'sk-ant-test-key',
+      stream: true,
+      fetchImpl: async () => sseResponse(fixture, { chunkSizes: [13, 2, 5] }),
+    }),
+    error => error?.code === 'OUTPUT_VIOLATES_CONTRACT'
+      && error?.phase === 'anthropic.stream.finish'
+      && /message_stop/.test(error.message),
+  );
 });
 
 test('invokeApi without provider key throws KEY_MISSING', async () => {
@@ -237,6 +378,43 @@ test('invokeApi maps fetch transport errors to RETRYABLE', async () => {
   );
 });
 
+test('createApiAgentAdapter forwards per-invoke AbortSignal and classifies cancellation', async () => {
+  const controller = new AbortController();
+  let fetchCalls = 0;
+  let capturedSignal = null;
+  const fetchImpl = async (_url, init = {}) => {
+    fetchCalls += 1;
+    capturedSignal = init.signal;
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => {
+        const err = new Error('fake fetch aborted by test');
+        err.name = 'AbortError';
+        err.code = 'ABORT_ERR';
+        reject(err);
+      }, { once: true });
+      setImmediate(() => controller.abort(new Error('test cancellation')));
+    });
+  };
+  const adapter = createApiAgentAdapter({
+    enabled: true,
+    selection: {
+      providerId: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+    },
+    providerKey: 'sk-ant-test-key',
+    fetchImpl,
+  });
+  await assert.rejects(
+    adapter.invoke({ ...buildAdapterRequest(), signal: controller.signal }),
+    error => error?.code === 'MACHINE_RUN_CANCELLED'
+      && error?.classification === 'CANCELLED'
+      && error?.retryable === false
+      && error?.fallbackAllowed === false,
+  );
+  assert.equal(fetchCalls, 1);
+  assert.equal(capturedSignal, controller.signal);
+});
+
 test('createApiAgentAdapter routes through registry plugin when no providerClient supplied', async () => {
   const fixture = readFixture('messages-success.json');
   const fetchImpl = async () => jsonResponse(fixture, { headers: { 'request-id': 'req_test_002' } });
@@ -295,6 +473,7 @@ test('Anthropic invokeApi never sends the API key in the request body', async ()
   });
   assert.equal(typeof capturedBody, 'string');
   assert.equal(capturedBody.includes('sk-ant-LEAK-CHECK-1234567890'), false, 'API key must never appear in request body');
+  assert.equal(JSON.parse(capturedBody).stream, false, 'single-shot JSON remains the default request mode');
   // Header surface check: the key is allowed *only* in x-api-key.
   assert.equal(capturedHeaders['x-api-key'], 'sk-ant-LEAK-CHECK-1234567890');
   for (const [name, value] of Object.entries(capturedHeaders)) {

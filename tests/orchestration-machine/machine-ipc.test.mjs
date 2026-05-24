@@ -747,6 +747,85 @@ test('Machine IPC approve+applyApproved defers writes until batch and emits sequ
   assert.equal(reapproveAfterApplied.decision, 'applied');
 });
 
+test('Machine IPC approve+applyApproved applies reviewable blocked worker patch artifacts', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const targetPath = path.join(workspaceRoot, 'src/smoke-target.md');
+  const afterContent = 'after from blocked worker review\n';
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260523_blocked_patch_apply',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const patchArtifact = 'artifacts/patches/blocked-review.patch.json';
+  await registerPatchArtifact(created.runRoot, {
+    runId: created.runId,
+    artifactPath: patchArtifact,
+    producedBy: 'test.blocked-worker-review',
+    patch: {
+      schemaVersion: 'orpad.patchArtifact.v1',
+      createdAt: '2026-05-23T00:00:00.000Z',
+      allowedFiles: ['src/smoke-target.md'],
+      changes: [{
+        path: 'src/smoke-target.md',
+        beforeExists: true,
+        afterExists: true,
+        beforeSha256: sha256Text('before\n'),
+        afterSha256: sha256Text(afterContent),
+        beforeContent: 'before\n',
+        afterContent,
+      }],
+      violations: [],
+    },
+  });
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    actor: 'machine',
+    eventType: 'worker.result',
+    itemId: 'ipc-blocked-review',
+    reason: 'worker-result.accepted',
+    artifactRefs: [patchArtifact],
+    payload: {
+      claimId: 'claim-ipc-blocked-review',
+      status: 'blocked',
+      toState: 'blocked',
+      patchArtifact,
+      changedFiles: ['src/smoke-target.md'],
+    },
+  });
+
+  const initialReview = patchReviewStateFromEvents(await readMachineEvents(created.runRoot));
+  assert.equal(initialReview.required, true);
+  assert.equal(initialReview.pendingCount, 1);
+  assert.equal(initialReview.autoApplyPendingCount, 0);
+
+  const approved = await handlers.get(MACHINE_IPC_CHANNELS.approvePatch)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    patchArtifact,
+    selectedFiles: ['src/smoke-target.md'],
+  });
+  assert.equal(approved.success, true);
+  assert.equal(await fs.readFile(targetPath, 'utf8'), 'before\n');
+
+  const applied = await handlers.get(MACHINE_IPC_CHANNELS.applyApprovedPatches)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+  });
+  assert.equal(applied.success, true);
+  assert.equal(applied.appliedCount, 1);
+  assert.equal(applied.conflictCount, 0);
+  assert.equal(await fs.readFile(targetPath, 'utf8'), afterContent);
+});
+
 test('Machine IPC rejects approval overlap before batch apply creates avoidable conflicts', async () => {
   const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
   const event = senderEvent();

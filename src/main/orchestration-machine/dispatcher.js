@@ -89,6 +89,7 @@ function normalizePatchChangedFiles(files = []) {
 function workerResultIsPendingPatchEligible(payload = {}) {
   const status = String(payload.status || '').trim().toLowerCase();
   const toState = String(payload.toState || '').trim().toLowerCase();
+  if ((status === 'blocked' || toState === 'blocked') && payload.patchArtifact) return true;
   if (status && status !== 'done') return false;
   if (toState && toState !== 'done') return false;
   return true;
@@ -111,7 +112,11 @@ function pendingPatchWriteSetsFromEvents(events = []) {
       });
       continue;
     }
-    if (event?.eventType === 'patch.applied' || event?.eventType === 'patch.review_skipped') {
+    if (
+      event?.eventType === 'patch.applied'
+      || event?.eventType === 'patch.review_skipped'
+      || event?.eventType === 'patch.review_rejected'
+    ) {
       const patchArtifact = String(event?.payload?.patchArtifact || '').trim();
       if (patchArtifact) pending.delete(patchArtifact);
     }

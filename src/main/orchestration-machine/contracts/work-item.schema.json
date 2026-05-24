@@ -119,6 +119,13 @@
         "minLength": 1
       }
     },
+    "expectedChangedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "verificationPlan": {
       "type": "string",
       "minLength": 1

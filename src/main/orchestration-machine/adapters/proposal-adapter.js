@@ -159,6 +159,13 @@ function summaryStatusForProposalResult(result) {
   return 'partial';
 }
 
+function proposalOnlyResultReason(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'done') return 'proposal-only-result.accepted';
+  if (normalized) return `proposal-only-result.${normalized}`;
+  return 'proposal-only-result.unknown';
+}
+
 async function findAdapterResultEvent(runRoot, idempotencyKey) {
   const events = await readMachineEvents(runRoot);
   return events.find(event => event.eventType === 'adapter.result' && event.payload?.idempotencyKey === idempotencyKey) || null;
@@ -244,13 +251,14 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
     actor: 'machine',
     eventType: 'adapter.result',
     nodePath: request.nodePath,
-    reason: 'proposal-only-result.accepted',
+    reason: proposalOnlyResultReason(result.status),
     artifactRefs: result.artifacts || [],
     payload: {
       adapter: request.adapter,
       adapterCallId: request.adapterCallId,
       attemptId: request.attemptId,
       idempotencyKey: request.idempotencyKey,
+      taskKind: request.taskKind,
       status: result.status,
       summaryStatus,
       proposalCount: proposals.length,

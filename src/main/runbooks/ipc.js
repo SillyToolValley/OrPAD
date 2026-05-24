@@ -25,9 +25,68 @@ const RUNBOOK_SCAN_IGNORED_DIRS = new Set([
 const RUNBOOK_SCAN_MAX_DEPTH = 8;
 const RUNBOOK_SCAN_MAX_ENTRIES = 5000;
 const execFileAsync = promisify(execFile);
+const TRUSTED_NODE_PACK_VALIDATION_OPTIONS = Symbol('orpad.trustedNodePackValidationOptions');
+// Renderer IPC may tune validation metadata, but approval/trust evidence is
+// authoritative only when a main-process or CLI caller uses the trusted helper.
+const NODE_PACK_VALIDATION_SAFE_OPTION_KEYS = [
+  'currentOrpadVersion',
+];
+const NODE_PACK_VALIDATION_TRUSTED_OPTION_KEYS = [
+  'grantedCapabilities',
+  'grantedCapabilitiesByPack',
+  'nodePackCapabilityGrants',
+  'trustEvidence',
+  'trustEvidenceByPack',
+  'nodePackTrustEvidenceByPack',
+  'nodePackTrustEvidence',
+  'highRiskCapabilityReview',
+  'nodePackCapabilityReview',
+  'capabilityReview',
+  'highRiskCapabilityReviewByPack',
+  'nodePackCapabilityReviewByPack',
+  'nodePackCapabilityReviews',
+  'capabilityReviewByPack',
+  'securityReviewByPack',
+];
+
+function withTrustedNodePackValidationOptions(options = {}) {
+  const trustedOptions = { ...(options && typeof options === 'object' ? options : {}) };
+  Object.defineProperty(trustedOptions, TRUSTED_NODE_PACK_VALIDATION_OPTIONS, {
+    value: true,
+    enumerable: true,
+  });
+  return trustedOptions;
+}
+
+function hasTrustedNodePackValidationOptions(options = {}) {
+  return options?.[TRUSTED_NODE_PACK_VALIDATION_OPTIONS] === true;
+}
 
 function normalizeTrustLevel(options = {}) {
   return options?.trustLevel || 'local-authored';
+}
+
+function appUserDataDir(app) {
+  try {
+    return typeof app?.getPath === 'function' ? String(app.getPath('userData') || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function nodePackValidationOptions(app, options = {}) {
+  const result = {};
+  const userDataDir = appUserDataDir(app);
+  if (userDataDir) result.userDataDir = userDataDir;
+  for (const key of NODE_PACK_VALIDATION_SAFE_OPTION_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(options, key)) result[key] = options[key];
+  }
+  if (hasTrustedNodePackValidationOptions(options)) {
+    for (const key of NODE_PACK_VALIDATION_TRUSTED_OPTION_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(options, key)) result[key] = options[key];
+    }
+  }
+  return result;
 }
 
 async function workspaceRootForRun(event, authority, workspacePath) {
@@ -331,6 +390,7 @@ async function auditPipelineRunEvidence(pipelinePath) {
 function registerRunbookHandlers({ ipcMain, app, authority }) {
   const validateTextHandler = async (_event, source, options = {}) => {
     return validateRunbookSource(source, {
+      ...nodePackValidationOptions(app, options),
       trustLevel: normalizeTrustLevel(options),
       checkFiles: false,
     });
@@ -343,6 +403,7 @@ function registerRunbookHandlers({ ipcMain, app, authority }) {
         allowFileCapability: true,
       });
       return await validateRunbookFile(target, {
+        ...nodePackValidationOptions(app, options),
         trustLevel: normalizeTrustLevel(options),
         checkFiles: options.checkFiles !== false,
       });
@@ -375,6 +436,7 @@ function registerRunbookHandlers({ ipcMain, app, authority }) {
         label: 'Pipeline file',
       });
       const validation = await validateRunbookFile(targetRunbook, {
+        ...nodePackValidationOptions(app, options),
         trustLevel: normalizeTrustLevel(options),
         checkFiles: options.checkFiles !== false,
       });
@@ -419,6 +481,7 @@ function registerRunbookHandlers({ ipcMain, app, authority }) {
         label: 'Pipeline file',
       });
       const validation = await validateRunbookFile(targetRunbook, {
+        ...nodePackValidationOptions(app, options),
         trustLevel: normalizeTrustLevel(options),
         checkFiles: options.checkFiles !== false,
       });
@@ -497,4 +560,5 @@ module.exports = {
   registerRunbookHandlers,
   scanAndCacheRunbookWorkspace,
   scanRunbookWorkspace,
+  withTrustedNodePackValidationOptions,
 };

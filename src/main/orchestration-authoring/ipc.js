@@ -15,7 +15,9 @@ const {
 } = require('../orchestration-machine/providers/plugins/claude-code');
 const {
   authoringNodePackPromptLines,
+  defaultBuiltInNodePacksRoot,
   discoverNodePackManifests,
+  HIGH_RISK_NODE_PACK_CAPABILITIES,
 } = require('../orchestration-machine/node-packs');
 
 // Providers that can act as the Generate authoring agent. The renderer modal
@@ -28,6 +30,7 @@ const GENERATE_EVENT_CHANNEL = 'orchestration-generate-pipeline-event';
 const activeGenerateRunsByRequest = new Map();
 const activeGenerateRunsByWorkspace = new Map();
 const SHELL_OPERATOR_TOKENS = new Set(['&&', '||', ';', '|', '>', '>>', '<', '&']);
+const TRUSTED_NODE_PACK_AUTHORING_OPTIONS = Symbol('orpad.trustedNodePackAuthoringOptions');
 
 function workspaceRunKey(workspaceRoot) {
   return path.resolve(String(workspaceRoot || '')).toLowerCase();
@@ -121,7 +124,13 @@ function summarizeForError(label, text, limit = 320) {
   return `${label}(${value.length}b): ${value.slice(0, limit)}${value.length > limit ? '…' : ''}`;
 }
 
-async function materializePipelineFromAuthoringSpec({ workspaceRoot, prompt, authoringSpec, workspaceSnapshot }) {
+async function materializePipelineFromAuthoringSpec({
+  workspaceRoot,
+  prompt,
+  authoringSpec,
+  workspaceSnapshot,
+  nodePackOptions = {},
+}) {
   // Lazy-require to avoid pulling generator.js into the IPC module's
   // require graph during test bootstrap.
   const { createOrchestrationPipeline } = require('./generator');
@@ -130,7 +139,237 @@ async function materializePipelineFromAuthoringSpec({ workspaceRoot, prompt, aut
     taskText: prompt,
     authoringSpec,
     workspaceSnapshot,
+    ...nodePackOptions,
   });
+}
+
+function appUserDataDir(app) {
+  try {
+    return app?.getPath ? app.getPath('userData') : '';
+  } catch {
+    return '';
+  }
+}
+
+function appBuiltInNodePacksRoot(app) {
+  try {
+    const appRoot = app?.getAppPath ? String(app.getAppPath() || '').trim() : '';
+    if (appRoot) return path.join(appRoot, 'nodes');
+  } catch {}
+  return defaultBuiltInNodePacksRoot();
+}
+
+function appUserNodePacksRoot(app) {
+  const userDataDir = appUserDataDir(app);
+  return userDataDir ? path.join(userDataDir, 'nodes') : '';
+}
+
+function hasOwnValue(target, key) {
+  return Object.prototype.hasOwnProperty.call(target || {}, key);
+}
+
+function requestedRootOverride(request, fields) {
+  for (const field of fields) {
+    if (hasOwnValue(request, field)) return { field, value: request[field] };
+  }
+  return null;
+}
+
+function rootPathForDiagnostic(value) {
+  if (value === false) return false;
+  const text = String(value || '').trim();
+  return text ? path.resolve(text) : '';
+}
+
+function isSameOrInsideRoot(candidate, approvedRoot) {
+  const candidatePath = rootPathForDiagnostic(candidate);
+  const rootPath = rootPathForDiagnostic(approvedRoot);
+  if (!candidatePath || !rootPath || candidatePath === false || rootPath === false) return false;
+  return candidatePath === rootPath || isInsidePath(candidatePath, rootPath);
+}
+
+function blockedNodePackRootDiagnostic({ field, value, rootKind, approvedRoot }) {
+  return {
+    level: 'warning',
+    code: 'NODE_PACK_DISCOVERY_ROOT_OVERRIDE_BLOCKED',
+    message: 'Renderer-supplied node pack discovery root is outside the approved OrPAD node pack roots and was ignored.',
+    rootKind,
+    requestField: field,
+    requestedRoot: rootPathForDiagnostic(value),
+    approvedRoot: rootPathForDiagnostic(approvedRoot),
+  };
+}
+
+function rendererNodePackDiscoveryOptions(app, request = {}) {
+  const diagnostics = [];
+  const builtInRoot = appBuiltInNodePacksRoot(app);
+  const userDataDir = appUserDataDir(app);
+  const approvedUserRoot = appUserNodePacksRoot(app);
+
+  let builtInNodePacksRoot = builtInRoot || undefined;
+  const builtInOverride = requestedRootOverride(request, ['builtInNodePacksRoot']);
+  if (builtInOverride) {
+    if (isSameOrInsideRoot(builtInOverride.value, builtInRoot)) {
+      builtInNodePacksRoot = builtInOverride.value;
+    } else {
+      diagnostics.push(blockedNodePackRootDiagnostic({
+        field: builtInOverride.field,
+        value: builtInOverride.value,
+        rootKind: 'built-in',
+        approvedRoot: builtInRoot,
+      }));
+    }
+  }
+
+  let userNodePacksRoot = '';
+  let discoveryUserDataDir = userDataDir;
+  const userOverride = requestedRootOverride(request, ['userNodePacksRoot', 'userNodePackRoot']);
+  if (userOverride) {
+    if (isSameOrInsideRoot(userOverride.value, approvedUserRoot)) {
+      userNodePacksRoot = userOverride.value;
+      discoveryUserDataDir = '';
+    } else {
+      diagnostics.push(blockedNodePackRootDiagnostic({
+        field: userOverride.field,
+        value: userOverride.value,
+        rootKind: 'user',
+        approvedRoot: approvedUserRoot,
+      }));
+    }
+  }
+
+  return {
+    builtInNodePacksRoot,
+    userNodePacksRoot,
+    userDataDir: discoveryUserDataDir,
+    diagnostics,
+  };
+}
+
+function trustedNodePackDiscoveryOptions(app, request = {}) {
+  return {
+    builtInNodePacksRoot: hasOwnValue(request, 'builtInNodePacksRoot')
+      ? request.builtInNodePacksRoot
+      : appBuiltInNodePacksRoot(app),
+    userNodePacksRoot: hasOwnValue(request, 'userNodePacksRoot')
+      ? request.userNodePacksRoot
+      : request.userNodePackRoot,
+    userDataDir: appUserDataDir(app),
+    diagnostics: [],
+  };
+}
+
+function nodePackDiscoveryOptionsForRequest(app, request = {}) {
+  return hasTrustedNodePackAuthoringOptions(request)
+    ? trustedNodePackDiscoveryOptions(app, request)
+    : rendererNodePackDiscoveryOptions(app, request);
+}
+
+function withTrustedNodePackAuthoringOptions(request = {}) {
+  const trustedRequest = { ...(request && typeof request === 'object' ? request : {}) };
+  Object.defineProperty(trustedRequest, TRUSTED_NODE_PACK_AUTHORING_OPTIONS, {
+    value: true,
+    enumerable: true,
+  });
+  return trustedRequest;
+}
+
+function hasTrustedNodePackAuthoringOptions(request = {}) {
+  return request?.[TRUSTED_NODE_PACK_AUTHORING_OPTIONS] === true;
+}
+
+function trustedNodePackAuthoringEvidence(request = {}) {
+  if (!hasTrustedNodePackAuthoringOptions(request)) return {};
+  return {
+    nodePackInstallMode: request.nodePackInstallMode || request.installMode || 'normal',
+    nodePackGrantedCapabilities: request.nodePackGrantedCapabilities || request.grantedCapabilities,
+    nodePackGrantedCapabilitiesByPack: request.nodePackGrantedCapabilitiesByPack
+      || request.grantedCapabilitiesByPack
+      || request.nodePackCapabilityGrants,
+    nodePackTrustEvidence: request.nodePackTrustEvidence || request.trustEvidence,
+    nodePackTrustEvidenceByPack: request.nodePackTrustEvidenceByPack
+      || request.trustEvidenceByPack
+      || request.nodePackTrustEvidence,
+    nodePackCapabilityReview: request.nodePackCapabilityReview
+      || request.highRiskCapabilityReview
+      || request.capabilityReview,
+    nodePackCapabilityReviewByPack: request.nodePackCapabilityReviewByPack
+      || request.nodePackCapabilityReviews
+      || request.highRiskCapabilityReviewByPack
+      || request.capabilityReviewByPack
+      || request.securityReviewByPack,
+  };
+}
+
+function generateNodePackOptionsForRequest(app, request = {}) {
+  const trustedNodePackOptions = trustedNodePackAuthoringEvidence(request);
+  const providedPool = hasTrustedNodePackAuthoringOptions(request)
+    ? request.nodePackPool
+      || request.authoringNodePackPool
+      || request.discoveredNodePacks
+      || request.availableNodePacks
+      || request.nodePackManifests
+    : null;
+  const baseOptions = {
+    maxAuthoringNodePacks: request.maxAuthoringNodePacks,
+    requiredNodePackIds: request.requiredNodePackIds || request.requiredAuthoringNodePackIds || [],
+    currentOrpadVersion: request.currentOrpadVersion,
+    nodePackInstallMode: trustedNodePackOptions.nodePackInstallMode || 'normal',
+    ...trustedNodePackOptions,
+  };
+  if (providedPool) {
+    return {
+      ...baseOptions,
+      nodePackPool: providedPool,
+      nodePackDiagnostics: request.nodePackDiagnostics,
+      nodePackConflicts: request.nodePackConflicts,
+    };
+  }
+
+  const discoveryRoots = nodePackDiscoveryOptionsForRequest(app, request);
+  const discovery = discoverNodePackManifests({
+    builtInNodePacksRoot: discoveryRoots.builtInNodePacksRoot,
+    userNodePacksRoot: discoveryRoots.userNodePacksRoot,
+    userDataDir: discoveryRoots.userDataDir,
+    currentOrpadVersion: baseOptions.currentOrpadVersion,
+    installMode: baseOptions.nodePackInstallMode,
+    grantedCapabilities: baseOptions.nodePackGrantedCapabilities,
+    grantedCapabilitiesByPack: baseOptions.nodePackGrantedCapabilitiesByPack,
+    trustEvidence: baseOptions.nodePackTrustEvidence,
+    trustEvidenceByPack: baseOptions.nodePackTrustEvidenceByPack,
+    highRiskCapabilityReview: baseOptions.nodePackCapabilityReview,
+    highRiskCapabilityReviewByPack: baseOptions.nodePackCapabilityReviewByPack,
+  });
+  const discoveryWithDiagnostics = {
+    ...discovery,
+    diagnostics: [
+      ...discoveryRoots.diagnostics,
+      ...(Array.isArray(discovery.diagnostics) ? discovery.diagnostics : []),
+    ],
+  };
+  return {
+    ...baseOptions,
+    nodePackPool: discoveryWithDiagnostics,
+    nodePackDiagnostics: discoveryWithDiagnostics.diagnostics,
+    nodePackConflicts: discovery.conflicts,
+  };
+}
+
+function nodePackPromptOptions(nodePackOptions = {}) {
+  return {
+    ...nodePackOptions,
+    maxPacks: nodePackOptions.maxAuthoringNodePacks === undefined
+      ? 3
+      : Math.max(0, Number(nodePackOptions.maxAuthoringNodePacks) || 0),
+    requiredPackIds: nodePackOptions.requiredNodePackIds || [],
+    installMode: nodePackOptions.nodePackInstallMode || 'normal',
+    grantedCapabilities: nodePackOptions.nodePackGrantedCapabilities,
+    grantedCapabilitiesByPack: nodePackOptions.nodePackGrantedCapabilitiesByPack,
+    trustEvidence: nodePackOptions.nodePackTrustEvidence,
+    trustEvidenceByPack: nodePackOptions.nodePackTrustEvidenceByPack,
+    highRiskCapabilityReview: nodePackOptions.nodePackCapabilityReview,
+    highRiskCapabilityReviewByPack: nodePackOptions.nodePackCapabilityReviewByPack,
+  };
 }
 
 function assertGeneratedPath(workspaceRoot, filePath, label) {
@@ -169,7 +408,16 @@ async function collectWorkspaceSnapshot(workspaceRoot, maxFiles = 120) {
   return { files };
 }
 
-function authoringAgentPrompt({ workspaceRoot, appRoot, cliPath, promptFile, authoringSpecPath, prompt, snapshot }) {
+function authoringAgentPrompt({
+  workspaceRoot,
+  appRoot,
+  cliPath,
+  promptFile,
+  authoringSpecPath,
+  prompt,
+  snapshot,
+  nodePackOptions = {},
+}) {
   const input = {
     workspaceRoot,
     appRoot,
@@ -221,7 +469,7 @@ function authoringAgentPrompt({ workspaceRoot, appRoot, cliPath, promptFile, aut
     files.length ? files.map(file => `- ${file}`).join('\n') : '- No file snapshot supplied.',
     '</workspace-files>',
     '',
-    ...authoringNodePackPromptLines(prompt, snapshot),
+    ...authoringNodePackPromptLines(prompt, snapshot, nodePackPromptOptions(nodePackOptions)),
     'Required steps (two-pass authoring):',
     '1. INSPECT — read just enough of the workspace to make the graph concrete to this request. Do not start editing source files.',
     '2. DRAFT — internally draft an authoring spec. Pick from the OrPAD Pattern Catalog (Linear, Ralph loop, Fork-Join, Cross-Validation, Behavior-Tree Sub-graph, RAG Retrieval, Ontology Scan, Multi-Agent Cross-Verification). Real tasks usually combine 2–3 patterns.',
@@ -290,6 +538,7 @@ async function authorPipelineWithCodexCli({ app, workspaceRoot, prompt, request,
   const cliPath = path.join(appRoot, 'bin', 'orpad-cli.mjs');
   const { snapshot, stamp, authoringRoot, promptFile, authoringSpecPath, outputLastMessagePath } =
     await prepareAuthoringWorkspace({ workspaceRoot, prompt, emit });
+  const nodePackOptions = generateNodePackOptionsForRequest(app, request);
 
   const invocation = codexCliInvocation(request.authoringCommand || codexCliCommand(), request.authoringCommandPrefixArgs);
   const agentPrompt = authoringAgentPrompt({
@@ -300,6 +549,7 @@ async function authorPipelineWithCodexCli({ app, workspaceRoot, prompt, request,
     authoringSpecPath,
     prompt,
     snapshot,
+    nodePackOptions,
   });
   emit?.({
     type: 'progress',
@@ -381,6 +631,7 @@ async function authorPipelineWithCodexCli({ app, workspaceRoot, prompt, request,
       prompt,
       authoringSpec: generated,
       workspaceSnapshot: snapshot,
+      nodePackOptions,
     });
   } else if (!generated) {
     const fallbackSpec = await loadAuthoringSpecFromSources({
@@ -396,10 +647,11 @@ async function authorPipelineWithCodexCli({ app, workspaceRoot, prompt, request,
       });
       generated = await materializePipelineFromAuthoringSpec({
         workspaceRoot,
-        prompt,
-        authoringSpec: fallbackSpec,
-        workspaceSnapshot: snapshot,
-      });
+          prompt,
+          authoringSpec: fallbackSpec,
+          workspaceSnapshot: snapshot,
+          nodePackOptions,
+        });
     } else {
       const debug = [
         summarizeForError('stdout', processResult.stdout || raw),
@@ -632,6 +884,8 @@ function harnessAuthoringPrompt({ pipelineDoc, graphDoc, projectProfile, toolPla
     '',
     'Rules:',
     '- Do not invent installed tools. Use project signals from projectProfile and mark uncertain commands as candidates.',
+    '- Put uncertain validation commands in the exact form "candidate: <command>". Keep explanations in residualRisks or notes, not before the colon.',
+    '- Put setup/install commands in the exact form "setup candidate: <command>" unless they are already known to be safe and required.',
     '- Do not request destructive commands or external network access as automatic harness steps.',
     '- Worker nodes need workspace-write, patch artifact, validation evidence, and base-SHA safety contracts.',
     '- Probe nodes need candidate proposal contracts with targetFiles/sourceOfTruthTargets guidance.',
@@ -759,6 +1013,30 @@ function executableCandidatesForTool(text) {
   }
   if (/^[A-Za-z0-9_.-]+$/.test(raw) && !raw.includes(' ')) return [raw];
   return [];
+}
+
+function harnessCommandLabelInfo(commandLine) {
+  const raw = String(commandLine || '').trim();
+  const colonIndex = raw.indexOf(':');
+  if (colonIndex <= 0) return { label: '', advisory: false, parseSource: raw };
+  if (/^[A-Za-z]:[\\/]/.test(raw)) return { label: '', advisory: false, parseSource: raw };
+  const labelText = raw.slice(0, colonIndex).trim();
+  const parseSource = raw.slice(colonIndex + 1).trim();
+  if (!labelText || !parseSource) return { label: '', advisory: false, parseSource: raw };
+  const normalized = labelText.toLowerCase().replace(/\s+/g, ' ').trim();
+  const advisory = /^(candidate|optional|example|manual)\b/.test(normalized)
+    || /^when[-\s]?needed\b/.test(normalized)
+    || /^if changed\b/.test(normalized)
+    || /^setup\b/.test(normalized)
+    || /\b(candidate|optional|manual)\b/.test(normalized)
+    || /\bonly when\b/.test(normalized);
+  const recognized = advisory || /^(required|validation|validate|check|test|verify)\b/.test(normalized);
+  if (!recognized) return { label: '', advisory: false, parseSource: raw };
+  return {
+    label: normalized.replace(/\s+/g, '-'),
+    advisory,
+    parseSource,
+  };
 }
 
 function versionArgsForExecutable(command) {
@@ -892,8 +1170,7 @@ async function checkHarnessToolHealth(toolInput, workspaceRoot) {
 function parseHarnessCommandLine(commandLine) {
   const raw = String(commandLine || '').trim();
   if (!raw) return { ok: false, raw, tokens: [], error: 'empty command' };
-  const labelMatch = raw.match(/^(candidate|optional|example|manual|when-needed|when needed|if changed)\s*:\s*(.+)$/i);
-  const parseSource = labelMatch ? labelMatch[2].trim() : raw;
+  const { label, advisory, parseSource } = harnessCommandLabelInfo(raw);
   const tokens = [];
   let current = '';
   let quote = '';
@@ -917,16 +1194,25 @@ function parseHarnessCommandLine(commandLine) {
     }
     current += ch;
   }
-  if (quote) return { ok: false, raw, tokens: [], error: 'unclosed quote' };
+  if (quote) return { ok: false, raw, tokens: [], label, advisory, error: 'unclosed quote' };
   if (current) tokens.push(current);
   const shellOperator = tokens.find(token => SHELL_OPERATOR_TOKENS.has(token));
-  if (shellOperator) return { ok: false, raw, tokens, error: `shell operator ${shellOperator} is not supported in harness preflight` };
+  if (shellOperator) {
+    return {
+      ok: false,
+      raw,
+      tokens,
+      label,
+      advisory,
+      error: `shell operator ${shellOperator} is not supported in harness preflight`,
+    };
+  }
   return {
     ok: true,
     raw,
     tokens,
-    label: labelMatch ? labelMatch[1].toLowerCase().replace(/\s+/g, '-') : '',
-    advisory: Boolean(labelMatch),
+    label,
+    advisory,
     error: '',
   };
 }
@@ -966,13 +1252,20 @@ async function pathExistsInWorkspace(workspaceRoot, relativePath) {
 async function preflightValidationCommand(commandLine, workspaceRoot) {
   const parsed = parseHarnessCommandLine(commandLine);
   if (!parsed.ok) {
+    const status = parsed.advisory ? 'candidate' : 'blocked';
     return {
       command: commandLine,
-      status: 'blocked',
+      status,
       parsed,
       tool: null,
       pathChecks: [],
-      dryRun: { status: 'not-run', mode: 'parse-failed', reason: parsed.error },
+      dryRun: {
+        status: status === 'candidate' ? 'not-run' : 'blocked',
+        mode: 'parse-failed',
+        reason: status === 'candidate'
+          ? `Command was marked advisory/candidate and was not executed during harness provisioning: ${parsed.error}`
+          : parsed.error,
+      },
     };
   }
   const executable = parsed.tokens[0];
@@ -1675,6 +1968,7 @@ async function authorPipelineWithClaudeCodeCli({ app, workspaceRoot, prompt, req
   const cliPath = path.join(appRoot, 'bin', 'orpad-cli.mjs');
   const { snapshot, stamp, authoringRoot, promptFile, authoringSpecPath, outputLastMessagePath } =
     await prepareAuthoringWorkspace({ workspaceRoot, prompt, emit });
+  const nodePackOptions = generateNodePackOptionsForRequest(app, request);
 
   const invocation = claudeCodeInvocation(request.authoringCommand || claudeCodeCommand(), request.authoringCommandPrefixArgs);
   const agentPrompt = authoringAgentPrompt({
@@ -1685,6 +1979,7 @@ async function authorPipelineWithClaudeCodeCli({ app, workspaceRoot, prompt, req
     authoringSpecPath,
     prompt,
     snapshot,
+    nodePackOptions,
   });
   emit?.({
     type: 'progress',
@@ -1764,6 +2059,7 @@ async function authorPipelineWithClaudeCodeCli({ app, workspaceRoot, prompt, req
       prompt,
       authoringSpec: generated,
       workspaceSnapshot: snapshot,
+      nodePackOptions,
     });
   } else if (!generated) {
     const fallbackSpec = await loadAuthoringSpecFromSources({
@@ -1779,10 +2075,11 @@ async function authorPipelineWithClaudeCodeCli({ app, workspaceRoot, prompt, req
       });
       generated = await materializePipelineFromAuthoringSpec({
         workspaceRoot,
-        prompt,
-        authoringSpec: fallbackSpec,
-        workspaceSnapshot: snapshot,
-      });
+          prompt,
+          authoringSpec: fallbackSpec,
+          workspaceSnapshot: snapshot,
+          nodePackOptions,
+        });
     } else {
       const debug = [
         summarizeForError('stdout', processResult.stdout),
@@ -1852,10 +2149,259 @@ function sanitizeNodePackAsset(asset) {
     capabilities: Array.isArray(asset.capabilities) ? asset.capabilities : [],
     inputs: Array.isArray(asset.inputs) ? asset.inputs : [],
     outputs: Array.isArray(asset.outputs) ? asset.outputs : [],
+    disabled: asset.disabled === true,
+    resolutionState: asset.resolutionState || '',
+    validationStatus: asset.validationStatus || '',
+    conflicts: Array.isArray(asset.conflicts) ? asset.conflicts.map(publicNodePackConflictIssue) : [],
   };
 }
 
-function publicNodePackManifest(pack) {
+const NODE_PACK_PUBLIC_CONFLICT_CODES = new Set([
+  'NODE_PACK_DISCOVERY_DUPLICATE_ID',
+  'NODE_PACK_TYPE_CONFLICT',
+]);
+
+const NODE_PACK_PUBLIC_INVALID_CODES = new Set([
+  'NODE_PACK_DISCOVERY_VALIDATION_FAILED',
+]);
+
+function publicNodePackString(value, fallback = '') {
+  if (value === undefined || value === null) return fallback;
+  const text = String(value).trim();
+  return text || fallback;
+}
+
+function publicNodePackIssueCode(issue) {
+  if (!issue || typeof issue !== 'object') return '';
+  return publicNodePackString(issue.code || issue.id || issue.type || issue.kind, '');
+}
+
+function publicNodePackIssueMatchesPack(issue, pack = {}) {
+  if (!issue || typeof issue !== 'object' || !pack || typeof pack !== 'object') return false;
+  const packId = publicNodePackString(pack.id, '');
+  const directPackIds = [
+    issue.packId,
+    issue.firstPackId,
+    issue.secondPackId,
+    issue.id,
+  ].map(value => publicNodePackString(value, '')).filter(Boolean);
+  if (packId && directPackIds.includes(packId)) return true;
+  const packTokens = [
+    pack.id,
+    pack.name,
+    pack.discovery?.manifestPath,
+    pack.discovery?.packDir,
+    pack.manifestPath,
+    pack.path,
+  ].map(value => publicNodePackString(value, '').toLowerCase()).filter(Boolean);
+  if (!packTokens.length) return false;
+  let issueText = '';
+  try {
+    issueText = JSON.stringify(issue).toLowerCase();
+  } catch {
+    issueText = publicNodePackString(issue, '').toLowerCase();
+  }
+  return packTokens.some(token => issueText.includes(token));
+}
+
+function publicNodePackConflictIssue(conflict) {
+  if (!conflict || typeof conflict !== 'object') return conflict;
+  if (conflict.code || conflict.message || conflict.level) return conflict;
+  return {
+    level: 'warning',
+    code: 'NODE_PACK_TYPE_CONFLICT',
+    message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+    ...conflict,
+  };
+}
+
+function publicNodePackIssuesForPack(issues, pack = {}) {
+  return (Array.isArray(issues) ? issues : []).filter(issue => publicNodePackIssueMatchesPack(issue, pack));
+}
+
+function publicNodePackIssueKey(issue) {
+  try {
+    return JSON.stringify(issue || {});
+  } catch {
+    return publicNodePackString(issue, '');
+  }
+}
+
+function publicNodePackUniqueIssues(issues = []) {
+  const seen = new Set();
+  return (Array.isArray(issues) ? issues : []).filter((issue) => {
+    const key = publicNodePackIssueKey(issue);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function publicNodePackValidationDiagnostics(pack = {}) {
+  return Array.isArray(pack?.validation?.diagnostics) ? pack.validation.diagnostics : [];
+}
+
+function publicNodePackValidationDeclaredNodeTypes(pack = {}) {
+  return Array.isArray(pack?.validation?.declaredNodeTypes) ? pack.validation.declaredNodeTypes : [];
+}
+
+function publicNodePackAddCapability(target, value) {
+  const text = publicNodePackString(value, '');
+  if (text) target.add(text);
+}
+
+function publicNodePackAddCapabilities(target, values) {
+  if (!Array.isArray(values)) return;
+  for (const value of values) publicNodePackAddCapability(target, value);
+}
+
+function publicNodePackDeclaredCapabilities(pack = {}) {
+  const capabilities = new Set();
+  publicNodePackAddCapabilities(capabilities, pack?.capabilities);
+  for (const collection of ['nodes', 'graphs', 'trees', 'skills', 'rules', 'examples']) {
+    for (const asset of (Array.isArray(pack?.[collection]) ? pack[collection] : [])) {
+      publicNodePackAddCapabilities(capabilities, asset?.capabilities);
+    }
+  }
+  return capabilities;
+}
+
+function publicNodePackHighRiskCapabilities(pack = {}, diagnostics = []) {
+  const highRiskDefinitions = HIGH_RISK_NODE_PACK_CAPABILITIES instanceof Set
+    ? HIGH_RISK_NODE_PACK_CAPABILITIES
+    : new Set(Array.isArray(HIGH_RISK_NODE_PACK_CAPABILITIES) ? HIGH_RISK_NODE_PACK_CAPABILITIES : []);
+  const highRiskCapabilities = new Set();
+  publicNodePackAddCapabilities(highRiskCapabilities, pack?.highRiskCapabilities);
+  publicNodePackAddCapabilities(highRiskCapabilities, pack?.validation?.highRiskCapabilities);
+  publicNodePackAddCapabilities(highRiskCapabilities, pack?.capabilityRisk?.highRiskCapabilities);
+  publicNodePackAddCapabilities(highRiskCapabilities, pack?.validation?.capabilityRisk?.highRiskCapabilities);
+  for (const capability of publicNodePackDeclaredCapabilities(pack)) {
+    if (highRiskDefinitions.has(capability)) highRiskCapabilities.add(capability);
+  }
+  for (const issue of (Array.isArray(diagnostics) ? diagnostics : [])) {
+    const code = publicNodePackIssueCode(issue);
+    if (!code.includes('HIGH_RISK') && !code.includes('CAPABILITY_REVIEW')) continue;
+    publicNodePackAddCapability(highRiskCapabilities, issue?.capability);
+    publicNodePackAddCapabilities(highRiskCapabilities, issue?.capabilities);
+  }
+  return [...highRiskCapabilities].sort((a, b) => a.localeCompare(b));
+}
+
+function publicNodePackIssueSeverity(issue) {
+  const severity = publicNodePackString(issue?.level || issue?.severity || issue?.status, '').toLowerCase();
+  if (severity.includes('error') || severity.includes('danger')) return 'error';
+  if (severity.includes('warn')) return 'warning';
+  return severity || 'info';
+}
+
+function publicNodePackDiagnosticsSummary(diagnostics = [], conflicts = []) {
+  const codes = new Set();
+  let errorCount = 0;
+  let warningCount = 0;
+  for (const issue of diagnostics) {
+    const code = publicNodePackIssueCode(issue);
+    if (code) codes.add(code);
+    const severity = publicNodePackIssueSeverity(issue);
+    if (severity === 'error') errorCount += 1;
+    else if (severity === 'warning') warningCount += 1;
+  }
+  for (const conflict of conflicts) {
+    const code = publicNodePackIssueCode(publicNodePackConflictIssue(conflict));
+    if (code) codes.add(code);
+  }
+  return {
+    count: diagnostics.length + conflicts.length,
+    diagnosticCount: diagnostics.length,
+    conflictCount: conflicts.length,
+    errorCount,
+    warningCount,
+    codes: [...codes].sort(),
+  };
+}
+
+function publicNodePackResolutionState(pack = {}, diagnostics = [], conflicts = []) {
+  const explicit = publicNodePackString(
+    pack.resolutionState || pack.validation?.resolutionState || pack.validation?.state || pack.validationState,
+    '',
+  ).toLowerCase();
+  const hasConflict = conflicts.length
+    || diagnostics.some(issue => NODE_PACK_PUBLIC_CONFLICT_CODES.has(publicNodePackIssueCode(issue)));
+  if (hasConflict) return 'conflict';
+  if (explicit) return explicit;
+  const hasInvalid = diagnostics.some(issue => (
+    NODE_PACK_PUBLIC_INVALID_CODES.has(publicNodePackIssueCode(issue))
+    || publicNodePackIssueSeverity(issue) === 'error'
+  ));
+  if (hasInvalid) return 'invalid';
+  if (diagnostics.length) return 'review';
+  return 'resolved';
+}
+
+function publicNodePackValidationStatus(resolutionState, diagnostics = [], conflicts = []) {
+  if (conflicts.length || resolutionState === 'conflict') return 'conflict';
+  if ((Array.isArray(diagnostics) ? diagnostics : []).some(issue => (
+    NODE_PACK_PUBLIC_INVALID_CODES.has(publicNodePackIssueCode(issue))
+    || publicNodePackIssueSeverity(issue) === 'error'
+  ))) {
+    return 'validation-error';
+  }
+  if (!resolutionState || resolutionState === 'resolved') return 'valid';
+  if (resolutionState === 'invalid' || resolutionState === 'incompatible') return 'validation-error';
+  return resolutionState;
+}
+
+function publicNodePackConflictInvolvement(conflicts = []) {
+  const visibleConflicts = (Array.isArray(conflicts) ? conflicts : []).map(publicNodePackConflictIssue);
+  const duplicateNodeTypes = [...new Set(visibleConflicts
+    .map(conflict => publicNodePackString(conflict?.nodeType, ''))
+    .filter(Boolean))]
+    .sort();
+  const duplicatePackIds = [...new Set(visibleConflicts
+    .filter(conflict => publicNodePackIssueCode(conflict) === 'NODE_PACK_DISCOVERY_DUPLICATE_ID')
+    .map(conflict => publicNodePackString(conflict?.packId, ''))
+    .filter(Boolean))]
+    .sort();
+  return {
+    hasConflicts: visibleConflicts.length > 0,
+    count: visibleConflicts.length,
+    duplicateNodeTypes,
+    duplicatePackIds,
+    conflicts: visibleConflicts,
+  };
+}
+
+function publicNodePackManifest(pack, discoveryContext = {}) {
+  const diagnostics = publicNodePackUniqueIssues([
+    ...publicNodePackValidationDiagnostics(pack),
+    ...publicNodePackIssuesForPack(discoveryContext.diagnostics, pack),
+  ]);
+  const packConflicts = [
+    ...(Array.isArray(pack?.conflicts) ? pack.conflicts : []),
+    ...(Array.isArray(pack?.conflictParticipation) ? pack.conflictParticipation : []),
+    ...(Array.isArray(pack?.validation?.conflicts) ? pack.validation.conflicts : []),
+  ].map(publicNodePackConflictIssue);
+  const conflicts = publicNodePackUniqueIssues([
+    ...publicNodePackIssuesForPack(
+      (Array.isArray(discoveryContext.conflicts) ? discoveryContext.conflicts : []).map(publicNodePackConflictIssue),
+      pack,
+    ),
+    ...packConflicts,
+  ]);
+  const conflictInvolvement = publicNodePackConflictInvolvement([
+    ...conflicts,
+    ...diagnostics.filter(issue => NODE_PACK_PUBLIC_CONFLICT_CODES.has(publicNodePackIssueCode(issue))),
+  ]);
+  const resolutionState = publicNodePackResolutionState(pack, diagnostics, conflicts);
+  const validationStatus = publicNodePackValidationStatus(resolutionState, diagnostics, conflicts);
+  const highRiskCapabilities = publicNodePackHighRiskCapabilities(pack, diagnostics);
+  const packValidation = pack?.validation && typeof pack.validation === 'object' ? pack.validation : {};
+  const validationOk = resolutionState === 'resolved' && (Object.prototype.hasOwnProperty.call(packValidation, 'ok')
+    ? packValidation.ok === true
+    : true);
+  const sourcePath = publicNodePackString(
+    pack?.discovery?.manifestPath || pack?.manifestPath || pack?.discovery?.packDir || pack?.path,
+    '',
+  );
   const collections = ['nodes', 'graphs', 'trees', 'skills', 'rules', 'examples'];
   const publicPack = {
     id: pack?.id || '',
@@ -1866,6 +2412,37 @@ function publicNodePackManifest(pack) {
     mutable: pack?.mutable === true,
     description: pack?.description || '',
     capabilities: Array.isArray(pack?.capabilities) ? pack.capabilities : [],
+    highRiskCapabilities,
+    resolutionState,
+    validationStatus,
+    sourcePath,
+    capabilityRisk: {
+      hasHighRiskCapabilities: highRiskCapabilities.length > 0,
+      highRiskCapabilities,
+      reviewRequired: diagnostics.some(issue => publicNodePackIssueCode(issue).includes('HIGH_RISK')),
+      summary: highRiskCapabilities.length
+        ? `high-risk capabilities requested: ${highRiskCapabilities.join(', ')}`
+        : 'no high-risk capabilities requested',
+    },
+    validation: {
+      ok: validationOk,
+      packId: publicNodePackString(packValidation.packId || pack?.id, ''),
+      packVersion: publicNodePackString(packValidation.packVersion || pack?.version, ''),
+      resolutionState,
+      status: validationStatus,
+      highRiskCapabilities,
+      declaredNodeTypes: publicNodePackValidationDeclaredNodeTypes(pack),
+      conflictingNodeTypes: Array.isArray(packValidation.conflictingNodeTypes)
+        ? packValidation.conflictingNodeTypes
+        : conflictInvolvement.duplicateNodeTypes,
+      diagnostics,
+      conflicts,
+    },
+    diagnostics,
+    conflicts,
+    hasConflicts: conflictInvolvement.hasConflicts,
+    conflictInvolvement,
+    diagnosticsSummary: publicNodePackDiagnosticsSummary(diagnostics, conflicts),
     discovery: {
       rootKind: pack?.discovery?.rootKind || '',
       packDir: pack?.discovery?.packDir || '',
@@ -1888,15 +2465,34 @@ function registerOrchestrationAuthoringHandlers({ ipcMain, app, authority }) {
           label: 'Node pack workspace',
         });
       }
+      const trustedNodePackOptions = trustedNodePackAuthoringEvidence(request);
+      const discoveryRoots = nodePackDiscoveryOptionsForRequest(app, request);
       const result = discoverNodePackManifests({
-        userDataDir: app?.getPath ? app.getPath('userData') : '',
+        builtInNodePacksRoot: discoveryRoots.builtInNodePacksRoot,
+        userNodePacksRoot: discoveryRoots.userNodePacksRoot,
+        userDataDir: discoveryRoots.userDataDir,
+        currentOrpadVersion: request.currentOrpadVersion,
+        installMode: trustedNodePackOptions.nodePackInstallMode || 'normal',
+        grantedCapabilities: trustedNodePackOptions.nodePackGrantedCapabilities,
+        grantedCapabilitiesByPack: trustedNodePackOptions.nodePackGrantedCapabilitiesByPack,
+        trustEvidence: trustedNodePackOptions.nodePackTrustEvidence,
+        trustEvidenceByPack: trustedNodePackOptions.nodePackTrustEvidenceByPack,
+        highRiskCapabilityReview: trustedNodePackOptions.nodePackCapabilityReview,
+        highRiskCapabilityReviewByPack: trustedNodePackOptions.nodePackCapabilityReviewByPack,
       });
+      const diagnostics = [
+        ...discoveryRoots.diagnostics,
+        ...(Array.isArray(result.diagnostics) ? result.diagnostics : []),
+      ];
       return {
         success: true,
-        ok: result.ok,
+        ok: result.ok && !diagnostics.some(item => item.level === 'error'),
         roots: result.roots,
-        nodePacks: result.nodePacks.map(publicNodePackManifest),
-        diagnostics: result.diagnostics,
+        nodePacks: result.nodePacks.map(pack => publicNodePackManifest(pack, {
+          diagnostics,
+          conflicts: result.conflicts,
+        })),
+        diagnostics,
         conflicts: result.conflicts,
       };
     } catch (err) {
@@ -2169,4 +2765,6 @@ module.exports = {
   unwrapClaudeCliResult,
   writeHarnessProvisioningArtifacts,
   extractJsonText,
+  generateNodePackOptionsForRequest,
+  withTrustedNodePackAuthoringOptions,
 };

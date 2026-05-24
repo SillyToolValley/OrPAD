@@ -26,14 +26,37 @@ const GATE_PASS_CONDITIONS = new Set(['pass', 'continue', 'accept', 'accepted', 
 const GATE_REVISE_CONDITIONS = new Set(['revise', 'reject', 'rejected', 'fail', 'retry']);
 const GATE_CONTINUE_ON_FAIL_POLICIES = new Set(['warn', 'continue', 'continue-with-warning']);
 const PATCH_ACCEPT_CONDITIONS = new Set(['accepted', 'accept', 'pass', 'continue']);
-const PATCH_REJECT_CONDITIONS = new Set(['rejected', 'reject', 'revise']);
+const PATCH_REJECT_CONDITIONS = new Set(['rejected', 'reject', 'revise', 'revision-requested', 'changes-requested']);
+const PATCH_ACCEPT_STATUSES = new Set(['reviewed', 'not-required', 'applied']);
+const PATCH_REJECT_STATUSES = new Set([
+  'rejected',
+  'reject',
+  'revise',
+  'revision-requested',
+  'request-revision',
+  'changes-requested',
+  'needs-revision',
+  'follow-up',
+  'followup',
+]);
 
 function normalizeCondition(value) {
-  return String(value || '').trim();
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+}
+
+function hasDeclaredFailureRouting(value) {
+  if (value == null || value === false) return false;
+  if (typeof value === 'string') return Boolean(value.trim());
+  if (Array.isArray(value)) return value.some(item => hasDeclaredFailureRouting(item));
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return Boolean(value);
 }
 
 function decideEdgeForSelector(condition, sourceResult) {
-  const selected = String(sourceResult?.selected || sourceResult?.selectedRoute || '').trim();
+  const selected = normalizeCondition(sourceResult?.selected || sourceResult?.selectedRoute || '');
   if (!selected) {
     return { fired: false, reason: 'selector-no-selection' };
   }
@@ -46,7 +69,16 @@ function decideEdgeForSelector(condition, sourceResult) {
 function decideEdgeForGate(condition, sourceResult) {
   const rawValid = Boolean(sourceResult?.valid);
   const onFail = normalizeCondition(sourceResult?.onFail);
-  const strictFailure = sourceResult?.strictFailure === true || sourceResult?.warningDoesNotPass === true;
+  const hasFailureRouting = hasDeclaredFailureRouting(sourceResult?.failureRouting);
+  const warningDoesNotPass = sourceResult?.warningDoesNotPass === true || hasFailureRouting;
+  const strictFailure = sourceResult?.strictFailure === true || warningDoesNotPass;
+  const strictRoutingReason = sourceResult?.strictFailure === true
+    ? 'gate-strict'
+    : (hasFailureRouting ? 'gate-failure-routing' : 'gate-warning-does-not-pass');
+  const strictRoutingAudit = {
+    ...(warningDoesNotPass ? { warningDoesNotPass: true } : {}),
+    ...(hasFailureRouting ? { failureRouting: sourceResult.failureRouting } : {}),
+  };
   const continueOnFail = !rawValid && !strictFailure && GATE_CONTINUE_ON_FAIL_POLICIES.has(onFail);
   const valid = rawValid || continueOnFail;
   // Queue-state conditions (Pattern I: queue-drain loop).
@@ -81,30 +113,30 @@ function decideEdgeForGate(condition, sourceResult) {
   if (GATE_PASS_CONDITIONS.has(condition)) {
     return valid
       ? { fired: true, reason: rawValid ? 'gate-pass' : 'gate-warning-pass', onFail }
-      : { fired: false, reason: strictFailure ? 'gate-strict-failed' : 'gate-failed', onFail };
+      : { fired: false, reason: strictFailure ? `${strictRoutingReason}-failed` : 'gate-failed', onFail, ...strictRoutingAudit };
   }
   if (GATE_REVISE_CONDITIONS.has(condition)) {
     return valid
       ? { fired: false, reason: rawValid ? 'gate-passed-skip-revise' : 'gate-warning-skip-revise', onFail }
-      : { fired: true, reason: strictFailure ? 'gate-strict-revise' : 'gate-revise', onFail };
+      : { fired: true, reason: strictFailure ? `${strictRoutingReason}-revise` : 'gate-revise', onFail, ...strictRoutingAudit };
   }
   return { fired: true, reason: 'gate-condition-unrecognized-default-fire' };
 }
 
 function decideEdgeForPatchReview(condition, sourceResult) {
-  const status = String(sourceResult?.status || '').trim();
-  const accepted = status === 'reviewed' || status === 'not-required';
+  const status = normalizeCondition(sourceResult?.status || '');
+  const decision = normalizeCondition(sourceResult?.decision || sourceResult?.reviewDecision || '');
+  const accepted = PATCH_ACCEPT_STATUSES.has(status);
+  const rejected = PATCH_REJECT_STATUSES.has(status) || PATCH_REJECT_STATUSES.has(decision);
   if (PATCH_ACCEPT_CONDITIONS.has(condition)) {
     return accepted
       ? { fired: true, reason: 'patch-review-accepted', reviewStatus: status }
       : { fired: false, reason: 'patch-review-not-accepted', reviewStatus: status };
   }
   if (PATCH_REJECT_CONDITIONS.has(condition)) {
-    // executePatchReviewNode does not currently emit a "rejected"
-    // resolution — rejection surfaces as `blocked` until Phase 3 adds
-    // proper reject semantics. The edge does not fire today; Phase 2
-    // surfaces it as a diagnostic so authors notice.
-    return { fired: false, reason: 'patch-review-rejected-not-yet-emitted', reviewStatus: status };
+    return rejected
+      ? { fired: true, reason: 'patch-review-rejected', reviewStatus: status, reviewDecision: decision }
+      : { fired: false, reason: 'patch-review-not-rejected', reviewStatus: status, reviewDecision: decision };
   }
   return { fired: true, reason: 'patch-review-condition-unrecognized-default-fire' };
 }

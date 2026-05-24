@@ -312,6 +312,72 @@ test('harness provisioning treats LLM candidate commands and file readers as non
   assert.equal(report.enforcement.runBlockers.length, 0);
 });
 
+test('harness provisioning treats advisory shell-style candidate commands as non-blocking', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-harness-candidate-shell-'));
+  const candidate = await preflightValidationCommand('candidate: cd OrPad && node --test tests/orchestration-machine/node-pack-compatibility.test.mjs', workspaceRoot);
+  assert.equal(candidate.status, 'candidate');
+  assert.equal(candidate.parsed.advisory, true);
+  assert.match(candidate.parsed.error, /shell operator &&/);
+  assert.equal(candidate.dryRun.status, 'not-run');
+
+  const blocking = await preflightValidationCommand('cd OrPad && node --test tests/orchestration-machine/node-pack-compatibility.test.mjs', workspaceRoot);
+  assert.equal(blocking.status, 'blocked');
+  assert.equal(blocking.parsed.advisory, false);
+
+  const report = await buildHarnessProvisioningReport({
+    app: { getPath: () => workspaceRoot },
+    workspaceRoot,
+    projectProfile: {},
+    toolPlan: {},
+    harnessSpec: {
+      schemaVersion: 'orpad.harnessAuthoringSpec.v1',
+      validationCommands: [
+        'candidate: cd OrPad && node --test tests/orchestration-machine/node-pack-compatibility.test.mjs',
+      ],
+    },
+    generatedAt: '2026-05-20T03:05:00.000Z',
+  });
+
+  assert.equal(report.status, 'ready');
+  assert.equal(report.validationPreflight.commands[0]?.status, 'candidate');
+  assert.equal(report.enforcement.runBlockers.length, 0);
+});
+
+test('harness provisioning treats descriptive candidate and setup labels as advisory', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-harness-descriptive-candidate-'));
+  const commands = [
+    'candidate if script exists: cd OrPad; npm run build:renderer',
+    'candidate for Pack Manager UI changes: cd OrPad; npx playwright test tests/e2e/runbook-pipeline-editor.spec.ts',
+    'candidate broad e2e: cd OrPad; npx playwright test',
+    'setup candidate only when dependencies are absent and policy permits network: cd OrPad; npm ci',
+  ];
+
+  for (const command of commands) {
+    const result = await preflightValidationCommand(command, workspaceRoot);
+    assert.equal(result.status, 'candidate');
+    assert.equal(result.parsed.advisory, true);
+    assert.equal(result.tool.command, 'cd');
+    assert.equal(result.dryRun.status, 'not-run');
+  }
+
+  const report = await buildHarnessProvisioningReport({
+    app: { getPath: () => workspaceRoot },
+    workspaceRoot,
+    projectProfile: {},
+    toolPlan: {},
+    harnessSpec: {
+      schemaVersion: 'orpad.harnessAuthoringSpec.v1',
+      validationCommands: commands,
+    },
+    generatedAt: '2026-05-20T03:06:00.000Z',
+  });
+
+  assert.equal(report.status, 'ready');
+  assert.equal(report.toolHealth.tools.some(tool => tool.input === 'candidate' || tool.input === 'setup'), false);
+  assert.equal(report.validationPreflight.commands.every(command => command.status === 'candidate'), true);
+  assert.equal(report.enforcement.runBlockers.length, 0);
+});
+
 test('harness provisioning checks Windows Codex npm shims through the provider invocation', { skip: process.platform !== 'win32' }, async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-harness-codex-health-'));
   const shimRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-codex-shim-'));

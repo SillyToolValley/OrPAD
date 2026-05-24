@@ -8,6 +8,15 @@ export default defineConfig({
     {
       name: 'electron',
       testMatch: 'tests/e2e/*.spec.ts',
+      // Electron tests launch full desktop app instances. Running them in
+      // parallel causes worker teardown timeouts and perf false positives on
+      // Windows, while serial execution keeps the assertions deterministic.
+      workers: 1,
+      use: {
+        trace: 'retain-on-failure',
+        screenshot: 'only-on-failure',
+        video: 'retain-on-failure',
+      },
     },
     {
       name: 'web-chromium',

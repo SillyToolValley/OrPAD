@@ -100,6 +100,41 @@ test('proposal-only probe ingests candidates without letting adapter close the r
   assert.equal(events.some(event => event.eventType === 'run.summary' && event.payload?.summaryStatus === 'partial'), true);
 });
 
+test('proposal-only adapter result records status-specific event reasons', async () => {
+  const run = await makeRun();
+  const failedRequest = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/failing-probe',
+    taskKind: 'probe',
+    workspaceRoot: run.workspaceRoot,
+  });
+
+  const failed = await applyProposalAdapterResult(run.runRoot, failedRequest, adapterResult(failedRequest, {
+    status: 'failed',
+    summary: 'Codex CLI proposal adapter timed out before writing last-message.json.',
+    candidateProposals: [],
+  }));
+
+  assert.equal(failed.summaryStatus, 'blocked');
+
+  const doneRequest = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/done-probe',
+    taskKind: 'probe',
+    workspaceRoot: run.workspaceRoot,
+  });
+  await applyProposalAdapterResult(run.runRoot, doneRequest, adapterResult(doneRequest));
+
+  const events = await readMachineEvents(run.runRoot);
+  const failedEvent = events.find(event => event.eventType === 'adapter.result' && event.payload?.adapterCallId === failedRequest.adapterCallId);
+  const doneEvent = events.find(event => event.eventType === 'adapter.result' && event.payload?.adapterCallId === doneRequest.adapterCallId);
+
+  assert.equal(failedEvent?.reason, 'proposal-only-result.failed');
+  assert.equal(failedEvent?.payload?.status, 'failed');
+  assert.equal(failedEvent?.payload?.taskKind, 'probe');
+  assert.equal(doneEvent?.reason, 'proposal-only-result.accepted');
+});
+
 test('proposal-only probe preserves candidate targetFiles on ingested work items', async () => {
   const run = await makeRun();
   const request = createAdapterRequest({

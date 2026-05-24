@@ -68,7 +68,7 @@ test('orpad generate writes an orchestration-focused pipeline package', async (t
   assert.equal(patchReviewEdges.some(edge => edge.to === 'verification-gate' && edge.condition === 'accepted'), true);
   const verificationEdges = graph.graph.transitions.filter(edge => edge.from === 'verification-gate');
   assert.equal(verificationEdges.some(edge => edge.to === 'worker' && edge.condition === 'revise'), true);
-  assert.equal(verificationEdges.some(edge => edge.to === 'triage' && edge.condition === 'queue-not-empty'), true);
+  assert.equal(verificationEdges.some(edge => edge.to === 'dispatch' && edge.condition === 'queue-not-empty'), true);
   assert.equal(verificationEdges.some(edge => edge.to === 'artifact' && edge.condition === 'queue-empty'), true);
 
   const prompt = await fs.readFile(result.promptPath, 'utf-8');
@@ -188,7 +188,7 @@ test('orpad generate materializes an LLM-authored orchestration spec', async (t)
   assert.equal(editorialGateEdges.some(edge => edge.to === 'verify-learning' && edge.condition === 'pass'), true);
   const gateEdges = graph.graph.transitions.filter(edge => edge.from === 'verify-learning');
   assert.equal(gateEdges.some(edge => edge.to === 'worker' && edge.condition === 'revise'), true);
-  assert.equal(gateEdges.some(edge => edge.to === 'triage' && edge.condition === 'queue-not-empty'), true);
+  assert.equal(gateEdges.some(edge => edge.to === 'dispatch' && edge.condition === 'queue-not-empty'), true);
   assert.equal(gateEdges.some(edge => edge.to === 'artifact' && edge.condition === 'queue-empty'), true);
   assert.equal(graph.graph.nodes.find(node => node.id === 'find-confusion').config.maxCandidates, 7);
   assert.deepEqual(graph.graph.nodes.find(node => node.id === 'worker').config.targetFiles, []);
@@ -246,6 +246,12 @@ test('orpad node-packs list reports built-in and user node pack pools', async (t
     version: '0.1.0',
     origin: 'community',
     trustLevel: 'signed',
+    author: {
+      name: 'CLI Pack Author',
+      repository: 'https://github.com/example/orpad-cli-pack',
+    },
+    license: 'MIT',
+    description: 'User-installed CLI node pack for list coverage.',
     compatibility: {
       orpad: '>=1.0.0-beta.3',
       packFormat: 'orpad.nodePack.v1',
@@ -282,4 +288,376 @@ test('orpad node-packs list reports built-in and user node pack pools', async (t
   const communityPack = result.nodePacks.find(pack => pack.id === 'community.cli-pack');
   assert.deepEqual(communityPack.nodeTypes, ['community.cliNode']);
   assert.equal(communityPack.location.endsWith('community.cli-pack'), true);
+});
+
+test('orpad node-packs list applies trust evidence files like generate discovery', async (t) => {
+  const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-node-pack-trust-'));
+  t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
+  const packDir = path.join(userRoot, 'community.cli-signed-trust');
+  await fs.mkdir(packDir, { recursive: true });
+  await fs.writeFile(path.join(packDir, 'orpad.node-pack.json'), JSON.stringify({
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'community.cli-signed-trust',
+    name: 'CLI Signed Trust Pack',
+    version: '0.1.0',
+    origin: 'community',
+    trustLevel: 'signed',
+    author: {
+      name: 'CLI Signed Author',
+      repository: 'https://github.com/example/orpad-cli-signed-trust',
+    },
+    license: 'MIT',
+    description: 'Signed user pack for node-packs list trust evidence parity.',
+    compatibility: {
+      orpad: '>=1.0.0-beta.3',
+      packFormat: 'orpad.nodePack.v1',
+    },
+    capabilities: ['read.workspace'],
+    nodes: [{
+      type: 'community.cliSignedTrustNode',
+      path: 'nodes/signed-trust.or-node',
+      runtimeHandlerKind: 'metadata-only',
+      capabilities: ['read.workspace'],
+    }],
+    graphs: [],
+    skills: [],
+    rules: [],
+    examples: [],
+  }, null, 2), 'utf-8');
+
+  const withoutEvidence = JSON.parse((await execFileAsync(process.execPath, [
+    cliPath,
+    'node-packs',
+    'list',
+    '--user-node-packs',
+    userRoot,
+    '--json',
+  ], { encoding: 'utf-8' })).stdout);
+  const untrustedPack = withoutEvidence.nodePacks.find(pack => pack.id === 'community.cli-signed-trust');
+
+  assert.equal(untrustedPack.resolutionState, 'untrusted');
+  assert.equal(untrustedPack.validationStatus, 'untrusted');
+  assert.equal(
+    untrustedPack.blockedNextAction,
+    'community.cli-signed-trust: provide OrPAD-controlled trust evidence (trustEvidence.signature.verified) with --node-pack-trust-evidence-file.',
+  );
+
+  const trustEvidencePath = path.join(userRoot, 'trust-evidence.json');
+  await fs.writeFile(trustEvidencePath, JSON.stringify({
+    'community.cli-signed-trust': {
+      signature: { verified: true },
+    },
+  }, null, 2), 'utf-8');
+
+  const withEvidence = JSON.parse((await execFileAsync(process.execPath, [
+    cliPath,
+    'node-packs',
+    'list',
+    '--user-node-packs',
+    userRoot,
+    '--node-pack-trust-evidence-file',
+    trustEvidencePath,
+    '--json',
+  ], { encoding: 'utf-8' })).stdout);
+  const resolvedPack = withEvidence.nodePacks.find(pack => pack.id === 'community.cli-signed-trust');
+
+  assert.equal(resolvedPack.source, 'user');
+  assert.equal(resolvedPack.resolutionState, 'resolved');
+  assert.equal(resolvedPack.validationStatus, 'valid');
+  assert.equal(Object.prototype.hasOwnProperty.call(resolvedPack, 'blockedNextAction'), false);
+});
+
+test('orpad node-packs list reports high-risk grant and review next actions', async (t) => {
+  const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-node-pack-risk-'));
+  t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
+  const packDir = path.join(userRoot, 'community.cli-high-risk');
+  await fs.mkdir(packDir, { recursive: true });
+  await fs.writeFile(path.join(packDir, 'orpad.node-pack.json'), JSON.stringify({
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'community.cli-high-risk',
+    name: 'CLI High Risk Pack',
+    version: '0.1.0',
+    origin: 'community',
+    trustLevel: 'signed',
+    author: {
+      name: 'CLI Risk Author',
+      repository: 'https://github.com/example/orpad-cli-high-risk',
+    },
+    license: 'MIT',
+    description: 'High-risk user pack for node-packs list capability evidence parity.',
+    compatibility: {
+      orpad: '>=1.0.0-beta.3',
+      packFormat: 'orpad.nodePack.v1',
+    },
+    capabilities: ['read.workspace', 'write.workspace'],
+    nodes: [{
+      type: 'community.cliHighRiskNode',
+      path: 'nodes/high-risk.or-node',
+      runtimeHandlerKind: 'metadata-only',
+      capabilities: ['write.workspace'],
+    }],
+    graphs: [],
+    skills: [],
+    rules: [],
+    examples: [],
+  }, null, 2), 'utf-8');
+
+  const signatureOnlyPath = path.join(userRoot, 'signature-only.json');
+  await fs.writeFile(signatureOnlyPath, JSON.stringify({
+    'community.cli-high-risk': {
+      signature: { verified: true },
+    },
+  }, null, 2), 'utf-8');
+
+  const approvalRequired = JSON.parse((await execFileAsync(process.execPath, [
+    cliPath,
+    'node-packs',
+    'list',
+    '--user-node-packs',
+    userRoot,
+    '--node-pack-trust-evidence-file',
+    signatureOnlyPath,
+    '--json',
+  ], { encoding: 'utf-8' })).stdout);
+  const blockedPack = approvalRequired.nodePacks.find(pack => pack.id === 'community.cli-high-risk');
+
+  assert.equal(blockedPack.resolutionState, 'approval-required');
+  assert.equal(
+    blockedPack.blockedNextAction,
+    'community.cli-high-risk: record an approved OrPAD high-risk capability review scoped to write.workspace and supply exact Machine-owned capability grants for write.workspace with --node-pack-granted-capabilities-file.',
+  );
+  assert.equal(
+    blockedPack.validation.diagnostics.some(item => item.code === 'NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED'),
+    true,
+  );
+  assert.equal(
+    blockedPack.validation.diagnostics.some(item => item.code === 'NODE_PACK_HIGH_RISK_CAPABILITY_REQUIRES_APPROVAL'),
+    true,
+  );
+
+  const approvedReviewPath = path.join(userRoot, 'approved-review.json');
+  await fs.writeFile(approvedReviewPath, JSON.stringify({
+    'community.cli-high-risk': {
+      signature: { verified: true },
+      review: {
+        status: 'approved',
+        approvedCapabilities: ['write.workspace'],
+      },
+    },
+  }, null, 2), 'utf-8');
+  const emptyGrantsPath = path.join(userRoot, 'empty-grants.json');
+  await fs.writeFile(emptyGrantsPath, JSON.stringify({
+    'community.cli-high-risk': [],
+  }, null, 2), 'utf-8');
+
+  const capabilityDenied = JSON.parse((await execFileAsync(process.execPath, [
+    cliPath,
+    'node-packs',
+    'list',
+    '--user-node-packs',
+    userRoot,
+    '--node-pack-trust-evidence-file',
+    approvedReviewPath,
+    '--node-pack-granted-capabilities-file',
+    emptyGrantsPath,
+    '--json',
+  ], { encoding: 'utf-8' })).stdout);
+  const deniedPack = capabilityDenied.nodePacks.find(pack => pack.id === 'community.cli-high-risk');
+
+  assert.equal(deniedPack.resolutionState, 'capability-denied');
+  assert.equal(
+    deniedPack.blockedNextAction,
+    'community.cli-high-risk: supply exact Machine-owned capability grants for write.workspace with --node-pack-granted-capabilities-file.',
+  );
+
+  const grantsPath = path.join(userRoot, 'grants.json');
+  await fs.writeFile(grantsPath, JSON.stringify({
+    'community.cli-high-risk': ['write.workspace'],
+  }, null, 2), 'utf-8');
+
+  const resolved = JSON.parse((await execFileAsync(process.execPath, [
+    cliPath,
+    'node-packs',
+    'list',
+    '--user-node-packs',
+    userRoot,
+    '--node-pack-trust-evidence-file',
+    approvedReviewPath,
+    '--node-pack-granted-capabilities-file',
+    grantsPath,
+    '--json',
+  ], { encoding: 'utf-8' })).stdout);
+  const resolvedPack = resolved.nodePacks.find(pack => pack.id === 'community.cli-high-risk');
+
+  assert.equal(resolvedPack.resolutionState, 'resolved');
+  assert.equal(resolvedPack.validationStatus, 'valid');
+});
+
+test('orpad generate selects a validated user-installed node pack from CLI discovery options', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-user-pack-generate-'));
+  const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-authoring-packs-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
+
+  await fs.mkdir(path.join(workspace, 'reports'), { recursive: true });
+  await fs.writeFile(path.join(workspace, 'README.md'), '# Report workflow fixture\n', 'utf-8');
+  await fs.writeFile(path.join(workspace, 'reports/monthly-report.js'), 'module.exports = {};\n', 'utf-8');
+
+  const packDir = path.join(userRoot, 'community.cli-report-workstream');
+  await fs.mkdir(packDir, { recursive: true });
+  await fs.writeFile(path.join(packDir, 'orpad.node-pack.json'), JSON.stringify({
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'community.cli-report-workstream',
+    name: 'CLI Report Workstream Pack',
+    version: '0.1.0',
+    origin: 'community',
+    trustLevel: 'signed',
+    author: {
+      name: 'Report Pack Author',
+      github: 'https://github.com/example',
+      repository: 'https://github.com/example/orpad-report-workstream',
+    },
+    license: 'MIT',
+    description: 'User-installed report workflow pack for Generate authoring.',
+    compatibility: {
+      orpad: '>=1.0.0-beta.3',
+      packFormat: 'orpad.nodePack.v1',
+    },
+    installPolicy: {
+      allowLifecycleScripts: false,
+      allowExecutableHandlers: false,
+    },
+    capabilities: ['read.workspace'],
+    nodes: [],
+    graphs: [{
+      id: 'cli-report-workstream',
+      path: 'graphs/cli-report-workstream.or-graph',
+      label: 'CLI Report Workstream',
+      role: 'reusable',
+    }],
+    skills: [{
+      id: 'cli-report-authoring',
+      path: 'skills/cli-report-authoring.md',
+      description: 'Guides report workflow increments.',
+    }],
+    rules: [{
+      id: 'cli-report-scope',
+      path: 'rules/cli-report-scope.or-rule',
+      description: 'Scopes report workflow files.',
+    }],
+    examples: [],
+    authoringHints: {
+      situational: true,
+      priority: 99,
+      keywords: ['custom report', 'report workflow'],
+      workspaceSignals: ['reports/'],
+      selectionReason: 'The request targets the user-installed report workflow pack.',
+      context: {
+        id: 'map-cli-report-workflow',
+        label: 'Map CLI report workflow',
+        summary: 'Inspect report workflow files before queuing work.',
+      },
+      probe: {
+        id: 'probe-cli-report-workflow',
+        label: 'Probe CLI report workflow candidates',
+        lens: 'cli-report-workflow',
+        maxCandidates: 5,
+      },
+      workerLabel: 'Implement CLI report workflow item',
+      verifyCriteria: ['report workflow behavior is covered by targeted evidence'],
+      rule: {
+        include: ['reports/**'],
+        exclude: ['.env'],
+      },
+      skill: {
+        acceptanceCriteria: ['report workflow work items include predictable targetFiles'],
+      },
+    },
+  }, null, 2), 'utf-8');
+
+  const trustEvidencePath = path.join(userRoot, 'trust-evidence.json');
+  await fs.writeFile(trustEvidencePath, JSON.stringify({
+    'community.cli-report-workstream': {
+      signature: { verified: true },
+    },
+  }, null, 2), 'utf-8');
+
+  const { stdout } = await execFileAsync(process.execPath, [
+    cliPath,
+    'generate',
+    '--workspace',
+    workspace,
+    '--prompt',
+    'Build the custom report workflow with reusable report pack guidance.',
+    '--timestamp',
+    '2026-05-23T01:00:00.000Z',
+    '--user-node-packs',
+    userRoot,
+    '--node-pack-trust-evidence-file',
+    trustEvidencePath,
+    '--json',
+  ], { encoding: 'utf-8' });
+  const result = JSON.parse(stdout);
+
+  assert.equal(result.success, true);
+  assert.equal(result.qualityAudit.ok, true);
+  assert.equal(
+    result.qualityAudit.diagnostics.some(item => item.code === 'AUTHORING_VALIDATION_FAILED'),
+    false,
+    'generation-time quality audit should use the CLI-discovered node pack pool',
+  );
+  const pipeline = JSON.parse(await fs.readFile(result.pipelinePath, 'utf-8'));
+  const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));
+  const prompt = await fs.readFile(result.promptPath, 'utf-8');
+  const selected = pipeline.metadata.orchestrationAuthoring.nodePackSelection;
+  const selectedPack = selected.find(pack => pack.id === 'community.cli-report-workstream');
+
+  assert.ok(selectedPack);
+  assert.equal(selectedPack.source, 'user');
+  assert.equal(selectedPack.trustLevel, 'signed');
+  assert.deepEqual(selectedPack.capabilities, ['read.workspace']);
+  assert.equal(selectedPack.validationStatus, 'valid');
+  assert.equal(pipeline.nodePacks.some(pack => (
+    pack.id === 'community.cli-report-workstream'
+    && pack.version === '>=0.1.0'
+    && pack.origin === 'user'
+  )), true);
+  assert.equal(graph.graph.nodes.find(node => node.type === 'orpad.context').config.sourceNodePack, 'community.cli-report-workstream');
+  assert.equal(graph.graph.nodes.find(node => node.type === 'orpad.probe').config.lens, 'cli-report-workflow');
+  assert.match(prompt, /community\.cli-report-workstream/);
+});
+
+test('orpad generate --required-node-pack fails when the required pack is unavailable', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-required-pack-block-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await fs.writeFile(path.join(workspace, 'README.md'), '# CLI required pack fixture\n', 'utf-8');
+
+  let thrown = null;
+  try {
+    await execFileAsync(process.execPath, [
+      cliPath,
+      'generate',
+      '--workspace',
+      workspace,
+      '--prompt',
+      'Build the custom report workflow with reusable report pack guidance.',
+      '--timestamp',
+      '2026-05-24T01:10:00.000Z',
+      '--required-node-pack',
+      'community.cli-missing-required-pack',
+      '--json',
+    ], { encoding: 'utf-8' });
+  } catch (err) {
+    thrown = err;
+  }
+
+  assert.ok(thrown, 'CLI Generate should exit non-zero when a required pack is unavailable');
+  const result = JSON.parse(thrown.stdout);
+  assert.equal(result.success, false);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /NODE_PACK_AUTHORING_REQUIRED_UNAVAILABLE/);
+  assert.match(result.error, /community\.cli-missing-required-pack/);
 });

@@ -36,6 +36,7 @@ const ERROR_CLASSES = Object.freeze([
   'RETRYABLE',
   'OUTPUT_VIOLATES_CONTRACT',
   'BUDGET_EXCEEDED',
+  'CANCELLED',
   'FATAL',
 ]);
 
@@ -49,12 +50,18 @@ const ERROR_CODE_TO_CLASS = Object.freeze({
   OUTPUT_VIOLATES_CONTRACT: 'OUTPUT_VIOLATES_CONTRACT',
   CONTRACT_VIOLATION: 'OUTPUT_VIOLATES_CONTRACT',
   BUDGET_EXCEEDED: 'BUDGET_EXCEEDED',
+  MACHINE_RUN_CANCELLED: 'CANCELLED',
+  CANCELLED: 'CANCELLED',
+  ABORT_ERR: 'CANCELLED',
+  AbortError: 'CANCELLED',
   FATAL: 'FATAL',
   API_ADAPTER_DISABLED: 'FATAL',
   API_TRACING_NOT_GRANTED: 'FATAL',
   API_TELEMETRY_EXPORT_NOT_GRANTED: 'FATAL',
   CLI_ADAPTER_DISABLED: 'FATAL',
   MACHINE_PROVIDER_PLUGIN_MISSING: 'FATAL',
+  MACHINE_API_PLUGIN_STUB: 'FATAL',
+  OPENAI_INVOKE_NOT_IMPLEMENTED: 'FATAL',
   MACHINE_DANGEROUS_SANDBOX_BYPASS_NOT_APPROVED: 'FATAL',
   MACHINE_DANGEROUS_SANDBOX_BYPASS_OVERLAY_NOT_ISOLATED: 'FATAL',
 });
@@ -71,6 +78,7 @@ function classifyAdapterError(error) {
   const code = String(error.code || '');
   if (ERROR_CODE_TO_CLASS[code]) return ERROR_CODE_TO_CLASS[code];
   if (code && ERROR_CLASSES.includes(code)) return code;
+  if (String(error.name || '') === 'AbortError') return 'CANCELLED';
   // HTTP-style status fallback (e.g. plugins that store err.status)
   const status = Number(error.status);
   if (status === 401 || status === 403) return 'KEY_MISSING';
@@ -153,6 +161,145 @@ function buildProviderSelectionEnvelope(candidate) {
     qualityTier: selection.qualityTier || 'standard',
     sessionStrategy: selection.sessionStrategy || 'none',
     toolPolicy: selection.toolPolicy || 'none',
+  };
+}
+
+function candidateProviderId(candidate) {
+  return String(candidate?.selection?.providerId || '');
+}
+
+function isStubProviderPlugin(plugin) {
+  return String(plugin?.implementationStatus || '').toLowerCase() === 'stub';
+}
+
+function createMissingProviderError(providerId) {
+  const err = new Error(`Provider plugin "${providerId}" is not registered.`);
+  err.code = 'MACHINE_PROVIDER_PLUGIN_MISSING';
+  return err;
+}
+
+function createStubProviderError(plugin, candidate) {
+  const providerId = candidateProviderId(candidate) || String(plugin?.id || '');
+  const err = new Error(
+    `Provider plugin "${providerId}" is registered but not runnable (implementationStatus: stub). `
+      + 'Configure a runnable provider or remove it from the adapter fallback chain.',
+  );
+  err.code = 'MACHINE_API_PLUGIN_STUB';
+  err.classification = 'FATAL';
+  err.providerId = providerId;
+  err.implementationStatus = 'stub';
+  err.statusNote = String(plugin?.statusNote || '');
+  err.nextAction = 'Configure a provider with implementationStatus other than stub, or remove this provider from the fallback chain.';
+  err.attempt = candidate;
+  return err;
+}
+
+function buildStubProviderSkipPayload({
+  request,
+  candidate,
+  plugin,
+  fromProviderId = '',
+  classification = '',
+  triggerReason = '',
+} = {}) {
+  const selection = candidate?.selection || {};
+  return {
+    adapterCallId: request?.adapterCallId,
+    attemptId: request?.attemptId,
+    providerId: candidateProviderId(candidate),
+    model: String(selection.model || ''),
+    family: selection.family,
+    chosenBy: candidate?.chosenBy,
+    attemptIndex: candidate?.attemptIndex,
+    fromProviderId,
+    classification,
+    triggerReason,
+    implementationStatus: 'stub',
+    statusNote: String(plugin?.statusNote || ''),
+    reason: 'provider-implementation-status-stub',
+    nextAction: 'Configure a runnable provider or remove this stub provider from the fallback chain.',
+  };
+}
+
+async function emitStubProviderSkipped({
+  request,
+  beforeAttempt,
+  candidate,
+  plugin,
+  fromProviderId = '',
+  classification = '',
+  triggerReason = '',
+} = {}) {
+  const payload = buildStubProviderSkipPayload({
+    request,
+    candidate,
+    plugin,
+    fromProviderId,
+    classification,
+    triggerReason,
+  });
+  if (typeof beforeAttempt === 'function') {
+    await beforeAttempt({
+      eventType: 'adapter.attempt.skipped',
+      nodePath: request?.nodePath,
+      payload,
+    });
+  }
+  return payload;
+}
+
+async function resolveRunnableFallbackCandidate({
+  allCandidates,
+  startIndex,
+  request,
+  beforeAttempt,
+  fromProviderId = '',
+  classification = '',
+  triggerReason = '',
+} = {}) {
+  const skippedProviders = [];
+  let lastStub = null;
+  for (let idx = startIndex; idx < allCandidates.length; idx += 1) {
+    const nextCandidate = allCandidates[idx];
+    const nextProviderId = candidateProviderId(nextCandidate);
+    const nextPlugin = nextProviderId ? getProviderPlugin(nextProviderId) : null;
+    if (!nextPlugin) {
+      return {
+        targetIdx: idx,
+        candidate: nextCandidate,
+        plugin: null,
+        skippedProviders,
+        error: createMissingProviderError(nextProviderId),
+      };
+    }
+    if (isStubProviderPlugin(nextPlugin)) {
+      lastStub = { candidate: nextCandidate, plugin: nextPlugin };
+      const skipped = await emitStubProviderSkipped({
+        request,
+        beforeAttempt,
+        candidate: nextCandidate,
+        plugin: nextPlugin,
+        fromProviderId,
+        classification,
+        triggerReason,
+      });
+      skippedProviders.push(skipped);
+      continue;
+    }
+    return {
+      targetIdx: idx,
+      candidate: nextCandidate,
+      plugin: nextPlugin,
+      skippedProviders,
+      error: null,
+    };
+  }
+  return {
+    targetIdx: -1,
+    candidate: null,
+    plugin: null,
+    skippedProviders,
+    error: lastStub ? createStubProviderError(lastStub.plugin, lastStub.candidate) : null,
   };
 }
 
@@ -273,12 +420,13 @@ async function dispatchAdapter(input = {}) {
   // head of the list and consults the error classifier between attempts.
   let candidateIndex = 0;
   let candidate = allCandidates[candidateIndex];
-  let providerId = candidate.selection.providerId;
+  let providerId = candidateProviderId(candidate);
   let plugin = providerId ? getProviderPlugin(providerId) : null;
   if (!plugin) {
-    const err = new Error(`Provider plugin "${providerId}" is not registered.`);
-    err.code = 'MACHINE_PROVIDER_PLUGIN_MISSING';
-    throw err;
+    throw createMissingProviderError(providerId);
+  }
+  if (isStubProviderPlugin(plugin)) {
+    throw createStubProviderError(plugin, candidate);
   }
 
   const lifted = liftedPipelineAdapter(pipelineAdapter);
@@ -470,12 +618,26 @@ async function dispatchAdapter(input = {}) {
       continue;
     }
     if (decision.action === 'fallback') {
-      const targetIdx = decision.target
+      const requestedTargetIdx = decision.target
         ? allCandidates.indexOf(decision.target, candidateIndex + 1)
         : candidateIndex + 1;
-      if (targetIdx < 0 || targetIdx >= allCandidates.length) {
+      if (requestedTargetIdx < 0 || requestedTargetIdx >= allCandidates.length) {
         break; // no remaining candidate
       }
+      const resolvedFallback = await resolveRunnableFallbackCandidate({
+        allCandidates,
+        startIndex: requestedTargetIdx,
+        request,
+        beforeAttempt,
+        fromProviderId: providerId,
+        classification: decision.classification,
+        triggerReason: decision.reason,
+      });
+      if (resolvedFallback.error) {
+        dispatchError = resolvedFallback.error;
+        break;
+      }
+      const targetIdx = resolvedFallback.targetIdx;
       if (typeof onFallback === 'function') {
         await onFallback({
           eventType: 'adapter.attempt.fallback',
@@ -484,23 +646,20 @@ async function dispatchAdapter(input = {}) {
             adapterCallId: request.adapterCallId,
             attemptId: request.attemptId,
             fromProviderId: providerId,
-            toProviderId: allCandidates[targetIdx].selection.providerId,
+            requestedProviderId: candidateProviderId(allCandidates[requestedTargetIdx]),
+            toProviderId: candidateProviderId(resolvedFallback.candidate),
             classification: decision.classification,
             reason: decision.reason,
             consumed: targetIdx,
+            skippedProviderIds: resolvedFallback.skippedProviders.map(item => item.providerId),
+            skippedProviders: resolvedFallback.skippedProviders,
           },
         });
       }
       candidateIndex = targetIdx;
-      candidate = allCandidates[candidateIndex];
-      providerId = candidate.selection.providerId;
-      plugin = providerId ? getProviderPlugin(providerId) : null;
-      if (!plugin) {
-        const err = new Error(`Provider plugin "${providerId}" is not registered.`);
-        err.code = 'MACHINE_PROVIDER_PLUGIN_MISSING';
-        dispatchError = err;
-        break;
-      }
+      candidate = resolvedFallback.candidate;
+      providerId = candidateProviderId(candidate);
+      plugin = resolvedFallback.plugin;
       sameCandidateAttempts = 0;
       selfRepairAttempts = 0;
       if (!(await reassertBudgetBeforeNextAttempt(plugin))) break;

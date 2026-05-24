@@ -309,8 +309,8 @@ test('dispatcher pauses claiming when every queued item overlaps an unresolved p
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
 });
 
-test('dispatcher does not treat blocked worker patch artifacts as virtual write locks', async () => {
-  const run = await makeRun('run_20260520_dispatcher_ignores_blocked_patch_lock');
+test('dispatcher treats blocked worker patch artifacts as virtual write locks until review', async () => {
+  const run = await makeRun('run_20260520_dispatcher_blocks_unreviewed_blocked_patch_lock');
   await appendMachineEvent(run.runRoot, {
     runId: run.runId,
     actor: 'machine',
@@ -338,10 +338,10 @@ test('dispatcher does not treat blocked worker patch artifacts as virtual write 
     now: '2026-05-20T00:00:20.000Z',
   });
 
-  assert.equal(claimed.claimed, true);
-  assert.equal(claimed.item.id, 'overlapping-work');
-  assert.deepEqual(claimed.pendingPatchOverlaps, []);
-  assert.equal((await findQueueItem(run.runRoot, 'overlapping-work')).state, 'claimed');
+  assert.equal(claimed.claimed, false);
+  assert.equal(claimed.stopReason, 'pending-patch-overlap');
+  assert.deepEqual(claimed.pendingPatchOverlaps.map(entry => entry.patchArtifact), ['artifacts/patches/blocked.patch.json']);
+  assert.equal((await findQueueItem(run.runRoot, 'overlapping-work')).state, 'queued');
 });
 
 test('dispatcher allows overlapping queued work after the pending patch artifact is resolved', async () => {

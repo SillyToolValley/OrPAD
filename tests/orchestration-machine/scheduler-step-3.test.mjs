@@ -11,6 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
 
 const {
+  appendPatchReviewRejectedEvent,
   createMachineRun,
   executeMachineRunStep,
   readMachineEvents,
@@ -24,6 +25,11 @@ const {
 // asserts a specific Step 3 contract.
 
 async function writePipeline(t, pipelineId, graphDoc, options = {}) {
+  const {
+    candidateProposals = null,
+    machineHarness: machineHarnessOverrides = {},
+    ...pipelineOverrides
+  } = options;
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), `orpad-${pipelineId}-`));
   t.after(() => fs.rm(workspaceRoot, { recursive: true, force: true }));
   const pipelineDir = path.join(workspaceRoot, `.orpad/pipelines/${pipelineId}`);
@@ -47,23 +53,28 @@ async function writePipeline(t, pipelineId, graphDoc, options = {}) {
       metadataPath: 'harness/generated/latest-run/run-metadata.json',
       summaryPath: 'harness/generated/latest-run/summary.md',
       machineHarness: {
-        candidateProposal: {
-          schemaVersion: 'orpad.candidateProposal.v1',
-          proposalId: `${pipelineId}-proposal`,
-          suggestedWorkItemId: `${pipelineId}-item`,
-          sourceNode: 'main/probe',
-          title: 'Update target.md',
-          fingerprint: `${pipelineId}:target.md`,
-          evidence: [{ id: 'target-before', file: 'target.md' }],
-          acceptanceCriteria: ['Patch artifact records the change.'],
-          sourceOfTruthTargets: ['target.md'],
-        },
+        ...(candidateProposals
+          ? { candidateProposals }
+          : {
+            candidateProposal: {
+              schemaVersion: 'orpad.candidateProposal.v1',
+              proposalId: `${pipelineId}-proposal`,
+              suggestedWorkItemId: `${pipelineId}-item`,
+              sourceNode: 'main/probe',
+              title: 'Update target.md',
+              fingerprint: `${pipelineId}:target.md`,
+              evidence: [{ id: 'target-before', file: 'target.md' }],
+              acceptanceCriteria: ['Patch artifact records the change.'],
+              sourceOfTruthTargets: ['target.md'],
+            },
+          }),
         expectedChangedFiles: ['target.md'],
         nodeCliPatch: { file: 'target.md', content: 'Updated.\n' },
+        ...machineHarnessOverrides,
       },
     },
     graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
-    ...options,
+    ...pipelineOverrides,
   };
   await fs.writeFile(pipelinePath, JSON.stringify(pipelineDoc, null, 2), 'utf8');
   const run = await createMachineRun({
@@ -360,7 +371,18 @@ test('Step 3.A (3-way selector): selector drops two of three branches; only the 
 // within the same run-step is deferred to a future increment. The
 // event must carry the source and target paths so
 // audit consumers can reconstruct the loop-back chain.
-test('Step 3.C: barrier firing partial edge emits scheduler.loopBackReset event for the loop-back target', async (t) => {
+test('Step 3.C: barrier partial loop-back redrives worker in the same run-step until queue-empty', async (t) => {
+  const candidateProposals = [1, 2].map(index => ({
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: `loop-back-reset-proposal-${index}`,
+    suggestedWorkItemId: `loop-back-reset-item-${index}`,
+    sourceNode: 'main/probe',
+    title: `Update target.md ${index}`,
+    fingerprint: `loop-back-reset:target.md:${index}`,
+    evidence: [{ id: `target-before-${index}`, file: 'target.md' }],
+    acceptanceCriteria: ['Patch artifact records the change.'],
+    sourceOfTruthTargets: ['target.md'],
+  }));
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await writePipeline(t, 'loop-back-reset', {
     kind: 'orpad.graph',
     version: '1.0',
@@ -395,6 +417,11 @@ test('Step 3.C: barrier firing partial edge emits scheduler.loopBackReset event 
         { from: 'verify-barrier', to: 'exit', condition: 'pass' },
       ],
     },
+  }, {
+    candidateProposals,
+    machineHarness: {
+      claimPolicy: { maxClaims: 1 },
+    },
   });
   await executeMachineRunStep({
     workspaceRoot,
@@ -407,27 +434,30 @@ test('Step 3.C: barrier firing partial edge emits scheduler.loopBackReset event 
   });
   const events = await readMachineEvents(run.runRoot);
   const resetEvents = events.filter(event => event.eventType === 'scheduler.loopBackReset');
-  assert.equal(resetEvents.length, 1, 'barrier firing partial should emit exactly one loop-back reset event this run-step');
+  assert.equal(resetEvents.length, 2, 'barrier partial should record the redrive reset and the queue-empty stop reset');
   assert.equal(resetEvents[0].nodePath, 'main/worker');
   assert.equal(resetEvents[0].payload.sourceNodePath, 'main/verify-barrier');
   assert.equal(resetEvents[0].payload.targetNodePath, 'main/worker');
   assert.equal(resetEvents[0].payload.phase, 'phase-3-step-3-loop-back');
-  // Step 3 MVP: worker is NOT re-dispatched within this run-step
-  // (deferred to next Continue click). Worker should have exactly
-  // one node.completed event for this run-step.
   const workerCompleted = events.filter(event => (
     event.eventType === 'node.completed' && event.nodePath === 'main/worker'
   ));
   assert.equal(
     workerCompleted.length,
-    1,
+    2,
     'Step 3 MVP defers automatic loop-back re-dispatch — worker should complete exactly once per run-step',
   );
-  // Codex cross-review tightening: no node.scheduled or node.started
-  // event for worker AFTER the loop-back reset event's sequence.
-  // The original assertion only checked completion count; this
-  // version pins the absence of any re-dispatch attempt.
-  const resetSequence = resetEvents[0].sequence;
+  const firstResetSequence = resetEvents[0].sequence;
+  const postFirstResetWorkerEvents = events.filter(event => (
+    event.sequence > firstResetSequence
+    && event.nodePath === 'main/worker'
+    && ['node.scheduled', 'node.started', 'node.completed'].includes(event.eventType)
+  ));
+  assert.ok(
+    postFirstResetWorkerEvents.length >= 3,
+    'worker should be scheduled, started, and completed after the first loop-back reset',
+  );
+  const resetSequence = resetEvents[1].sequence;
   const postResetWorkerEvents = events.filter(event => (
     event.sequence > resetSequence
     && event.nodePath === 'main/worker'
@@ -436,6 +466,161 @@ test('Step 3.C: barrier firing partial edge emits scheduler.loopBackReset event 
   assert.equal(
     postResetWorkerEvents.length,
     0,
-    `worker must not be re-dispatched within the same run-step after loop-back reset (got ${postResetWorkerEvents.length} post-reset events)`,
+    `worker must not be re-dispatched after the queue-empty stop reset (got ${postResetWorkerEvents.length} post-reset events)`,
   );
+});
+
+test('Step 3.C: queue-not-empty loop-back drains dispatcher without manual continue', async (t) => {
+  const candidateProposals = [1, 2, 3].map(index => ({
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: `queue-drain-proposal-${index}`,
+    suggestedWorkItemId: `queue-drain-item-${index}`,
+    sourceNode: 'main/probe',
+    title: `Drain queue item ${index}`,
+    fingerprint: `queue-drain:target.md:${index}`,
+    evidence: [{ id: `queue-drain-before-${index}`, file: 'target.md' }],
+    acceptanceCriteria: ['Patch artifact records the change.'],
+    sourceOfTruthTargets: ['target.md'],
+  }));
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await writePipeline(t, 'queue-drain-loop-back', {
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'queue-drain-loop-back-main',
+      nodes: [
+        { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+        { id: 'probe', type: 'orpad.probe', label: 'Probe' },
+        { id: 'queue', type: 'orpad.workQueue', label: 'Queue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'triage', type: 'orpad.triage', label: 'Triage', config: { queueRef: 'queue' } },
+        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+        { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue' } },
+        { id: 'queue-gate', type: 'orpad.gate', label: 'Queue empty?', config: { criteria: ['queue empty'], onFail: 'continue-with-warning' } },
+        { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+      ],
+      transitions: [
+        { from: 'entry', to: 'probe' },
+        { from: 'probe', to: 'queue' },
+        { from: 'queue', to: 'triage' },
+        { from: 'triage', to: 'dispatch' },
+        { from: 'dispatch', to: 'worker' },
+        { from: 'worker', to: 'queue-gate' },
+        { from: 'queue-gate', to: 'dispatch', condition: 'queue-not-empty' },
+        { from: 'queue-gate', to: 'dispatch', condition: 'fail' },
+        { from: 'queue-gate', to: 'exit', condition: 'queue-empty' },
+        { from: 'queue-gate', to: 'exit', condition: 'pass' },
+      ],
+    },
+  }, {
+    candidateProposals,
+    machineHarness: {
+      claimPolicy: { maxClaims: 1 },
+    },
+  });
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  const events = await readMachineEvents(run.runRoot);
+  const workerCompleted = events.filter(event => (
+    event.eventType === 'node.completed' && event.nodePath === 'main/worker'
+  ));
+  assert.equal(workerCompleted.length, 3, 'single run-step should claim and complete all three queued items');
+  const dispatchResets = events.filter(event => (
+    event.eventType === 'scheduler.loopBackReset'
+    && event.payload?.targetNodePath === 'main/dispatch'
+  ));
+  assert.ok(dispatchResets.length >= 2, 'queue-not-empty should redrive dispatcher after queued items remain');
+});
+
+test('Step 3.C: patch-review rejected branch loops back to worker in the same run-step', async (t) => {
+  const candidateProposals = [1, 2].map(index => ({
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: `patch-reject-proposal-${index}`,
+    suggestedWorkItemId: `patch-reject-item-${index}`,
+    sourceNode: 'main/probe',
+    title: `Patch review item ${index}`,
+    fingerprint: `patch-review-reject:target.md:${index}`,
+    evidence: [{ id: `patch-review-before-${index}`, file: 'target.md' }],
+    acceptanceCriteria: ['Patch artifact records the change.'],
+    sourceOfTruthTargets: ['target.md'],
+  }));
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await writePipeline(t, 'patch-review-reject-loop-back', {
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'patch-review-reject-loop-back-main',
+      nodes: [
+        { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+        { id: 'probe', type: 'orpad.probe', label: 'Probe' },
+        { id: 'queue', type: 'orpad.workQueue', label: 'Queue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'triage', type: 'orpad.triage', label: 'Triage', config: { queueRef: 'queue' } },
+        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+        { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue' } },
+        { id: 'review', type: 'orpad.patchReview', label: 'Review patch', config: { reviewRequired: true } },
+        { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+      ],
+      transitions: [
+        { from: 'entry', to: 'probe' },
+        { from: 'probe', to: 'queue' },
+        { from: 'queue', to: 'triage' },
+        { from: 'triage', to: 'dispatch' },
+        { from: 'dispatch', to: 'worker' },
+        { from: 'worker', to: 'review' },
+        { from: 'review', to: 'worker', condition: 'rejected' },
+        { from: 'review', to: 'exit', condition: 'accepted' },
+      ],
+    },
+  }, {
+    candidateProposals,
+    machineHarness: {
+      claimPolicy: { maxClaims: 1 },
+    },
+  });
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  const firstEvents = await readMachineEvents(run.runRoot);
+  const reviewRequired = firstEvents.find(event => event.eventType === 'patch.review_required');
+  assert.ok(reviewRequired, 'first step should request patch review for the first item');
+  await appendPatchReviewRejectedEvent(run.runRoot, {
+    runId: run.runId,
+    patchArtifact: reviewRequired.payload.patchArtifact,
+    itemId: reviewRequired.payload.itemId,
+    selectedFiles: reviewRequired.payload.changedFiles,
+    reason: 'test-rejected',
+    nextAction: 'revise',
+  });
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  const events = await readMachineEvents(run.runRoot);
+  const rejectReset = events.find(event => (
+    event.eventType === 'scheduler.loopBackReset'
+    && event.payload?.sourceNodePath === 'main/review'
+    && event.payload?.targetNodePath === 'main/worker'
+  ));
+  assert.ok(rejectReset, 'patch-review rejected branch should emit a worker loop-back reset');
+  const workerCompletedAfterReject = events.filter(event => (
+    event.sequence > rejectReset.sequence
+    && event.eventType === 'node.completed'
+    && event.nodePath === 'main/worker'
+  ));
+  assert.equal(workerCompletedAfterReject.length, 1, 'rejected patch review should redrive the worker for the next queued item');
 });

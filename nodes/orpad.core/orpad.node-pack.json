@@ -51,6 +51,18 @@
     {
       "type": "orpad.artifactContract",
       "path": "nodes/artifact-contract.or-node"
+    },
+    {
+      "type": "orpad.entry",
+      "path": "nodes/entry.or-node"
+    },
+    {
+      "type": "orpad.exit",
+      "path": "nodes/exit.or-node"
+    },
+    {
+      "type": "orpad.patchReview",
+      "path": "nodes/patch-review.or-node"
     }
   ],
   "graphs": [],

@@ -22,9 +22,11 @@ const {
   readMachineEvents,
   readRunState,
   recordApprovalDecision,
+  recoverStaleClaims,
   resumeMachineRun,
   transitionQueueItem,
 } = require('../../src/main/orchestration-machine');
+const { emitNodeCancelledForInflight } = require('../../src/main/orchestration-machine/worker-loop');
 
 const fixedNow = new Date('2026-04-30T00:00:00.000Z');
 
@@ -409,7 +411,7 @@ test('patch review resume state blocks patch artifacts with empty changedFiles',
   assert.equal(state.pendingPatchArtifacts[0], 'artifacts/patches/empty-changed-files.patch.json');
 });
 
-test('patch review resume state ignores patch artifacts from blocked workers', () => {
+test('patch review resume state requires review for patch artifacts from blocked workers', () => {
   const state = patchReviewResumeStateFromEvents([
     {
       eventType: 'worker.result',
@@ -423,10 +425,10 @@ test('patch review resume state ignores patch artifacts from blocked workers', (
     },
   ]);
 
-  assert.equal(state.required, false);
-  assert.equal(state.resolved, true);
-  assert.equal(state.patchCount, 0);
-  assert.deepEqual(state.pendingPatchArtifacts, []);
+  assert.equal(state.required, true);
+  assert.equal(state.resolved, false);
+  assert.equal(state.patchCount, 1);
+  assert.deepEqual(state.pendingPatchArtifacts, ['artifacts/patches/blocked-partial.patch.json']);
 });
 
 test('finalize keeps run blocked when review-required patch has not emitted node.blocked', async () => {
@@ -578,6 +580,51 @@ test('resume repairs derived queue directories from canonical transition events'
     toState: 'queued',
   }]);
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'waiting');
+});
+
+test('resume closes in-flight node executions when recovering stale claims', async () => {
+  const run = await makeRun('run_20260430_resume_stale_node');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'resume-stale-node-item',
+    fingerprint: 'lifecycle:resume-stale-node-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-resume-stale-node',
+    leaseMs: 10,
+    now: '2026-04-30T00:00:10.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.started',
+    nodePath: 'main/worker',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'started',
+      attempt: 1,
+      itemId,
+      claimId: 'claim-resume-stale-node',
+    },
+  });
+
+  const resumed = await resumeMachineRun(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:00:30.000Z',
+    recoverStaleClaims,
+    emitNodeCancelledForInflight,
+  });
+
+  assert.equal(resumed.staleClaims.length, 1);
+  assert.equal(resumed.cancelledNodes.length, 1);
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  const events = await readMachineEvents(run.runRoot);
+  const cancelled = events.find(event => event.eventType === 'node.cancelled' && event.nodePath === 'main/worker');
+  assert.equal(Boolean(cancelled), true, 'resume should close the stale in-flight worker node');
+  assert.equal(cancelled.payload?.reason, 'lifecycle.resume.stale-claim');
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'waiting');
 });
 
