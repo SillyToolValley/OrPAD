@@ -1,0 +1,31 @@
+{
+  "kind": "orpad.rule",
+  "version": "1.0",
+  "id": "node-pack-hardening-scope",
+  "include": [
+    "nodes/**/orpad.node-pack.json",
+    "nodes/**/*.or-node",
+    "nodes/**/*.or-graph",
+    "nodes/**/*.or-rule",
+    "nodes/**/*.md",
+    "src/main/orchestration-machine/node-packs.js",
+    "src/main/orchestration-authoring/**",
+    "src/main/runbooks/validator.js",
+    "tests/orchestration-machine/*node-pack*",
+    "tests/orchestration-authoring-node-packs.test.mjs",
+    "scripts/audit-orpad-node-schemas.mjs",
+    "scripts/audit-orpad-run.mjs",
+    "package.json"
+  ],
+  "exclude": [
+    "node_modules/**",
+    "dist/**",
+    "release/**",
+    "out/**",
+    ".env",
+    "**/*secret*",
+    "**/*token*",
+    "**/*.pem",
+    "**/*.key"
+  ]
+}

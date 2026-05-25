@@ -927,6 +927,55 @@ test('generated graph editor UX pipeline selects frontend UX and regression pack
   assert.equal(rule.include.includes('tests/e2e/**'), true);
 });
 
+test('generated node pack hardening pipeline selects node pack hardening guidance', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-hardening-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await fs.mkdir(path.join(workspace, 'nodes/orpad.core'), { recursive: true });
+  await fs.mkdir(path.join(workspace, 'src/main/orchestration-machine'), { recursive: true });
+  await fs.mkdir(path.join(workspace, 'tests/orchestration-machine'), { recursive: true });
+  await fs.writeFile(path.join(workspace, 'nodes/orpad.core/orpad.node-pack.json'), JSON.stringify({
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'orpad.core',
+    version: '1.0.0-beta.3',
+    nodes: [],
+  }, null, 2), 'utf-8');
+  await fs.writeFile(path.join(workspace, 'src/main/orchestration-machine/node-packs.js'), 'module.exports = {};\n', 'utf-8');
+  await fs.writeFile(path.join(workspace, 'tests/orchestration-machine/node-pack-compatibility.test.mjs'), 'import test from "node:test";\n', 'utf-8');
+  await fs.writeFile(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { 'test:machine': 'node --test tests/orchestration-machine/*.test.mjs' } }, null, 2), 'utf-8');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Harden Node Pack orchestration by auditing node pack manifests, discovery trust and capability gates, community quarantine, test runs, and keep repair deprecate decisions.',
+    timestamp: '2026-05-25T01:30:00.000Z',
+    workspaceSnapshot: {
+      files: [
+        'nodes/orpad.core/orpad.node-pack.json',
+        'src/main/orchestration-machine/node-packs.js',
+        'tests/orchestration-machine/node-pack-compatibility.test.mjs',
+        'package.json',
+      ],
+    },
+  });
+
+  assert.equal(result.qualityAudit.ok, true);
+  const pipeline = JSON.parse(await fs.readFile(result.pipelinePath, 'utf-8'));
+  const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));
+  const prompt = await fs.readFile(result.promptPath, 'utf-8');
+  const skill = await fs.readFile(result.skillPath, 'utf-8');
+  const rule = JSON.parse(await fs.readFile(result.contextRulePath, 'utf-8'));
+  const selectedIds = pipeline.metadata.orchestrationAuthoring.nodePackSelection.map(pack => pack.id);
+
+  assert.equal(selectedIds[0], 'orpad.starter.node-pack-hardening');
+  assert.equal(pipeline.nodePacks.some(pack => pack.id === 'orpad.starter.node-pack-hardening'), true);
+  assert.equal(graph.graph.nodes.find(node => node.type === 'orpad.probe').config.lens, 'node-pack-hardening');
+  assert.equal(rule.include.includes('nodes/**/orpad.node-pack.json'), true);
+  assert.equal(rule.include.includes('src/main/orchestration-machine/node-packs.js'), true);
+  assert.match(prompt, /node-pack-hardening-workstream/);
+  assert.match(skill, /Catalog, manifest, and portable asset parity/);
+  assertGraphNodePackRefsDeclared(pipeline, graph);
+});
+
 test('authoring pack exploration treats C# and CSS extensions as separate signals', () => {
   const selected = selectAuthoringNodePacks('Fix graph editor CSS layout only.', {
     files: [

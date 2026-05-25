@@ -890,6 +890,142 @@ const STARTER_NODE_PACK_MANIFESTS = [
       },
     },
   },
+  {
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'orpad.starter.node-pack-hardening',
+    name: 'Node Pack Hardening Starter Pack',
+    version: '0.1.0',
+    origin: 'built-in',
+    trustLevel: 'official',
+    mutable: false,
+    description: 'Reusable orchestration hints for node pack catalog audits, manifest parity, trust and capability gates, discovery quarantine, and maintenance decisions.',
+    author: {
+      name: 'OrPAD',
+      github: 'https://github.com/luke-youngmin-cho/OrPAD',
+      repository: 'https://github.com/luke-youngmin-cho/OrPAD',
+    },
+    license: 'MIT',
+    compatibility: {
+      orpad: '>=1.0.0-beta.3',
+      pipelineSchema: '>=1.0',
+      packFormat: 'orpad.nodePack.v1',
+    },
+    dependsOn: [
+      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.workstream', version: '>=0.1.0' },
+    ],
+    installPolicy: {
+      allowLifecycleScripts: false,
+      allowExecutableHandlers: false,
+    },
+    capabilities: ['read.workspace', 'write.workspace', 'write.runArtifacts', 'run.localVerification'],
+    nodes: [],
+    graphs: [{
+      id: 'node-pack-hardening-workstream',
+      path: 'graphs/node-pack-hardening-workstream.or-graph',
+      label: 'Node Pack Hardening Workstream',
+      role: 'reusable',
+      description: 'Discovery and verification lens for node pack manifests, in-code catalog parity, trust evidence, capability gates, quarantine diagnostics, and keep or deprecate decisions.',
+      inputs: ['workspaceContext'],
+      outputs: ['nodePackHardeningCandidateItems'],
+    }],
+    skills: [{
+      id: 'node-pack-hardening-audit',
+      path: 'skills/node-pack-hardening-audit.md',
+      description: 'Guides evidence-backed node pack hardening, parity checks, validation runs, and maintenance or deprecation decisions.',
+    }],
+    rules: [{
+      id: 'node-pack-hardening-scope',
+      path: 'rules/node-pack-hardening-scope.or-rule',
+      description: 'Includes node pack manifests, starter assets, node pack validation code, authoring integration, run audits, and focused compatibility tests.',
+    }],
+    examples: [],
+    authoringHints: {
+      situational: true,
+      priority: 98,
+      keywords: [
+        'node pack',
+        'node-pack',
+        'node packs',
+        'nodepacks',
+        'orpad.node-pack',
+        'starter pack',
+        'authoring pack',
+        'pack manifest',
+        'manifest parity',
+        'catalog parity',
+        'pack hardening',
+        'hardening orchestration',
+        'capability grant',
+        'trust evidence',
+        'quarantine',
+        'deprecate pack',
+        'pack maintenance',
+      ],
+      workspaceSignals: [
+        'nodes/**/orpad.node-pack.json',
+        'nodes/**/*.or-node',
+        'nodes/**/*.or-graph',
+        'nodes/**/*.or-rule',
+        'src/main/orchestration-machine/node-packs.js',
+        'src/main/orchestration-authoring/generator.js',
+        'src/main/orchestration-authoring/ipc.js',
+        'tests/orchestration-machine/node-pack-compatibility.test.mjs',
+        'tests/orchestration-authoring-node-packs.test.mjs',
+        'scripts/audit-orpad-node-schemas.mjs',
+        'scripts/audit-orpad-run.mjs',
+      ],
+      selectionReason: 'The request targets node pack manifests, discovery, validation, trust/capability gates, starter pack selection, or maintenance/deprecation decisions.',
+      context: {
+        id: 'map-node-pack-hardening-surface',
+        label: 'Map node pack hardening surface',
+        summary: 'Inspect in-code built-in catalogs, disk manifests, graph/skill/rule assets, discovery roots, trust evidence, capability grants, and node pack tests before proposing changes.',
+      },
+      probe: {
+        id: 'probe-node-pack-hardening',
+        label: 'Probe node pack hardening candidates',
+        lens: 'node-pack-hardening',
+        maxCandidates: 8,
+      },
+      workerLabel: 'Implement node pack hardening item',
+      verifyCriteria: [
+        'In-code built-in catalog entries, disk manifests, and declared assets remain in sync or the drift is explicitly justified',
+        'User and community packs cannot bypass trust, capability, executable handler, lifecycle script, duplicate id, or type conflict gates',
+        'Test or audit evidence records keep, repair, quarantine, or deprecate decisions for each node pack candidate',
+      ],
+      candidateTargetPolicy: [
+        'Node pack findings should target both the source catalog or manifest and the compatibility or authoring test that proves the decision.',
+        'Discovery and trust findings should include the root kind, manifest path, capability scope, and validation diagnostic that triggered the decision.',
+        'Do not mark a pack as kept, repaired, or deprecated without a current validation or audit command tied to the changed surface.',
+      ],
+      rule: {
+        include: [
+          'nodes/**/orpad.node-pack.json',
+          'nodes/**/*.or-node',
+          'nodes/**/*.or-graph',
+          'nodes/**/*.or-rule',
+          'nodes/**/*.md',
+          'src/main/orchestration-machine/node-packs.js',
+          'src/main/orchestration-authoring/**',
+          'src/main/runbooks/validator.js',
+          'tests/orchestration-machine/*node-pack*',
+          'tests/orchestration-authoring-node-packs.test.mjs',
+          'scripts/audit-orpad-node-schemas.mjs',
+          'scripts/audit-orpad-run.mjs',
+          'package.json',
+        ],
+        exclude: ['node_modules/**', 'dist/**', 'release/**', 'out/**', '.env', '**/*secret*', '**/*token*', '**/*.pem', '**/*.key'],
+      },
+      skill: {
+        acceptanceCriteria: [
+          'Catalog, manifest, and portable asset parity is checked before and after the change',
+          'Trust, capability, lifecycle script, executable handler, duplicate id, and node type conflict behavior is covered by focused tests when touched',
+          'Run results drive an explicit keep, repair, quarantine, or deprecate decision instead of only reporting pass/fail',
+        ],
+      },
+    },
+  },
 ];
 const BUILT_IN_NODE_PACK_MANIFESTS = [
   {
@@ -2639,9 +2775,21 @@ function readDiscoveredManifest(item, diagnostics) {
     return null;
   }
   const declaredOrigin = normalizeNodePackDeclarationOrigin(parsed);
+  const origin = item.rootKind === 'built-in'
+    ? 'built-in'
+    : (declaredOrigin === 'built-in' ? 'user' : (declaredOrigin || 'user'));
+  if (item.rootKind !== 'built-in' && declaredOrigin === 'built-in') {
+    diagnostics.push(diagnostic('warning', 'NODE_PACK_DISCOVERY_BUILT_IN_ORIGIN_IGNORED', 'Node packs discovered outside the built-in root cannot self-declare built-in origin.', {
+      packId: parsed.id || '',
+      rootKind: item.rootKind,
+      manifestPath: item.manifestPath,
+      declaredOrigin,
+      resolvedOrigin: origin,
+    }));
+  }
   return {
     ...parsed,
-    origin: item.rootKind === 'built-in' ? 'built-in' : (declaredOrigin || 'user'),
+    origin,
     discovery: {
       rootKind: item.rootKind,
       packDir: item.packDir,
@@ -3166,8 +3314,56 @@ function builtInAuthoringNodePacksForOptions(options = {}) {
   return BUILT_IN_NODE_PACK_MANIFESTS.map(cloneNodePackManifest);
 }
 
+function canonicalBuiltInNodePackFor(pack) {
+  if (!isKnownBuiltInNodePack(pack)) return null;
+  const packId = String(pack?.id || '').trim();
+  return BUILT_IN_NODE_PACK_MANIFESTS.find(manifest => manifest.id === packId) || null;
+}
+
+function mergeAuthoringHintObject(canonicalValue, providedValue) {
+  if (
+    canonicalValue
+    && typeof canonicalValue === 'object'
+    && !Array.isArray(canonicalValue)
+    && providedValue
+    && typeof providedValue === 'object'
+    && !Array.isArray(providedValue)
+  ) {
+    return { ...canonicalValue, ...providedValue };
+  }
+  return providedValue === undefined ? canonicalValue : providedValue;
+}
+
+function mergeBuiltInAuthoringHints(canonicalHints = {}, providedHints = {}) {
+  const merged = { ...canonicalHints, ...providedHints };
+  for (const key of ['context', 'probe', 'rule', 'skill', 'finalQualityGate']) {
+    const value = mergeAuthoringHintObject(canonicalHints[key], providedHints[key]);
+    if (value !== undefined) merged[key] = value;
+  }
+  return merged;
+}
+
+function withCanonicalBuiltInAuthoringMetadata(pack) {
+  const canonical = canonicalBuiltInNodePackFor(pack);
+  if (!canonical) return pack;
+  const canonicalClone = cloneNodePackManifest(canonical);
+  return {
+    ...canonicalClone,
+    ...pack,
+    graphs: canonicalClone.graphs,
+    trees: canonicalClone.trees,
+    skills: canonicalClone.skills,
+    rules: canonicalClone.rules,
+    examples: canonicalClone.examples,
+    capabilities: canonicalClone.capabilities,
+    nodes: canonicalClone.nodes,
+    installPolicy: canonicalClone.installPolicy,
+    authoringHints: mergeBuiltInAuthoringHints(canonical.authoringHints || {}, pack.authoringHints || {}),
+  };
+}
+
 function mergeAuthoringNodePacksWithBuiltIns(nodePacks, options = {}) {
-  const packs = objectList(nodePacks);
+  const packs = objectList(nodePacks).map(withCanonicalBuiltInAuthoringMetadata);
   const explicitBuiltInIds = new Set(
     packs
       .filter(pack => isKnownBuiltInNodePack(pack))

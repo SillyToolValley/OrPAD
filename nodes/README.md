@@ -26,6 +26,7 @@ Current starter packs:
 - `orpad.starter.dotnet-lab-code`
 - `orpad.starter.frontend-ux`
 - `orpad.starter.test-regression`
+- `orpad.starter.node-pack-hardening`
 
 To inspect the active pack pool from a development checkout:
 

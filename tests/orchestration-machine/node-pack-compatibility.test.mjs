@@ -822,6 +822,57 @@ test('node pack discovery loads built-in and user pools in deterministic order',
   assert.equal(duplicateDiagnostic.skippedManifestPath.endsWith(path.join('orpad.core-duplicate', 'orpad.node-pack.json')), true);
 });
 
+test('user-discovered node packs cannot spoof built-in origin or reserved ids', async (t) => {
+  const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-user-node-pack-origin-spoof-'));
+  t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
+  const packDir = path.join(userRoot, 'spoofed-core');
+  await fs.mkdir(packDir, { recursive: true });
+  await fs.writeFile(path.join(packDir, 'orpad.node-pack.json'), JSON.stringify({
+    kind: 'orpad.nodePack',
+    schemaVersion: '1.0',
+    id: 'orpad.core',
+    name: 'Spoofed Core Pack',
+    version: '1.0.0-beta.3',
+    origin: 'built-in',
+    trustLevel: 'official',
+    description: 'A user-root manifest attempting to borrow built-in status.',
+    author: {
+      name: 'Spoofed Pack Author',
+      repository: 'https://github.com/example/spoofed-core',
+    },
+    license: 'MIT',
+    compatibility: {
+      orpad: '>=1.0.0-beta.3',
+      packFormat: 'orpad.nodePack.v1',
+    },
+    capabilities: ['read.workspace'],
+    nodes: [{
+      type: 'orpad.spoofedNode',
+      path: 'nodes/spoofed.or-node',
+      runtimeHandlerKind: 'metadata-only',
+      capabilities: ['read.workspace'],
+    }],
+  }, null, 2), 'utf-8');
+
+  const discovery = discoverNodePackManifests({
+    builtInNodePacksRoot: false,
+    userNodePacksRoot: userRoot,
+    grantedCapabilities: ['read.workspace'],
+  });
+  const discovered = discovery.nodePacks.find(pack => pack.id === 'orpad.core');
+  const codes = new Set(discovered.validation.diagnostics.map(item => item.code));
+  const originDiagnostic = discovery.diagnostics.find(item => item.code === 'NODE_PACK_DISCOVERY_BUILT_IN_ORIGIN_IGNORED');
+
+  assert.equal(discovered.origin, 'user');
+  assert.equal(discovered.validation.ok, false);
+  assert.equal(discovered.validation.resolutionState, 'incompatible');
+  assert.equal(codes.has('NODE_PACK_RESERVED_ID'), true);
+  assert.equal(codes.has('NODE_PACK_RESERVED_NODE_TYPE'), true);
+  assert.equal(codes.has('NODE_PACK_SELF_DECLARED_TRUST_REQUIRES_PROOF'), true);
+  assert.equal(originDiagnostic.packId, 'orpad.core');
+  assert.equal(originDiagnostic.resolvedOrigin, 'user');
+});
+
 test('node pack discovery forwards disabled untrusted and capability-denied validation states', async (t) => {
   const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-user-node-pack-states-'));
   t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
@@ -1189,6 +1240,35 @@ test('authoring node pack selector chooses packs from prompt and workspace signa
       ],
     },
     { maxPacks: 3 },
+  );
+  const ids = selected.map(pack => pack.id);
+
+  assert.equal(ids.includes('orpad.starter.electron-maintenance'), true);
+  assert.equal(ids.includes('orpad.starter.security-review'), true);
+  assert.equal(ids.includes('orpad.starter.release-readiness'), true);
+  assert.equal(selected.every(pack => pack.matchedSignals.length > 0), true);
+});
+
+test('authoring node pack selector preserves canonical hints for discovered built-in packs', () => {
+  const discovery = discoverNodePackManifests({
+    builtInNodePacksRoot: path.join(repoRoot, 'nodes'),
+    userNodePacksRoot: false,
+  });
+  const selected = selectAuthoringNodePacks(
+    'Review Electron preload IPC security before release and verify renderer packaging risks.',
+    {
+      files: [
+        'src/main/main.js',
+        'src/main/preload.js',
+        'src/renderer/renderer.js',
+        'electron-builder.yml',
+        'SECURITY.md',
+      ],
+    },
+    {
+      nodePackPool: discovery,
+      maxPacks: 3,
+    },
   );
   const ids = selected.map(pack => pack.id);
 

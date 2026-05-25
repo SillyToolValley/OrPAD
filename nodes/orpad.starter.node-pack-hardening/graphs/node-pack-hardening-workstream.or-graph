@@ -1,0 +1,62 @@
+{
+  "$schema": "https://orpad.dev/schemas/or-graph/v1.json",
+  "kind": "orpad.graph",
+  "version": "1.0",
+  "graph": {
+    "id": "node-pack-hardening-workstream",
+    "label": "Node Pack Hardening Workstream",
+    "start": "entry",
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Entry"
+      },
+      {
+        "id": "map-node-pack-hardening-surface",
+        "type": "orpad.context",
+        "label": "Map node pack hardening surface",
+        "config": {
+          "ruleRef": "node-pack-hardening-scope",
+          "skillRef": "node-pack-hardening-audit",
+          "summary": "Inspect in-code built-in catalogs, disk manifests, graph/skill/rule assets, discovery roots, trust evidence, capability grants, and node pack tests before proposing changes."
+        }
+      },
+      {
+        "id": "probe-node-pack-hardening",
+        "type": "orpad.probe",
+        "label": "Probe node pack hardening candidates",
+        "config": {
+          "lens": "node-pack-hardening",
+          "skillRef": "node-pack-hardening-audit",
+          "maxCandidates": 8,
+          "candidateLimitPolicy": "collect-all-visible"
+        }
+      },
+      {
+        "id": "maintenance-decision-gate",
+        "type": "orpad.gate",
+        "label": "Gate maintenance decision",
+        "config": {
+          "criteria": [
+            "Catalog, disk manifest, and declared asset parity is current",
+            "Trust, capability, lifecycle, executable, duplicate id, and node type gates are enforced",
+            "Run evidence records keep, repair, quarantine, or deprecate decisions"
+          ],
+          "onFail": "warn"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Exit"
+      }
+    ],
+    "transitions": [
+      { "from": "entry", "to": "map-node-pack-hardening-surface" },
+      { "from": "map-node-pack-hardening-surface", "to": "probe-node-pack-hardening" },
+      { "from": "probe-node-pack-hardening", "to": "maintenance-decision-gate" },
+      { "from": "maintenance-decision-gate", "to": "exit", "condition": "pass" }
+    ]
+  }
+}
