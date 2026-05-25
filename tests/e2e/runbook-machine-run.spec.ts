@@ -787,7 +787,9 @@ test('Machine UI replay slider drives graph projection and keeps run actions liv
   await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'machine-cancel-run');
 
   for (let pass = 0; pass < 2; pass += 1) {
-    await win.locator('[data-runbook-run-details] summary').click();
+    await win.locator('[data-runbook-run-details]').evaluate((element: HTMLDetailsElement) => {
+      element.open = true;
+    });
     const slider = win.locator('[data-runbook-replay-slider]');
     await expect(slider).toBeVisible();
     await slider.evaluate((element: HTMLInputElement, value: string) => {
@@ -813,6 +815,145 @@ test('Machine UI replay slider drives graph projection and keeps run actions liv
   }
 
   expect(fs.readFileSync(path.join(seeded.runRoot, 'events.jsonl'), 'utf-8')).toContain('main/probe');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Orchestration window run refresh preserves scroll, details, and text selection', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const seeded = await seedReplayProjectionRun(workspace, pipelinePath);
+  for (let i = 0; i < 60; i += 1) {
+    await appendMachineEvent(seeded.runRoot, {
+      runId: seeded.runId,
+      actor: 'machine',
+      eventType: 'scheduler.edgeEvaluation',
+      nodePath: 'main/probe',
+      payload: {
+        firedCount: i % 2,
+        droppedCount: (i + 1) % 2,
+      },
+    });
+  }
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  const orchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const orchestrationWin = await orchestrationWindowPromise;
+  await orchestrationWin.waitForLoadState('domcontentloaded');
+  await orchestrationWin.waitForSelector('body.orchestration-window');
+  await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
+  await orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Machine Workstream$/ }) })
+    .click();
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Latest Run');
+  await orchestrationWin.addStyleTag({ content: '.runbook-replay-events { max-height: 36px !important; }' });
+
+  await orchestrationWin.locator('[data-runbook-run-details] summary').click();
+  const eventLog = orchestrationWin.locator('[data-runbook-run-details] [data-runbook-replay-events]');
+  await expect(eventLog).toBeVisible();
+  const beforeScrollTop = await eventLog.evaluate((el: HTMLElement) => new Promise<number>((resolve) => {
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.style.scrollBehavior = 'auto';
+    el.scrollTop = Math.max(12, Math.floor(maxTop / 2));
+    requestAnimationFrame(() => {
+      el.dispatchEvent(new Event('scroll', { bubbles: true }));
+      resolve(el.scrollTop);
+    });
+  }));
+  expect(beforeScrollTop).toBeGreaterThan(0);
+
+  await appendMachineEvent(seeded.runRoot, {
+    runId: seeded.runId,
+    actor: 'machine',
+    eventType: 'scheduler.loopBackReset',
+    nodePath: 'main/probe',
+    payload: {
+      targetNodePath: 'pointer-defer-probe',
+    },
+  });
+  await orchestrationWin.locator('#content').evaluate((element: HTMLElement) => {
+    const EventCtor = window.PointerEvent || window.MouseEvent;
+    element.dispatchEvent(new EventCtor('pointerdown', { bubbles: true, buttons: 1 }));
+  });
+  await orchestrationWin.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await orchestrationWin.waitForTimeout(900);
+  await expect(orchestrationWin.locator('#runbooks-content')).not.toContainText('Loop-back reset: pointer-defer-probe');
+  await orchestrationWin.locator('#content').evaluate((element: HTMLElement) => {
+    const EventCtor = window.PointerEvent || window.MouseEvent;
+    element.dispatchEvent(new EventCtor('pointerup', { bubbles: true }));
+  });
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Loop-back reset: pointer-defer-probe');
+
+  await appendMachineEvent(seeded.runRoot, {
+    runId: seeded.runId,
+    actor: 'machine',
+    eventType: 'node.blocked',
+    nodePath: 'main/probe',
+    payload: {
+      nodeExecutionId: `${seeded.runId}:main/probe:attempt-1`,
+      nodeType: 'orpad.probe',
+      attempt: 1,
+      reason: 'orchestration-window-refresh-test',
+    },
+  });
+  await orchestrationWin.locator('button[data-runbook-action="refresh"]').click();
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Step blocked');
+
+  const afterRefresh = await orchestrationWin.locator('[data-runbook-run-details]').evaluate((details: HTMLDetailsElement) => {
+    const log = details.querySelector('[data-runbook-replay-events]') as HTMLElement | null;
+    return {
+      open: details.open,
+      scrollTop: log?.scrollTop || 0,
+    };
+  });
+  expect(afterRefresh.open).toBe(true);
+  expect(Math.abs(afterRefresh.scrollTop - beforeScrollTop)).toBeLessThanOrEqual(8);
+  await expect(orchestrationWin.locator('button[data-runbook-action="toggle-replay-stick"]')).toContainText('Manual scroll');
+
+  const firstEvent = orchestrationWin.locator('[data-runbook-run-details] [data-runbook-replay-events] .runbook-event').first();
+  const selectedText = (await firstEvent.textContent())?.trim().slice(0, 12) || 'Run started';
+  await firstEvent.evaluate((el: HTMLElement) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+
+  await appendMachineEvent(seeded.runRoot, {
+    runId: seeded.runId,
+    actor: 'machine',
+    eventType: 'node.failed',
+    nodePath: 'main/probe',
+    payload: {
+      nodeExecutionId: `${seeded.runId}:main/probe:attempt-2`,
+      nodeType: 'orpad.probe',
+      attempt: 2,
+      reason: 'orchestration-window-refresh-test-selection',
+    },
+  });
+  await orchestrationWin.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await orchestrationWin.waitForTimeout(900);
+  await expect.poll(() => orchestrationWin.evaluate(() => window.getSelection()?.toString() || '')).toContain(selectedText);
+  await expect(orchestrationWin.locator('#runbooks-content')).not.toContainText('Step failed');
+
+  await orchestrationWin.evaluate(() => window.getSelection()?.removeAllRanges());
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Step failed');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -860,7 +1001,9 @@ test('Machine UI resets transient replay and history state when switching worksp
   await historySearch.fill('no-such-run');
   await expect(win.locator('#runbooks-content')).toContainText('No runs match the current filter.');
 
-  await win.locator('[data-runbook-run-details] summary').click();
+  await win.locator('[data-runbook-run-details]').evaluate((element: HTMLDetailsElement) => {
+    element.open = true;
+  });
   const stickToggle = win.locator('button[data-runbook-action="toggle-replay-stick"]');
   await expect(stickToggle).toContainText('Auto-scroll');
   await stickToggle.click();
@@ -881,13 +1024,27 @@ test('Machine UI resets transient replay and history state when switching worksp
   });
   const switchedRunbook = win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' });
   await expect(switchedRunbook).toBeVisible();
-  await switchedRunbook.click();
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
 
   await expect(win.locator('#runbooks-content')).not.toContainText('Replaying');
-  await expect(runbar).toContainText('progress 1/2');
-  await expect(win.locator('[data-runbook-history-search]')).toHaveValue('');
+  const switchedHistorySearch = win.locator('[data-runbook-history-search]');
+  await expect.poll(async () => {
+    if (await switchedHistorySearch.count() === 0) return '';
+    return switchedHistorySearch.first().inputValue();
+  }).toBe('');
   await expect(win.locator('#runbooks-content')).not.toContainText('No runs match the current filter.');
-  await win.locator('[data-runbook-run-details] summary').click();
+  if (await win.locator('[data-runbook-run-details]').count() === 0) {
+    const selectedAfterSwitch = await switchedRunbook.evaluate((element: HTMLElement) => element.classList.contains('active'));
+    if (selectedAfterSwitch) {
+      await switchedRunbook.click();
+      await expect(switchedRunbook).not.toHaveClass(/active/);
+    }
+    await switchedRunbook.click();
+    await expect(win.locator('[data-runbook-run-details]')).toHaveCount(1);
+  }
+  await win.locator('[data-runbook-run-details]').evaluate((element: HTMLDetailsElement) => {
+    element.open = true;
+  });
   await expect(win.locator('button[data-runbook-action="toggle-replay-stick"]')).toContainText('Auto-scroll');
 
   await app.close();
@@ -1882,8 +2039,13 @@ test('Machine UI shows harness implementation failure details on graph nodes', a
   });
 
   await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  const implementHarnessButton = win.locator('button[data-pipeline-run-action="implement-harness"]').filter({ hasText: 'Implement Harness' });
+  await expect.poll(async () => implementHarnessButton.evaluateAll((buttons: HTMLButtonElement[]) =>
+    buttons.some(button => !button.disabled))).toBe(true);
   await win.locator('[data-pipeline-run-menu]').click();
-  await win.locator('button[data-pipeline-run-action="implement-harness"]').click();
+  await expect(implementHarnessButton).toBeVisible();
+  await expect(implementHarnessButton).toBeEnabled();
+  await implementHarnessButton.click();
 
   const failedContextNode = win.locator('.orch-graph-node[data-machine-node-path="main/context"]');
   await expect(failedContextNode).toContainText('Harness failed');

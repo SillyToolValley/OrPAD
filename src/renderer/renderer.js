@@ -532,16 +532,24 @@ const machineRunStartPendingPaths = new Set();
 const machineRunPendingActions = new Map();
 const machineRunProgressTimers = new Map();
 const machineRunExternalResearchDecisions = new Map();
+const deferredPipelinePreviewRefreshPaths = new Set();
 const pipelineHarnessImplementedAtCache = new Map();
 const pipelineHarnessAuthoringBadgeCache = new Map();
 const pipelineHarnessImplementationStatusCache = new Map();
 const pipelineHarnessImplementationPendingPaths = new Set();
 const pipelineHarnessRequiredBeforeRunCache = new Set();
 const machinePatchReviewShown = new Set();
+const ORCHESTRATION_REFRESH_DEFER_MS = 650;
+const ORCHESTRATION_REFRESH_FLUSH_RETRY_MS = 250;
 let lastMachineRunRecord = null;
 let machineCapabilityToken = '';
 let machineRuntimeStatus = null;
 let machineRuntimeStatusLoading = false;
+let orchestrationUiActivePointers = 0;
+let orchestrationUiDeferUntil = 0;
+let orchestrationUiFlushTimer = 0;
+let deferredRunbooksPanelRefresh = false;
+const orchestrationPersistedUiState = { scroll: new Map(), details: new Map() };
 let gitRepoState = { isRepo: false, statuses: new Map(), branch: null, ahead: null, behind: null, slow: false };
 let gitStatusTimer = null;
 let gitRefreshToken = 0;
@@ -549,6 +557,263 @@ let gitHunkTimer = null;
 let snippetsRefreshTimer = null;
 let userSnippetsPath = null;
 let userSnippetsSource = 'none';
+
+function elementFromEventTarget(target) {
+  if (!target) return null;
+  if (target.nodeType === Node.ELEMENT_NODE) return target;
+  return target.parentElement || null;
+}
+
+function isOrchestrationPreviewVisible() {
+  return !!contentEl?.classList?.contains('view-orch-tree')
+    || !!contentEl?.classList?.contains('view-orch-graph')
+    || !!contentEl?.classList?.contains('view-orch-pipeline');
+}
+
+function orchestrationRefreshSurfaceFromTarget(target) {
+  const el = elementFromEventTarget(target);
+  if (!el) return null;
+  const direct = el.closest?.(
+    '.orch-preview, .orch-floating-inspector, .orch-inspector, '
+    + '[data-runbook-run-details], [data-runbook-replay-events], '
+    + '.runbook-machine-history, #runbooks-content, #orchestration-runbar-slot',
+  );
+  if (direct) return direct;
+  if (isOrchestrationPreviewVisible() && contentEl?.contains(el)) return contentEl;
+  return null;
+}
+
+function selectionTouchesOrchestrationRefreshSurface() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  if (orchestrationRefreshSurfaceFromTarget(selection.anchorNode)) return true;
+  if (orchestrationRefreshSurfaceFromTarget(selection.focusNode)) return true;
+  for (let i = 0; i < selection.rangeCount; i += 1) {
+    if (orchestrationRefreshSurfaceFromTarget(selection.getRangeAt(i).commonAncestorContainer)) return true;
+  }
+  return false;
+}
+
+function markOrchestrationUiInteraction(durationMs = ORCHESTRATION_REFRESH_DEFER_MS) {
+  orchestrationUiDeferUntil = Math.max(orchestrationUiDeferUntil, Date.now() + durationMs);
+}
+
+function shouldDeferOrchestrationRefresh() {
+  if (orchestrationUiActivePointers > 0) return true;
+  if (Date.now() < orchestrationUiDeferUntil) return true;
+  if (selectionTouchesOrchestrationRefreshSurface()) return true;
+  return false;
+}
+
+function scheduleDeferredOrchestrationRefreshFlush(delayMs = ORCHESTRATION_REFRESH_FLUSH_RETRY_MS) {
+  if (orchestrationUiFlushTimer) clearTimeout(orchestrationUiFlushTimer);
+  orchestrationUiFlushTimer = setTimeout(() => {
+    orchestrationUiFlushTimer = 0;
+    flushDeferredOrchestrationRefreshes();
+  }, Math.max(0, delayMs));
+}
+
+function deferRunbooksPanelRefresh() {
+  deferredRunbooksPanelRefresh = true;
+  scheduleDeferredOrchestrationRefreshFlush();
+}
+
+function deferPipelinePreviewRefresh(runbookPath) {
+  if (runbookPath) deferredPipelinePreviewRefreshPaths.add(runbookNormalizePath(runbookPath));
+  scheduleDeferredOrchestrationRefreshFlush();
+}
+
+function flushDeferredOrchestrationRefreshes() {
+  if (!deferredRunbooksPanelRefresh && deferredPipelinePreviewRefreshPaths.size === 0) return;
+  if (shouldDeferOrchestrationRefresh()) {
+    const retryDelay = Math.max(ORCHESTRATION_REFRESH_FLUSH_RETRY_MS, orchestrationUiDeferUntil - Date.now() + 50);
+    scheduleDeferredOrchestrationRefreshFlush(retryDelay);
+    return;
+  }
+  const shouldRenderRunbooks = deferredRunbooksPanelRefresh;
+  const previewPaths = [...deferredPipelinePreviewRefreshPaths];
+  deferredRunbooksPanelRefresh = false;
+  deferredPipelinePreviewRefreshPaths.clear();
+  if (shouldRenderRunbooks) renderRunbooksPanel({ force: true });
+  previewPaths.forEach(runbookPath => rerenderPipelinePreviewIfActive(runbookPath, { force: true }));
+}
+
+function orchestrationUiStateKey(el) {
+  if (!el) return '';
+  if (el.id === 'sidebar-runbooks') return 'scroll:sidebar-runbooks';
+  if (el.id === 'runbooks-content') return 'scroll:runbooks-content';
+  if (el.id === 'content') return `scroll:content:${getActiveTab()?.viewType || ''}`;
+  if (el.matches?.('[data-runbook-replay-events]')) {
+    return `scroll:replay-events:${el.dataset.path || ''}:${el.dataset.runId || ''}`;
+  }
+  if (el.matches?.('[data-runbook-run-details]')) {
+    return `details:run:${el.dataset.path || ''}:${el.dataset.runId || ''}`;
+  }
+  if (el.matches?.('[data-orch-inspector-runtime]')) {
+    return `details:orch-runtime:${el.dataset.nodePath || selectedOrchNodePath || selectedOrchEdgeId || ''}`;
+  }
+  if (el.matches?.('.orch-floating-inspector')) {
+    return `scroll:orch-floating-inspector:${selectedOrchEdgeId || selectedOrchNodePath || ''}`;
+  }
+  if (el.matches?.('.orch-inspector')) {
+    return `scroll:orch-inspector:${selectedOrchEdgeId || selectedOrchNodePath || ''}`;
+  }
+  return '';
+}
+
+function captureOrchestrationUiState() {
+  const scroll = new Map();
+  const details = new Map();
+  const addScrollable = (el) => {
+    const key = orchestrationUiStateKey(el);
+    if (!key || scroll.has(key)) return;
+    scroll.set(key, {
+      top: el.scrollTop || 0,
+      left: el.scrollLeft || 0,
+      atBottom: (el.scrollHeight || 0) - (el.clientHeight || 0) - (el.scrollTop || 0) <= 8,
+      path: el.dataset?.path || '',
+      runId: el.dataset?.runId || '',
+    });
+  };
+  const addDetails = (el) => {
+    const key = orchestrationUiStateKey(el);
+    if (!key || details.has(key)) return;
+    details.set(key, !!el.open);
+  };
+  [
+    document.getElementById('sidebar-runbooks'),
+    runbooksContentEl,
+    contentEl,
+  ].filter(Boolean).forEach(addScrollable);
+  document.querySelectorAll([
+    '[data-runbook-replay-events]',
+    '.orch-floating-inspector',
+    '.orch-inspector',
+  ].join(',')).forEach(addScrollable);
+  document.querySelectorAll([
+    '[data-runbook-run-details]',
+    '[data-orch-inspector-runtime]',
+  ].join(',')).forEach(addDetails);
+  return { scroll, details };
+}
+
+function cloneOrchestrationUiState(state) {
+  const scroll = new Map();
+  const details = new Map();
+  if (state?.scroll) {
+    state.scroll.forEach((value, key) => {
+      scroll.set(key, { ...value });
+    });
+  }
+  if (state?.details) {
+    state.details.forEach((value, key) => {
+      details.set(key, value);
+    });
+  }
+  return { scroll, details };
+}
+
+function mergeOrchestrationUiState(state) {
+  if (!state) return;
+  state.scroll?.forEach((value, key) => {
+    orchestrationPersistedUiState.scroll.set(key, { ...value });
+  });
+  state.details?.forEach((value, key) => {
+    orchestrationPersistedUiState.details.set(key, value);
+  });
+}
+
+function restoreOrchestrationUiState(state) {
+  if (!state) return;
+  document.querySelectorAll([
+    '[data-runbook-run-details]',
+    '[data-orch-inspector-runtime]',
+  ].join(',')).forEach(el => {
+    const key = orchestrationUiStateKey(el);
+    if (key && state.details.has(key)) el.open = state.details.get(key);
+  });
+  const restoreScrollable = (el) => {
+    const key = orchestrationUiStateKey(el);
+    const saved = key ? state.scroll.get(key) : null;
+    if (!saved) return;
+    const previousScrollBehavior = el.style.scrollBehavior;
+    el.style.scrollBehavior = 'auto';
+    if (el.matches?.('[data-runbook-replay-events]') && isReplayStickEnabled(saved.path, saved.runId) && saved.atBottom) {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      const maxTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+      el.scrollTop = Math.min(saved.top, maxTop);
+    }
+    el.scrollLeft = saved.left;
+    if (previousScrollBehavior) el.style.scrollBehavior = previousScrollBehavior;
+    else el.style.removeProperty('scroll-behavior');
+  };
+  [
+    document.getElementById('sidebar-runbooks'),
+    runbooksContentEl,
+    contentEl,
+  ].filter(Boolean).forEach(restoreScrollable);
+  document.querySelectorAll([
+    '[data-runbook-replay-events]',
+    '.orch-floating-inspector',
+    '.orch-inspector',
+  ].join(',')).forEach(restoreScrollable);
+}
+
+function withOrchestrationUiStatePreserved(renderFn) {
+  mergeOrchestrationUiState(captureOrchestrationUiState());
+  const state = cloneOrchestrationUiState(orchestrationPersistedUiState);
+  try {
+    return renderFn();
+  } finally {
+    restoreOrchestrationUiState(state);
+    mergeOrchestrationUiState(captureOrchestrationUiState());
+  }
+}
+
+document.addEventListener('pointerdown', (event) => {
+  if (!orchestrationRefreshSurfaceFromTarget(event.target)) return;
+  orchestrationUiActivePointers += 1;
+  markOrchestrationUiInteraction();
+}, true);
+
+['pointerup', 'pointercancel'].forEach(type => {
+  document.addEventListener(type, () => {
+    if (orchestrationUiActivePointers > 0) orchestrationUiActivePointers -= 1;
+    markOrchestrationUiInteraction(250);
+    scheduleDeferredOrchestrationRefreshFlush();
+  }, true);
+});
+
+window.addEventListener('blur', () => {
+  orchestrationUiActivePointers = 0;
+  markOrchestrationUiInteraction(250);
+  scheduleDeferredOrchestrationRefreshFlush();
+});
+
+document.addEventListener('scroll', (event) => {
+  if (!orchestrationRefreshSurfaceFromTarget(event.target)) return;
+  markOrchestrationUiInteraction(450);
+  scheduleDeferredOrchestrationRefreshFlush(500);
+}, true);
+
+document.addEventListener('toggle', (event) => {
+  const el = elementFromEventTarget(event.target);
+  if (!el?.matches?.('[data-runbook-run-details], [data-orch-inspector-runtime]')) return;
+  const key = orchestrationUiStateKey(el);
+  if (key) orchestrationPersistedUiState.details.set(key, !!el.open);
+  markOrchestrationUiInteraction(250);
+  scheduleDeferredOrchestrationRefreshFlush(250);
+}, true);
+
+document.addEventListener('wheel', (event) => {
+  if (!orchestrationRefreshSurfaceFromTarget(event.target)) return;
+  markOrchestrationUiInteraction();
+}, { capture: true, passive: true });
+
+document.addEventListener('selectionchange', () => {
+  scheduleDeferredOrchestrationRefreshFlush(300);
+});
 
 // Search state
 let searchRegex = false;
@@ -14521,7 +14786,7 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
   ].includes(e?.eventType || ''));
   if (!lifecycleEvents.length && !adapterEvents.length && !diagnosticEvents.length) {
     return `
-      <details class="orch-inspector-runtime" open>
+      <details class="orch-inspector-runtime" data-orch-inspector-runtime data-node-path="${escapeHtml(machineNodePath)}" open>
         <summary>Run state</summary>
         <div class="runbook-empty">No machine events for this node yet.</div>
       </details>
@@ -14628,7 +14893,7 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
       </div>
     `;
   return `
-    <details class="orch-inspector-runtime" open>
+    <details class="orch-inspector-runtime" data-orch-inspector-runtime data-node-path="${escapeHtml(machineNodePath)}" open>
       <summary>Run state ${headerChip}</summary>
       <div class="orch-inspector-runtime-meta">
         <code>${escapeHtml(machineNodePath)}</code>
@@ -15632,7 +15897,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       </div>
       ${replayActionNoticeHtml}
       ${renderMachineRunHistory(runbookPath, runId)}
-      <details class="runbook-run-details" data-runbook-run-details>
+      <details class="runbook-run-details" data-runbook-run-details data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}">
         <summary>
           <span>Run details</span>
           <span>${escapeHtml(machineCountLabel(events.length, 'event'))}</span>
@@ -15749,8 +16014,13 @@ function renderMachineHistoryInspectionPanel(record, runbookPath) {
   `;
 }
 
-function renderRunbooksPanel() {
+function renderRunbooksPanel(options = {}) {
   if (!runbooksContentEl) return;
+  if (!options.force && shouldDeferOrchestrationRefresh()) {
+    deferRunbooksPanelRefresh();
+    return;
+  }
+  return withOrchestrationUiStatePreserved(() => {
   if (!workspacePath) {
     runbooksContentEl.innerHTML = `
       <div class="runbook-empty">
@@ -15843,6 +16113,7 @@ function renderRunbooksPanel() {
   // only genuinely new events as fresh.
   applyReplayStickAfterRender();
   refreshOrchestrationRunbarFromSelection();
+  });
 }
 
 async function validateSelectedRunbook(runbookPath) {
@@ -15867,13 +16138,17 @@ async function validateSelectedRunbook(runbookPath) {
   }
 }
 
-function rerenderPipelinePreviewIfActive(runbookPath) {
+function rerenderPipelinePreviewIfActive(runbookPath, options = {}) {
   const context = pipelineContextForPath();
   if (!context?.pipelinePath || !runbookPath) return;
   if (runbookNormalizePath(context.pipelinePath).toLowerCase() !== runbookNormalizePath(runbookPath).toLowerCase()) return;
+  if (!options.force && shouldDeferOrchestrationRefresh()) {
+    deferPipelinePreviewRefresh(runbookPath);
+    return;
+  }
   invalidateRenderCache();
   if (getActiveTab()?.viewType === 'orch-pipeline' || getActiveTab()?.viewType === 'orch-graph') {
-    renderPreview(editor.state.doc.toString());
+    withOrchestrationUiStatePreserved(() => renderPreview(editor.state.doc.toString()));
   }
 }
 
