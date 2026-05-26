@@ -1,6 +1,6 @@
-# OrPAD Built-In Node Packs
+# OrPAD Built-In Packages
 
-This folder contains node packs shipped with OrPAD.
+This folder contains packages shipped with OrPAD.
 
 Built-in packs are immutable at runtime and are loaded before user-installed packs.
 
@@ -11,13 +11,13 @@ Recommended loading order:
 
 Core `orpad.*` node type ids are reserved for built-in OrPAD packs.
 
-This folder also includes metadata-only starter packs under `orpad.starter.*`.
-They are intentionally shaped like community node packs: each pack declares
+This folder also includes metadata-only starter packages under `orpad.starter.*`.
+They are intentionally shaped like community packages: each pack declares
 portable graph, skill, and rule assets that the Generate authoring agent can
 select for a situation-specific pipeline without loading arbitrary executable
 code.
 
-Current starter packs:
+Current starter packages:
 
 - `orpad.starter.electron-maintenance`
 - `orpad.starter.security-review`
@@ -28,11 +28,11 @@ Current starter packs:
 - `orpad.starter.test-regression`
 - `orpad.starter.node-pack-hardening`
 
-To inspect the active pack pool from a development checkout:
+To inspect the active package pool from a development checkout:
 
 ```text
-node bin/orpad-cli.mjs node-packs list
-node bin/orpad-cli.mjs node-packs list --user-node-packs <path-to-user-nodes> --json
+node bin/orpad-cli.mjs packages list
+node bin/orpad-cli.mjs packages list --user-packages <path-to-user-packages> --json
 ```
 
 The list command reports built-in packs, user-installed packs, manifest
@@ -42,8 +42,8 @@ before activation.
 To prepare a community pack for sharing:
 
 ```text
-node bin/orpad-cli.mjs node-packs validate <path-to-pack> --json
-node bin/orpad-cli.mjs node-packs registry-entry create <path-to-pack> --source-repository https://github.com/<owner>/<repo> --source-ref <tag-or-commit> --json
+node bin/orpad-cli.mjs packages validate <path-to-pack> --json
+node bin/orpad-cli.mjs packages registry-entry create <path-to-pack> --source-repository https://github.com/<owner>/<repo> --source-ref <tag-or-commit> --json
 ```
 
 `validate` checks the manifest, declared files, normal-install quarantine rules,
@@ -55,7 +55,7 @@ evidence after review.
 
 Reproducibility in the sharing MVP is user-level. Pipelines declare required
 packs in `nodePacks`; installed user packs are tracked in the app-data
-`orpad-node-packs.lock.json`; and `node-packs export-list` can share that
+`orpad-node-packs.lock.json`; and `packages export-list` can share that
 inventory for collaboration or support. Workspace-local packs, workspace-level
-node pack locks, and project-portable custom pack restoration are intentionally
+package locks, and project-portable custom package restoration are intentionally
 deferred until a separate design covers the restore flow.

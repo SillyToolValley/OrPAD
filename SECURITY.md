@@ -309,7 +309,7 @@ MCP, URL, or file-write pipeline steps.
   marked as review-required and are not executable. A file-declared trust level wins over caller
   options so renderer/API defaults cannot promote an imported pipeline to executable.
 - MVP executable node types are limited to `Sequence`, `Skill`, `Gate`, `Context`, simple
-  `Retry`, simple `Timeout`, `OrchTree`, and the canonical node-pack equivalents
+  `Retry`, simple `Timeout`, `OrchTree`, and the canonical package-backed equivalents
   `orpad.context`, `orpad.gate`, `orpad.skill`, and `orpad.tree`. Other valid
   orchestration node types are render/validate-only.
 - Minimal pipeline run records can be created only inside the approved workspace under
@@ -538,38 +538,38 @@ harness command assembled by main process.
 - Resume repair uses Machine events as canonical metadata and only repairs derived queue files
   when an item snapshot is still available. Artifact presence alone is never treated as proof
   that claimed work completed.
-- Node pack compatibility is metadata-only in this phase. Normal install validation rejects npm
+- Package compatibility is metadata-only in this phase. Normal install validation rejects npm
   lifecycle scripts, executable handlers, community overrides of the reserved `orpad.*`
-  namespace, incompatible pack formats, unsafe pack-relative paths, and user-node type
-  conflicts before activation. Untrusted, capability-denied, and review-required packs may
+  namespace, incompatible package formats, unsafe package-relative paths, and user-node type
+  conflicts before activation. Untrusted, capability-denied, and review-required packages may
   be present on disk for inspection, but Machine execution keeps them non-runnable until
   OrPAD-owned trust evidence, review evidence, and exact capability grants resolve them.
-- Node pack sharing installs use a main-process safe transaction. Local installs pre-audit the
+- Package sharing installs use a main-process safe transaction. Local installs pre-audit the
   source folder, copy only manifest-declared files into a staging directory, re-run Machine
-  discovery/validation, then atomically activate under `<userData>/nodes/<pack-id>/` and update
+  discovery/validation, then atomically activate under `<userData>/nodes/<package-id>/` and update
   `<userData>/nodes/orpad-node-packs.lock.json`. Registry installs fetch the manifest plus
   declared raw files only; normal install does not run git, npm, archive extraction, lifecycle
-  scripts, native builds, or pack-provided commands.
+  scripts, native builds, or package-provided commands.
 - Registry signatures are verified only when OrPAD-owned trusted registry public keys are
   configured. A verified registry signature can turn registry-declared version signature,
   checksum, and approved review metadata into Machine-owned trust evidence; unsigned or
   untrusted registries do not. Registry installs compare the fetched manifest and declared
   asset bytes against registry SHA-256 checksums before activation, and checksum mismatches
-  fail closed without replacing the active pack.
+  fail closed without replacing the active package.
 - Registry governance separates official OrPAD Registry metadata from custom Registry
   discovery. Official entries use the `orpad-pr-reviewed` review model and are accepted through
   maintainer-reviewed Registry pull requests in `OrPAD-Lab/orpad-registry`; custom or
   third-party Registry sources are labeled separately in Package Manager and their review claims
   do not become OrPAD-owned approval evidence.
-- Node pack updates reuse the same safe install transaction. Pinned installs are skipped by
-  default, failed updates leave the active pack untouched, and successful replacements store
+- Package updates reuse the same safe install transaction. Pinned installs are skipped by
+  default, failed updates leave the active package untouched, and successful replacements store
   the previous lock entry plus backup path for an explicit rollback command.
-- Node pack authoring tools are validation and metadata-generation tools only. `node-packs
+- Package authoring tools are validation and metadata-generation tools only. `packages
   registry-entry create` computes SHA-256 checksums from manifest-declared files but never
   claims verified trust, never creates a registry signature, and never marks review status as
   approved. Publishing remains a manual registry pull request and review flow.
-- Workspace-local node pack locks are metadata-only sharing state. Workspaces can declare
-  required packs, but install state remains user-level app data and restore/install still routes
+- Workspace-local package locks are metadata-only sharing state. Workspaces can declare
+  required packages, but install state remains user-level app data and restore/install still routes
   through the Machine safe transaction instead of trusting workspace files as authority.
 - Missing or incompatible community nodes are represented as lossless placeholders for graph
   round-trip; placeholder metadata is not executable.

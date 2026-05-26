@@ -7,7 +7,7 @@
   "origin": "built-in",
   "trustLevel": "official",
   "mutable": false,
-  "description": "Core OrPAD orchestration primitives shared by pipelines, graphs, trees, and node packs.",
+  "description": "Core OrPAD orchestration primitives shared by pipelines, graphs, trees, and packages.",
   "author": {
     "name": "OrPAD",
     "github": "https://github.com/luke-youngmin-cho/OrPAD",

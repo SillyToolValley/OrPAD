@@ -39,29 +39,31 @@ function loadGeneratorModule() {
 function usage() {
   return [
     'Usage:',
-    '  orpad generate --workspace <path> --prompt <text> [--authoring-spec-file <file>] [--user-node-packs <path>] [--json]',
-    '  orpad generate --workspace <path> --prompt-file <file> [--authoring-spec-file <file>] [--user-node-packs <path>] [--json]',
+    '  orpad generate --workspace <path> --prompt <text> [--authoring-spec-file <file>] [--user-packages <path>] [--json]',
+    '  orpad generate --workspace <path> --prompt-file <file> [--authoring-spec-file <file>] [--user-packages <path>] [--json]',
     '  orpad generate --workspace <path> --prompt <text> --emit-authoring-prompt',
-    '  orpad node-packs list [--user-node-packs <path>] [--user-data <path>] [--node-pack-trust-evidence <json>|--node-pack-trust-evidence-file <file>] [--node-pack-granted-capabilities <json>|--node-pack-granted-capabilities-file <file>] [--json]',
-    '  orpad node-packs registry list --registry <url-or-file> [--user-data <path>] [--json]',
-    '  orpad node-packs registry search <query> --registry <url-or-file> [--category <name>] [--capability <capability>] [--user-data <path>] [--json]',
-    '  orpad node-packs install <id> --registry <url-or-file> [--version <version>] [--pin] [--user-data <path>] [--json]',
-    '  orpad node-packs install-local <folder> [--user-data <path>] [--user-node-packs <path>] [--json]',
-    '  orpad node-packs update [id] --registry <url-or-file> [--include-pinned] [--dry-run] [--user-data <path>] [--json]',
-    '  orpad node-packs rollback <id> [--user-data <path>] [--user-node-packs <path>] [--json]',
-    '  orpad node-packs validate <folder> [--json]',
-    '  orpad node-packs registry-entry create <folder> --source-repository <url> --source-ref <ref> [--source-root <path>] [--manifest-url <url>] [--json]',
-    '  orpad node-packs enable <id> [--user-data <path>] [--user-node-packs <path>] [--json]',
-    '  orpad node-packs disable <id> [--user-data <path>] [--user-node-packs <path>] [--json]',
-    '  orpad node-packs remove <id> [--user-data <path>] [--user-node-packs <path>] [--json]',
-    '  orpad node-packs export-list [--user-data <path>] [--user-node-packs <path>] [--json]',
+    '  orpad packages list [--user-packages <path>] [--user-data <path>] [--package-trust-evidence <json>|--package-trust-evidence-file <file>] [--package-granted-capabilities <json>|--package-granted-capabilities-file <file>] [--json]',
+    '  orpad packages registry list --registry <url-or-file> [--user-data <path>] [--json]',
+    '  orpad packages registry search <query> --registry <url-or-file> [--category <name>] [--capability <capability>] [--user-data <path>] [--json]',
+    '  orpad packages install <id> --registry <url-or-file> [--version <version>] [--pin] [--user-data <path>] [--json]',
+    '  orpad packages install-local <folder> [--user-data <path>] [--user-packages <path>] [--json]',
+    '  orpad packages update [id] --registry <url-or-file> [--include-pinned] [--dry-run] [--user-data <path>] [--json]',
+    '  orpad packages rollback <id> [--user-data <path>] [--user-packages <path>] [--json]',
+    '  orpad packages validate <folder> [--json]',
+    '  orpad packages registry-entry create <folder> --source-repository <url> --source-ref <ref> [--source-root <path>] [--manifest-url <url>] [--json]',
+    '  orpad packages enable <id> [--user-data <path>] [--user-packages <path>] [--json]',
+    '  orpad packages disable <id> [--user-data <path>] [--user-packages <path>] [--json]',
+    '  orpad packages remove <id> [--user-data <path>] [--user-packages <path>] [--json]',
+    '  orpad packages export-list [--user-data <path>] [--user-packages <path>] [--json]',
     '',
     'Commands:',
     '  generate          Define an OrPAD orchestration package for the prompt.',
-    '  node-packs list   List discovered built-in and user node packs.',
-    '  node-packs registry list/search   Browse a read-only node pack registry.',
-    '  node-packs install/install-local  Safely stage, validate, and activate user node packs.',
-    '  node-packs validate/registry-entry create  Prepare a shareable node pack registry draft.',
+    '  packages list   List discovered built-in and user packages.',
+    '  packages registry list/search   Browse a read-only package registry.',
+    '  packages install/install-local  Safely stage, validate, and activate user packages.',
+    '  packages validate/registry-entry create  Prepare a shareable package registry draft.',
+    '',
+    'Legacy alias: node-packs remains accepted for existing scripts.',
   ].join('\n');
 }
 
@@ -112,6 +114,24 @@ function hasOwnOption(args, key) {
   return Object.prototype.hasOwnProperty.call(args, key);
 }
 
+function optionValue(args, key, legacyKey, fallback = '') {
+  if (hasOwnOption(args, key)) return args[key];
+  if (legacyKey && hasOwnOption(args, legacyKey)) return args[legacyKey];
+  return fallback;
+}
+
+async function readJsonObjectAnyOption(args, inlineKeys, fileKeys) {
+  const inlineKey = inlineKeys.find(key => hasOwnOption(args, key));
+  const fileKey = fileKeys.find(key => hasOwnOption(args, key));
+  if (!inlineKey && !fileKey) return undefined;
+  const text = inlineKey ? String(args[inlineKey]) : await fs.readFile(args[fileKey], 'utf-8');
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`--${inlineKey || fileKey} must be a JSON object.`);
+  }
+  return parsed;
+}
+
 function splitOptionList(value) {
   return String(value || '')
     .split(',')
@@ -119,58 +139,58 @@ function splitOptionList(value) {
     .filter(Boolean);
 }
 
-async function readJsonObjectOption(args, inlineKey, fileKey) {
-  const inline = args[inlineKey];
-  const file = args[fileKey];
-  if (!inline && !file) return undefined;
-  const text = inline ? String(inline) : await fs.readFile(file, 'utf-8');
-  const parsed = JSON.parse(text);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`--${inline ? inlineKey : fileKey} must be a JSON object.`);
-  }
-  return parsed;
-}
-
 async function generateNodePackOptions(args) {
   const hasDiscoveryOptions = [
     'built-in-root',
+    'user-packages',
     'user-node-packs',
+    'package-trust-evidence',
+    'package-trust-evidence-file',
     'user-data',
     'node-pack-trust-evidence',
     'node-pack-trust-evidence-file',
+    'package-granted-capabilities',
+    'package-granted-capabilities-file',
     'node-pack-granted-capabilities',
     'node-pack-granted-capabilities-file',
+    'required-package',
+    'required-packages',
+    'required-package-ids',
     'required-node-pack',
     'required-node-packs',
     'required-node-pack-ids',
+    'max-authoring-packages',
     'max-authoring-node-packs',
   ].some(key => hasOwnOption(args, key));
   if (!hasDiscoveryOptions) return {};
 
-  const trustEvidenceByPack = await readJsonObjectOption(
+  const trustEvidenceByPack = await readJsonObjectAnyOption(
     args,
-    'node-pack-trust-evidence',
-    'node-pack-trust-evidence-file',
+    ['package-trust-evidence', 'node-pack-trust-evidence'],
+    ['package-trust-evidence-file', 'node-pack-trust-evidence-file'],
   );
-  const grantedCapabilitiesByPack = await readJsonObjectOption(
+  const grantedCapabilitiesByPack = await readJsonObjectAnyOption(
     args,
-    'node-pack-granted-capabilities',
-    'node-pack-granted-capabilities-file',
+    ['package-granted-capabilities', 'node-pack-granted-capabilities'],
+    ['package-granted-capabilities-file', 'node-pack-granted-capabilities-file'],
   );
   const requiredNodePackIds = [
+    ...splitOptionList(args['required-package']),
+    ...splitOptionList(args['required-packages']),
+    ...splitOptionList(args['required-package-ids']),
     ...splitOptionList(args['required-node-pack']),
     ...splitOptionList(args['required-node-packs']),
     ...splitOptionList(args['required-node-pack-ids']),
   ];
-  const maxAuthoringNodePacks = hasOwnOption(args, 'max-authoring-node-packs')
-    ? Math.max(0, Number(args['max-authoring-node-packs']) || 0)
+  const maxAuthoringNodePacks = hasOwnOption(args, 'max-authoring-packages') || hasOwnOption(args, 'max-authoring-node-packs')
+    ? Math.max(0, Number(optionValue(args, 'max-authoring-packages', 'max-authoring-node-packs')) || 0)
     : undefined;
   const discovery = discoverNodePackManifests({
     builtInNodePacksRoot: hasOwnOption(args, 'built-in-root') ? args['built-in-root'] : undefined,
     userDataDir: args['user-data'] || '',
-    userNodePacksRoot: args['user-node-packs'] || '',
+    userNodePacksRoot: optionValue(args, 'user-packages', 'user-node-packs'),
     currentOrpadVersion: args['current-orpad-version'],
-    installMode: args['node-pack-install-mode'] || args['install-mode'] || 'normal',
+    installMode: optionValue(args, 'package-install-mode', 'node-pack-install-mode', args['install-mode'] || 'normal'),
     trustEvidenceByPack,
     grantedCapabilitiesByPack,
   });
@@ -202,22 +222,22 @@ async function generateNodePackOptions(args) {
 }
 
 async function nodePackDiscoveryOptionsFromArgs(args) {
-  const trustEvidenceByPack = await readJsonObjectOption(
+  const trustEvidenceByPack = await readJsonObjectAnyOption(
     args,
-    'node-pack-trust-evidence',
-    'node-pack-trust-evidence-file',
+    ['package-trust-evidence', 'node-pack-trust-evidence'],
+    ['package-trust-evidence-file', 'node-pack-trust-evidence-file'],
   );
-  const grantedCapabilitiesByPack = await readJsonObjectOption(
+  const grantedCapabilitiesByPack = await readJsonObjectAnyOption(
     args,
-    'node-pack-granted-capabilities',
-    'node-pack-granted-capabilities-file',
+    ['package-granted-capabilities', 'node-pack-granted-capabilities'],
+    ['package-granted-capabilities-file', 'node-pack-granted-capabilities-file'],
   );
   return {
     builtInNodePacksRoot: hasOwnOption(args, 'built-in-root') ? args['built-in-root'] : undefined,
     userDataDir: args['user-data'] || '',
-    userNodePacksRoot: args['user-node-packs'] || '',
+    userNodePacksRoot: optionValue(args, 'user-packages', 'user-node-packs'),
     currentOrpadVersion: args['current-orpad-version'],
-    installMode: args['node-pack-install-mode'] || args['install-mode'] || 'normal',
+    installMode: optionValue(args, 'package-install-mode', 'node-pack-install-mode', args['install-mode'] || 'normal'),
     trustEvidenceByPack,
     grantedCapabilitiesByPack,
   };
@@ -285,7 +305,7 @@ function diagnosticMissingTrustFields(diagnostics) {
 
 function blockedNextActionForNodePack(pack, validation, resolutionState) {
   const diagnostics = validationDiagnostics(validation);
-  const packId = String(pack.id || validation.packId || 'node pack').trim();
+  const packId = String(pack.id || validation.packId || 'package').trim();
   const missingReviewCapabilities = diagnosticCapabilities(
     diagnostics,
     'NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED',
@@ -304,26 +324,26 @@ function blockedNextActionForNodePack(pack, validation, resolutionState) {
       actions.push(`record an approved OrPAD high-risk capability review scoped to ${missingReviewCapabilities.join(', ')}`);
     }
     if (missingGrantCapabilities.length) {
-      actions.push(`supply exact Machine-owned capability grants for ${missingGrantCapabilities.join(', ')} with --node-pack-granted-capabilities-file`);
+      actions.push(`supply exact Machine-owned capability grants for ${missingGrantCapabilities.join(', ')} with --package-granted-capabilities-file`);
     }
     return `${packId}: ${actions.join(' and ')}.`;
   }
 
   if (deniedCapabilities.length || resolutionState === 'capability-denied') {
     const capabilityText = deniedCapabilities.length ? ` for ${deniedCapabilities.join(', ')}` : '';
-    return `${packId}: supply matching Machine-owned capability grants${capabilityText} with --node-pack-granted-capabilities-file or remove the denied capabilities from the pack manifest.`;
+    return `${packId}: supply matching Machine-owned capability grants${capabilityText} with --package-granted-capabilities-file or remove the denied capabilities from the package manifest.`;
   }
 
   if (missingTrustFields.length) {
-    return `${packId}: provide OrPAD-controlled trust evidence (${missingTrustFields.join(', ')}) with --node-pack-trust-evidence-file.`;
+    return `${packId}: provide OrPAD-controlled trust evidence (${missingTrustFields.join(', ')}) with --package-trust-evidence-file.`;
   }
 
   if (untrusted || resolutionState === 'untrusted') {
-    return `${packId}: provide OrPAD-controlled trust evidence with --node-pack-trust-evidence-file or move the pack through manual review.`;
+    return `${packId}: provide OrPAD-controlled trust evidence with --package-trust-evidence-file or move the pack through manual review.`;
   }
 
   if (resolutionState === 'incompatible') {
-    return `${packId}: fix the node pack manifest diagnostics before activation.`;
+    return `${packId}: fix the package manifest diagnostics before activation.`;
   }
 
   if (resolutionState === 'conflict') {
@@ -331,7 +351,7 @@ function blockedNextActionForNodePack(pack, validation, resolutionState) {
   }
 
   if (resolutionState === 'disabled') {
-    return `${packId}: enable the node pack before activation.`;
+    return `${packId}: enable the package before activation.`;
   }
 
   return '';
@@ -387,7 +407,7 @@ async function listNodePacks(args) {
   return {
     success: true,
     ok: discovered.ok,
-    command: 'node-packs list',
+    command: `${args.__packageCommand || 'packages'} list`,
     roots: discovered.roots,
     nodePacks: discovered.nodePacks.map(summarizeNodePack),
     diagnostics: discovered.diagnostics,
@@ -397,7 +417,7 @@ async function listNodePacks(args) {
 
 async function registryOptionsFromArgs(args) {
   const registry = args.registry || args['registry-file'] || args['registry-url'] || '';
-  if (!registry) throw new Error('Missing --registry for node-packs registry command.');
+  if (!registry) throw new Error('Missing --registry for packages registry command.');
   return {
     registry,
     userDataDir: args['user-data'] || '',
@@ -406,21 +426,21 @@ async function registryOptionsFromArgs(args) {
 }
 
 async function nodePackInstallOptionsFromArgs(args) {
-  const trustEvidenceByPack = await readJsonObjectOption(
+  const trustEvidenceByPack = await readJsonObjectAnyOption(
     args,
-    'node-pack-trust-evidence',
-    'node-pack-trust-evidence-file',
+    ['package-trust-evidence', 'node-pack-trust-evidence'],
+    ['package-trust-evidence-file', 'node-pack-trust-evidence-file'],
   );
-  const grantedCapabilitiesByPack = await readJsonObjectOption(
+  const grantedCapabilitiesByPack = await readJsonObjectAnyOption(
     args,
-    'node-pack-granted-capabilities',
-    'node-pack-granted-capabilities-file',
+    ['package-granted-capabilities', 'node-pack-granted-capabilities'],
+    ['package-granted-capabilities-file', 'node-pack-granted-capabilities-file'],
   );
   return {
     userDataDir: args['user-data'] || '',
-    userNodePacksRoot: args['user-node-packs'] || '',
+    userNodePacksRoot: optionValue(args, 'user-packages', 'user-node-packs'),
     currentOrpadVersion: args['current-orpad-version'],
-    installMode: args['node-pack-install-mode'] || args['install-mode'] || 'normal',
+    installMode: optionValue(args, 'package-install-mode', 'node-pack-install-mode', args['install-mode'] || 'normal'),
     trustEvidenceByPack,
     grantedCapabilitiesByPack,
     registry: args.registry || args['registry-file'] || args['registry-url'] || '',
@@ -434,7 +454,7 @@ async function nodePackInstallOptionsFromArgs(args) {
 function nodePackAuthoringOptionsFromArgs(args) {
   return {
     currentOrpadVersion: args['current-orpad-version'],
-    installMode: args['node-pack-install-mode'] || args['install-mode'] || 'normal',
+    installMode: optionValue(args, 'package-install-mode', 'node-pack-install-mode', args['install-mode'] || 'normal'),
     sourceRepository: args['source-repository'] || args.repository || '',
     sourceRef: args['source-ref'] || args.ref || '',
     sourceRoot: args['source-root'] || '',
@@ -465,7 +485,7 @@ async function listNodePackRegistry(args) {
   const options = await registryOptionsFromArgs(args);
   const sourceResult = await loadNodePackRegistrySource(options.registry, options);
   return {
-    ...registryResultBase(args, sourceResult, 'node-packs registry list'),
+    ...registryResultBase(args, sourceResult, `${args.__packageCommand || 'packages'} registry list`),
     entries: sourceResult.ok ? summarizeNodePackRegistry(sourceResult.registry).entries : [],
   };
 }
@@ -482,7 +502,7 @@ async function searchNodePackRegistry(args) {
     })
     : [];
   return {
-    ...registryResultBase(args, sourceResult, 'node-packs registry search'),
+    ...registryResultBase(args, sourceResult, `${args.__packageCommand || 'packages'} registry search`),
     query,
     entries,
   };
@@ -493,7 +513,7 @@ function printNodePacksResult(result, json) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
-  process.stdout.write(`Discovered ${result.nodePacks.length} OrPAD node pack(s)\n`);
+  process.stdout.write(`Discovered ${result.nodePacks.length} OrPAD package(s)\n`);
   for (const pack of result.nodePacks) {
     const scope = [pack.origin || 'unknown', pack.trustLevel || 'unknown'].join('/');
     const state = pack.resolutionState && pack.resolutionState !== 'resolved'
@@ -528,7 +548,7 @@ function printNodePackRegistryResult(result, json) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
-  const registryName = result.registry?.name || result.source || 'node pack registry';
+  const registryName = result.registry?.name || result.source || 'package registry';
   const cacheText = result.fromCache ? ' (cached)' : '';
   process.stdout.write(`${registryName}${cacheText}: ${result.entries.length} entr${result.entries.length === 1 ? 'y' : 'ies'}\n`);
   if (result.query) process.stdout.write(`Query: ${result.query}\n`);
@@ -555,7 +575,7 @@ function printNodePackInstallResult(result, json) {
     return;
   }
   const state = result.success ? 'succeeded' : 'failed';
-  process.stdout.write(`Node pack ${result.action || 'install'} ${state}\n`);
+  process.stdout.write(`Package ${result.action || 'install'} ${state}\n`);
   if (result.nodePack) {
     const pack = summarizeNodePack(result.nodePack);
     process.stdout.write(`- ${pack.id}@${pack.version || '(no version)'} (${pack.resolutionState || 'unknown'})\n`);
@@ -581,9 +601,9 @@ function printNodePackUpdateResult(result, json) {
     return;
   }
   if (result.action === 'update-candidates') {
-    process.stdout.write(`Node pack update candidates: ${(result.candidates || []).length}\n`);
+    process.stdout.write(`Package update candidates: ${(result.candidates || []).length}\n`);
   } else {
-    process.stdout.write(`Node pack update ${result.success ? 'succeeded' : 'failed'}\n`);
+    process.stdout.write(`Package update ${result.success ? 'succeeded' : 'failed'}\n`);
   }
   for (const candidate of result.candidates || []) {
     const state = candidate.updateAvailable
@@ -606,7 +626,7 @@ function printNodePackExportResult(result, json) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
-  process.stdout.write(`Installed node pack export: ${(result.packs || []).length} pack${(result.packs || []).length === 1 ? '' : 's'}\n`);
+  process.stdout.write(`Installed package export: ${(result.packs || []).length} package${(result.packs || []).length === 1 ? '' : 's'}\n`);
   if (result.lockPath) process.stdout.write(`Lock: ${result.lockPath}\n`);
   for (const pack of result.packs || []) {
     const flags = [
@@ -624,7 +644,7 @@ function printNodePackAuthoringResult(result, json) {
     return;
   }
   const state = result.success ? 'succeeded' : 'failed';
-  process.stdout.write(`Node pack ${result.action || 'authoring'} ${state}\n`);
+  process.stdout.write(`Package ${result.action || 'authoring'} ${state}\n`);
   const pack = result.pack || (result.nodePack ? {
     id: result.nodePack.id,
     version: result.nodePack.version,
@@ -656,7 +676,8 @@ async function main() {
     process.stdout.write(`${usage()}\n`);
     return;
   }
-  if (command === 'node-packs') {
+  if (command === 'packages' || command === 'node-packs') {
+    args.__packageCommand = command;
     const subcommand = args._[1] || 'list';
     if (subcommand === 'list') {
       printNodePacksResult(await listNodePacks(args), !!args.json);
@@ -676,11 +697,11 @@ async function main() {
         if (!result.success) process.exitCode = 1;
         return;
       }
-      throw new Error(`Unknown node-packs registry command: ${registryCommand}`);
+      throw new Error(`Unknown packages registry command: ${registryCommand}`);
     }
     if (subcommand === 'install') {
       const packId = args._[2] || args.id || args.pack || '';
-      if (!packId) throw new Error('Missing node pack id for node-packs install.');
+      if (!packId) throw new Error('Missing package id for packages install.');
       const options = await nodePackInstallOptionsFromArgs(args);
       const result = await installRegistryNodePack({
         registry: options.registry,
@@ -709,7 +730,7 @@ async function main() {
     }
     if (subcommand === 'rollback') {
       const packId = args._[2] || args.id || args.pack || '';
-      if (!packId) throw new Error('Missing node pack id for node-packs rollback.');
+      if (!packId) throw new Error('Missing package id for packages rollback.');
       const result = await rollbackInstalledNodePack(packId, await nodePackInstallOptionsFromArgs(args));
       printNodePackInstallResult(result, !!args.json);
       if (!result.success) process.exitCode = 1;
@@ -717,7 +738,7 @@ async function main() {
     }
     if (subcommand === 'validate') {
       const folder = args._[2] || args.folder || args.path || '';
-      if (!folder) throw new Error('Missing folder for node-packs validate.');
+      if (!folder) throw new Error('Missing folder for packages validate.');
       const result = await validateNodePackFolder(folder, nodePackAuthoringOptionsFromArgs(args));
       printNodePackAuthoringResult(result, !!args.json);
       if (!result.success) process.exitCode = 1;
@@ -725,9 +746,9 @@ async function main() {
     }
     if (subcommand === 'pack-manifest') {
       const manifestCommand = args._[2] || 'check';
-      if (manifestCommand !== 'check') throw new Error(`Unknown node-packs pack-manifest command: ${manifestCommand}`);
+      if (manifestCommand !== 'check') throw new Error(`Unknown packages pack-manifest command: ${manifestCommand}`);
       const folder = args._[3] || args.folder || args.path || '';
-      if (!folder) throw new Error('Missing folder for node-packs pack-manifest check.');
+      if (!folder) throw new Error('Missing folder for packages pack-manifest check.');
       const result = await validateNodePackFolder(folder, nodePackAuthoringOptionsFromArgs(args));
       printNodePackAuthoringResult(result, !!args.json);
       if (!result.success) process.exitCode = 1;
@@ -735,9 +756,9 @@ async function main() {
     }
     if (subcommand === 'registry-entry') {
       const registryEntryCommand = args._[2] || 'create';
-      if (registryEntryCommand !== 'create') throw new Error(`Unknown node-packs registry-entry command: ${registryEntryCommand}`);
+      if (registryEntryCommand !== 'create') throw new Error(`Unknown packages registry-entry command: ${registryEntryCommand}`);
       const folder = args._[3] || args.folder || args.path || '';
-      if (!folder) throw new Error('Missing folder for node-packs registry-entry create.');
+      if (!folder) throw new Error('Missing folder for packages registry-entry create.');
       const result = await createNodePackRegistryEntryDraft(folder, nodePackAuthoringOptionsFromArgs(args));
       printNodePackAuthoringResult(result, !!args.json);
       if (!result.success) process.exitCode = 1;
@@ -745,7 +766,7 @@ async function main() {
     }
     if (subcommand === 'install-local') {
       const folder = args._[2] || args.folder || args.path || '';
-      if (!folder) throw new Error('Missing folder for node-packs install-local.');
+      if (!folder) throw new Error('Missing folder for packages install-local.');
       const result = await installLocalNodePack(folder, await nodePackInstallOptionsFromArgs(args));
       printNodePackInstallResult(result, !!args.json);
       if (!result.success) process.exitCode = 1;
@@ -753,7 +774,7 @@ async function main() {
     }
     if (subcommand === 'enable' || subcommand === 'disable') {
       const packId = args._[2] || args.id || args.pack || '';
-      if (!packId) throw new Error(`Missing node pack id for node-packs ${subcommand}.`);
+      if (!packId) throw new Error(`Missing package id for packages ${subcommand}.`);
       const result = await setInstalledNodePackEnabled(
         packId,
         subcommand === 'enable',
@@ -765,7 +786,7 @@ async function main() {
     }
     if (subcommand === 'remove') {
       const packId = args._[2] || args.id || args.pack || '';
-      if (!packId) throw new Error('Missing node pack id for node-packs remove.');
+      if (!packId) throw new Error('Missing package id for packages remove.');
       const result = await removeInstalledNodePack(packId, await nodePackInstallOptionsFromArgs(args));
       printNodePackInstallResult(result, !!args.json);
       if (!result.success) process.exitCode = 1;
@@ -778,7 +799,7 @@ async function main() {
       return;
     }
     if (subcommand !== 'list') {
-      throw new Error(`Unknown node-packs command: ${subcommand}`);
+      throw new Error(`Unknown packages command: ${subcommand}`);
     }
   }
   if (command !== 'generate' && command !== 'generate-orchestration') {

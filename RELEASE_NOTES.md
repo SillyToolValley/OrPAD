@@ -12,7 +12,7 @@ navigation, and release audit cleanup.
 - Added Registry governance metadata for official PR-reviewed OrPAD packages,
   custom Registry sources, third-party review claims, and discovery-only
   metadata.
-- Added an initial official Registry JSON under `registry/node-packs.json` and
+- Added an initial official Registry JSON under `registry/packages.json` and
   wired the default Package Manager source to the repository-hosted copy.
 - Added Package Manager trust labels and warnings so custom Registry URLs
   cannot self-declare OrPAD official approval.

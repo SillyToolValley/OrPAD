@@ -122,7 +122,7 @@ async function readWorkspaceNodePackLock(options = {}) {
       lockPath: '',
       lock: emptyWorkspaceNodePackLock(),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_ROOT_MISSING', 'Workspace node pack lock requires a workspace path.'),
+        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_ROOT_MISSING', 'Workspace Package lock requires a workspace path.'),
       ],
     };
   }
@@ -137,7 +137,7 @@ async function readWorkspaceNodePackLock(options = {}) {
       lockPath,
       lock: emptyWorkspaceNodePackLock(),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_INVALID', 'Workspace node pack lock could not be read.', {
+        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_INVALID', 'Workspace Package lock could not be read.', {
           path: lockPath,
           error: err.message,
         }),
@@ -167,7 +167,7 @@ async function readWorkspaceNodePackLock(options = {}) {
       lockPath,
       lock: emptyWorkspaceNodePackLock(),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_INVALID', 'Workspace node pack lock has an unsupported shape.', {
+        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_INVALID', 'Workspace Package lock has an unsupported shape.', {
           path: lockPath,
         }),
       ],
@@ -195,7 +195,7 @@ async function writeWorkspaceNodePackLock(lock, options = {}) {
       lockPath: '',
       lock: emptyWorkspaceNodePackLock(),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_ROOT_MISSING', 'Workspace node pack lock requires a workspace path.'),
+        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_ROOT_MISSING', 'Workspace Package lock requires a workspace path.'),
       ],
     };
   }
@@ -226,7 +226,7 @@ async function upsertWorkspaceNodePackLockEntry(entry, options = {}) {
       lockPath: workspaceNodePackLockPath(options.workspacePath),
       lock: emptyWorkspaceNodePackLock(),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_ENTRY_INVALID', 'Workspace node pack lock entry requires a package id.'),
+        errorDiagnostic('NODE_PACK_WORKSPACE_LOCK_ENTRY_INVALID', 'Workspace Package lock entry requires a package id.'),
       ],
     };
   }

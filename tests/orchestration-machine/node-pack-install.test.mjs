@@ -37,7 +37,7 @@ function communityPack(overrides = {}) {
     id: 'community.safe-install',
     name: 'Safe Install Pack',
     version: '0.1.0',
-    description: 'Safe declarative node pack install fixture.',
+    description: 'Safe declarative Package install fixture.',
     origin: 'community',
     author: {
       name: 'Fixture Author',
@@ -685,7 +685,7 @@ test('installRegistryNodePack converts verified registry signature checksum and 
   assert.equal(lock.lock.packs[0].validationStatus, 'valid');
 });
 
-test('node pack update candidates compare registry latest versions and skip pinned installs by default', async () => {
+test('Package update candidates compare registry latest versions and skip pinned installs by default', async () => {
   const userDataDir = await makeTempDir('orpad-node-pack-update-candidates-user-data-');
   const registryDir = await makeTempDir('orpad-node-pack-update-candidates-registry-');
   const registryPath = path.join(registryDir, 'registry.json');
@@ -746,7 +746,7 @@ test('node pack update candidates compare registry latest versions and skip pinn
   assert.equal((await readInstalledManifest(userDataDir, packV1.id)).version, '0.1.0');
 });
 
-test('node pack update failure leaves the previous active version untouched', async () => {
+test('Package update failure leaves the previous active version untouched', async () => {
   const userDataDir = await makeTempDir('orpad-node-pack-update-failure-user-data-');
   const registryDir = await makeTempDir('orpad-node-pack-update-failure-registry-');
   const registryPath = path.join(registryDir, 'registry.json');
@@ -805,7 +805,7 @@ test('node pack update failure leaves the previous active version untouched', as
   assert.equal((await readInstalledManifest(userDataDir, packV1.id)).version, '0.1.0');
 });
 
-test('node pack update records rollback metadata and rollback restores the previous version', async () => {
+test('Package update records rollback metadata and rollback restores the previous version', async () => {
   const userDataDir = await makeTempDir('orpad-node-pack-rollback-user-data-');
   const registryDir = await makeTempDir('orpad-node-pack-rollback-registry-');
   const registryPath = path.join(registryDir, 'registry.json');
@@ -921,24 +921,24 @@ test('CLI install-local disable enable and remove operate through the safe insta
   const evidence = JSON.stringify(trustEvidenceFor(pack.id).trustEvidenceByPack);
 
   const installResult = await runCli([
-    'node-packs',
+    'packages',
     'install-local',
     sourceDir,
     '--user-data',
     userDataDir,
-    '--node-pack-trust-evidence',
+    '--package-trust-evidence',
     evidence,
     '--json',
   ]);
   assert.equal(installResult.success, true, JSON.stringify(installResult.diagnostics, null, 2));
 
   const disableResult = await runCli([
-    'node-packs',
+    'packages',
     'disable',
     pack.id,
     '--user-data',
     userDataDir,
-    '--node-pack-trust-evidence',
+    '--package-trust-evidence',
     evidence,
     '--json',
   ]);
@@ -946,12 +946,12 @@ test('CLI install-local disable enable and remove operate through the safe insta
   assert.equal((await readInstalledManifest(userDataDir, pack.id)).enabled, false);
 
   const enableResult = await runCli([
-    'node-packs',
+    'packages',
     'enable',
     pack.id,
     '--user-data',
     userDataDir,
-    '--node-pack-trust-evidence',
+    '--package-trust-evidence',
     evidence,
     '--json',
   ]);
@@ -959,11 +959,11 @@ test('CLI install-local disable enable and remove operate through the safe insta
   assert.equal((await readInstalledManifest(userDataDir, pack.id)).enabled, true);
 
   const exportResult = await runCli([
-    'node-packs',
+    'packages',
     'export-list',
     '--user-data',
     userDataDir,
-    '--node-pack-trust-evidence',
+    '--package-trust-evidence',
     evidence,
     '--json',
   ]);
@@ -971,7 +971,7 @@ test('CLI install-local disable enable and remove operate through the safe insta
   assert.equal(exportResult.packs.some(item => item.id === pack.id), true);
 
   const removeResult = await runCli([
-    'node-packs',
+    'packages',
     'remove',
     pack.id,
     '--user-data',

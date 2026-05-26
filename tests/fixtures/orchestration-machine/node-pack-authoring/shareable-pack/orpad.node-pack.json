@@ -4,7 +4,7 @@
   "id": "community.shareable-review",
   "name": "Shareable Review Pack",
   "version": "0.1.0",
-  "description": "A minimal declarative node pack fixture for registry draft generation.",
+  "description": "A minimal declarative Package fixture for registry draft generation.",
   "origin": "community",
   "author": {
     "name": "Fixture Author",

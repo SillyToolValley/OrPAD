@@ -20,12 +20,12 @@ Recommended layout:
       runs/
 ```
 
-The app ships built-in node packs from the repository-level `nodes/` folder.
-User-installed node packs are managed in the OrPAD app data directory.
+The app ships built-in Packages from the repository-level `nodes/` folder.
+User-installed Packages are managed in the OrPAD app data directory.
 
 Future support may add:
 
-- Workspace-local node packs under `.orpad/nodes/`.
-- Workspace-level node pack lock files.
-- Project-portable custom node pack resolution.
+- Workspace-local Packages under `.orpad/nodes/`.
+- Workspace-level Package lock files.
+- Project-portable custom Package resolution.
 - Workspace override and conflict UI.

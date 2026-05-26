@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -17,7 +18,7 @@ function usage() {
     'Usage:',
     '  node scripts/validate-node-pack-registry.mjs [registry-json] [--json] [--allow-custom-governance]',
     '',
-    'Defaults to registry/node-packs.json and enforces the official OrPAD-Lab registry policy.',
+    'Defaults to registry/packages.json and enforces the official OrPAD-Lab registry policy.',
   ].join('\n');
 }
 
@@ -54,8 +55,45 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function stableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (isPlainObject(value)) {
+    const next = {};
+    for (const key of Object.keys(value).sort()) next[key] = stableJsonValue(value[key]);
+    return next;
+  }
+  return value;
+}
+
+function stableJson(value) {
+  return JSON.stringify(stableJsonValue(value));
+}
+
 function isSha256(value) {
   return /^[a-f0-9]{64}$/i.test(String(value || '').trim());
+}
+
+async function aliasDiagnostics(registryPath, rawRegistry) {
+  const diagnostics = [];
+  const normalizedPath = path.resolve(registryPath).replace(/\\/g, '/');
+  if (!normalizedPath.endsWith('/registry/packages.json')) return diagnostics;
+  const aliasPath = path.resolve(path.dirname(registryPath), 'node-packs.json');
+  let alias;
+  try {
+    alias = JSON.parse(await fs.readFile(aliasPath, 'utf-8'));
+  } catch (err) {
+    diagnostics.push(errorDiagnostic('ORPAD_OFFICIAL_REGISTRY_COMPAT_ALIAS_MISSING', 'registry/node-packs.json compatibility alias must exist for shipped OrPAD builds.', {
+      path: aliasPath,
+      error: err.message,
+    }));
+    return diagnostics;
+  }
+  if (stableJson(alias) !== stableJson(rawRegistry)) {
+    diagnostics.push(errorDiagnostic('ORPAD_OFFICIAL_REGISTRY_COMPAT_ALIAS_DRIFT', 'registry/node-packs.json must match registry/packages.json until legacy OrPAD builds are retired.', {
+      path: aliasPath,
+    }));
+  }
+  return diagnostics;
 }
 
 function officialPolicyDiagnostics(rawRegistry) {
@@ -158,14 +196,18 @@ async function main() {
     process.stdout.write(`${usage()}\n`);
     return;
   }
-  const registryPath = path.resolve(args._[0] || 'registry/node-packs.json');
+  const registryPath = path.resolve(args._[0] || 'registry/packages.json');
   const source = await readNodePackRegistryFile(registryPath, { useCacheOnFailure: false });
   const policyDiagnostics = (!args.allowCustomGovernance && source.rawRegistry)
     ? officialPolicyDiagnostics(source.rawRegistry)
     : [];
+  const compatibilityDiagnostics = source.rawRegistry
+    ? await aliasDiagnostics(registryPath, source.rawRegistry)
+    : [];
   const diagnostics = [
     ...(source.diagnostics || []),
     ...policyDiagnostics,
+    ...compatibilityDiagnostics,
   ];
   const success = source.ok && !diagnostics.some(item => item.level === 'error');
   const result = {

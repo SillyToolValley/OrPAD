@@ -13,7 +13,7 @@ Judge whether the pipeline improved real work quality and capture the next impro
 ## Procedure
 
 1. Compare candidate quality against the user's expectation: did the pipeline discover real issues without being spoon-fed?
-2. Explain whether the processed work items improved product code, tests, node packs, or the pipeline source of truth.
+2. Explain whether the processed work items improved product code, tests, Packages, or the pipeline source of truth.
 3. Identify any weak spot in discovery, queue ingestion, triage, implementation, or verification.
 4. Compare `run.candidateInventoryPath` with the final queue state and call out any observation that was discovered but not queued, blocked, rejected, deferred, or deduped.
 5. If the weak spot is actionable and self-improvement is enabled, stage it as a future candidate instead of silently changing scope.

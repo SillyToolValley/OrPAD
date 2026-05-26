@@ -25,8 +25,8 @@ Write these files under `run.artifactRoot`:
 1. Start a new maintenance cycle from the manifest alone. Treat any existing `harness/generated/latest-run` content as historical unless `npm run audit:orpad-run` passes for the current HEAD and worktree.
 2. If stale generated state exists, replace it within the allowed generated harness area instead of using it as source-of-truth. Do not restore, beautify, or select generated evidence as the only improvement target.
 3. Write `cycle-start.md` with runId, startedAt, current git HEAD, current git status digest, cycle semantics, previous latest-run handling, and the rule that `done` closes this cycle only.
-4. Record the pipeline id, selected entry graph, node packs, trust level, maintenancePolicy, and self-improvement setting.
-5. Summarize OrPAD's current product intent: local-first orchestration authoring, graph/tree editing, node packs, queue-driven maintenance, and safe agent execution.
+4. Record the pipeline id, selected entry graph, Packages, trust level, maintenancePolicy, and self-improvement setting.
+5. Summarize OrPAD's current product intent: local-first orchestration authoring, graph/tree editing, Packages, queue-driven maintenance, and safe agent execution.
 6. Record which local files are likely relevant to this run.
 7. Record which reference families are being used: agent orchestration, durable workflow, Electron security, Playwright verification, packaging, and developer-content quality.
 8. Create or update `run.metadataPath` with schemaVersion `orpad.runEvidence.v1`, pipelineId, runId, startedAt, current git HEAD, current git status digest, and the audit commands that must pass before trusting latest-run evidence.

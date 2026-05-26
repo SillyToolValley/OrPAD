@@ -1126,7 +1126,7 @@ async function setNodePackRegistrySourceManagementMock(win: Page): Promise<void>
           diagnostics: [{
             level: 'warning',
             code: 'NODE_PACK_REGISTRY_SOURCE_FAILED_CACHE_USED',
-            message: 'Node pack registry source failed; using last valid cache.',
+            message: 'Package registry source failed; using last valid cache.',
             source,
           }],
           query,
@@ -1502,7 +1502,7 @@ test('pipeline details preview exposes editable contract fields', async () => {
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('pipeline details surfaces missing node pack diagnostics inline', async () => {
+test('pipeline details surfaces missing Package diagnostics inline', async () => {
   test.setTimeout(60_000);
   const { workspace, pipelinePath } = writePipelineWorkspace();
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
@@ -1545,7 +1545,7 @@ test('pipeline details surfaces missing node pack diagnostics inline', async () 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager opens registry candidates for a missing pipeline pack', async () => {
+test('Package manager opens registry candidates for a missing pipeline pack', async () => {
   test.setTimeout(60_000);
   const { workspace, pipelinePath } = writePipelineWorkspace();
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
@@ -1595,7 +1595,7 @@ test('node pack manager opens registry candidates for a missing pipeline pack', 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager lists metadata and safe pack prose states', async () => {
+test('Package manager lists metadata and safe pack prose states', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -1673,7 +1673,7 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
       },
       {
         id: 'orpad.starter.frontend-ux',
-        name: 'Frontend UX Starter Pack',
+        name: 'Frontend UX Starter Package',
         version: '0.1.0',
         origin: 'built-in',
         trustLevel: 'official',
@@ -1722,7 +1722,7 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
           {
             level: 'warning',
             code: 'NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED',
-            message: 'Community node pack requests high-risk authority without approved review.',
+            message: 'Community Package requests high-risk authority without approved review.',
             packId: 'community.review-required',
             capability: 'use.credentials',
             scope: 'pack',
@@ -1754,7 +1754,7 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
   const safePack = nodePackManagerRow(win, 'Community Safe Pack');
   await expect(safePack).toContainText('user-installed');
   await expect(safePack).toHaveAttribute('data-node-pack-validation', 'valid');
-  const starterPack = nodePackManagerRow(win, 'Frontend UX Starter Pack');
+  const starterPack = nodePackManagerRow(win, 'Frontend UX Starter Package');
   await expect(starterPack).toContainText('built-in');
   const reviewPack = nodePackManagerRow(win, 'Review Required Pack');
   await expect(reviewPack).toHaveAttribute('data-node-pack-validation', 'approval-required');
@@ -1765,12 +1765,12 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
   await expect(detail).toContainText('0 diagnostics');
   await expect(detail).toContainText('Capabilities');
   await expect(detail).toContainText('call.aiProvider');
-  await expect(detail).toContainText('Pack-Provided Prose (Untrusted)');
+  await expect(detail).toContainText('Package-Provided Text (Untrusted)');
   await expect(win.locator('[data-unsafe-pack-prose]')).toHaveCount(0);
   await expect(win.locator('.node-pack-manager-untrusted')).toContainText('<button data-unsafe-pack-prose>Do not click</button> Pack prose.');
   await closeNodePackManagerRowDetail(win);
   detail = await openNodePackManagerRowDetail(win, starterPack);
-  await expect(detail).toContainText('Pack Components');
+  await expect(detail).toContainText('Package Components');
   await expect(detail).toContainText('Components');
   await expect(detail).toContainText('1 graph, 1 skill, 1 rule');
   await expect(detail).toContainText('Reusable Graphs, Skills, and Rules');
@@ -1786,7 +1786,7 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
   await expect(detail).toContainText('use.credentials');
   await expect(detail).toContainText('NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED');
   await closeNodePackManagerRowDetail(win);
-  await expectNodePackManagerInspectorUsable(win, 'node pack manager metadata inspector', 4);
+  await expectNodePackManagerInspectorUsable(win, 'Package manager metadata inspector', 4);
 
   await win.locator('#fmt-modal-close').click();
   await setNodePackManagerMock(win, { success: true, ok: true, nodePacks: [], diagnostics: [], conflicts: [] });
@@ -1804,7 +1804,7 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager browses registry entries and installs through the manager action', async () => {
+test('Package manager browses registry entries and installs through the manager action', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -1859,7 +1859,7 @@ test('node pack manager browses registry entries and installs through the manage
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager manages registry source defaults recents and offline cache state', async () => {
+test('Package manager manages registry source defaults recents and offline cache state', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -1920,7 +1920,7 @@ test('node pack manager manages registry source defaults recents and offline cac
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager blocks non-HTTPS registry source before browsing', async () => {
+test('Package manager blocks non-HTTPS registry source before browsing', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -1955,7 +1955,7 @@ test('node pack manager blocks non-HTTPS registry source before browsing', async
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager shows registry trust review warnings and blocks unsafe package actions', async () => {
+test('Package manager shows registry trust review warnings and blocks unsafe package actions', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2044,7 +2044,7 @@ test('node pack manager shows registry trust review warnings and blocks unsafe p
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager applies an available registry update from the updates tab', async () => {
+test('Package manager applies an available registry update from the updates tab', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2094,7 +2094,7 @@ test('node pack manager applies an available registry update from the updates ta
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager shows workspace lock drift and syncs registry update metadata', async () => {
+test('Package manager shows workspace lock drift and syncs registry update metadata', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2174,7 +2174,7 @@ test('node pack manager shows workspace lock drift and syncs registry update met
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager dry-runs workspace lock apply before package install', async () => {
+test('Package manager dry-runs workspace lock apply before package install', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2268,7 +2268,7 @@ test('node pack manager dry-runs workspace lock apply before package install', a
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager prefers workspace lock registry source for missing package resolution', async () => {
+test('Package manager prefers workspace lock registry source for missing package resolution', async () => {
   test.setTimeout(60_000);
   const { workspace, pipelinePath } = writePipelineWorkspace();
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
@@ -2311,7 +2311,7 @@ test('node pack manager prefers workspace lock registry source for missing packa
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager exposes installed lifecycle export rollback and remove actions', async () => {
+test('Package manager exposes installed lifecycle export rollback and remove actions', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2348,7 +2348,7 @@ test('node pack manager exposes installed lifecycle export rollback and remove a
   await expect(exportModal).toContainText('community.lifecycle-pack');
   await expect(exportModal).toContainText('/userData/nodes/orpad-node-packs.lock.json');
   await closeNodePackManagerRowDetail(win);
-  await expectNodePackManagerInspectorUsable(win, 'node pack manager installed lifecycle inspector', 1);
+  await expectNodePackManagerInspectorUsable(win, 'Package manager installed lifecycle inspector', 1);
 
   lifecycleDetail = await openNodePackManagerRowDetail(win, lifecyclePack);
   const rollbackDialog = win.waitForEvent('dialog').then(async (dialog) => {
@@ -2376,7 +2376,7 @@ test('node pack manager exposes installed lifecycle export rollback and remove a
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager keeps update candidates visible when a registry update fails', async () => {
+test('Package manager keeps update candidates visible when a registry update fails', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2429,7 +2429,7 @@ test('node pack manager keeps update candidates visible when a registry update f
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager surfaces discovery diagnostics and conflicts', async () => {
+test('Package manager surfaces discovery diagnostics and conflicts', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2498,7 +2498,7 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
           {
             level: 'error',
             code: 'NODE_PACK_VERSION_MISSING',
-            message: 'Node pack version is required.',
+            message: 'Package version is required.',
             packId: 'community.broken',
           },
         ],
@@ -2514,7 +2514,7 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
       {
         level: 'warning',
         code: 'NODE_PACK_DISCOVERY_ROOT_UNREADABLE',
-        message: 'Node pack root could not be read.',
+        message: 'Package root could not be read.',
         rootKind: 'user',
         root: '/bad/nodes',
         error: 'EACCES: permission denied',
@@ -2522,7 +2522,7 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
       {
         level: 'warning',
         code: 'NODE_PACK_DISCOVERY_MANIFEST_INVALID',
-        message: 'Node pack manifest could not be parsed.',
+        message: 'Package manifest could not be parsed.',
         rootKind: 'user',
         manifestPath: '/packs/broken/orpad.node-pack.json',
         error: 'Unexpected token } in JSON',
@@ -2530,14 +2530,14 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
       {
         level: 'warning',
         code: 'NODE_PACK_DISCOVERY_VALIDATION_FAILED',
-        message: 'Discovered node pack is not launch-compatible.',
+        message: 'Discovered Package is not launch-compatible.',
         packId: 'community.alpha',
         manifestPath: '/packs/community.alpha/orpad.node-pack.json',
         packDiagnostics: [
           {
             level: 'error',
             code: 'NODE_PACK_VERSION_MISSING',
-            message: 'Node pack version is required.',
+            message: 'Package version is required.',
             packId: 'community.alpha',
           },
         ],
@@ -2545,7 +2545,7 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
       {
         level: 'warning',
         code: 'NODE_PACK_DISCOVERY_DUPLICATE_ID',
-        message: 'Duplicate node pack id discovered; deterministic load keeps the first pack and skips later duplicates.',
+        message: 'Duplicate Package id discovered; deterministic load keeps the first pack and skips later duplicates.',
         packId: 'community.alpha',
         keptManifestPath: '/packs/community.alpha/orpad.node-pack.json',
         skippedManifestPath: '/packs/community.alpha-copy/orpad.node-pack.json',
@@ -2553,7 +2553,7 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
       {
         level: 'warning',
         code: 'NODE_PACK_TYPE_CONFLICT',
-        message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+        message: 'Multiple packages declare the same node type; user selection is required before activation.',
         nodeType: 'community.shared',
         firstPackId: 'community.alpha',
         firstManifestPath: '/packs/community.alpha/orpad.node-pack.json',
@@ -2653,13 +2653,13 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
   await expect(detail).toContainText('/packs/community.broken/orpad.node-pack.json');
   await expect(detail).toContainText('NODE_PACK_VERSION_MISSING');
   await closeNodePackManagerRowDetail(win);
-  await expectNodePackManagerInspectorUsable(win, 'node pack manager diagnostics inspector', 3);
+  await expectNodePackManagerInspectorUsable(win, 'Package manager diagnostics inspector', 3);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('add node browser blocks unresolved and conflicting node pack choices', async () => {
+test('add node browser blocks unresolved and conflicting Package choices', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2722,7 +2722,7 @@ test('add node browser blocks unresolved and conflicting node pack choices', asy
       {
         level: 'warning',
         code: 'NODE_PACK_TYPE_CONFLICT',
-        message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+        message: 'Multiple packages declare the same node type; user selection is required before activation.',
         nodeType: 'orpad.gate',
         firstPackId: 'community.alpha',
         secondPackId: 'community.beta',
@@ -2753,7 +2753,7 @@ test('add node browser blocks unresolved and conflicting node pack choices', asy
   const unsafeProbe = win.locator('.orch-node-browser-item').filter({ hasText: 'Unsafe Probe' });
   await expect(unsafeProbe).toBeDisabled();
   await expect(unsafeProbe).toContainText('approval-required');
-  await expect(unsafeProbe).toContainText('Pack resolution is approval-required');
+  await expect(unsafeProbe).toContainText('Package resolution is approval-required');
 
   const conflictTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'Community Alpha Pack' });
   await expect(conflictTab).toHaveAttribute('data-orch-node-pack-status', 'conflict');
@@ -2767,7 +2767,7 @@ test('add node browser blocks unresolved and conflicting node pack choices', asy
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('add node browser surfaces node pack discovery failure fallback state', async () => {
+test('add node browser surfaces Package discovery failure fallback state', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2838,7 +2838,7 @@ test('add node browser surfaces node pack discovery failure fallback state', asy
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('node pack manager refresh updates add node browser catalog in the same session', async () => {
+test('Package manager refresh updates add node browser catalog in the same session', async () => {
   test.setTimeout(60_000);
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
@@ -2930,7 +2930,7 @@ test('node pack manager refresh updates add node browser catalog in the same ses
       {
         level: 'warning',
         code: 'NODE_PACK_TYPE_CONFLICT',
-        message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+        message: 'Multiple packages declare the same node type; user selection is required before activation.',
         nodeType: 'orpad.gate',
         firstPackId: 'community.conflict-alpha',
         secondPackId: 'community.conflict-beta',

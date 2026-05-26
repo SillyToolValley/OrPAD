@@ -15,7 +15,7 @@ const PLACEHOLDER_PATTERN = /TODO\s*(?:\u2014|-)?\s*author|Placeholder created b
 const ORPAD_HARDENING_PROMPT = [
   'Create an OrPAD orchestration pipeline to improve OrPAD product completeness and reliability through evidence-driven hardening.',
   'The pipeline must orchestrate a Ralph-style iterative improvement loop with deterministic verification before expensive work.',
-  'Required orchestration shape: Use a fork-join discovery phase with independent probes for runtime, renderer UI, generation quality, web compatibility, Electron stability, and node pack trust.',
+  'Required orchestration shape: Use a fork-join discovery phase with independent probes for runtime, renderer UI, generation quality, web compatibility, Electron stability, and Package trust.',
   'Merge findings into a triage node that creates a prioritized work queue.',
   'Use dispatcher + workerLoop for one bounded improvement task per iteration.',
   'Use patchReview with accepted and rejected branches; rejected patches must loop back to workerLoop.',
@@ -265,7 +265,7 @@ function communityQualityPack(overrides = {}) {
     version: '0.1.0',
     origin: 'user',
     trustLevel: 'signed',
-    description: 'Metadata-only user-installed pack used to validate authoring quality with installed node packs.',
+    description: 'Metadata-only user-installed pack used to validate authoring quality with installed Packages.',
     author: {
       name: 'Community Pack Author',
       github: 'https://github.com/example',
@@ -798,7 +798,7 @@ test('quality auditor fails unsupported barrier partial failure policies before 
 test('quality auditor fails graph node-pack references missing from pipeline declarations', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-reference-audit-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
-  await writeWorkspaceSeed(workspace, 'Node pack reference audit fixture');
+  await writeWorkspaceSeed(workspace, 'Package reference audit fixture');
 
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
@@ -824,10 +824,10 @@ test('quality auditor fails graph node-pack references missing from pipeline dec
   assert.ok(codes.includes('AUTHORING_NODE_PACK_REFERENCE_UNDECLARED'));
 });
 
-test('quality auditor fails selected node packs missing generated graph provenance', async (t) => {
+test('quality auditor fails selected Packages missing generated graph provenance', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-provenance-audit-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
-  await writeWorkspaceSeed(workspace, 'Node pack provenance audit fixture');
+  await writeWorkspaceSeed(workspace, 'Package provenance audit fixture');
   await fs.mkdir(path.join(workspace, 'src/main'), { recursive: true });
   await fs.mkdir(path.join(workspace, 'src/renderer'), { recursive: true });
   await fs.writeFile(path.join(workspace, 'electron-builder.yml'), 'appId: dev.orpad.fixture\n', 'utf-8');
@@ -852,7 +852,7 @@ test('quality auditor fails selected node packs missing generated graph provenan
   const pipeline = JSON.parse(await fs.readFile(result.pipelinePath, 'utf-8'));
   const selectedIds = pipeline.metadata.orchestrationAuthoring.nodePackSelection.map(pack => pack.id);
   const missingPackId = selectedIds.find(id => id !== selectedIds[0]);
-  assert.ok(missingPackId, 'fixture should select at least two node packs');
+  assert.ok(missingPackId, 'fixture should select at least two Packages');
 
   const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));
   const provenanceTypes = new Set(['orpad.context', 'orpad.probe', 'orpad.gate', 'orpad.workerLoop', 'orpad.artifactContract']);
@@ -872,10 +872,10 @@ test('quality auditor fails selected node packs missing generated graph provenan
   );
 });
 
-test('quality auditor validates generated pipelines that declare installed user node packs', async (t) => {
+test('quality auditor validates generated pipelines that declare installed user Packages', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-quality-installed-node-pack-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
-  await writeWorkspaceSeed(workspace, 'Installed node pack quality fixture');
+  await writeWorkspaceSeed(workspace, 'Installed Package quality fixture');
   const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-quality-user-node-packs-'));
   t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
   const userPack = communityQualityPack();
@@ -1098,6 +1098,7 @@ test('quality auditor fails when inline sub-graph probes are omitted from machin
     workspaceRoot: workspace,
     taskText: 'Audit subgraph probe fanout',
     timestamp: '2026-05-18T10:30:00.000Z',
+    maxAuthoringNodePacks: 0,
     authoringSpec: {
       title: 'Subgraph probe fanout',
       graph: {

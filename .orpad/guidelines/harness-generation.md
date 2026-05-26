@@ -11,4 +11,4 @@ For queue-driven workstream pipelines:
 - Treat approval, credentials, publishing, signing, destructive git, and destructive filesystem operations as explicit stop conditions.
 - Local read, edit, build, and focused verification steps are allowed when the pipeline and node capabilities allow them.
 
-Generated harnesses should be reproducible from the `.or-pipeline`, referenced graphs, node packs, skills, rules, and this guideline folder.
+Generated harnesses should be reproducible from the `.or-pipeline`, referenced graphs, Packages, skills, rules, and this guideline folder.

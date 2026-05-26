@@ -2,12 +2,12 @@
   "kind": "orpad.nodePack",
   "schemaVersion": "1.0",
   "id": "orpad.starter.node-pack-hardening",
-  "name": "Node Pack Hardening Starter Pack",
+  "name": "Package Hardening Starter Package",
   "version": "0.1.0",
   "origin": "built-in",
   "trustLevel": "official",
   "mutable": false,
-  "description": "Reusable orchestration hints for node pack catalog audits, manifest parity, trust and capability gates, discovery quarantine, and maintenance decisions.",
+  "description": "Reusable orchestration hints for package catalog audits, manifest parity, trust and capability gates, discovery quarantine, and maintenance decisions.",
   "author": {
     "name": "OrPAD",
     "github": "https://github.com/luke-youngmin-cho/OrPAD",
@@ -33,9 +33,9 @@
     {
       "id": "node-pack-hardening-workstream",
       "path": "graphs/node-pack-hardening-workstream.or-graph",
-      "label": "Node Pack Hardening Workstream",
+      "label": "Package Hardening Workstream",
       "role": "reusable",
-      "description": "Discovery and verification lens for node pack manifests, in-code catalog parity, trust evidence, capability gates, quarantine diagnostics, and keep or deprecate decisions.",
+      "description": "Discovery and verification lens for package manifests, in-code catalog parity, trust evidence, capability gates, quarantine diagnostics, and keep or deprecate decisions.",
       "inputs": ["workspaceContext"],
       "outputs": ["nodePackHardeningCandidateItems"]
     }
@@ -44,14 +44,14 @@
     {
       "id": "node-pack-hardening-audit",
       "path": "skills/node-pack-hardening-audit.md",
-      "description": "Guides evidence-backed node pack hardening, parity checks, validation runs, and maintenance or deprecation decisions."
+      "description": "Guides evidence-backed package hardening, parity checks, validation runs, and maintenance or deprecation decisions."
     }
   ],
   "rules": [
     {
       "id": "node-pack-hardening-scope",
       "path": "rules/node-pack-hardening-scope.or-rule",
-      "description": "Includes node pack manifests, starter assets, node pack validation code, authoring integration, run audits, and focused compatibility tests."
+      "description": "Includes package manifests, starter assets, package validation code, authoring integration, run audits, and focused compatibility tests."
     }
   ],
   "examples": []

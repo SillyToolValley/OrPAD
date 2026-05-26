@@ -5033,7 +5033,7 @@ function renderPipelineNodePackSummary(doc, validation, diagnostics = []) {
       : '';
     return `
       <div class="pipeline-node-pack-row ${status.issues.length ? 'has-inline-diagnostic' : ''}" data-pipeline-node-pack-id="${escapeHtml(pipelineNodePackEntryId(entry))}">
-        ${renderPipelineNodePackValue('Pack id', pipelineNodePackEntryId(entry), { code: true })}
+        ${renderPipelineNodePackValue('Package id', pipelineNodePackEntryId(entry), { code: true })}
         ${renderPipelineNodePackValue('Requested version', entry.requestedVersion || 'any')}
         ${renderPipelineNodePackValue('Origin', entry.origin || 'any')}
         <div class="pipeline-node-pack-state">
@@ -5068,7 +5068,7 @@ function renderPipelineNodePacksSection(doc, readwrite, validation, diagnostics 
           <h3>Packages</h3>
           <p>Built-in and custom packages required by this pipeline. Packages can contribute node types, graphs, skills, and rules.</p>
         </div>
-        <span class="runbook-chip ${blocking ? 'danger' : (nodePackDiagnostics.length ? 'warn' : '')}">${entries.length ? machineCountLabel(entries.length, 'pack') : 'not set'}</span>
+        <span class="runbook-chip ${blocking ? 'danger' : (nodePackDiagnostics.length ? 'warn' : '')}">${entries.length ? machineCountLabel(entries.length, 'package') : 'not set'}</span>
         <button data-node-pack-manager-open>${blocking ? 'Resolve in Package Manager' : 'Open Package Manager'}</button>
       </header>
       <div class="pipeline-node-pack-list">
@@ -7104,7 +7104,7 @@ function nodePackManagerPackPath(pack = {}) {
   return nodePackManagerString(pack.sourcePath || pack.discovery?.manifestPath || pack.manifestPath || pack.discovery?.packDir || pack.path, '');
 }
 
-const NODE_PACK_MANAGER_DEFAULT_REGISTRY_SOURCE = 'https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/node-packs.json';
+const NODE_PACK_MANAGER_DEFAULT_REGISTRY_SOURCE = 'https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/packages.json';
 const NODE_PACK_MANAGER_REGISTRY_SOURCE_KEY = 'orpad.nodePackRegistrySource';
 const NODE_PACK_MANAGER_RECENT_REGISTRY_SOURCES_KEY = 'orpad.nodePackRegistryRecentSources';
 const NODE_PACK_MANAGER_RECENT_REGISTRY_LIMIT = 5;
@@ -7159,16 +7159,16 @@ const NODE_PACK_MANAGER_DETAIL_ORDER = [
 const NODE_PACK_MANAGER_DETAIL_LABELS = {
   rootKind: 'Root kind',
   root: 'Root path',
-  packId: 'Pack id',
+  packId: 'Package id',
   manifestPath: 'Manifest path',
   keptManifestPath: 'Kept manifest',
   skippedManifestPath: 'Skipped manifest',
   nodeType: 'Node type',
-  firstPackId: 'First pack',
+  firstPackId: 'First package',
   firstManifestPath: 'First manifest',
-  secondPackId: 'Second pack',
+  secondPackId: 'Second package',
   secondManifestPath: 'Second manifest',
-  packPath: 'Pack path',
+  packPath: 'Package path',
   path: 'Path',
   assetKind: 'Asset kind',
   assetId: 'Asset id',
@@ -7179,7 +7179,7 @@ const NODE_PACK_MANAGER_DETAIL_LABELS = {
   actual: 'Actual',
   valueType: 'Value type',
   error: 'Error',
-  packDiagnostics: 'Pack diagnostics',
+  packDiagnostics: 'Package diagnostics',
 };
 
 function nodePackManagerIssueCode(issue) {
@@ -7300,7 +7300,7 @@ function nodePackManagerConflictIssue(conflict) {
   return {
     level: 'warning',
     code: 'NODE_PACK_TYPE_CONFLICT',
-    message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+    message: 'Multiple packages declare the same node type; user selection is required before activation.',
     ...conflict,
   };
 }
@@ -7572,8 +7572,8 @@ function renderNodePackManagerContentSections(pack = {}, nodes = [], packConflic
     </div>
   ` : '';
   const reusableIntro = nodes.length
-    ? 'Additional graph, skill, and rule assets this pack can contribute during authoring.'
-    : 'No custom node types are declared. This pack contributes reusable graph, skill, and rule assets for authoring.';
+    ? 'Additional graph, skill, and rule assets this package can contribute during authoring.'
+    : 'No custom node types are declared. This package contributes reusable graph, skill, and rule assets for authoring.';
   const reusableGroup = reusableAssets.length ? `
     <div class="node-pack-manager-component-group">
       <h5>Reusable Graphs, Skills, and Rules</h5>
@@ -7586,7 +7586,7 @@ function renderNodePackManagerContentSections(pack = {}, nodes = [], packConflic
   if (nodeGroup || reusableGroup) {
     return `
       <section class="node-pack-manager-section">
-        <h4>Pack Components</h4>
+        <h4>Package Components</h4>
         <p class="node-pack-manager-section-note">${escapeHtml(nodePackManagerComponentSummary(pack))}</p>
         ${nodeGroup}
         ${reusableGroup}
@@ -7595,7 +7595,7 @@ function renderNodePackManagerContentSections(pack = {}, nodes = [], packConflic
   }
   return `
     <section class="node-pack-manager-section">
-      <h4>Pack Contents</h4>
+      <h4>Package Contents</h4>
       <span class="node-pack-manager-muted">No node types, reusable graphs, skills, or rules were declared.</span>
     </section>
   `;
@@ -7681,13 +7681,13 @@ function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
   const packConflicts = nodePackManagerPackConflicts(pack, catalog);
   const issueCount = nodePackManagerPackIssueCount(pack, catalog);
   const conflictNote = status.label === 'conflict'
-    ? '<div class="node-pack-manager-conflict-note">Conflict state: this pack matches a duplicate pack id or duplicate node type diagnostic and needs review before activation.</div>'
+    ? '<div class="node-pack-manager-conflict-note">Conflict state: this package matches a duplicate package id or duplicate node type diagnostic and needs review before activation.</div>'
     : '';
   return `
     <div class="node-pack-manager-detail-header ${status.label === 'conflict' ? 'has-conflict' : ''}">
       <div>
-        <h3>${escapeHtml(nodePackManagerString(pack.name || pack.id, 'Node Pack'))}</h3>
-        <code>${escapeHtml(nodePackManagerString(pack.id, 'missing-pack-id'))}</code>
+        <h3>${escapeHtml(nodePackManagerString(pack.name || pack.id, 'Package'))}</h3>
+        <code>${escapeHtml(nodePackManagerString(pack.id, 'missing-package-id'))}</code>
       </div>
       <span class="runbook-chip ${status.tone}">${escapeHtml(status.label)}</span>
     </div>
@@ -7696,7 +7696,7 @@ function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
       <h4>Trusted Discovery Metadata</h4>
       <dl class="node-pack-manager-metadata">
         ${renderNodePackManagerMetaRow('Name', pack.name || pack.id)}
-        ${renderNodePackManagerMetaRow('Pack id', pack.id, { code: true })}
+        ${renderNodePackManagerMetaRow('Package id', pack.id, { code: true })}
         ${renderNodePackManagerMetaRow('Version', pack.version || 'unversioned', { code: true })}
         ${renderNodePackManagerMetaRow('Origin / source', nodePackManagerOrigin(pack))}
         ${renderNodePackManagerMetaRow('Trust level', pack.trustLevel || 'unknown')}
@@ -7706,7 +7706,7 @@ function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
         ${renderNodePackManagerMetaRow('Diagnostic count', issueCount.total ? `${issueCount.total} issue${issueCount.total === 1 ? '' : 's'}` : '0 diagnostics')}
         ${renderNodePackManagerMetaRow('Source path', nodePackManagerPackPath(pack), { code: true })}
         ${renderNodePackManagerMetaRow('Manifest path', pack.discovery?.manifestPath || pack.manifestPath, { code: true })}
-        ${renderNodePackManagerMetaRow('Pack path', pack.discovery?.packDir || pack.path, { code: true })}
+        ${renderNodePackManagerMetaRow('Package path', pack.discovery?.packDir || pack.path, { code: true })}
       </dl>
     </section>
     <section class="node-pack-manager-section">
@@ -7720,12 +7720,12 @@ function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
     ${renderNodePackManagerLifecycleSection(pack, state)}
     ${renderNodePackManagerWorkspaceLockSection(pack, state)}
     <section class="node-pack-manager-section node-pack-manager-untrusted">
-      <h4>Pack-Provided Prose (Untrusted)</h4>
+      <h4>Package-Provided Text (Untrusted)</h4>
       <p>${escapeHtml(nodePackManagerString(pack.description, 'No description declared.'))}</p>
     </section>
     ${renderNodePackManagerContentSections(pack, nodes, packConflicts)}
-    ${renderNodePackManagerIssueCards('Pack diagnostics', packDiagnostics)}
-    ${renderNodePackManagerIssueCards('Pack conflicts', packConflicts, { className: 'node-pack-manager-conflict-issues' })}
+    ${renderNodePackManagerIssueCards('Package diagnostics', packDiagnostics)}
+    ${renderNodePackManagerIssueCards('Package conflicts', packConflicts, { className: 'node-pack-manager-conflict-issues' })}
   `;
 }
 
@@ -7775,7 +7775,7 @@ function normalizeNodePackRegistryResponse(response = {}, request = {}) {
       .filter(entry => entry && typeof entry === 'object')
       .map(entry => ({
         id: nodePackManagerString(entry.id, ''),
-        name: nodePackManagerString(entry.name || entry.id, 'Node Pack'),
+        name: nodePackManagerString(entry.name || entry.id, 'Package'),
         description: nodePackManagerString(entry.description, ''),
         latestVersion: nodePackManagerString(entry.latestVersion || entry.version, ''),
         versionCount: Number(entry.versionCount || 0) || 0,
@@ -9262,7 +9262,7 @@ function nodePackManagerFailureNotice(action, packId, err) {
 function confirmNodePackManagerAction(action, packId, pack = {}) {
   const packageName = nodePackManagerString(pack.name || packId, packId);
   const messages = {
-    disable: `Disable package "${packageName}"?\n\nIts Pack Components will stop resolving until the package is enabled again.`,
+    disable: `Disable package "${packageName}"?\n\nIts Package Components will stop resolving until the package is enabled again.`,
     remove: `Remove package "${packageName}"?\n\nThe package is moved to a backup, but dependent pipelines may stop resolving until it is installed or restored again.`,
     rollback: `Rollback package "${packageName}"?\n\nThe current package will be replaced with the previous backup. The current version is backed up for another explicit rollback.`,
   };
@@ -9331,7 +9331,7 @@ function renderNodePackManagerPackageRow(options = {}) {
   return `
     <div class="node-pack-manager-pack node-pack-manager-package-row ${escapeHtml(className)}" data-node-pack-validation="${escapeHtml(validation)}" role="listitem"${extraAttrs}>
       <div class="node-pack-manager-package-row-main">
-        <strong>${escapeHtml(nodePackManagerString(options.name, 'Node Pack'))}</strong>
+        <strong>${escapeHtml(nodePackManagerString(options.name, 'Package'))}</strong>
         <span class="node-pack-manager-package-maker">${escapeHtml(nodePackManagerMakerLabel(options.pack || options.entry || options.item || {}))}</span>
       </div>
       <div class="node-pack-manager-package-row-actions">
@@ -9389,7 +9389,7 @@ function renderNodePackManagerInstalledActions(pack = {}, managerState = {}) {
   const packId = nodePackManagerString(pack.id, '');
   const rootKind = nodePackManagerString(pack.discovery?.rootKind || pack.origin, '');
   if (!packId || rootKind === 'built-in' || pack.origin === 'built-in') {
-    return '<div class="node-pack-manager-actions"><span class="node-pack-manager-muted">Built-in packs are managed by the app.</span></div>';
+    return '<div class="node-pack-manager-actions"><span class="node-pack-manager-muted">Built-in packages are managed by the app.</span></div>';
   }
   const resolutionState = nodePackManagerString(pack.resolutionState || pack.validation?.resolutionState, '').toLowerCase();
   const enableAction = resolutionState === 'disabled'
@@ -9453,7 +9453,7 @@ function renderNodePackRegistryEntryDetail(entry = null, state = {}, options = {
       <div class="node-pack-manager-capabilities">${renderNodePackManagerCapabilities(entry.capabilities)}</div>
     </section>
     <section class="node-pack-manager-section node-pack-manager-untrusted">
-      <h4>Pack-Provided Prose (Untrusted)</h4>
+      <h4>Package-Provided Text (Untrusted)</h4>
       <p>${escapeHtml(entry.description || 'No description declared.')}</p>
     </section>
     ${hideActions ? '' : `
@@ -9500,7 +9500,7 @@ function renderNodePackUpdateEntryDetail(entry = null, installed = null, state =
     ${renderNodePackManagerRegistryWorkspaceLockSection(entry, state)}
     ${renderNodePackManagerRegistryRiskReview(entry, state.registry)}
     <section class="node-pack-manager-section node-pack-manager-untrusted">
-      <h4>Pack-Provided Prose (Untrusted)</h4>
+      <h4>Package-Provided Text (Untrusted)</h4>
       <p>${escapeHtml(entry.description || 'No description declared.')}</p>
     </section>
     ${hideActions ? '' : `
@@ -9547,7 +9547,7 @@ function openOrchNodePackManager(resolutionContext = null) {
     </div>
     <div class="node-pack-manager-registry-controls" data-node-pack-manager-registry-controls hidden>
       <select data-node-pack-manager-registry-source-select aria-label="Registry source"></select>
-      <input type="url" data-node-pack-manager-registry-source aria-label="Custom Registry source" placeholder="https://example.com/orpad-node-pack-registry.json" />
+      <input type="url" data-node-pack-manager-registry-source aria-label="Custom Registry source" placeholder="https://example.com/orpad-package-registry.json" />
       <input type="search" data-node-pack-manager-registry-query aria-label="Search packages" placeholder="Search packages" />
       <button type="button" data-node-pack-manager-registry-load>Browse</button>
     </div>
@@ -10144,7 +10144,7 @@ function openOrchNodePackManager(resolutionContext = null) {
         status.label === 'conflict' ? 'has-conflict' : '',
       ].filter(Boolean).join(' ');
       return renderNodePackManagerPackageRow({
-        name: nodePackManagerString(pack.name || pack.id, 'Node Pack'),
+        name: nodePackManagerString(pack.name || pack.id, 'Package'),
         pack,
         className: statusClass,
         validation: status.label,
@@ -10594,7 +10594,7 @@ function orchNodeBrowserAllowedTypes(surface = orchNodeBrowserSurface()) {
 }
 
 function orchNodeBrowserPackLabel(pack = {}) {
-  return pack.name || pack.id || 'Node Pack';
+  return pack.name || pack.id || 'Package';
 }
 
 const NODE_PACK_BROWSER_SAFE_RESOLUTION_STATES = new Set(['', 'resolved', 'valid', 'ok']);
@@ -10626,12 +10626,12 @@ function orchNodeBrowserPackSafety(pack = {}, catalog = {}) {
     label = resolutionState;
     if (tone === 'good') tone = 'warn';
     blocksNodes = true;
-    reason = `Pack resolution is ${resolutionState}; resolve validation, trust, or capability review before adding nodes.`;
+    reason = `Package resolution is ${resolutionState}; resolve validation, trust, or capability review before adding nodes.`;
   } else if (NODE_PACK_BROWSER_BLOCKING_STATUS_LABELS.has(label)) {
     blocksNodes = true;
     reason = label === 'conflict'
-      ? 'Pack has a duplicate id or node type conflict; choose one owner before activation.'
-      : `Pack status is ${label}; resolve validation before adding nodes.`;
+      ? 'Package has a duplicate id or node type conflict; choose one owner before activation.'
+      : `Package status is ${label}; resolve validation before adding nodes.`;
   }
 
   return { label, tone, trustLevel, resolutionState, blocksNodes, reason };
@@ -19860,7 +19860,7 @@ function harnessToolPlanFromProfile(profile, pipelineDoc) {
     mcpRecommendations: profile.mcpRecommendations,
     validationCommands: profile.validationCommands,
     notes: [
-      'This plan is inferred during harness implementation from workspace files, selected node packs, and pipeline adapter metadata.',
+      'This plan is inferred during harness implementation from workspace files, selected packages, and pipeline adapter metadata.',
       'Commands are candidate validation contracts, not automatically executed during harness implementation.',
       'Workers must record actual pass/fail/blocked evidence when they use these commands.',
     ],
@@ -19907,7 +19907,7 @@ function localHarnessAuthoringSpec(projectProfile, toolPlan, nodes, pipelineDoc,
     generatedAt,
     pipelineId: pipelineDoc?.id || projectProfile.pipelineId || '',
     graphId: graphDoc?.graph?.id || graphDoc?.id || projectProfile.graphId || '',
-    summary: 'Harness spec inferred in renderer fallback from project profile, tool plan, graph node types, and selected node packs.',
+    summary: 'Harness spec inferred in renderer fallback from project profile, tool plan, graph node types, and selected packages.',
     projectProfileRef: 'project-profile.json',
     toolPlanRef: 'tool-plan.json',
     requiredTools: toolPlan.requiredTools || projectProfile.requiredTools || [],

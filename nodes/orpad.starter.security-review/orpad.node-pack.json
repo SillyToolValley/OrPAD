@@ -2,7 +2,7 @@
   "kind": "orpad.nodePack",
   "schemaVersion": "1.0",
   "id": "orpad.starter.security-review",
-  "name": "Security Review Starter Pack",
+  "name": "Security Review Starter Package",
   "version": "0.1.0",
   "origin": "built-in",
   "trustLevel": "official",

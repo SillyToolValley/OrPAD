@@ -25,7 +25,7 @@ async function withTempWorkspace(fn) {
   }
 }
 
-test('workspace node pack lock reads missing lock as empty shared state', async () => {
+test('workspace Package lock reads missing lock as empty shared state', async () => {
   await withTempWorkspace(async (workspacePath) => {
     const result = await readWorkspaceNodePackLock({ workspacePath });
     assert.equal(result.ok, true);
@@ -35,7 +35,7 @@ test('workspace node pack lock reads missing lock as empty shared state', async 
   });
 });
 
-test('workspace node pack lock writes and upserts normalized package metadata', async () => {
+test('workspace Package lock writes and upserts normalized package metadata', async () => {
   await withTempWorkspace(async (workspacePath) => {
     const entry = createWorkspaceNodePackLockEntry({
       id: 'community.shared-pack',
@@ -69,7 +69,7 @@ test('workspace node pack lock writes and upserts normalized package metadata', 
   });
 });
 
-test('workspace node pack lock rejects unsupported file shape', async () => {
+test('workspace Package lock rejects unsupported file shape', async () => {
   await withTempWorkspace(async (workspacePath) => {
     const lockPath = workspaceNodePackLockPath(workspacePath);
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
@@ -81,7 +81,7 @@ test('workspace node pack lock rejects unsupported file shape', async () => {
   });
 });
 
-test('workspace node pack lock write keeps package ids sorted', async () => {
+test('workspace Package lock write keeps package ids sorted', async () => {
   await withTempWorkspace(async (workspacePath) => {
     const result = await writeWorkspaceNodePackLock({
       packs: [

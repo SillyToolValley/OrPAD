@@ -11,7 +11,7 @@ const repoRoot = path.resolve(__dirname, '../..');
 const MARKDOWN_TEMPLATES = [
   { id: 'prd', label: 'Product Requirements Document' },
   { id: 'release-checklist', label: 'Release Checklist' },
-  { id: 'node-pack-submission', label: 'Node Pack Submission' },
+  { id: 'package-submission', label: 'Package Submission' },
   { id: 'ux-review', label: 'UX Review' },
   { id: 'handover', label: 'Handover' },
   { id: 'spec-sheet', label: 'Spec Sheet' },
@@ -107,7 +107,7 @@ test('template catalog documents exposed templates and isolated candidates', asy
   }
 
   for (const packId of STARTER_PACK_IDS) {
-    assert.match(catalog, new RegExp(`\\\`${packId}\\\``), `${packId} missing from starter pack catalog`);
+    assert.match(catalog, new RegExp(`\\\`${packId}\\\``), `${packId} missing from starter package catalog`);
   }
 
   for (const isolated of ['Generic blank notes', 'Snippet bodies', 'Reserved folders']) {

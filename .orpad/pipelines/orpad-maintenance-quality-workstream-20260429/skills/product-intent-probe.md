@@ -26,7 +26,7 @@ Find mismatches between OrPAD's intended product model and the current implement
 - Pipeline path should be enough to launch agent work.
 - Manifest policy should replace prompt-heavy instructions.
 - Graphs should compose other graphs as nested layers.
-- Node packs should distinguish built-in, official, and community nodes.
+- Packages should distinguish built-in, official, and community nodes.
 - Self-improvement should be controlled by manifest policy.
 - Generated harness evidence should be evidence, not the main product.
 
@@ -35,7 +35,7 @@ Find mismatches between OrPAD's intended product model and the current implement
 Inspect and record at least three current evidence items before writing an empty pass:
 
 - Pipeline authoring model: `.orpad` structure, pipeline manifest, Graph/Manifest editor behavior, or validation output.
-- Node pack model: built-in node pack files, example pipeline, editor node type exposure, or validator support.
+- Package model: built-in Package files, example pipeline, editor node type exposure, or validator support.
 - Agent launch model: execution policy, run button behavior, approval/run boundary, or path-only launch instructions.
 
 ## Candidate Rules

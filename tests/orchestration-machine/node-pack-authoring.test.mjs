@@ -116,10 +116,10 @@ test('validateNodePackFolder reports deterministic authoring diagnostics for uns
   assert.equal(codes.has('NODE_PACK_AUTHOR_README_MISSING'), true);
 });
 
-test('orpad node-packs validate and registry-entry create expose authoring results as JSON', async () => {
+test('orpad packages validate and registry-entry create expose authoring results as JSON', async () => {
   const validate = await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'validate',
     fixtureDir,
     '--json',
@@ -131,7 +131,7 @@ test('orpad node-packs validate and registry-entry create expose authoring resul
 
   const draft = await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'registry-entry',
     'create',
     fixtureDir,

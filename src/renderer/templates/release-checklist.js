@@ -29,7 +29,7 @@ _State what is shipping, who it affects, and why this version is worth publishin
 ## Preflight
 - [ ] Version metadata is correct.
 - [ ] Release notes match the shipped behavior.
-- [ ] Required templates, node packs, and generated assets are present.
+- [ ] Required templates, packages, and generated assets are present.
 - [ ] Signing, notarization, or unsigned-build decision is recorded.
 
 ## Verification

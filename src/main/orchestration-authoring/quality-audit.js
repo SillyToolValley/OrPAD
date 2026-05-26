@@ -162,8 +162,8 @@ function auditRequiredNodePackSelectionDiagnostics(pipeline, diagnostics) {
       'error',
       REQUIRED_NODE_PACK_UNAVAILABLE_CODE,
       packId
-        ? `Required node pack ${packId} was not available or eligible for Generate authoring.`
-        : 'A required node pack was not available or eligible for Generate authoring.',
+        ? `Required Package ${packId} was not available or eligible for Generate authoring.`
+        : 'A required Package was not available or eligible for Generate authoring.',
       {
         ...(packId ? { packId } : {}),
         selectionDiagnostic: item,
@@ -910,7 +910,7 @@ function auditDeclaredNodePackReferences(pipeline, graphSet, diagnostics) {
   }
   for (const [packId, locations] of referenced) {
     if (declared.has(packId)) continue;
-    diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_REFERENCE_UNDECLARED', 'Graph nodes must not reference a node pack that is missing from pipeline.nodePacks.', {
+    diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_REFERENCE_UNDECLARED', 'Graph nodes must not reference a Package that is missing from pipeline.nodePacks.', {
       nodePackId: packId,
       locations,
     }));
@@ -948,7 +948,7 @@ function auditSelectedNodePackProvenance(pipeline, graphSet, diagnostics) {
     .filter(Boolean));
   for (const packId of selectedIds) {
     if (!declared.has(packId)) {
-      diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_SELECTION_UNDECLARED', 'Selected node packs must be declared in pipeline.nodePacks.', {
+      diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_SELECTION_UNDECLARED', 'Selected packages must be declared in pipeline.nodePacks.', {
         nodePackId: packId,
       }));
     }
@@ -966,7 +966,7 @@ function auditSelectedNodePackProvenance(pipeline, graphSet, diagnostics) {
     for (const packId of selectedIds) {
       const matching = entries.filter(({ node }) => nodeReferencesPack(node, packId));
       if (matching.length) continue;
-      diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_PROVENANCE_MISSING', 'Selected node packs must be represented on context, probe, verification gate, worker, and artifact metadata.', {
+      diagnostics.push(diagnostic('error', 'AUTHORING_NODE_PACK_PROVENANCE_MISSING', 'Selected packages must be represented on context, probe, verification gate, worker, and artifact metadata.', {
         nodePackId: packId,
         surface: surface.key,
         expectedFields: ['config.sourceNodePack', 'config.supportingNodePacks'],

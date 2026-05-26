@@ -200,7 +200,7 @@ test('orpad generate materializes an LLM-authored orchestration spec', async (t)
   assert.match(skill, /slides explain thread lifecycle/);
 });
 
-test('orpad generate uses workspace file snapshot for node pack selection', async (t) => {
+test('orpad generate uses workspace file snapshot for Package selection', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-snapshot-pack-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   const labDir = path.join(workspace, 'ThreadProgramming/Unit3/Lab05_Semaphore');
@@ -233,7 +233,7 @@ test('orpad generate uses workspace file snapshot for node pack selection', asyn
   assert.match(prompt, /ThreadProgramming\/Unit3\/Lab05_Semaphore\/Program\.cs/);
 });
 
-test('orpad node-packs list reports built-in and user node pack pools', async (t) => {
+test('orpad packages list reports built-in and user package pools', async (t) => {
   const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-node-packs-'));
   t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
   const packDir = path.join(userRoot, 'community.cli-pack');
@@ -251,7 +251,7 @@ test('orpad node-packs list reports built-in and user node pack pools', async (t
       repository: 'https://github.com/example/orpad-cli-pack',
     },
     license: 'MIT',
-    description: 'User-installed CLI node pack for list coverage.',
+    description: 'User-installed CLI Package for list coverage.',
     compatibility: {
       orpad: '>=1.0.0-beta.3',
       packFormat: 'orpad.nodePack.v1',
@@ -271,9 +271,9 @@ test('orpad node-packs list reports built-in and user node pack pools', async (t
 
   const { stdout } = await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'list',
-    '--user-node-packs',
+    '--user-packages',
     userRoot,
     '--json',
   ], { encoding: 'utf-8' });
@@ -290,7 +290,7 @@ test('orpad node-packs list reports built-in and user node pack pools', async (t
   assert.equal(communityPack.location.endsWith('community.cli-pack'), true);
 });
 
-test('orpad node-packs list applies trust evidence files like generate discovery', async (t) => {
+test('orpad packages list applies trust evidence files like generate discovery', async (t) => {
   const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-node-pack-trust-'));
   t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
   const packDir = path.join(userRoot, 'community.cli-signed-trust');
@@ -308,7 +308,7 @@ test('orpad node-packs list applies trust evidence files like generate discovery
       repository: 'https://github.com/example/orpad-cli-signed-trust',
     },
     license: 'MIT',
-    description: 'Signed user pack for node-packs list trust evidence parity.',
+    description: 'Signed user package for packages list trust evidence parity.',
     compatibility: {
       orpad: '>=1.0.0-beta.3',
       packFormat: 'orpad.nodePack.v1',
@@ -328,9 +328,9 @@ test('orpad node-packs list applies trust evidence files like generate discovery
 
   const withoutEvidence = JSON.parse((await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'list',
-    '--user-node-packs',
+    '--user-packages',
     userRoot,
     '--json',
   ], { encoding: 'utf-8' })).stdout);
@@ -340,7 +340,7 @@ test('orpad node-packs list applies trust evidence files like generate discovery
   assert.equal(untrustedPack.validationStatus, 'untrusted');
   assert.equal(
     untrustedPack.blockedNextAction,
-    'community.cli-signed-trust: provide OrPAD-controlled trust evidence (trustEvidence.signature.verified) with --node-pack-trust-evidence-file.',
+    'community.cli-signed-trust: provide OrPAD-controlled trust evidence (trustEvidence.signature.verified) with --package-trust-evidence-file.',
   );
 
   const trustEvidencePath = path.join(userRoot, 'trust-evidence.json');
@@ -352,11 +352,11 @@ test('orpad node-packs list applies trust evidence files like generate discovery
 
   const withEvidence = JSON.parse((await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'list',
-    '--user-node-packs',
+    '--user-packages',
     userRoot,
-    '--node-pack-trust-evidence-file',
+    '--package-trust-evidence-file',
     trustEvidencePath,
     '--json',
   ], { encoding: 'utf-8' })).stdout);
@@ -368,7 +368,7 @@ test('orpad node-packs list applies trust evidence files like generate discovery
   assert.equal(Object.prototype.hasOwnProperty.call(resolvedPack, 'blockedNextAction'), false);
 });
 
-test('orpad node-packs list reports high-risk grant and review next actions', async (t) => {
+test('orpad packages list reports high-risk grant and review next actions', async (t) => {
   const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-node-pack-risk-'));
   t.after(() => fs.rm(userRoot, { recursive: true, force: true }));
   const packDir = path.join(userRoot, 'community.cli-high-risk');
@@ -386,7 +386,7 @@ test('orpad node-packs list reports high-risk grant and review next actions', as
       repository: 'https://github.com/example/orpad-cli-high-risk',
     },
     license: 'MIT',
-    description: 'High-risk user pack for node-packs list capability evidence parity.',
+    description: 'High-risk user package for packages list capability evidence parity.',
     compatibility: {
       orpad: '>=1.0.0-beta.3',
       packFormat: 'orpad.nodePack.v1',
@@ -413,11 +413,11 @@ test('orpad node-packs list reports high-risk grant and review next actions', as
 
   const approvalRequired = JSON.parse((await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'list',
-    '--user-node-packs',
+    '--user-packages',
     userRoot,
-    '--node-pack-trust-evidence-file',
+    '--package-trust-evidence-file',
     signatureOnlyPath,
     '--json',
   ], { encoding: 'utf-8' })).stdout);
@@ -426,7 +426,7 @@ test('orpad node-packs list reports high-risk grant and review next actions', as
   assert.equal(blockedPack.resolutionState, 'approval-required');
   assert.equal(
     blockedPack.blockedNextAction,
-    'community.cli-high-risk: record an approved OrPAD high-risk capability review scoped to write.workspace and supply exact Machine-owned capability grants for write.workspace with --node-pack-granted-capabilities-file.',
+    'community.cli-high-risk: record an approved OrPAD high-risk capability review scoped to write.workspace and supply exact Machine-owned capability grants for write.workspace with --package-granted-capabilities-file.',
   );
   assert.equal(
     blockedPack.validation.diagnostics.some(item => item.code === 'NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED'),
@@ -454,13 +454,13 @@ test('orpad node-packs list reports high-risk grant and review next actions', as
 
   const capabilityDenied = JSON.parse((await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'list',
-    '--user-node-packs',
+    '--user-packages',
     userRoot,
-    '--node-pack-trust-evidence-file',
+    '--package-trust-evidence-file',
     approvedReviewPath,
-    '--node-pack-granted-capabilities-file',
+    '--package-granted-capabilities-file',
     emptyGrantsPath,
     '--json',
   ], { encoding: 'utf-8' })).stdout);
@@ -469,7 +469,7 @@ test('orpad node-packs list reports high-risk grant and review next actions', as
   assert.equal(deniedPack.resolutionState, 'capability-denied');
   assert.equal(
     deniedPack.blockedNextAction,
-    'community.cli-high-risk: supply exact Machine-owned capability grants for write.workspace with --node-pack-granted-capabilities-file.',
+    'community.cli-high-risk: supply exact Machine-owned capability grants for write.workspace with --package-granted-capabilities-file.',
   );
 
   const grantsPath = path.join(userRoot, 'grants.json');
@@ -479,13 +479,13 @@ test('orpad node-packs list reports high-risk grant and review next actions', as
 
   const resolved = JSON.parse((await execFileAsync(process.execPath, [
     cliPath,
-    'node-packs',
+    'packages',
     'list',
-    '--user-node-packs',
+    '--user-packages',
     userRoot,
-    '--node-pack-trust-evidence-file',
+    '--package-trust-evidence-file',
     approvedReviewPath,
-    '--node-pack-granted-capabilities-file',
+    '--package-granted-capabilities-file',
     grantsPath,
     '--json',
   ], { encoding: 'utf-8' })).stdout);
@@ -495,7 +495,7 @@ test('orpad node-packs list reports high-risk grant and review next actions', as
   assert.equal(resolvedPack.validationStatus, 'valid');
 });
 
-test('orpad generate selects a validated user-installed node pack from CLI discovery options', async (t) => {
+test('orpad generate selects a validated user-installed Package from CLI discovery options', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-user-pack-generate-'));
   const userRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-cli-authoring-packs-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
@@ -594,9 +594,9 @@ test('orpad generate selects a validated user-installed node pack from CLI disco
     'Build the custom report workflow with reusable report pack guidance.',
     '--timestamp',
     '2026-05-23T01:00:00.000Z',
-    '--user-node-packs',
+    '--user-packages',
     userRoot,
-    '--node-pack-trust-evidence-file',
+    '--package-trust-evidence-file',
     trustEvidencePath,
     '--json',
   ], { encoding: 'utf-8' });
@@ -607,7 +607,7 @@ test('orpad generate selects a validated user-installed node pack from CLI disco
   assert.equal(
     result.qualityAudit.diagnostics.some(item => item.code === 'AUTHORING_VALIDATION_FAILED'),
     false,
-    'generation-time quality audit should use the CLI-discovered node pack pool',
+    'generation-time quality audit should use the CLI-discovered Package pool',
   );
   const pipeline = JSON.parse(await fs.readFile(result.pipelinePath, 'utf-8'));
   const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));

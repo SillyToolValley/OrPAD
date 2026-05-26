@@ -1,5 +1,5 @@
-# Node Pack Hardening Starter Pack
+# Package Hardening Starter Package
 
-Reusable metadata-only authoring guidance for node pack validation, manifest parity, trust evidence, and capability review.
+Reusable metadata-only authoring guidance for package validation, manifest parity, trust evidence, and capability review.
 
-This starter pack declares graph, skill, and rule assets only; it does not provide executable handlers.
+This starter package declares graph, skill, and rule assets only; it does not provide executable handlers.

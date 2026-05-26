@@ -140,7 +140,7 @@ function verifyExpectedSha256(buffer, expectedSha256, options = {}) {
       sha256: actual,
       expectedSha256: expected,
       diagnostics: [
-        errorDiagnostic(options.mismatchCode || 'NODE_PACK_INSTALL_CHECKSUM_MISMATCH', options.mismatchMessage || 'Fetched node pack file checksum does not match the registry checksum.', {
+        errorDiagnostic(options.mismatchCode || 'NODE_PACK_INSTALL_CHECKSUM_MISMATCH', options.mismatchMessage || 'Fetched Package file checksum does not match the registry checksum.', {
           ...(options.details || {}),
           expectedSha256: expected,
           actualSha256: actual,
@@ -190,7 +190,7 @@ function validatePackIdForInstall(packId) {
     return {
       ok: false,
       id,
-      diagnostic: errorDiagnostic('NODE_PACK_INSTALL_ID_UNSAFE', 'Installed node pack ids must be safe storage ids.', {
+      diagnostic: errorDiagnostic('NODE_PACK_INSTALL_ID_UNSAFE', 'Installed Package ids must be safe storage ids.', {
         packId: id,
       }),
     };
@@ -222,7 +222,7 @@ function pathInsideRoot(root, relativePath) {
       ok: false,
       normalized: '',
       path: '',
-      diagnostic: errorDiagnostic('NODE_PACK_INSTALL_PATH_UNSAFE', 'Node pack install paths must be pack-relative portable paths.', {
+      diagnostic: errorDiagnostic('NODE_PACK_INSTALL_PATH_UNSAFE', 'Package install paths must be pack-relative portable paths.', {
         path: relativePath,
       }),
     };
@@ -234,7 +234,7 @@ function pathInsideRoot(root, relativePath) {
       ok: false,
       normalized,
       path: targetPath,
-      diagnostic: errorDiagnostic('NODE_PACK_INSTALL_PATH_ESCAPE', 'Node pack install path escaped the expected root.', {
+      diagnostic: errorDiagnostic('NODE_PACK_INSTALL_PATH_ESCAPE', 'Package install path escaped the expected root.', {
         path: relativePath,
       }),
     };
@@ -462,7 +462,7 @@ async function createInstallStagingRoot(options = {}) {
       ok: false,
       stagingRoot: '',
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Node pack install requires --user-data or --user-node-packs.'),
+        errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Package install requires --user-data or --user-node-packs.'),
       ],
     };
   }
@@ -493,7 +493,7 @@ async function copyDeclaredLocalFiles(sourceDir, stagingPackDir, pack) {
     try {
       stat = await fs.lstat(sourceTarget.path);
     } catch (err) {
-      diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_DECLARED_FILE_MISSING', 'Declared node pack file is missing from the source pack.', {
+      diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_DECLARED_FILE_MISSING', 'Declared Package file is missing from the source pack.', {
         filePath: relativePath,
         sourcePath: sourceTarget.path,
         error: err.message,
@@ -501,14 +501,14 @@ async function copyDeclaredLocalFiles(sourceDir, stagingPackDir, pack) {
       continue;
     }
     if (stat.isSymbolicLink()) {
-      diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_DECLARED_FILE_SYMLINK', 'Declared node pack files cannot be symlinks during normal install.', {
+      diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_DECLARED_FILE_SYMLINK', 'Declared Package files cannot be symlinks during normal install.', {
         filePath: relativePath,
         sourcePath: sourceTarget.path,
       }));
       continue;
     }
     if (!stat.isFile()) {
-      diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_DECLARED_FILE_NOT_FILE', 'Declared node pack path must resolve to a file.', {
+      diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_DECLARED_FILE_NOT_FILE', 'Declared Package path must resolve to a file.', {
         filePath: relativePath,
         sourcePath: sourceTarget.path,
       }));
@@ -529,7 +529,7 @@ async function fetchUrlBytes(urlText, options = {}) {
       ok: false,
       buffer: Buffer.alloc(0),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_FETCH_URL_INVALID', 'Node pack install URL is invalid.', {
+        errorDiagnostic('NODE_PACK_INSTALL_FETCH_URL_INVALID', 'Package install URL is invalid.', {
           url: urlText,
         }),
       ],
@@ -540,7 +540,7 @@ async function fetchUrlBytes(urlText, options = {}) {
       ok: false,
       buffer: Buffer.alloc(0),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_FETCH_URL_UNSAFE', 'Node pack install URL must use https.', {
+        errorDiagnostic('NODE_PACK_INSTALL_FETCH_URL_UNSAFE', 'Package install URL must use https.', {
           url: urlText,
         }),
       ],
@@ -553,7 +553,7 @@ async function fetchUrlBytes(urlText, options = {}) {
       ok: false,
       buffer: Buffer.alloc(0),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_FETCH_UNAVAILABLE', 'Node pack install URL fetch is unavailable in this runtime.', {
+        errorDiagnostic('NODE_PACK_INSTALL_FETCH_UNAVAILABLE', 'Package install URL fetch is unavailable in this runtime.', {
           url: urlText,
         }),
       ],
@@ -579,7 +579,7 @@ async function fetchUrlBytes(urlText, options = {}) {
       ok: false,
       buffer: Buffer.alloc(0),
       diagnostics: [
-        errorDiagnostic(err?.name === 'AbortError' ? 'NODE_PACK_INSTALL_FETCH_TIMEOUT' : 'NODE_PACK_INSTALL_FETCH_FAILED', 'Node pack install URL could not be fetched.', {
+        errorDiagnostic(err?.name === 'AbortError' ? 'NODE_PACK_INSTALL_FETCH_TIMEOUT' : 'NODE_PACK_INSTALL_FETCH_FAILED', 'Package install URL could not be fetched.', {
           url: url.href,
           error: err.message,
         }),
@@ -593,7 +593,7 @@ async function fetchUrlBytes(urlText, options = {}) {
       ok: false,
       buffer: Buffer.alloc(0),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_FETCH_STATUS', 'Node pack install URL returned a non-success status.', {
+        errorDiagnostic('NODE_PACK_INSTALL_FETCH_STATUS', 'Package install URL returned a non-success status.', {
           url: url.href,
           status: response?.status || 0,
         }),
@@ -609,7 +609,7 @@ async function fetchUrlBytes(urlText, options = {}) {
       ok: false,
       buffer: Buffer.alloc(0),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_FETCH_BODY_FAILED', 'Node pack install response body could not be read.', {
+        errorDiagnostic('NODE_PACK_INSTALL_FETCH_BODY_FAILED', 'Package install response body could not be read.', {
           url: url.href,
           error: err.message,
         }),
@@ -626,7 +626,7 @@ async function fetchUrlBytes(urlText, options = {}) {
       ok: false,
       buffer: Buffer.alloc(0),
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_FETCH_TOO_LARGE', 'Node pack install response exceeds the safe file read limit.', {
+        errorDiagnostic('NODE_PACK_INSTALL_FETCH_TOO_LARGE', 'Package install response exceeds the safe file read limit.', {
           url: url.href,
           size: buffer.byteLength,
           byteLimit,
@@ -646,7 +646,7 @@ function parseManifestBuffer(buffer, manifestUrl = '') {
       ok: false,
       manifest: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_MANIFEST_JSON_INVALID', 'Fetched node pack manifest must be valid JSON.', {
+        errorDiagnostic('NODE_PACK_INSTALL_MANIFEST_JSON_INVALID', 'Fetched Package manifest must be valid JSON.', {
           manifestUrl,
           error: err.message,
         }),
@@ -658,7 +658,7 @@ function parseManifestBuffer(buffer, manifestUrl = '') {
       ok: false,
       manifest: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_MANIFEST_INVALID', 'Fetched node pack manifest must be a JSON object.', {
+        errorDiagnostic('NODE_PACK_INSTALL_MANIFEST_INVALID', 'Fetched Package manifest must be a JSON object.', {
           manifestUrl,
         }),
       ],
@@ -747,7 +747,7 @@ async function fetchDeclaredRegistryFiles(stagingPackDir, pack, versionInfo, opt
     } else {
       const fileUrl = registryVersionFileUrl(versionInfo, relativePath);
       if (!fileUrl) {
-        diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_FILE_URL_UNRESOLVED', 'Declared registry node pack file URL could not be resolved.', {
+        diagnostics.push(errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_FILE_URL_UNRESOLVED', 'Declared registry Package file URL could not be resolved.', {
           filePath: relativePath,
           manifestUrl: versionInfo.manifestUrl,
           sourceRepository: versionInfo.sourceRepository,
@@ -761,7 +761,7 @@ async function fetchDeclaredRegistryFiles(stagingPackDir, pack, versionInfo, opt
       const checksum = verifyExpectedSha256(buffer, expectedChecksumForDeclaredFile(versionInfo, relativePath), {
         invalidCode: 'NODE_PACK_INSTALL_DECLARED_FILE_CHECKSUM_INVALID',
         mismatchCode: 'NODE_PACK_INSTALL_DECLARED_FILE_CHECKSUM_MISMATCH',
-        mismatchMessage: 'Declared registry node pack file checksum does not match the registry checksum.',
+        mismatchMessage: 'Declared registry Package file checksum does not match the registry checksum.',
         details: {
           filePath: relativePath,
           url: fileUrl,
@@ -891,7 +891,7 @@ async function readNodePackInstallLock(options = {}) {
       lock: emptyNodePackInstallLock(),
       path: '',
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_LOCK_ROOT_MISSING', 'Node pack install lock requires a user node pack root.'),
+        errorDiagnostic('NODE_PACK_INSTALL_LOCK_ROOT_MISSING', 'Package install lock requires a user Package root.'),
       ],
     };
   }
@@ -904,7 +904,7 @@ async function readNodePackInstallLock(options = {}) {
       lock: emptyNodePackInstallLock(),
       path: lockPath,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_LOCK_INVALID', 'Node pack install lock could not be read.', {
+        errorDiagnostic('NODE_PACK_INSTALL_LOCK_INVALID', 'Package install lock could not be read.', {
           path: lockPath,
           error: err.message,
         }),
@@ -930,7 +930,7 @@ async function readNodePackInstallLock(options = {}) {
       lock: emptyNodePackInstallLock(),
       path: lockPath,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_LOCK_INVALID', 'Node pack install lock has an unsupported shape.', {
+        errorDiagnostic('NODE_PACK_INSTALL_LOCK_INVALID', 'Package install lock has an unsupported shape.', {
           path: lockPath,
         }),
       ],
@@ -954,7 +954,7 @@ async function writeNodePackInstallLock(lock, options = {}) {
       ok: false,
       path: '',
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_LOCK_ROOT_MISSING', 'Node pack install lock requires a user node pack root.'),
+        errorDiagnostic('NODE_PACK_INSTALL_LOCK_ROOT_MISSING', 'Package install lock requires a user Package root.'),
       ],
     };
   }
@@ -997,7 +997,7 @@ async function moveActivePackToBackup(packId, options = {}) {
     throw err;
   }
   if (!stat.isDirectory() && !stat.isSymbolicLink()) {
-    throw new Error(`Installed node pack target is not a directory: ${targetPath}`);
+    throw new Error(`Installed Package target is not a directory: ${targetPath}`);
   }
   const metadataRoot = installMetadataRoot(options);
   const backupRoot = path.join(metadataRoot, NODE_PACK_INSTALL_BACKUP_DIR);
@@ -1020,7 +1020,7 @@ async function activateStagedNodePack(stagingPackDir, pack, lockEntry, options =
     return {
       ok: false,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Node pack install requires --user-data or --user-node-packs.'),
+        errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Package install requires --user-data or --user-node-packs.'),
       ],
     };
   }
@@ -1047,7 +1047,7 @@ async function activateStagedNodePack(stagingPackDir, pack, lockEntry, options =
     };
     const lockWrite = await upsertNodePackInstallLockEntry(nextLockEntry, options);
     if (!lockWrite.ok) {
-      throw new Error(lockWrite.diagnostics.map(item => item.message).join('; ') || 'Node pack install lock write failed.');
+      throw new Error(lockWrite.diagnostics.map(item => item.message).join('; ') || 'Package install lock write failed.');
     }
     return {
       ok: true,
@@ -1065,7 +1065,7 @@ async function activateStagedNodePack(stagingPackDir, pack, lockEntry, options =
       installedPath: targetPath,
       backupPath: backupInfo.backupPath || '',
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_ACTIVATION_FAILED', 'Node pack install activation failed and previous active pack was restored.', {
+        errorDiagnostic('NODE_PACK_INSTALL_ACTIVATION_FAILED', 'Package install activation failed and previous active pack was restored.', {
           packId,
           error: err.message,
         }),
@@ -1081,7 +1081,7 @@ function selectedStagedPack(discovery, packId) {
 function validationFailureDiagnostics(pack, fallbackCode = 'NODE_PACK_INSTALL_VALIDATION_FAILED') {
   const validation = pack?.validation || {};
   return [
-    errorDiagnostic(fallbackCode, 'Node pack install validation failed.', {
+    errorDiagnostic(fallbackCode, 'Package install validation failed.', {
       packId: pack?.id || validation.packId || '',
       resolutionState: validation.resolutionState || pack?.resolutionState || '',
       validationStatus: validation.status || pack?.validationStatus || '',
@@ -1093,7 +1093,7 @@ function validationFailureDiagnostics(pack, fallbackCode = 'NODE_PACK_INSTALL_VA
 function conflictDiagnostics(conflicts) {
   return conflicts.map(conflict => errorDiagnostic(
     'NODE_PACK_INSTALL_NODE_TYPE_CONFLICT',
-    'Installed node pack already declares a node type from the candidate pack.',
+    'Installed Package already declares a node type from the candidate pack.',
     conflict,
   ));
 }
@@ -1101,7 +1101,7 @@ function conflictDiagnostics(conflicts) {
 async function prepareLocalNodePackStaging(sourceDir, options = {}) {
   const sourceRoot = path.resolve(String(sourceDir || ''));
   const manifestPath = path.join(sourceRoot, 'orpad.node-pack.json');
-  const manifestRead = await readJsonObjectFile(manifestPath, 'NODE_PACK_INSTALL_MANIFEST', 'Node pack manifest');
+  const manifestRead = await readJsonObjectFile(manifestPath, 'NODE_PACK_INSTALL_MANIFEST', 'Package manifest');
   if (!manifestRead.ok) return { ok: false, diagnostics: manifestRead.diagnostics };
 
   const pack = manifestRead.value;
@@ -1116,7 +1116,7 @@ async function prepareLocalNodePackStaging(sourceDir, options = {}) {
       pack,
       validation: sourceValidation,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_SOURCE_VALIDATION_FAILED', 'Local node pack source failed safe install validation before staging.', {
+        errorDiagnostic('NODE_PACK_INSTALL_SOURCE_VALIDATION_FAILED', 'Local Package source failed safe install validation before staging.', {
           packId: pack.id || '',
           resolutionState: sourceValidation.resolutionState,
         }),
@@ -1162,7 +1162,7 @@ async function finalizePreparedInstall(prepared, sourceInfo, options = {}) {
     await cleanupPath(prepared.stagingRoot);
     return installFailure(sourceInfo.action, [
       ...diagnostics,
-      errorDiagnostic('NODE_PACK_INSTALL_STAGED_PACK_MISSING', 'Staged node pack could not be discovered before activation.', {
+      errorDiagnostic('NODE_PACK_INSTALL_STAGED_PACK_MISSING', 'Staged Package could not be discovered before activation.', {
         packId,
       }),
     ]);
@@ -1224,7 +1224,7 @@ async function installLocalNodePack(sourceDir, options = {}) {
   const root = userNodePacksRoot(options);
   if (!root) {
     return installFailure('install-local', [
-      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Node pack install requires --user-data or --user-node-packs.'),
+      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Package install requires --user-data or --user-node-packs.'),
     ]);
   }
   const prepared = await prepareLocalNodePackStaging(sourceDir, options);
@@ -1262,7 +1262,7 @@ async function prepareRegistryNodePackStaging(versionInfo, expectedPackId, optio
   const manifestChecksum = verifyExpectedSha256(manifestFetch.buffer, versionChecksums(versionInfo).manifestSha256, {
     invalidCode: 'NODE_PACK_INSTALL_MANIFEST_CHECKSUM_INVALID',
     mismatchCode: 'NODE_PACK_INSTALL_MANIFEST_CHECKSUM_MISMATCH',
-    mismatchMessage: 'Registry node pack manifest checksum does not match the registry checksum.',
+    mismatchMessage: 'Registry Package manifest checksum does not match the registry checksum.',
     details: {
       manifestUrl: versionInfo.manifestUrl,
       filePath: 'orpad.node-pack.json',
@@ -1277,7 +1277,7 @@ async function prepareRegistryNodePackStaging(versionInfo, expectedPackId, optio
       ok: false,
       pack,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_MANIFEST_ID_MISMATCH', 'Registry manifest id does not match the requested node pack.', {
+        errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_MANIFEST_ID_MISMATCH', 'Registry manifest id does not match the requested Package.', {
           expectedPackId,
           actualPackId: pack.id || '',
           manifestUrl: versionInfo.manifestUrl,
@@ -1306,7 +1306,7 @@ async function prepareRegistryNodePackStaging(versionInfo, expectedPackId, optio
       pack,
       validation: manifestValidation,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_MANIFEST_VALIDATION_FAILED', 'Registry node pack manifest failed safe install validation before staging.', {
+        errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_MANIFEST_VALIDATION_FAILED', 'Registry Package manifest failed safe install validation before staging.', {
           packId: pack.id || '',
           resolutionState: manifestValidation.resolutionState,
         }),
@@ -1361,12 +1361,12 @@ async function installRegistryNodePack(request = {}, options = {}) {
   if (!idCheck.ok) return installFailure('install', [idCheck.diagnostic]);
   if (!registrySource) {
     return installFailure('install', [
-      errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_MISSING', 'Registry node pack install requires a registry source.'),
+      errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_MISSING', 'Registry Package install requires a registry source.'),
     ]);
   }
   if (!userNodePacksRoot(options)) {
     return installFailure('install', [
-      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Node pack install requires --user-data or --user-node-packs.'),
+      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Package install requires --user-data or --user-node-packs.'),
     ]);
   }
 
@@ -1379,7 +1379,7 @@ async function installRegistryNodePack(request = {}, options = {}) {
   const { entry, versionInfo } = findRegistryEntryVersion(registryResult.registry, idCheck.id, requestedVersion);
   if (!entry) {
     return installFailure('install', [
-      errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_ENTRY_MISSING', 'Registry does not contain the requested node pack.', {
+      errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_ENTRY_MISSING', 'Registry does not contain the requested Package.', {
         packId: idCheck.id,
         registry: registryResult.registry.registryId,
       }),
@@ -1389,7 +1389,7 @@ async function installRegistryNodePack(request = {}, options = {}) {
   }
   if (!versionInfo) {
     return installFailure('install', [
-      errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_VERSION_MISSING', 'Registry node pack version was not found.', {
+      errorDiagnostic('NODE_PACK_INSTALL_REGISTRY_VERSION_MISSING', 'Registry Package version was not found.', {
         packId: idCheck.id,
         version: requestedVersion || entry.latestVersion || '',
       }),
@@ -1483,7 +1483,7 @@ async function listNodePackUpdateCandidates(request = {}, options = {}) {
   const registrySource = request.registry || options.registry || '';
   if (!registrySource) {
     return installFailure('update-candidates', [
-      errorDiagnostic('NODE_PACK_UPDATE_REGISTRY_MISSING', 'Node pack update requires a registry source.'),
+      errorDiagnostic('NODE_PACK_UPDATE_REGISTRY_MISSING', 'Package update requires a registry source.'),
     ]);
   }
   const current = await readNodePackInstallLock(options);
@@ -1507,7 +1507,7 @@ async function listNodePackUpdateCandidates(request = {}, options = {}) {
     if (packId && installed.id !== packId) continue;
     const installedRegistryId = registryIdFromLockSource(installed.source);
     if (installedRegistryId && installedRegistryId !== registryResult.registry.registryId) {
-      diagnostics.push(warningDiagnostic('NODE_PACK_UPDATE_REGISTRY_SOURCE_MISMATCH', 'Installed node pack came from a different registry id.', {
+      diagnostics.push(warningDiagnostic('NODE_PACK_UPDATE_REGISTRY_SOURCE_MISMATCH', 'Installed Package came from a different registry id.', {
         packId: installed.id,
         installedSource: installed.source || '',
         requestedRegistryId: registryResult.registry.registryId,
@@ -1516,7 +1516,7 @@ async function listNodePackUpdateCandidates(request = {}, options = {}) {
     }
     const entry = entriesById.get(installed.id);
     if (!entry) {
-      diagnostics.push(warningDiagnostic('NODE_PACK_UPDATE_REGISTRY_ENTRY_MISSING', 'Installed node pack is not present in the registry.', {
+      diagnostics.push(warningDiagnostic('NODE_PACK_UPDATE_REGISTRY_ENTRY_MISSING', 'Installed Package is not present in the registry.', {
         packId: installed.id,
         registryId: registryResult.registry.registryId,
       }));
@@ -1527,7 +1527,7 @@ async function listNodePackUpdateCandidates(request = {}, options = {}) {
     }));
   }
   if (packId && !(current.lock.packs || []).some(item => item.id === packId)) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_UPDATE_INSTALLED_PACK_MISSING', 'Installed node pack was not found in the install lock.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_UPDATE_INSTALLED_PACK_MISSING', 'Installed Package was not found in the install lock.', {
       packId,
     }));
   }
@@ -1621,7 +1621,7 @@ async function rollbackInstalledNodePack(packId, options = {}) {
   const root = userNodePacksRoot(options);
   if (!root) {
     return installFailure('rollback', [
-      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Node pack install requires --user-data or --user-node-packs.'),
+      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Package install requires --user-data or --user-node-packs.'),
     ]);
   }
   const current = await readNodePackInstallLock(options);
@@ -1633,7 +1633,7 @@ async function rollbackInstalledNodePack(packId, options = {}) {
   const previousBackupPath = previousInstall?.backupPath || '';
   if (!entry || !previousBackupPath) {
     return installFailure('rollback', [
-      errorDiagnostic('NODE_PACK_ROLLBACK_UNAVAILABLE', 'Installed node pack does not have rollback metadata.', {
+      errorDiagnostic('NODE_PACK_ROLLBACK_UNAVAILABLE', 'Installed Package does not have rollback metadata.', {
         packId: idCheck.id,
       }),
     ]);
@@ -1681,10 +1681,10 @@ async function rollbackInstalledNodePack(packId, options = {}) {
       });
     const lockWrite = await upsertNodePackInstallLockEntry(restoredEntry, options);
     if (!lockWrite.ok) {
-      throw new Error(lockWrite.diagnostics.map(item => item.message).join('; ') || 'Node pack rollback lock write failed.');
+      throw new Error(lockWrite.diagnostics.map(item => item.message).join('; ') || 'Package rollback lock write failed.');
     }
     return installSuccess('rollback', [
-      warningDiagnostic('NODE_PACK_ROLLBACK_RESTORED_BACKUP', 'Installed node pack was restored from rollback backup.', {
+      warningDiagnostic('NODE_PACK_ROLLBACK_RESTORED_BACKUP', 'Installed Package was restored from rollback backup.', {
         packId: idCheck.id,
         backupPath: previousBackupPath,
       }),
@@ -1703,7 +1703,7 @@ async function rollbackInstalledNodePack(packId, options = {}) {
     }
     await restoreBackup(currentBackup);
     return installFailure('rollback', [
-      errorDiagnostic('NODE_PACK_ROLLBACK_FAILED', 'Node pack rollback failed and current active pack was restored.', {
+      errorDiagnostic('NODE_PACK_ROLLBACK_FAILED', 'Package rollback failed and current active pack was restored.', {
         packId: idCheck.id,
         error: err.message,
       }),
@@ -1719,11 +1719,11 @@ async function setInstalledNodePackEnabled(packId, enabled, options = {}) {
   const root = userNodePacksRoot(options);
   if (!root) {
     return installFailure(enabled ? 'enable' : 'disable', [
-      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Node pack install requires --user-data or --user-node-packs.'),
+      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Package install requires --user-data or --user-node-packs.'),
     ]);
   }
   const manifestPath = path.join(root, idCheck.id, 'orpad.node-pack.json');
-  const read = await readJsonObjectFile(manifestPath, 'NODE_PACK_INSTALL_MANIFEST', 'Installed node pack manifest');
+  const read = await readJsonObjectFile(manifestPath, 'NODE_PACK_INSTALL_MANIFEST', 'Installed Package manifest');
   if (!read.ok) return installFailure(enabled ? 'enable' : 'disable', read.diagnostics);
   const pack = {
     ...read.value,
@@ -1774,7 +1774,7 @@ async function removeInstalledNodePack(packId, options = {}) {
   const root = userNodePacksRoot(options);
   if (!root) {
     return installFailure('remove', [
-      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Node pack install requires --user-data or --user-node-packs.'),
+      errorDiagnostic('NODE_PACK_INSTALL_USER_ROOT_MISSING', 'Package install requires --user-data or --user-node-packs.'),
     ]);
   }
   const targetPath = path.join(root, idCheck.id);
@@ -1782,7 +1782,7 @@ async function removeInstalledNodePack(packId, options = {}) {
     await fs.lstat(targetPath);
   } catch (err) {
     return installFailure('remove', [
-      errorDiagnostic('NODE_PACK_INSTALL_REMOVE_MISSING', 'Installed node pack could not be found for removal.', {
+      errorDiagnostic('NODE_PACK_INSTALL_REMOVE_MISSING', 'Installed Package could not be found for removal.', {
         packId: idCheck.id,
         path: targetPath,
         error: err.message,
@@ -1800,7 +1800,7 @@ async function removeInstalledNodePack(packId, options = {}) {
   }
   const discovery = discoverNodePackManifests(discoveryOptionsForUserRoot(root, options));
   return installSuccess('remove', [
-    warningDiagnostic('NODE_PACK_INSTALL_REMOVED_TO_BACKUP', 'Installed node pack was moved to a backup directory instead of being deleted.', {
+    warningDiagnostic('NODE_PACK_INSTALL_REMOVED_TO_BACKUP', 'Installed Package was moved to a backup directory instead of being deleted.', {
       packId: idCheck.id,
       backupPath: backupInfo.backupPath || '',
     }),

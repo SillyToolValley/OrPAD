@@ -1,6 +1,6 @@
 # OrPAD Template Catalog
 
-This catalog is the source-of-truth decision record for templates that are exposed to users through the document template picker, built-in pipeline examples, and Generate's starter node-pack selection. Build outputs under `docs/` are intentionally excluded from this catalog.
+This catalog is the source-of-truth decision record for templates that are exposed to users through the document template picker, built-in pipeline examples, and Generate's starter package selection. Build outputs under `docs/` are intentionally excluded from this catalog.
 
 ## User-Facing Markdown Templates
 
@@ -8,7 +8,7 @@ This catalog is the source-of-truth decision record for templates that are expos
 | --- | --- | --- | --- |
 | `prd` | Product Requirements Document | Product change framing: problem, users, goals, scope, risks, and open questions. | Keep. It is the default product-planning template and remains first in the picker. |
 | `release-checklist` | Release Checklist | Version, notes, build evidence, verification, publish plan, rollback, and ship/hold decision. | Add. Release prep is a repeated OrPAD workflow and needs a checklist that records build proof and accepted risk. |
-| `node-pack-submission` | Node Pack Submission | Package author/source review, capability audit, manifest/file checks, verification, quarantine notes, and approval decision. | Add. Community package sharing should be mediated through PR or maintainer approval with a durable review record. |
+| `package-submission` | Package Submission | Package author/source review, capability audit, manifest/file checks, verification, quarantine notes, and approval decision. | Add. Community package sharing should be mediated through PR or maintainer approval with a durable review record. |
 | `ux-review` | UX Review | Journey, screens, issues, decisions, verification states, rejected ideas, and follow-ups. | Add. UI polish work needs a focused review artifact before implementation changes are queued. |
 | `handover` | Handover | Session transfer summary for humans or AI conversations. | Keep. It supports long-running local-first workflows and has tracker coverage through the registry test. |
 | `spec-sheet` | Spec Sheet | Endpoint, command, or module contract details with request/response/error/test sections. | Keep and monitor. It is useful when the user needs implementation-contract precision. |
@@ -21,7 +21,7 @@ Rejected or isolated candidates:
 
 - Generic blank notes, meeting notes, and status updates are not added because they overlap with normal Markdown creation and dilute the picker.
 - Snippet bodies such as `row-template` are editor snippets, not document templates.
-- Reserved folders under `nodes/orpad.workstream/skills`, `rules`, and `trees` are internal starter asset slots until they contain concrete user-facing pack assets.
+- Reserved folders under `nodes/orpad.workstream/skills`, `rules`, and `trees` are internal starter asset slots until they contain concrete user-facing package assets.
 - Tutorial-only orchestration examples are not exposed as package templates. Built-in examples should model product, build, release, or maintenance work directly.
 
 ## Built-In Pipeline Templates
@@ -40,11 +40,11 @@ All built-in pipeline templates must declare:
 - `executionPolicy.mode: "template-only"`
 - `executionPolicy.copyBeforeRun: true`
 
-## Starter Node-Pack Templates
+## Starter Packageage Templates
 
-Generate can select these metadata-only starter packs when prompt text and workspace evidence match the situation. They are not one-click document templates; they are reusable authoring guidance for generated pipeline packages.
+Generate can select these metadata-only starter packages when prompt text and workspace evidence match the situation. They are not one-click document templates; they are reusable authoring guidance for generated pipeline packages.
 
-| Pack id | Role | Decision |
+| Package id | Role | Decision |
 | --- | --- | --- |
 | `orpad.starter.electron-maintenance` | Electron runtime, preload/IPC, renderer packaging, and desktop app maintenance. | Keep. |
 | `orpad.starter.security-review` | Secrets, authority boundaries, XSS, IPC, and destructive capability risk. | Keep. |
@@ -53,7 +53,7 @@ Generate can select these metadata-only starter packs when prompt text and works
 | `orpad.starter.dotnet-lab-code` | C#/.NET lab code, README-to-code alignment, runnable examples, and course validation. | Keep. |
 | `orpad.starter.frontend-ux` | Renderer/web UI, styles, templates UI, Playwright/e2e, and browser-facing behavior. | Keep and use for template picker UX changes. |
 | `orpad.starter.test-regression` | Failing tests, regression checks, smoke runs, and validation gaps. | Keep and pair with template hardening verification. |
-| `orpad.starter.node-pack-hardening` | Node pack manifests, discovery trust, capability gates, quarantine, and maintenance decisions. | Keep and use when starter pack selection or deprecation decisions are part of the work. |
+| `orpad.starter.node-pack-hardening` | Package manifests, discovery trust, capability gates, quarantine, and maintenance decisions. | Keep and use when starter package selection or deprecation decisions are part of the work. |
 
 ## Validation Contract
 
@@ -61,5 +61,5 @@ Template changes should preserve this closed loop:
 
 1. Document templates are registered in `src/renderer/templates/registry.js`, create Markdown through `createTemplateFile`, and are understood by `src/renderer/templates/tracker.js`.
 2. Pipeline templates validate through `validateRunbookFile`; executable static templates must also have a copied-workspace machine run test or be explicitly labeled structural/template-only.
-3. Generate starter-pack decisions are verified by `createOrchestrationPipeline` or `orpad generate` with a template-hardening prompt and a workspace snapshot that includes template, starter pack, and test paths.
+3. Generate starter package decisions are verified by `createOrchestrationPipeline` or `orpad generate` with a template-hardening prompt and a workspace snapshot that includes template, starter package, and test paths.
 4. Low-value or overlapping candidates are recorded here instead of silently remaining in the picker.

@@ -392,21 +392,21 @@ function graphNodePackDiagnosticCode(resolutionState) {
 function graphNodePackDiagnosticMessage(resolutionState) {
   switch (resolutionState) {
     case 'missing':
-      return 'Graph node references a node pack that is not available.';
+      return 'Graph node references a Package that is not available.';
     case 'disabled':
-      return 'Graph node references a disabled node pack.';
+      return 'Graph node references a disabled Package.';
     case 'incompatible':
-      return 'Graph node references a node pack that is not launch-compatible.';
+      return 'Graph node references a Package that is not launch-compatible.';
     case 'conflict':
-      return 'Graph node references a node pack with unresolved duplicate node type conflicts.';
+      return 'Graph node references a Package with unresolved duplicate node type conflicts.';
     case 'capability-denied':
-      return 'Graph node references a node pack with denied capabilities.';
+      return 'Graph node references a Package with denied capabilities.';
     case 'approval-required':
-      return 'Graph node references a node pack that requires approved high-risk capability review.';
+      return 'Graph node references a Package that requires approved high-risk capability review.';
     case 'untrusted':
-      return 'Graph node references a node pack that requires trust review before execution.';
+      return 'Graph node references a Package that requires trust review before execution.';
     default:
-      return 'Graph node references a node pack that is not resolved for execution.';
+      return 'Graph node references a Package that is not resolved for execution.';
   }
 }
 
@@ -447,7 +447,7 @@ function pushResolvedNodePackGraphNode(node, currentPath, state, diagnostics, re
   diagnostics.push(diagnostic(
     'warning',
     'GRAPH_NODE_PACK_RENDER_VALIDATE_ONLY',
-    'Node pack graph nodes validate for rendering and compatibility, but the local MVP executor does not run community pack handlers.',
+    'Package graph nodes validate for rendering and compatibility, but the local MVP executor does not run community pack handlers.',
     {
       nodeId: id || undefined,
       path: currentPath,

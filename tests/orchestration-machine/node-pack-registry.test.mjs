@@ -13,9 +13,9 @@ const fixturePath = path.join(
   repoRoot,
   'tests/fixtures/orchestration-machine/node-pack-registry/valid-registry.json',
 );
-const bundledRegistryPath = path.join(repoRoot, 'registry/node-packs.json');
+const bundledRegistryPath = path.join(repoRoot, 'registry/packages.json');
 const rendererPath = path.join(repoRoot, 'src/renderer/renderer.js');
-const officialRegistrySource = 'https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/node-packs.json';
+const officialRegistrySource = 'https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/packages.json';
 
 const {
   SCHEMA_VERSIONS,
@@ -57,7 +57,7 @@ function signRegistry(rawRegistry, keyId, privateKey) {
   };
 }
 
-test('node pack registry fixture validates as a Machine contract and renderer-safe summary', async () => {
+test('Package registry fixture validates as a Machine contract and renderer-safe summary', async () => {
   const raw = await fixtureRegistry();
   const contract = createContractValidator().validate('nodePackRegistry', raw);
   const result = normalizeNodePackRegistryIndex(raw, { sourcePath: fixturePath });
@@ -87,7 +87,7 @@ test('node pack registry fixture validates as a Machine contract and renderer-sa
   assert.deepEqual(summary.entries[0].nodeTypes, ['community.electronMaintenance.review']);
 });
 
-test('bundled official node pack registry points submissions at OrPAD-Lab registry repo', async () => {
+test('bundled official Package registry points submissions at OrPAD-Lab registry repo', async () => {
   const raw = JSON.parse(await fs.readFile(bundledRegistryPath, 'utf-8'));
   const contract = createContractValidator().validate('nodePackRegistry', raw);
   const result = normalizeNodePackRegistryIndex(raw, { sourcePath: bundledRegistryPath });
@@ -108,7 +108,7 @@ test('package manager default registry source uses OrPAD-Lab registry raw index'
   assert.match(renderer, new RegExp(`NODE_PACK_MANAGER_DEFAULT_REGISTRY_SOURCE = '${officialRegistrySource.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`));
 });
 
-test('node pack registry file reader loads local fixture registries without network access', async () => {
+test('Package registry file reader loads local fixture registries without network access', async () => {
   const result = await readNodePackRegistryFile(fixturePath);
 
   assert.equal(result.ok, true, JSON.stringify(result.diagnostics, null, 2));
@@ -116,7 +116,7 @@ test('node pack registry file reader loads local fixture registries without netw
   assert.equal(result.entries.length, 2);
 });
 
-test('node pack registry URL loader accepts mocked HTTPS JSON without depending on content-type', async () => {
+test('Package registry URL loader accepts mocked HTTPS JSON without depending on content-type', async () => {
   const raw = await fixtureRegistry();
   const result = await fetchNodePackRegistryUrl('https://registry.example.test/index.json', {
     fetchImpl: async () => ({
@@ -130,7 +130,7 @@ test('node pack registry URL loader accepts mocked HTTPS JSON without depending 
   assert.equal(result.entries.length, 2);
 });
 
-test('node pack registry verifies a signed registry when a trusted public key is configured', async () => {
+test('Package registry verifies a signed registry when a trusted public key is configured', async () => {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicPem = publicKey.export({ type: 'spki', format: 'pem' });
   const raw = await fixtureRegistry();
@@ -150,7 +150,7 @@ test('node pack registry verifies a signed registry when a trusted public key is
   assert.equal(summary.signature.keyId, 'orpad-registry-test-key');
 });
 
-test('node pack registry rejects a bad signature when a trusted public key is configured', async () => {
+test('Package registry rejects a bad signature when a trusted public key is configured', async () => {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicPem = publicKey.export({ type: 'spki', format: 'pem' });
   const raw = await fixtureRegistry();
@@ -169,14 +169,14 @@ test('node pack registry rejects a bad signature when a trusted public key is co
   assert.equal(result.registry.signature.verified, false);
 });
 
-test('node pack registry rejects unsupported schema versions before install work', async () => {
+test('Package registry rejects unsupported schema versions before install work', async () => {
   const result = normalizeNodePackRegistryIndex(await fixtureRegistry({ schemaVersion: '2.0' }));
 
   assert.equal(result.ok, false);
   assert.equal(codes(result).has('NODE_PACK_REGISTRY_SCHEMA_VERSION_INVALID'), true);
 });
 
-test('node pack registry URL loader rejects non-HTTPS sources', async () => {
+test('Package registry URL loader rejects non-HTTPS sources', async () => {
   const result = await fetchNodePackRegistryUrl('http://registry.example.test/index.json', {
     fetchImpl: async () => {
       throw new Error('fetch should not run for unsafe URLs');
@@ -187,14 +187,14 @@ test('node pack registry URL loader rejects non-HTTPS sources', async () => {
   assert.equal(codes(result).has('NODE_PACK_REGISTRY_SOURCE_URL_UNSAFE'), true);
 });
 
-test('node pack registry rejects malformed root shapes', () => {
+test('Package registry rejects malformed root shapes', () => {
   const result = normalizeNodePackRegistryIndex([]);
 
   assert.equal(result.ok, false);
   assert.equal(codes(result).has('NODE_PACK_REGISTRY_INVALID'), true);
 });
 
-test('node pack registry reports duplicate entry ids deterministically', async () => {
+test('Package registry reports duplicate entry ids deterministically', async () => {
   const raw = await fixtureRegistry();
   raw.entries = [raw.entries[0], { ...raw.entries[0], name: 'Duplicate Electron Pack' }];
 
@@ -207,7 +207,7 @@ test('node pack registry reports duplicate entry ids deterministically', async (
   assert.equal(duplicate.path, 'entries[1].id');
 });
 
-test('node pack registry reports duplicate versions inside one entry', async () => {
+test('Package registry reports duplicate versions inside one entry', async () => {
   const raw = await fixtureRegistry();
   raw.entries[1].versions = [raw.entries[1].versions[0], { ...raw.entries[1].versions[0] }];
 
@@ -217,7 +217,7 @@ test('node pack registry reports duplicate versions inside one entry', async () 
   assert.equal(codes(result).has('NODE_PACK_REGISTRY_VERSION_DUPLICATE'), true);
 });
 
-test('node pack registry rejects unsafe manifest URLs and source metadata', async () => {
+test('Package registry rejects unsafe manifest URLs and source metadata', async () => {
   const raw = await fixtureRegistry();
   raw.entries[0].versions[0].manifestUrl = 'http://example.test/orpad.node-pack.json';
   raw.entries[0].versions[0].sourceRepository = 'ssh://example.test/repo.git';
@@ -234,7 +234,7 @@ test('node pack registry rejects unsafe manifest URLs and source metadata', asyn
   assert.equal(resultCodes.has('NODE_PACK_REGISTRY_SOURCE_ROOT_UNSAFE'), true);
 });
 
-test('node pack registry bounds entry count before registry browse surfaces it', async () => {
+test('Package registry bounds entry count before registry browse surfaces it', async () => {
   const raw = await fixtureRegistry();
   const result = normalizeNodePackRegistryIndex(raw, { maxEntries: 1 });
 
@@ -245,14 +245,14 @@ test('node pack registry bounds entry count before registry browse surfaces it',
   assert.equal(diagnostic.maxEntries, 1);
 });
 
-test('node pack registry file reader enforces byte limits before parsing', async () => {
+test('Package registry file reader enforces byte limits before parsing', async () => {
   const result = await readNodePackRegistryFile(fixturePath, { byteLimit: 10 });
 
   assert.equal(result.ok, false);
   assert.equal(codes(result).has('NODE_PACK_REGISTRY_FILE_TOO_LARGE'), true);
 });
 
-test('node pack registry rejects entries missing install source metadata', async () => {
+test('Package registry rejects entries missing install source metadata', async () => {
   const raw = await fixtureRegistry();
   delete raw.entries[0].versions[0].manifestUrl;
   delete raw.entries[0].versions[0].sourceRepository;
@@ -270,7 +270,7 @@ test('node pack registry rejects entries missing install source metadata', async
   assert.equal(resultCodes.has('NODE_PACK_REGISTRY_MANIFEST_PATH_MISSING'), true);
 });
 
-test('node pack registry summary exposes sanitized immutable version review metadata', async () => {
+test('Package registry summary exposes sanitized immutable version review metadata', async () => {
   const result = normalizeNodePackRegistryIndex(await fixtureRegistry());
   const entry = result.entries[0];
   const summary = summarizeNodePackRegistryEntry(entry);
@@ -289,7 +289,7 @@ test('node pack registry summary exposes sanitized immutable version review meta
   assert.deepEqual(entry.keywords, ['electron', 'maintenance']);
 });
 
-test('node pack registry search matches text category and capability filters', async () => {
+test('Package registry search matches text category and capability filters', async () => {
   const result = normalizeNodePackRegistryIndex(await fixtureRegistry());
 
   assert.deepEqual(
@@ -310,7 +310,7 @@ test('node pack registry search matches text category and capability filters', a
   );
 });
 
-test('node pack registry candidates match missing pack ids and graph node types', async () => {
+test('Package registry candidates match missing pack ids and graph node types', async () => {
   const result = normalizeNodePackRegistryIndex(await fixtureRegistry());
   const candidates = findNodePackRegistryCandidates(result.entries, {
     registry: result.registry,
@@ -335,7 +335,7 @@ test('node pack registry candidates match missing pack ids and graph node types'
   ]);
 });
 
-test('node pack registry source loader writes cache for successful local registries', async (t) => {
+test('Package registry source loader writes cache for successful local registries', async (t) => {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-registry-cache-'));
   t.after(() => fs.rm(userDataDir, { recursive: true, force: true }));
 
@@ -350,7 +350,7 @@ test('node pack registry source loader writes cache for successful local registr
   assert.equal(cache.registry.registryId, 'orpad.community');
 });
 
-test('node pack registry source loader falls back to last valid cache when source fails', async (t) => {
+test('Package registry source loader falls back to last valid cache when source fails', async (t) => {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-registry-cache-fallback-'));
   const registryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-registry-source-'));
   t.after(() => fs.rm(userDataDir, { recursive: true, force: true }));
@@ -372,7 +372,7 @@ test('node pack registry source loader falls back to last valid cache when sourc
   ]);
 });
 
-test('node pack registry source loader diagnoses corrupt cache and leaves source failure intact', async (t) => {
+test('Package registry source loader diagnoses corrupt cache and leaves source failure intact', async (t) => {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-registry-cache-corrupt-'));
   const registryPath = path.join(userDataDir, 'missing-registry.json');
   t.after(() => fs.rm(userDataDir, { recursive: true, force: true }));

@@ -163,7 +163,7 @@ function verifyNodePackRegistrySignature(registry, options = {}) {
     };
   }
   if (!signature) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_MISSING', 'Node pack registry signature is required when trusted registry keys are configured.'));
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_MISSING', 'Package registry signature is required when trusted registry keys are configured.'));
     return { verified: false, attempted: true, signature: null, keyId: '', fingerprint: '', diagnostics };
   }
 
@@ -171,22 +171,22 @@ function verifyNodePackRegistrySignature(registry, options = {}) {
   const keyId = optionalString(signature.keyId);
   const value = optionalString(signature.value);
   if (scheme !== 'ed25519') {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_SCHEME_UNSUPPORTED', 'Node pack registry signature scheme is not supported.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_SCHEME_UNSUPPORTED', 'Package registry signature scheme is not supported.', {
       scheme: signature.scheme || '',
       keyId,
     }));
   }
   if (!keyId) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_KEY_ID_MISSING', 'Node pack registry signature must include a key id.'));
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_KEY_ID_MISSING', 'Package registry signature must include a key id.'));
   }
   if (!value) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_VALUE_MISSING', 'Node pack registry signature must include a base64 value.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_VALUE_MISSING', 'Package registry signature must include a base64 value.', {
       keyId,
     }));
   }
   const publicKey = keyId ? trustedKeys.get(keyId) : null;
   if (keyId && !publicKey) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_KEY_UNTRUSTED', 'Node pack registry signature key is not trusted by this OrPAD build or profile.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_KEY_UNTRUSTED', 'Package registry signature key is not trusted by this OrPAD build or profile.', {
       keyId,
     }));
   }
@@ -202,14 +202,14 @@ function verifyNodePackRegistrySignature(registry, options = {}) {
     fingerprint = publicKeyFingerprint(publicKey);
     verified = crypto.verify(null, payload, publicKey, signatureBytes);
   } catch (err) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_VERIFY_FAILED', 'Node pack registry signature could not be verified.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_VERIFY_FAILED', 'Package registry signature could not be verified.', {
       keyId,
       error: err.message,
     }));
     return { verified: false, attempted: true, signature: { ...signature }, keyId, fingerprint, diagnostics };
   }
   if (!verified) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_INVALID', 'Node pack registry signature does not match the registry payload.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SIGNATURE_INVALID', 'Package registry signature does not match the registry payload.', {
       keyId,
       fingerprint,
     }));
@@ -283,35 +283,35 @@ function normalizeRegistryVersion(rawVersion, entryPath, diagnostics) {
     `${entryPath}.version`,
     diagnostics,
     'NODE_PACK_REGISTRY_VERSION',
-    'Node pack registry version',
+    'Package registry version',
   );
   const manifestUrl = stringField(
     rawVersion.manifestUrl,
     `${entryPath}.manifestUrl`,
     diagnostics,
     'NODE_PACK_REGISTRY_MANIFEST_URL',
-    'Node pack registry manifestUrl',
+    'Package registry manifestUrl',
   );
   const sourceRepository = stringField(
     rawVersion.sourceRepository,
     `${entryPath}.sourceRepository`,
     diagnostics,
     'NODE_PACK_REGISTRY_SOURCE_REPOSITORY',
-    'Node pack registry sourceRepository',
+    'Package registry sourceRepository',
   );
   const sourceRef = stringField(
     rawVersion.sourceRef,
     `${entryPath}.sourceRef`,
     diagnostics,
     'NODE_PACK_REGISTRY_SOURCE_REF',
-    'Node pack registry sourceRef',
+    'Package registry sourceRef',
   );
   const manifestPath = stringField(
     rawVersion.manifestPath,
     `${entryPath}.manifestPath`,
     diagnostics,
     'NODE_PACK_REGISTRY_MANIFEST_PATH',
-    'Node pack registry manifestPath',
+    'Package registry manifestPath',
   );
 
   if (!manifestUrl || !sourceRepository || !sourceRef || !manifestPath) {
@@ -412,21 +412,21 @@ function normalizeRegistryEntry(rawEntry, entryPath, diagnostics) {
     `${entryPath}.id`,
     diagnostics,
     'NODE_PACK_REGISTRY_ENTRY_ID',
-    'Node pack registry entry id',
+    'Package registry entry id',
   );
   const name = stringField(
     rawEntry.name,
     `${entryPath}.name`,
     diagnostics,
     'NODE_PACK_REGISTRY_ENTRY_NAME',
-    'Node pack registry entry name',
+    'Package registry entry name',
   );
   const latestVersion = stringField(
     rawEntry.latestVersion,
     `${entryPath}.latestVersion`,
     diagnostics,
     'NODE_PACK_REGISTRY_ENTRY_LATEST_VERSION',
-    'Node pack registry entry latestVersion',
+    'Package registry entry latestVersion',
   );
 
   if (!Array.isArray(rawEntry.versions) || !rawEntry.versions.length) {
@@ -488,7 +488,7 @@ function normalizeNodePackRegistryIndex(registry, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_INVALID', 'Node pack registry index must be a JSON object.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_INVALID', 'Package registry index must be a JSON object.', {
           valueType: valueKind(registry),
         }),
       ],
@@ -500,10 +500,10 @@ function normalizeNodePackRegistryIndex(registry, options = {}) {
     'kind',
     diagnostics,
     'NODE_PACK_REGISTRY_KIND',
-    'Node pack registry kind',
+    'Package registry kind',
   );
   if (kind && kind !== NODE_PACK_REGISTRY_KIND) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_KIND_INVALID', 'Node pack registry kind is not supported.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_KIND_INVALID', 'Package registry kind is not supported.', {
       path: 'kind',
       expected: NODE_PACK_REGISTRY_KIND,
       actual: kind,
@@ -515,10 +515,10 @@ function normalizeNodePackRegistryIndex(registry, options = {}) {
     'schemaVersion',
     diagnostics,
     'NODE_PACK_REGISTRY_SCHEMA_VERSION',
-    'Node pack registry schemaVersion',
+    'Package registry schemaVersion',
   );
   if (schemaVersion && schemaVersion !== SUPPORTED_NODE_PACK_REGISTRY_SCHEMA_VERSION) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SCHEMA_VERSION_INVALID', 'Node pack registry schemaVersion is not supported.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_SCHEMA_VERSION_INVALID', 'Package registry schemaVersion is not supported.', {
       path: 'schemaVersion',
       expected: SUPPORTED_NODE_PACK_REGISTRY_SCHEMA_VERSION,
       actual: schemaVersion,
@@ -530,18 +530,18 @@ function normalizeNodePackRegistryIndex(registry, options = {}) {
     'registryId',
     diagnostics,
     'NODE_PACK_REGISTRY_ID',
-    'Node pack registry id',
+    'Package registry id',
   );
   const name = stringField(
     registry.name,
     'name',
     diagnostics,
     'NODE_PACK_REGISTRY_NAME',
-    'Node pack registry name',
+    'Package registry name',
   );
 
   if (!Array.isArray(registry.entries)) {
-    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_ENTRIES_MISSING', 'Node pack registry entries must be an array.', {
+    diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_ENTRIES_MISSING', 'Package registry entries must be an array.', {
       path: 'entries',
       valueType: valueKind(registry.entries),
     }));
@@ -550,7 +550,7 @@ function normalizeNodePackRegistryIndex(registry, options = {}) {
       ? Math.max(0, options.maxEntries)
       : DEFAULT_REGISTRY_ENTRY_LIMIT;
     if (registry.entries.length > maxEntries) {
-      diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_ENTRIES_TOO_MANY', 'Node pack registry entry count exceeds the safe parse limit.', {
+      diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_ENTRIES_TOO_MANY', 'Package registry entry count exceeds the safe parse limit.', {
         path: 'entries',
         entryCount: registry.entries.length,
         maxEntries,
@@ -565,7 +565,7 @@ function normalizeNodePackRegistryIndex(registry, options = {}) {
     if (!entry) continue;
     if (entry.id) {
       if (entrySeen.has(entry.id)) {
-        diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_ENTRY_DUPLICATE_ID', 'Registry declares the same node pack id more than once.', {
+        diagnostics.push(errorDiagnostic('NODE_PACK_REGISTRY_ENTRY_DUPLICATE_ID', 'Registry declares the same Package id more than once.', {
           path: `entries[${index}].id`,
           entryId: entry.id,
         }));
@@ -626,7 +626,7 @@ async function readNodePackRegistryFile(filePath, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FILE_UNREADABLE', 'Node pack registry file could not be read.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FILE_UNREADABLE', 'Package registry file could not be read.', {
           path: targetPath,
           error: err.message,
         }),
@@ -640,7 +640,7 @@ async function readNodePackRegistryFile(filePath, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FILE_NOT_FILE', 'Node pack registry path must be a file.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FILE_NOT_FILE', 'Package registry path must be a file.', {
           path: targetPath,
         }),
       ],
@@ -653,7 +653,7 @@ async function readNodePackRegistryFile(filePath, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FILE_TOO_LARGE', 'Node pack registry file exceeds the safe read limit.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FILE_TOO_LARGE', 'Package registry file exceeds the safe read limit.', {
           path: targetPath,
           size: stat.size,
           byteLimit,
@@ -671,7 +671,7 @@ async function readNodePackRegistryFile(filePath, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_JSON_INVALID', 'Node pack registry file must contain valid JSON.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_JSON_INVALID', 'Package registry file must contain valid JSON.', {
           path: targetPath,
           error: err.message,
         }),
@@ -712,7 +712,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_SOURCE_URL_INVALID', 'Node pack registry source URL is invalid.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_SOURCE_URL_INVALID', 'Package registry source URL is invalid.', {
           source,
           error: err.message,
         }),
@@ -725,7 +725,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_SOURCE_URL_UNSAFE', 'Node pack registry source URL must use https.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_SOURCE_URL_UNSAFE', 'Package registry source URL must use https.', {
           source,
           reason: 'registry source must use https',
         }),
@@ -740,7 +740,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_UNAVAILABLE', 'Node pack registry URL fetch is unavailable in this runtime.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_UNAVAILABLE', 'Package registry URL fetch is unavailable in this runtime.', {
           source,
         }),
       ],
@@ -766,7 +766,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic(err?.name === 'AbortError' ? 'NODE_PACK_REGISTRY_FETCH_TIMEOUT' : 'NODE_PACK_REGISTRY_FETCH_FAILED', 'Node pack registry URL could not be fetched.', {
+        errorDiagnostic(err?.name === 'AbortError' ? 'NODE_PACK_REGISTRY_FETCH_TIMEOUT' : 'NODE_PACK_REGISTRY_FETCH_FAILED', 'Package registry URL could not be fetched.', {
           source,
           error: err.message,
         }),
@@ -781,7 +781,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_STATUS', 'Node pack registry URL returned a non-success status.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_STATUS', 'Package registry URL returned a non-success status.', {
           source,
           status: response?.status || 0,
         }),
@@ -798,7 +798,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_BODY_FAILED', 'Node pack registry response body could not be read.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_BODY_FAILED', 'Package registry response body could not be read.', {
           source,
           error: err.message,
         }),
@@ -813,7 +813,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_TOO_LARGE', 'Node pack registry response exceeds the safe read limit.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_TOO_LARGE', 'Package registry response exceeds the safe read limit.', {
           source,
           size,
           byteLimit,
@@ -831,7 +831,7 @@ async function fetchNodePackRegistryUrl(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_JSON_INVALID', 'Node pack registry URL must return valid JSON.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_FETCH_JSON_INVALID', 'Package registry URL must return valid JSON.', {
           source,
           error: err.message,
         }),
@@ -891,7 +891,7 @@ async function readNodePackRegistryCache(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_CACHE_UNAVAILABLE', 'Node pack registry cache requires a user data directory.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_CACHE_UNAVAILABLE', 'Package registry cache requires a user data directory.', {
           source,
         }),
       ],
@@ -906,7 +906,7 @@ async function readNodePackRegistryCache(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic(err?.code === 'ENOENT' ? 'NODE_PACK_REGISTRY_CACHE_MISSING' : 'NODE_PACK_REGISTRY_CACHE_INVALID', 'Node pack registry cache could not be read.', {
+        errorDiagnostic(err?.code === 'ENOENT' ? 'NODE_PACK_REGISTRY_CACHE_MISSING' : 'NODE_PACK_REGISTRY_CACHE_INVALID', 'Package registry cache could not be read.', {
           source,
           cachePath,
           error: err.message,
@@ -921,7 +921,7 @@ async function readNodePackRegistryCache(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_CACHE_INVALID', 'Node pack registry cache has an unsupported shape.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_CACHE_INVALID', 'Package registry cache has an unsupported shape.', {
           source,
           cachePath,
         }),
@@ -935,7 +935,7 @@ async function readNodePackRegistryCache(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_CACHE_SOURCE_MISMATCH', 'Node pack registry cache source does not match the requested registry.', {
+        errorDiagnostic('NODE_PACK_REGISTRY_CACHE_SOURCE_MISMATCH', 'Package registry cache source does not match the requested registry.', {
           source,
           cachePath,
           cachedSource: parsed.source || '',
@@ -957,7 +957,7 @@ async function readNodePackRegistryCache(source, options = {}) {
 }
 
 function cacheFallbackDiagnostic(source, sourceResult, cacheResult) {
-  return diagnostic('warning', 'NODE_PACK_REGISTRY_SOURCE_FAILED_CACHE_USED', 'Node pack registry source failed; using last valid cache.', {
+  return diagnostic('warning', 'NODE_PACK_REGISTRY_SOURCE_FAILED_CACHE_USED', 'Package registry source failed; using last valid cache.', {
     source,
     sourceDiagnostics: sourceResult.diagnostics || [],
     cachePath: cacheResult.cachePath || '',
@@ -972,7 +972,7 @@ async function loadNodePackRegistrySource(source, options = {}) {
       registry: null,
       entries: [],
       diagnostics: [
-        errorDiagnostic('NODE_PACK_REGISTRY_SOURCE_MISSING', 'Node pack registry source is required.'),
+        errorDiagnostic('NODE_PACK_REGISTRY_SOURCE_MISSING', 'Package registry source is required.'),
       ],
     };
   }
@@ -987,7 +987,7 @@ async function loadNodePackRegistrySource(source, options = {}) {
       try {
         await writeNodePackRegistryCache(sourceText, result.rawRegistry || result.registry, options);
       } catch (err) {
-        result.diagnostics.push(diagnostic('warning', 'NODE_PACK_REGISTRY_CACHE_WRITE_FAILED', 'Node pack registry cache could not be written.', {
+        result.diagnostics.push(diagnostic('warning', 'NODE_PACK_REGISTRY_CACHE_WRITE_FAILED', 'Package registry cache could not be written.', {
           source: sourceText,
           error: err.message,
         }));

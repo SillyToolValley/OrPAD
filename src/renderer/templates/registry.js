@@ -1,6 +1,6 @@
 import prd from './prd.js';
 import releaseChecklist from './release-checklist.js';
-import nodePackSubmission from './node-pack-submission.js';
+import packageSubmission from './package-submission.js';
 import uxReview from './ux-review.js';
 import handover from './handover.js';
 import specSheet from './spec-sheet.js';
@@ -10,6 +10,9 @@ import sessionLog from './session-log.js';
 import runEvidence from './run-evidence.js';
 
 const templates = new Map();
+const templateAliases = new Map([
+  ['node-pack-submission', 'package-submission'],
+]);
 
 function slug(value) {
   return String(value || 'untitled')
@@ -59,7 +62,7 @@ export function listTemplates() {
 }
 
 export function getTemplate(id) {
-  return templates.get(id) || null;
+  return templates.get(id) || templates.get(templateAliases.get(id)) || null;
 }
 
 export function createFromTemplate(id, opts = {}) {
@@ -93,7 +96,7 @@ export function createTemplateFile(id, opts = {}) {
 [
   prd,
   releaseChecklist,
-  nodePackSubmission,
+  packageSubmission,
   uxReview,
   handover,
   specSheet,

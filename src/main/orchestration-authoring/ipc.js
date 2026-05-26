@@ -210,7 +210,7 @@ function blockedNodePackRootDiagnostic({ field, value, rootKind, approvedRoot })
   return {
     level: 'warning',
     code: 'NODE_PACK_DISCOVERY_ROOT_OVERRIDE_BLOCKED',
-    message: 'Renderer-supplied node pack discovery root is outside the approved OrPAD node pack roots and was ignored.',
+    message: 'Renderer-supplied package discovery root is outside the approved OrPAD package roots and was ignored.',
     rootKind,
     requestField: field,
     requestedRoot: rootPathForDiagnostic(value),
@@ -324,7 +324,7 @@ function rendererRegistrySourceDiagnostic(source) {
     return {
       level: 'error',
       code: 'NODE_PACK_REGISTRY_SOURCE_MISSING',
-      message: 'A node pack registry source is required.',
+      message: 'A package registry source is required.',
     };
   }
   try {
@@ -334,7 +334,7 @@ function rendererRegistrySourceDiagnostic(source) {
   return {
     level: 'error',
     code: 'NODE_PACK_REGISTRY_SOURCE_BLOCKED',
-    message: 'Renderer node pack registry access is limited to explicit HTTPS registry URLs.',
+    message: 'Renderer package registry access is limited to explicit HTTPS registry URLs.',
     source: String(source || ''),
   };
 }
@@ -897,7 +897,7 @@ function buildDeterministicHarnessAuthoringSpec(input = {}) {
     generatedAt: now,
     pipelineId: pipelineDoc.id || projectProfile.pipelineId || '',
     graphId: graphDoc?.graph?.id || graphDoc?.id || projectProfile.graphId || '',
-    summary: 'Harness spec inferred from project profile, tool plan, graph node types, and selected node packs.',
+    summary: 'Harness spec inferred from project profile, tool plan, graph node types, and selected packages.',
     projectProfileRef: 'project-profile.json',
     toolPlanRef: 'tool-plan.json',
     requiredTools: compactHarnessStringList(toolPlan.requiredTools || projectProfile.requiredTools || [], 30),
@@ -2324,7 +2324,7 @@ function publicNodePackConflictIssue(conflict) {
   return {
     level: 'warning',
     code: 'NODE_PACK_TYPE_CONFLICT',
-    message: 'Multiple node packs declare the same node type; user selection is required before activation.',
+    message: 'Multiple packages declare the same node type; user selection is required before activation.',
     ...conflict,
   };
 }
@@ -2576,7 +2576,7 @@ function registerOrchestrationAuthoringHandlers({ ipcMain, app, authority }) {
     try {
       if (request?.workspacePath) {
         await authority.assertWorkspacePath(event.sender, request.workspacePath, {
-          label: 'Node pack workspace',
+          label: 'Package workspace',
         });
       }
       const trustedNodePackOptions = trustedNodePackAuthoringEvidence(request);
@@ -2617,7 +2617,7 @@ function registerOrchestrationAuthoringHandlers({ ipcMain, app, authority }) {
   ipcMain.handle('orchestration-node-pack-workspace-lock-read', async (event, request = {}) => {
     try {
       const workspaceRoot = await authority.assertWorkspacePath(event.sender, request.workspacePath, {
-        label: 'Node pack workspace lock',
+        label: 'Package workspace lock',
       });
       return publicWorkspaceNodePackLockResult(await readWorkspaceNodePackLock({ workspacePath: workspaceRoot }));
     } catch (err) {
@@ -2628,7 +2628,7 @@ function registerOrchestrationAuthoringHandlers({ ipcMain, app, authority }) {
   ipcMain.handle('orchestration-node-pack-workspace-lock-write', async (event, request = {}) => {
     try {
       const workspaceRoot = await authority.assertWorkspacePath(event.sender, request.workspacePath, {
-        label: 'Node pack workspace lock',
+        label: 'Package workspace lock',
       });
       const lock = request.lock || request.workspaceLock || { packs: request.packs || [] };
       return publicWorkspaceNodePackLockResult(await writeWorkspaceNodePackLock(lock, { workspacePath: workspaceRoot }));
@@ -2640,7 +2640,7 @@ function registerOrchestrationAuthoringHandlers({ ipcMain, app, authority }) {
   ipcMain.handle('orchestration-node-pack-workspace-lock-upsert', async (event, request = {}) => {
     try {
       const workspaceRoot = await authority.assertWorkspacePath(event.sender, request.workspacePath, {
-        label: 'Node pack workspace lock',
+        label: 'Package workspace lock',
       });
       const entry = request.entry || request.lockEntry || request.package || null;
       return publicWorkspaceNodePackLockResult(await upsertWorkspaceNodePackLockEntry(entry, { workspacePath: workspaceRoot }));

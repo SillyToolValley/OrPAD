@@ -2,7 +2,7 @@
   "kind": "orpad.nodePack",
   "schemaVersion": "1.0",
   "id": "orpad.starter.content-qa",
-  "name": "Content QA Starter Pack",
+  "name": "Content QA Starter Package",
   "version": "0.1.0",
   "origin": "built-in",
   "trustLevel": "official",

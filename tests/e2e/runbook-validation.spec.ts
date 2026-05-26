@@ -348,7 +348,7 @@ test('pipeline validator reports deterministic tree ref cycles', async () => {
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('pipeline validator recognizes built-in OrPAD node pack graph types', async () => {
+test('pipeline validator recognizes built-in OrPAD Package graph types', async () => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-pipeline-node-pack-'));
   const pipelineRoot = path.join(workspace, '.orpad', 'pipelines', 'node-pack-validation');
   fs.mkdirSync(path.join(pipelineRoot, 'graphs'), { recursive: true });
@@ -375,7 +375,7 @@ test('pipeline validator recognizes built-in OrPAD node pack graph types', async
     version: '1.0',
     graph: {
       id: 'node-pack-validation',
-      label: 'Node pack validation',
+      label: 'Package validation',
       start: 'context',
       nodes: [
         { id: 'context', type: 'orpad.context', label: 'Context', config: { summary: 'Collect local workspace context.' } },

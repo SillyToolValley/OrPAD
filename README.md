@@ -266,11 +266,12 @@ and agent handoffs into an inspectable orchestration workflow. Pipeline files
 can be authored as text while the Pipes UI exposes Flow and Details views for
 editing graph layout, node configuration, run metadata, and handoff context.
 
-Node packs describe reusable orchestration roles such as probes, queues,
-triage, dispatchers, worker loops, and barriers. Managed runs use those node
-definitions to launch supervised worker activity from explicit local paths,
-collect evidence, and keep machine-readable run state with the package instead
-of hiding decisions in chat history.
+Packages describe reusable orchestration roles such as probes, queues,
+triage, dispatchers, worker loops, and barriers. They can include node
+definitions, reusable graphs, skills, rules, templates, and supporting assets.
+Managed runs use those definitions to launch supervised worker activity from
+explicit local paths, collect evidence, and keep machine-readable run state
+with the package instead of hiding decisions in chat history.
 
 The run controls are intentionally explicit. **Start Run** begins a managed
 run from the current pipeline package, while **Prepare Handoff** gathers the
@@ -288,8 +289,9 @@ maintainer-reviewed pull requests before Package Manager labels them as
 OrPAD official review metadata.
 
 The official registry index is served from
-`https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/node-packs.json`,
-and submissions go through `https://github.com/OrPAD-Lab/orpad-registry/pulls`.
+`https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/packages.json`,
+with a compatibility alias at `registry/node-packs.json` for already-shipped
+builds. Submissions go through `https://github.com/OrPAD-Lab/orpad-registry/pulls`.
 
 Custom Registry URLs remain supported for teams and experiments, but they are
 shown as custom Registry sources and treated as discovery metadata unless the

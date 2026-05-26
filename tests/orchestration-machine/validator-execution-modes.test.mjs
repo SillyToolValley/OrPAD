@@ -113,7 +113,7 @@ test('Machine execution blocks imported-review trust level until explicit review
   assert.equal(result.machineBlockedReasons.includes('trust-review-required'), true);
 });
 
-test('workstream node pack declares Machine runtime metadata and adapter capabilities', async () => {
+test('workstream Package declares Machine runtime metadata and adapter capabilities', async () => {
   const nodePack = JSON.parse(await fs.readFile(workstreamNodePackPath, 'utf8'));
   const declaredCapabilities = new Set(nodePack.capabilities);
 

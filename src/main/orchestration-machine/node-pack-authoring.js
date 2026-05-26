@@ -88,7 +88,7 @@ function safePackPath(root, relativePath) {
       ok: false,
       normalized: '',
       path: '',
-      diagnostic: errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_PATH_UNSAFE', 'Declared node pack files must be pack-relative portable paths.', {
+      diagnostic: errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_PATH_UNSAFE', 'Declared Package files must be pack-relative portable paths.', {
         filePath: relativePath,
       }),
     };
@@ -100,7 +100,7 @@ function safePackPath(root, relativePath) {
       ok: false,
       normalized,
       path: targetPath,
-      diagnostic: errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_PATH_ESCAPE', 'Declared node pack file escaped the pack folder.', {
+      diagnostic: errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_PATH_ESCAPE', 'Declared Package file escaped the pack folder.', {
         filePath: relativePath,
       }),
     };
@@ -118,7 +118,7 @@ async function readNodePackManifestFile(sourceDir) {
       manifestBuffer: null,
       pack: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_AUTHOR_SOURCE_MISSING', 'A node pack folder path is required.'),
+        errorDiagnostic('NODE_PACK_AUTHOR_SOURCE_MISSING', 'A Package folder path is required.'),
       ],
     };
   }
@@ -134,7 +134,7 @@ async function readNodePackManifestFile(sourceDir) {
       manifestBuffer: null,
       pack: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_AUTHOR_SOURCE_UNREADABLE', 'Node pack folder could not be read.', {
+        errorDiagnostic('NODE_PACK_AUTHOR_SOURCE_UNREADABLE', 'Package folder could not be read.', {
           sourceDir: root,
           error: err.message,
         }),
@@ -149,7 +149,7 @@ async function readNodePackManifestFile(sourceDir) {
       manifestBuffer: null,
       pack: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_AUTHOR_SOURCE_NOT_DIRECTORY', 'Node pack source must be a folder.', {
+        errorDiagnostic('NODE_PACK_AUTHOR_SOURCE_NOT_DIRECTORY', 'Package source must be a folder.', {
           sourceDir: root,
         }),
       ],
@@ -168,7 +168,7 @@ async function readNodePackManifestFile(sourceDir) {
       manifestBuffer: null,
       pack: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_AUTHOR_MANIFEST_READ_FAILED', 'Node pack manifest could not be read.', {
+        errorDiagnostic('NODE_PACK_AUTHOR_MANIFEST_READ_FAILED', 'Package manifest could not be read.', {
           manifestPath,
           error: err.message,
         }),
@@ -187,7 +187,7 @@ async function readNodePackManifestFile(sourceDir) {
       manifestBuffer,
       pack: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_AUTHOR_MANIFEST_JSON_INVALID', 'Node pack manifest must be valid JSON.', {
+        errorDiagnostic('NODE_PACK_AUTHOR_MANIFEST_JSON_INVALID', 'Package manifest must be valid JSON.', {
           manifestPath,
           error: err.message,
         }),
@@ -202,7 +202,7 @@ async function readNodePackManifestFile(sourceDir) {
       manifestBuffer,
       pack: null,
       diagnostics: [
-        errorDiagnostic('NODE_PACK_AUTHOR_MANIFEST_INVALID', 'Node pack manifest must be a JSON object.', {
+        errorDiagnostic('NODE_PACK_AUTHOR_MANIFEST_INVALID', 'Package manifest must be a JSON object.', {
           manifestPath,
           valueType: valueKind(pack),
         }),
@@ -255,14 +255,14 @@ async function collectDeclaredFileChecksums(sourceDir, pack, manifestBuffer, dia
     try {
       stat = await fs.stat(target.path);
     } catch (err) {
-      diagnostics.push(errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_MISSING', 'Manifest-declared node pack file is missing.', {
+      diagnostics.push(errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_MISSING', 'Manifest-declared Package file is missing.', {
         filePath: target.normalized,
         error: err.message,
       }));
       continue;
     }
     if (!stat.isFile()) {
-      diagnostics.push(errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_NOT_FILE', 'Manifest-declared node pack path must be a file.', {
+      diagnostics.push(errorDiagnostic('NODE_PACK_AUTHOR_DECLARED_FILE_NOT_FILE', 'Manifest-declared Package path must be a file.', {
         filePath: target.normalized,
       }));
       continue;
@@ -283,7 +283,7 @@ function authorFacingDiagnostics(pack, readme) {
   const packId = pack?.id || '';
   const officialOrBuiltIn = pack?.origin === 'built-in' || pack?.trustLevel === 'official';
   if (!readme.exists) {
-    diagnostics.push(warningDiagnostic('NODE_PACK_AUTHOR_README_MISSING', 'Shareable node packs should include a README for registry review and user inspection.', {
+    diagnostics.push(warningDiagnostic('NODE_PACK_AUTHOR_README_MISSING', 'Shareable Packages should include a README for registry review and user inspection.', {
       packId,
       expected: 'README.md',
     }));

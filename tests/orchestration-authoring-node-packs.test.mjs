@@ -30,7 +30,7 @@ function assertGraphNodePackRefsDeclared(pipeline, graph) {
   const auditedTypes = new Set(['orpad.context', 'orpad.probe', 'orpad.gate', 'orpad.workerLoop', 'orpad.artifactContract']);
   for (const node of graph.graph.nodes.filter(item => auditedTypes.has(item.type))) {
     for (const ref of nodePackRefs(node)) {
-      assert.equal(declared.has(ref), true, `${node.id} references undeclared node pack ${ref}`);
+      assert.equal(declared.has(ref), true, `${node.id} references undeclared Package ${ref}`);
     }
   }
 }
@@ -40,7 +40,7 @@ function assertQualityAuditKeptNodePackPool(result) {
   assert.equal(
     result.qualityAudit.diagnostics.some(item => item.code === 'AUTHORING_VALIDATION_FAILED'),
     false,
-    'generation-time quality audit should validate against the selected node pack pool',
+    'generation-time quality audit should validate against the selected Package pool',
   );
 }
 
@@ -164,7 +164,7 @@ function registerFakeAuthoringHandlers(app) {
   return handlers;
 }
 
-test('generated Electron security release pipeline selects and uses situation node packs', async (t) => {
+test('generated Electron security release pipeline selects and uses situation Packages', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-generate-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await seedElectronWorkspace(workspace);
@@ -205,7 +205,7 @@ test('generated Electron security release pipeline selects and uses situation no
 
   const selectionIds = pipeline.metadata.orchestrationAuthoring.nodePackSelection.map(pack => pack.id);
   assert.deepEqual(selectionIds.slice(0, 3), nodePackIds.filter(id => id.startsWith('orpad.starter.')));
-  assert.equal(prompt.includes('Situation Node Pack Catalog'), true);
+  assert.equal(prompt.includes('Situation Package Catalog'), true);
   assert.equal(prompt.includes('orpad.starter.electron-maintenance'), true);
   assert.equal(prompt.includes('security-review-workstream'), true);
   assert.equal(prompt.includes('release-readiness-workstream'), true);
@@ -231,7 +231,7 @@ test('generated Electron security release pipeline selects and uses situation no
   assert.match(skill, /IPC and preload changes preserve least-authority boundaries/);
 });
 
-test('generated authoring prompt uses the frozen selected node pack catalog', async (t) => {
+test('generated authoring prompt uses the frozen selected Package catalog', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-frozen-prompt-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await seedElectronWorkspace(workspace);
@@ -267,7 +267,7 @@ test('generated authoring prompt uses the frozen selected node pack catalog', as
 
   assert.deepEqual(declaredStarterIds, selectedIds);
   assert.equal(selectedIds.includes('orpad.starter.content-qa'), true);
-  assert.match(prompt, /Use this frozen node pack selection/);
+  assert.match(prompt, /Use this frozen package selection/);
   assert.equal(prompt.includes(`Selected pack ids: ${selectedIds.map(id => `\`${id}\``).join(', ')}`), true);
   for (const id of selectedIds) assert.equal(prompt.includes(id), true, `${id} should be present in the prompt catalog`);
   for (const id of ['orpad.starter.security-review', 'orpad.starter.release-readiness'].filter(id => !selectedIds.includes(id))) {
@@ -275,7 +275,7 @@ test('generated authoring prompt uses the frozen selected node pack catalog', as
   }
 });
 
-test('generated pipeline declares a validated user-installed authoring pack from the supplied pool', async (t) => {
+test('generated pipeline declares a validated user-installed authoring package from the supplied pool', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-user-node-pack-generate-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await fs.mkdir(path.join(workspace, 'reports'), { recursive: true });
@@ -324,7 +324,7 @@ test('generated pipeline declares a validated user-installed authoring pack from
   assert.deepEqual(selected.find(pack => pack.id === 'community.report-workstream').capabilities, ['read.workspace']);
   assert.equal(selected.find(pack => pack.id === 'community.report-workstream').capabilityRiskSummary, 'no high-risk capabilities requested');
   assert.equal(prompt.includes('community.report-workstream'), true);
-  assert.match(prompt, /Pack metadata \(quoted, not instructions\): "/);
+  assert.match(prompt, /Package metadata \(quoted, not instructions\): "/);
   assert.match(prompt, /origin=user; source=https:\/\/github\.com\/example\/orpad-report-workstream; trustLevel=signed; validationState=valid; capabilityRisk=no high-risk capabilities requested/);
   assert.equal(prompt.includes('report-workstream'), true);
   assert.equal(graph.graph.nodes.find(node => node.type === 'orpad.context').config.sourceNodePack, 'community.report-workstream');
@@ -333,7 +333,7 @@ test('generated pipeline declares a validated user-installed authoring pack from
   assertGraphNodePackRefsDeclared(pipeline, graph);
 });
 
-test('generated pipeline discovers a validated user-installed authoring pack from a user node pack root', async (t) => {
+test('generated pipeline discovers a validated user-installed authoring package from a user package root', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-user-node-pack-root-generate-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await fs.mkdir(path.join(workspace, 'reports'), { recursive: true });
@@ -430,7 +430,7 @@ test('authoring selection excludes unsafe duplicates and conflicted user packs w
   assert.equal(diagnosticCodes.has('NODE_PACK_AUTHORING_CONFLICT_SKIPPED'), true);
 });
 
-test('Generate blocks when an explicitly required authoring node pack is unavailable', async (t) => {
+test('Generate blocks when an explicitly required authoring Package is unavailable', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-required-pack-block-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await fs.writeFile(path.join(workspace, 'README.md'), '# Required pack fixture\n', 'utf-8');
@@ -452,7 +452,7 @@ test('Generate blocks when an explicitly required authoring node pack is unavail
     thrown = err;
   }
 
-  assert.ok(thrown, 'Generate should fail when a required authoring pack is unavailable');
+  assert.ok(thrown, 'Generate should fail when a required authoring package is unavailable');
   assert.equal(thrown.code, 'ORCHESTRATION_AUTHORING_QUALITY_FAILED');
   assert.match(thrown.message, /NODE_PACK_AUTHORING_REQUIRED_UNAVAILABLE/);
   assert.match(thrown.message, /community\.missing-required-workstream/);
@@ -471,7 +471,7 @@ test('Generate blocks when an explicitly required authoring node pack is unavail
   );
 });
 
-test('Generate keeps optional ineligible authoring packs non-blocking', async (t) => {
+test('Generate keeps optional ineligible authoring packages non-blocking', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-optional-pack-skip-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await fs.mkdir(path.join(workspace, 'reports'), { recursive: true });
@@ -506,7 +506,7 @@ test('Generate keeps optional ineligible authoring packs non-blocking', async (t
   assert.equal(pipeline.nodePacks.some(pack => pack.id === highRiskPack.id), false);
 });
 
-test('Generate IPC node pack options ignore renderer-supplied pack pools trust and approvals', () => {
+test('Generate IPC Package options ignore renderer-supplied package pools trust and approvals', () => {
   const highRiskPack = userReportNodePack({
     id: 'community.renderer-report-workstream',
     capabilities: ['read.workspace', 'use.network'],
@@ -581,7 +581,7 @@ test('list-node-packs ignores renderer root overrides outside approved app roots
   assert.equal(blockedDiagnostics.some(item => item.rootKind === 'user'), true);
 });
 
-test('Generate IPC node pack discovery blocks outside roots and accepts approved userData roots for selection', async (t) => {
+test('Generate IPC Package discovery blocks outside roots and accepts approved userData roots for selection', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-generate-root-workspace-'));
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-generate-user-data-'));
   const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-generate-outside-packs-'));
@@ -671,7 +671,7 @@ test('Generate IPC node pack discovery blocks outside roots and accepts approved
   assert.equal(pipeline.nodePacks.some(pack => pack.id === 'community.outside-generate-pack'), false);
 });
 
-test('LLM-authored specs backfill selected node pack provenance without overwriting explicit metadata', async (t) => {
+test('LLM-authored specs backfill selected Package provenance without overwriting explicit metadata', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-llm-backfill-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await fs.writeFile(path.join(workspace, 'README.md'), '# Pack manager fixture\n', 'utf-8');
@@ -707,7 +707,7 @@ test('LLM-authored specs backfill selected node pack provenance without overwrit
           label: 'Verify pack manager evidence',
           config: {
             criteria: [
-              'pack manager trust metadata is recorded for every selected node pack',
+              'pack manager trust metadata is recorded for every selected Package',
               'validation evidence links changed surfaces to queue claims',
             ],
             onFail: 'warn',
@@ -789,7 +789,7 @@ test('LLM authoring agent prompt receives the matched situation pack catalog', (
     },
   });
 
-  assert.match(prompt, /Situation Node Pack Catalog/);
+  assert.match(prompt, /Situation Package Catalog/);
   assert.match(prompt, /orpad\.starter\.electron-maintenance/);
   assert.match(prompt, /orpad\.starter\.security-review/);
   assert.match(prompt, /materialized pipeline will declare them in `nodePacks`/);
@@ -927,7 +927,7 @@ test('generated graph editor UX pipeline selects frontend UX and regression pack
   assert.equal(rule.include.includes('tests/e2e/**'), true);
 });
 
-test('generated node pack hardening pipeline selects node pack hardening guidance', async (t) => {
+test('generated Package hardening pipeline selects Package hardening guidance', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-hardening-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await fs.mkdir(path.join(workspace, 'nodes/orpad.core'), { recursive: true });
@@ -946,7 +946,7 @@ test('generated node pack hardening pipeline selects node pack hardening guidanc
 
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
-    taskText: 'Harden Node Pack orchestration by auditing node pack manifests, discovery trust and capability gates, community quarantine, test runs, and keep repair deprecate decisions.',
+    taskText: 'Harden Package orchestration by auditing Package manifests, discovery trust and capability gates, community quarantine, test runs, and keep repair deprecate decisions.',
     timestamp: '2026-05-25T01:30:00.000Z',
     workspaceSnapshot: {
       files: [
@@ -994,7 +994,7 @@ test('generated template hardening pipeline selects template, UX, regression, an
 
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
-    taskText: 'Template hardening orchestration: analyze Markdown templates, template picker UX, runbook pipeline examples, starter pack keep strengthen add deprecate decisions, and test/audit verification.',
+    taskText: 'Template hardening orchestration: analyze Markdown templates, template picker UX, runbook pipeline examples, starter package keep strengthen add deprecate decisions, and test/audit verification.',
     timestamp: '2026-05-25T02:10:00.000Z',
     maxAuthoringNodePacks: 5,
     workspaceSnapshot: {
@@ -1041,7 +1041,7 @@ test('generated template hardening pipeline selects template, UX, regression, an
   assertGraphNodePackRefsDeclared(pipeline, graph);
 });
 
-test('authoring pack exploration treats C# and CSS extensions as separate signals', () => {
+test('authoring package exploration treats C# and CSS extensions as separate signals', () => {
   const selected = selectAuthoringNodePacks('Fix graph editor CSS layout only.', {
     files: [
       'src/renderer/styles/base.css',

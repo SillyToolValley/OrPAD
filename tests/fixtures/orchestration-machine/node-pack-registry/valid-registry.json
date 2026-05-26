@@ -2,7 +2,7 @@
   "kind": "orpad.nodePackRegistry",
   "schemaVersion": "1.0",
   "registryId": "orpad.community",
-  "name": "OrPAD Community Node Packs",
+  "name": "OrPAD Community Packages",
   "governance": {
     "registryTrust": "official",
     "reviewModel": "orpad-pr-reviewed",

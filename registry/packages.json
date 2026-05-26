@@ -1,0 +1,19 @@
+{
+  "kind": "orpad.nodePackRegistry",
+  "schemaVersion": "1.0",
+  "registryId": "orpad.official",
+  "name": "OrPAD Official Package Registry",
+  "governance": {
+    "registryTrust": "official",
+    "reviewModel": "orpad-pr-reviewed",
+    "submissions": {
+      "type": "pull-request",
+      "url": "https://github.com/OrPAD-Lab/orpad-registry/pulls"
+    },
+    "reviewPolicyUrl": "https://github.com/OrPAD-Lab/orpad-registry/blob/main/REGISTRY_POLICY.md",
+    "maintainer": "OrPAD maintainers",
+    "notes": "Registry entries become installable only after maintainer review through OrPAD registry pull requests."
+  },
+  "generatedAt": "2026-05-26T00:00:00.000Z",
+  "entries": []
+}

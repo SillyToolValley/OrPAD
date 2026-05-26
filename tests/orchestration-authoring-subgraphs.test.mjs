@@ -63,6 +63,7 @@ test('generator writes a sub-graph file when an orpad.graph node references one'
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
     taskText: 'Refactor with per-service verify sub-graph',
+    maxAuthoringNodePacks: 0,
     authoringSpec,
     timestamp: '2026-05-15T01:00:00.000Z',
   });
@@ -129,6 +130,7 @@ test('generator writes a sub-tree file when an orpad.tree node references one', 
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
     taskText: 'Behavior tree decomposition',
+    maxAuthoringNodePacks: 0,
     authoringSpec,
     timestamp: '2026-05-15T01:00:00.000Z',
   });
@@ -171,6 +173,7 @@ test('generator auto-materializes an executable sub-graph when the spec forgot a
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
     taskText: 'Forgot to author the sub-graph',
+    maxAuthoringNodePacks: 0,
     authoringSpec,
     timestamp: '2026-05-15T01:00:00.000Z',
   });
@@ -252,6 +255,7 @@ test('generator auto-fills missing graphRef/treeRef and preserves parent hints',
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
     taskText: 'LLM forgot every graphRef/treeRef',
+    maxAuthoringNodePacks: 0,
     authoringSpec,
     timestamp: '2026-05-15T20:00:00.000Z',
   });
@@ -384,6 +388,7 @@ test('generator defaults orpad.graph executionMode to inline and preserves expli
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
     taskText: 'executionMode default + override',
+    maxAuthoringNodePacks: 0,
     authoringSpec,
     timestamp: '2026-05-15T10:00:00.000Z',
   });
@@ -456,6 +461,7 @@ test('generator rewrites duplicate orpad.graph refs so each parent gets a unique
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
     taskText: 'duplicate graphRef',
+    maxAuthoringNodePacks: 0,
     authoringSpec,
     timestamp: '2026-05-15T11:00:00.000Z',
   });
@@ -549,6 +555,7 @@ test('generator canonicalizes runtime-facing orchestration contracts from LLM pr
   const result = await createOrchestrationPipeline({
     workspaceRoot: workspace,
     taskText: 'normalize LLM prose contracts',
+    maxAuthoringNodePacks: 0,
     authoringSpec,
     timestamp: '2026-05-18T01:00:00.000Z',
   });
@@ -628,6 +635,7 @@ test('safeRefPath rejects refs that climb out of the pipeline directory', async 
     createOrchestrationPipeline({
       workspaceRoot: workspace,
       taskText: 'Escape attempt',
+      maxAuthoringNodePacks: 0,
       authoringSpec,
       timestamp: '2026-05-15T01:00:00.000Z',
     }),
