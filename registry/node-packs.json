@@ -2,7 +2,7 @@
   "kind": "orpad.nodePackRegistry",
   "schemaVersion": "1.0",
   "registryId": "orpad.official",
-  "name": "OrPAD Official Node Pack Registry",
+  "name": "OrPAD Official Package Registry",
   "governance": {
     "registryTrust": "official",
     "reviewModel": "orpad-pr-reviewed",

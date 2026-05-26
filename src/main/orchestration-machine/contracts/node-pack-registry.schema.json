@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "orpad.nodePackRegistry.v1",
-  "title": "OrPAD Node Pack Registry",
+  "title": "OrPAD Package Registry",
   "type": "object",
   "required": ["kind", "schemaVersion", "registryId", "name", "entries"],
   "properties": {
