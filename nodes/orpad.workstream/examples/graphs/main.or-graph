@@ -2,23 +2,23 @@
   "kind": "orpad.graph",
   "schemaVersion": "1.0",
   "version": "1.0",
-  "id": "maintenance-workstream-example-main",
-  "label": "Maintenance Workstream Example Main Graph",
+  "id": "maintenance-quality-workstream-main",
+  "label": "Maintenance Quality Workstream",
   "role": "entry",
   "graph": {
     "nodes": [
       {
         "id": "entry",
         "type": "orpad.entry",
-        "label": "Begin maintenance run",
+        "label": "Start maintenance run",
         "config": {
-          "summary": "Enter the bundled maintenance workstream example."
+          "summary": "Enter a maintenance workflow that collects product, defect, and UX evidence before changing files."
         }
       },
       {
         "id": "product-probe",
         "type": "orpad.probe",
-        "label": "Product Intent Probe",
+        "label": "Product intent probe",
         "config": {
           "lens": "product-intent",
           "queueRef": "maintenance-queue",
@@ -31,7 +31,7 @@
       {
         "id": "bug-risk-probe",
         "type": "orpad.probe",
-        "label": "Bug Risk Probe",
+        "label": "Bug risk probe",
         "config": {
           "lens": "bug-risk",
           "queueRef": "maintenance-queue",
@@ -44,7 +44,7 @@
       {
         "id": "ux-ui-probe",
         "type": "orpad.probe",
-        "label": "UX/UI Journey Probe",
+        "label": "UX/UI probe",
         "config": {
           "lens": "ux-ui",
           "queueRef": "maintenance-queue",
@@ -57,7 +57,7 @@
       {
         "id": "discovery-barrier",
         "type": "orpad.barrier",
-        "label": "Discovery Barrier",
+        "label": "Discovery barrier",
         "config": {
           "waitFor": ["product-probe", "bug-risk-probe", "ux-ui-probe"],
           "onPartialFailure": "continue-with-warning"
@@ -66,7 +66,7 @@
       {
         "id": "maintenance-queue",
         "type": "orpad.workQueue",
-        "label": "Maintenance Work Queue",
+        "label": "Maintenance queue",
         "config": {
           "queueRoot": "harness/generated/latest-run/queue",
           "inboxRoot": "harness/generated/latest-run/queue/inbox",
@@ -74,25 +74,66 @@
           "states": ["candidate", "queued", "claimed", "done", "blocked", "rejected"],
           "singleWriter": true,
           "ingestAfter": "discovery-barrier",
-          "ingestFrom": ["product-probe", "bug-risk-probe", "ux-ui-probe"]
+          "ingestFrom": ["product-probe", "bug-risk-probe", "ux-ui-probe"],
+          "ingestPolicy": {
+            "from": "inbox/*/candidate/*.json",
+            "writeTo": "candidate/",
+            "journal": "journal.jsonl",
+            "journalActor": "maintenance-queue",
+            "stableOrder": ["severity", "fingerprint", "sourceNode", "id"]
+          },
+          "dedupeKeys": ["fingerprint", "contentArea", "issueType", "evidence.file"],
+          "validationArtifact": "harness/generated/latest-run/artifacts/queue-harness-validation.md"
+        }
+      },
+      {
+        "id": "queue-harness-validation",
+        "type": "orpad.skill",
+        "label": "Validate queue evidence",
+        "config": {
+          "skillRef": "orpad.workstream:queue-harness-validation",
+          "inputs": [
+            {
+              "queueStageRoot": "harness/generated/latest-run/queue/inbox"
+            },
+            {
+              "queue": "candidate"
+            },
+            {
+              "ref": "harness/generated/latest-run/queue/journal.jsonl"
+            }
+          ],
+          "outputs": [
+            {
+              "ref": "harness/generated/latest-run/artifacts/queue-harness-validation.md"
+            }
+          ]
         }
       },
       {
         "id": "triage",
         "type": "orpad.triage",
-        "label": "Triage Candidates",
+        "label": "Triage candidates",
         "config": {
           "queueRef": "maintenance-queue",
           "requiresCurrentEvidence": true,
           "rejectDuplicates": true,
           "classifyApprovalRequired": true,
-          "stateWrites": ["queued", "blocked", "rejected"]
+          "stateWrites": ["queued", "blocked", "rejected"],
+          "inputs": [
+            {
+              "ref": "harness/generated/latest-run/artifacts/queue-harness-validation.md"
+            },
+            {
+              "queue": "candidate"
+            }
+          ]
         }
       },
       {
         "id": "dispatcher",
         "type": "orpad.dispatcher",
-        "label": "Task Dispatcher",
+        "label": "Task dispatcher",
         "config": {
           "queueRef": "maintenance-queue",
           "workerLoopRef": "worker-loop",
@@ -114,7 +155,7 @@
       {
         "id": "worker-loop",
         "type": "orpad.workerLoop",
-        "label": "Worker Loop",
+        "label": "Worker loop",
         "config": {
           "queueRef": "maintenance-queue",
           "outcomes": ["done", "blocked", "requeued"]
@@ -123,17 +164,17 @@
       {
         "id": "artifact-contract",
         "type": "orpad.artifactContract",
-        "label": "Evidence Contract",
+        "label": "Evidence contract",
         "config": {
           "artifactRoot": "harness/generated/latest-run/artifacts",
-          "required": ["workstream-proof.md"],
+          "required": ["workstream-proof.md", "queue-harness-validation.md"],
           "onMissing": "mark-partial"
         }
       },
       {
         "id": "patch-review",
         "type": "orpad.patchReview",
-        "label": "Review Patches",
+        "label": "Review patches",
         "config": {
           "reviewMode": "user-selected-files"
         }
@@ -141,9 +182,9 @@
       {
         "id": "exit",
         "type": "orpad.exit",
-        "label": "Finish run",
+        "label": "Finish maintenance run",
         "config": {
-          "summary": "Maintenance workstream example complete."
+          "summary": "Maintenance workflow complete with queued work, evidence contract, and patch review state recorded."
         }
       }
     ],
@@ -155,7 +196,8 @@
       { "id": "edge-bug-barrier", "from": "bug-risk-probe", "to": "discovery-barrier" },
       { "id": "edge-uxui-barrier", "from": "ux-ui-probe", "to": "discovery-barrier" },
       { "id": "edge-barrier-queue", "from": "discovery-barrier", "to": "maintenance-queue" },
-      { "id": "edge-queue-triage", "from": "maintenance-queue", "to": "triage" },
+      { "id": "edge-queue-validation", "from": "maintenance-queue", "to": "queue-harness-validation" },
+      { "id": "edge-validation-triage", "from": "queue-harness-validation", "to": "triage" },
       { "id": "edge-triage-dispatcher", "from": "triage", "to": "dispatcher" },
       { "id": "edge-dispatcher-worker", "from": "dispatcher", "to": "worker-loop" },
       { "id": "edge-worker-contract", "from": "worker-loop", "to": "artifact-contract" },

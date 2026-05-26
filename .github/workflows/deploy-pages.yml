@@ -1,11 +1,11 @@
 name: Deploy Pages
 
 # Builds the web app (docs/) and publishes it to GitHub Pages.
-# The docs/ directory is no longer committed — this workflow is the sole
+# The docs/ directory is no longer committed; this workflow is the sole
 # publisher of the deployed bundle.
 #
 # Before the first run:
-#   Repo Settings → Pages → Build and deployment → Source: "GitHub Actions"
+#   Repo Settings -> Pages -> Build and deployment -> Source: "GitHub Actions"
 
 on:
   push:

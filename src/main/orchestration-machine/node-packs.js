@@ -68,12 +68,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -171,12 +171,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -278,12 +278,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -383,12 +383,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -436,13 +436,13 @@ const STARTER_NODE_PACK_MANIFESTS = [
         'localization',
         'locale',
         'copy',
-        '문서',
-        '강의',
-        '자료',
-        '슬라이드',
-        '학습',
-        '교육',
-        '수업',
+        'documentation',
+        'lecture',
+        'material',
+        'slide',
+        'study',
+        'education',
+        'class',
       ],
       workspaceSignals: [
         'readme.md',
@@ -529,12 +529,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -583,10 +583,10 @@ const STARTER_NODE_PACK_MANIFESTS = [
         'course code',
         'threading',
         'concurrency',
-        '실습',
-        '예제',
-        '강의',
-        '코드',
+        'study',
+        'assignment',
+        'lecture',
+        'code',
       ],
       workspaceSignals: [
         '**/*.cs',
@@ -652,12 +652,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -710,11 +710,11 @@ const STARTER_NODE_PACK_MANIFESTS = [
         'css',
         'layout',
         'accessibility',
-        '우클릭',
-        '그래프',
-        '인스펙터',
-        '메뉴',
-        '화면',
+        'workflow',
+        'graph',
+        'inspector',
+        'menu',
+        'screen',
       ],
       workspaceSignals: [
         'src/renderer/',
@@ -781,12 +781,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -832,12 +832,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
         'e2e',
         'smoke',
         'reproduce',
-        '검증',
-        '테스트',
-        '실패',
-        '버그',
-        '재현',
-        '회귀',
+        'workflow',
+        'graph',
+        'failure',
+        'bug',
+        'reproduce',
+        'repair',
       ],
       workspaceSignals: [
         'tests/',
@@ -907,12 +907,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -1033,7 +1033,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     schemaVersion: '1.0',
     id: 'orpad.core',
     name: 'OrPAD Core Nodes',
-    version: '1.0.0-beta.3',
+    version: '1.0.0-beta.4',
     origin: 'built-in',
     trustLevel: 'official',
     mutable: false,
@@ -1045,7 +1045,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
@@ -1074,16 +1074,16 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     rules: [],
     examples: [
       {
-        id: 'tutorial-gate-decision',
-        path: 'examples/tutorial-gate-decision/pipeline.or-pipeline',
-        label: 'Tutorial: Gate decision',
-        description: 'Smallest pipeline with an orpad.gate guarding the rest of the flow.',
+        id: 'product-decision-gate',
+        path: 'examples/product-decision-gate/pipeline.or-pipeline',
+        label: 'Product Decision Gate',
+        description: 'Product readiness gate for problem, owner, acceptance, non-goal, and release-risk evidence.',
       },
       {
-        id: 'tutorial-selector-branching',
-        path: 'examples/tutorial-selector-branching/pipeline.or-pipeline',
-        label: 'Tutorial: Selector branching',
-        description: 'Demonstrates orpad.selector forking into named branches that converge at exit.',
+        id: 'release-risk-routing',
+        path: 'examples/release-risk-routing/pipeline.or-pipeline',
+        label: 'Release Risk Routing',
+        description: 'Release readiness selector that routes evidence to ship, fix-forward, or hold decisions.',
       },
     ],
   },
@@ -1092,7 +1092,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     schemaVersion: '1.0',
     id: 'orpad.workstream',
     name: 'OrPAD Workstream Nodes',
-    version: '1.0.0-beta.3',
+    version: '1.0.0-beta.4',
     origin: 'built-in',
     trustLevel: 'official',
     mutable: false,
@@ -1109,7 +1109,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0-beta.3',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       graphSchema: '>=1.0',
       nodeContractSchema: '>=1.0',
@@ -1120,7 +1120,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
     ],
     capabilities: [
       'read.workspace',
@@ -1200,14 +1200,16 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     ],
     examples: [
       {
-        id: 'maintenance-workstream-example',
+        id: 'maintenance-quality-workstream',
         path: 'examples/maintenance-workstream.or-pipeline',
+        label: 'Maintenance Quality Workstream',
+        description: 'Parallel product, bug-risk, and UX/UI probes feeding queue validation, triage, dispatch, worker, evidence, and patch review.',
       },
       {
-        id: 'tutorial-worker-patch-review',
-        path: 'examples/tutorial-worker-patch-review/pipeline.or-pipeline',
-        label: 'Tutorial: Worker patch review',
-        description: 'Single-candidate machine flow with a deterministic harness fixture so the Review Patch modal has a concrete diff to inspect.',
+        id: 'product-build-workstream',
+        path: 'examples/product-build-workstream/pipeline.or-pipeline',
+        label: 'Product Build Workstream',
+        description: 'Executable product-build flow with a deterministic harness fixture and patch review handoff.',
       },
     ],
   },
@@ -1946,7 +1948,7 @@ function validateCommunityNodePackMetadata(diagnostics, pack) {
 
 function validateNodePackManifest(pack, options = {}) {
   const diagnostics = [];
-  const currentOrpadVersion = options.currentOrpadVersion || '1.0.0-beta.3';
+  const currentOrpadVersion = options.currentOrpadVersion || '1.0.0-beta.4';
   const installMode = options.installMode || 'normal';
   const grantedCapabilities = normalizeGrantedCapabilities(options.grantedCapabilities);
   const explicitCapabilityGrants = explicitNodePackCapabilityGrants(pack, options);
@@ -2484,7 +2486,12 @@ function validatePipelineNodePacks(nodePacks, options = {}) {
         'error',
         'PIPELINE_NODE_PACK_UNKNOWN',
         'Pipeline declares a node pack that is not available.',
-        { path: declaration.path, packId: declaration.id },
+        {
+          path: declaration.path,
+          packId: declaration.id,
+          registryCandidateKind: 'pack-id',
+          registryCandidateQuery: declaration.id,
+        },
       ));
       resolved.push({
         id: declaration.id,
@@ -3854,10 +3861,12 @@ module.exports = {
   PACK_ASSET_COLLECTIONS,
   RESERVED_TYPE_PREFIX,
   STARTER_NODE_PACK_MANIFESTS,
+  auditDiscoveredNodePackDirectory,
   authoringNodePackPromptLines,
   collectNodePackDeclarations,
   createLosslessNodePlaceholder,
   createNodePackLockEntry,
+  declaredNodePackFilePaths,
   declaredNodeTypes,
   defaultBuiltInNodePacksRoot,
   discoverNodePackManifests,

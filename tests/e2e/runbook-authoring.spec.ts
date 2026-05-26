@@ -374,18 +374,143 @@ test('graph editor supports node bypass and repeater decorator controls', async 
   await expect(win.locator('#fmt-modal')).toHaveClass(/hidden/);
   await expect(win.locator('.orch-graph-node')).toHaveCount(3);
   await expect(win.locator('.orch-graph-node.selected')).toContainText('New work queue');
+  const openBlankGraphMenu = async (x: number, y: number): Promise<void> => {
+    await win.locator('.orch-graph-frame').evaluate((frame, point) => {
+      const rect = frame.getBoundingClientRect();
+      frame.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: rect.left + point.x,
+        clientY: rect.top + point.y,
+      }));
+    }, { x, y });
+  };
+  await openBlankGraphMenu(520, 360);
+  await expect(win.locator('.orch-context-menu')).toContainText('Add Context');
+  await win.locator('button[data-orch-context-action="add-context"]').click();
+  await expect(win.locator('.orch-graph-node')).toHaveCount(4);
+  await expect(win.locator('.orch-graph-node.selected')).toContainText('New context');
+  const blankContextPath = await win.locator('.orch-graph-node.selected').getAttribute('data-orch-path');
+  expect(blankContextPath).toBeTruthy();
+  const blankContextTopBeforeConnect = await win.locator(`.orch-graph-node[data-orch-path="${blankContextPath}"]`).evaluate((el) => parseFloat((el as HTMLElement).style.top || '0'));
+  await graphNode.click();
+  await win.locator(`.orch-graph-node[data-orch-path="${blankContextPath}"]`).evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: rect.left + 18,
+      clientY: rect.top + 18,
+    }));
+  });
+  await expect(win.locator('.orch-context-menu')).toContainText('Connect selected');
+  await win.locator('button[data-orch-context-action="connect-selected"]').click();
+  await expect(win.locator('.orch-transition')).toHaveCount(2);
+  await expect.poll(async () => win.locator(`.orch-graph-node[data-orch-path="${blankContextPath}"]`).evaluate((el) => parseFloat((el as HTMLElement).style.top || '0'))).toBe(blankContextTopBeforeConnect);
+  await openBlankGraphMenu(560, 390);
+  await win.locator('button[data-orch-context-action="add-skill"]').click();
+  await expect(win.locator('.orch-graph-node')).toHaveCount(5);
+  await openBlankGraphMenu(600, 420);
+  await win.locator('button[data-orch-context-action="insert-subtree"]').click();
+  await expect(win.locator('.orch-graph-node')).toHaveCount(6);
   await win.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S');
   await expect.poll(() => {
     try {
       const saved = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
+      const transitionTargets = new Set(saved.graph.transitions.map((transition: any) => transition.to));
+      const autoConnectedBlankNodes = saved.graph.nodes.filter((node: any) => (
+        ['orpad.workQueue', 'orpad.skill', 'orpad.tree'].includes(node.type) && transitionTargets.has(node.id)
+      ));
       return {
         bypass: saved.graph.nodes[0].bypass,
         workQueue: saved.graph.nodes.some((node: any) => node.type === 'orpad.workQueue'),
+        transitionCount: saved.graph.transitions.length,
+        connectedBlankContext: saved.graph.transitions.some((transition: any) => (
+          transition.from === 'start'
+          && saved.graph.nodes.find((node: any) => node.id === transition.to)?.type === 'orpad.context'
+        )),
+        autoConnectedBlankNodes: autoConnectedBlankNodes.length,
       };
     } catch {
       return null;
     }
-  }).toEqual({ bypass: true, workQueue: true });
+  }).toEqual({
+    bypass: true,
+    workQueue: true,
+    transitionCount: 2,
+    connectedBlankContext: true,
+    autoConnectedBlankNodes: 0,
+  });
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('choose node model opens provider and model picker instead of capability token prompt', async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-node-model-picker-'));
+  const pipelineDir = path.join(workspace, '.orpad', 'pipelines', 'model-picker');
+  fs.mkdirSync(path.join(pipelineDir, 'graphs'), { recursive: true });
+  fs.writeFileSync(path.join(pipelineDir, 'pipeline.or-pipeline'), JSON.stringify({
+    kind: 'orpad.pipeline',
+    schemaVersion: '1.0',
+    version: '1.0',
+    id: 'model-picker',
+    title: 'Model Picker',
+    trustLevel: 'local-authored',
+    entryGraph: 'graphs/main.or-graph',
+    graphs: {
+      main: { file: 'graphs/main.or-graph' },
+    },
+    nodePacks: [
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
+    ],
+  }, null, 2));
+  fs.writeFileSync(path.join(pipelineDir, 'graphs', 'main.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    schemaVersion: '1.0',
+    version: '1.0',
+    id: 'model-picker-main',
+    graph: {
+      id: 'model-picker-main',
+      start: 'entry',
+      nodes: [
+        { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+        { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+      ],
+      transitions: [{ from: 'entry', to: 'exit' }],
+    },
+  }, null, 2));
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Model Picker' }).click();
+  await expect(win.locator('.tab-item.active')).toContainText('main.or-graph');
+  await win.locator('#btn-preview').click();
+  const entryNode = win.locator('.orch-graph-node[data-orch-path="graph.nodes.0"]');
+  await expect(entryNode).toBeVisible();
+  await entryNode.click({ button: 'right' });
+  await expect(win.locator('.orch-context-menu')).toContainText('Choose node model');
+  await win.locator('button[data-orch-context-action="choose-node-model"]').click();
+  await expect(win.locator('.orpad-adapter-picker-overlay')).toBeVisible();
+  await expect(win.locator('.orpad-adapter-picker-overlay')).toContainText('Choose Node Model');
+  await expect(win.locator('.orpad-adapter-picker-overlay')).toContainText('Provider');
+  await expect(win.locator('.orpad-adapter-picker-overlay')).toContainText('Model');
+  await expect(win.locator('#fmt-modal')).toHaveClass(/hidden/);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -852,9 +977,44 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
     }));
   });
   await expect(win.locator('.orch-transition.selected')).toHaveCount(1);
+  await expect(win.locator('[data-orch-transition-edit="from"]')).toBeVisible();
+  await win.locator('[data-orch-transition-edit="to"]').selectOption('external-research-mode');
+  await expect(win.locator('[data-orch-transition-edit="to"]')).toHaveValue('external-research-mode');
+  await win.locator('[data-orch-transition-edit="id"]').evaluate((input, value) => {
+    (input as HTMLInputElement).value = value;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, 'entry-to-research-mode');
+  await win.locator('[data-orch-transition-edit="condition"]').evaluate((input, value) => {
+    (input as HTMLInputElement).value = value;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, 'manual-review');
+  await expect(win.locator('[data-orch-transition-edit="condition"]')).toHaveValue('manual-review');
   await win.locator('button[data-orch-action="transition-straight"]').click();
   await expect(win.locator('.orch-transition.selected')).toHaveClass(/style-straight/);
   await expect(win.locator('.orch-transition-handle')).toBeVisible();
+  await win.locator('[data-orch-transition-edit="point.x"]').evaluate((input, value) => {
+    (input as HTMLInputElement).value = value;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, '420');
+  await win.locator('[data-orch-transition-edit="point.y"]').evaluate((input, value) => {
+    (input as HTMLInputElement).value = value;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, '168');
+  await expect(win.locator('[data-orch-transition-edit="point.x"]')).toHaveValue('420');
+  await expect(win.locator('[data-orch-transition-edit="point.y"]')).toHaveValue('168');
+  await win.keyboard.press('Control+S');
+  const graphAfterTransitionEdit = JSON.parse(fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8'));
+  expect(graphAfterTransitionEdit.graph.transitions).toContainEqual({
+    id: 'entry-to-research-mode',
+    from: 'entry',
+    to: 'external-research-mode',
+    condition: 'manual-review',
+  });
+  const graphMetaAfterTransitionEdit = JSON.parse(fs.readFileSync(graphMetaPath, 'utf-8'));
+  expect(graphMetaAfterTransitionEdit.transitions['graph.nodes.0->graph.nodes.2']).toMatchObject({
+    style: 'straight',
+    points: [{ x: 420, y: 168 }],
+  });
   await win.locator('button[data-orch-action="delete-transition"]').click();
   await expect(win.locator('.orch-graph-node')).toHaveCount(12);
   await expect(win.locator('.orch-transition')).toHaveCount(graphTransitionCountBeforeAdd);

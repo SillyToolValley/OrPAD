@@ -7,8 +7,8 @@
 </p>
 
 -> [Official website](https://or-pad-website.vercel.app)
-  
-**OrPAD (<a>Or</a>chestration <a>P</a>ipeline <a>A</a>uthoring & <a>D</a>evelopment)**<br> 
+
+**OrPAD (<a>Or</a>chestration <a>P</a>ipeline <a>A</a>uthoring & <a>D</a>evelopment)**<br>
  is a local-first editor for Markdown, structured data, diagrams, AI-assisted writing workflows, and supervised orchestration pipelines.
 
 Open Markdown, JSON, YAML, CSV/TSV, TOML, XML, HTML, Mermaid, INI/conf, `.env`,
@@ -188,6 +188,9 @@ the preview follows the editor.
 - Clipboard image paste into `./assets/`
 - Auto-save with crash recovery on restart
 - Drag-and-drop file open
+- New from Template for PRDs, handovers, specs, task lists, ADRs, session logs,
+  and run evidence records. The maintained template decisions live in
+  [TEMPLATE_CATALOG.md](TEMPLATE_CATALOG.md).
 
 ### Sidebar
 
@@ -276,6 +279,27 @@ shell commands, MCP actions, terminal work, and external browsing are treated
 as supervised surfaces: they may be prepared or documented, but side-effecting
 commands and competitor or market research require approved browsing or
 attached evidence before OrPAD treats them as source material.
+
+### Package registry sharing
+
+OrPAD packages can be shared through Registry metadata. The default public path
+is the official OrPAD Registry, where new package entries are admitted through
+maintainer-reviewed pull requests before Package Manager labels them as
+OrPAD official review metadata.
+
+The official registry index is served from
+`https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/node-packs.json`,
+and submissions go through `https://github.com/OrPAD-Lab/orpad-registry/pulls`.
+
+Custom Registry URLs remain supported for teams and experiments, but they are
+shown as custom Registry sources and treated as discovery metadata unless the
+workspace or user explicitly trusts them. Package Manager still checks
+signatures, checksums, review state, declared capabilities, and high-risk
+capabilities before import or update.
+
+Authoring tools can generate checksum-backed Registry entry drafts for a pull
+request, but they do not mark packages approved and do not create official
+Registry signatures by themselves.
 
 ### Git status
 

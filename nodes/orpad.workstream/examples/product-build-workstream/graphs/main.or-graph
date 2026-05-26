@@ -2,32 +2,32 @@
   "kind": "orpad.graph",
   "schemaVersion": "1.0",
   "version": "1.0",
-  "id": "tutorial-worker-patch-review-main",
-  "label": "Tutorial: Worker patch review",
+  "id": "product-build-workstream-main",
+  "label": "Product Build Workstream",
   "role": "entry",
   "graph": {
     "nodes": [
       {
         "id": "entry",
         "type": "orpad.entry",
-        "label": "Begin tutorial run",
+        "label": "Start product build",
         "config": {
-          "summary": "Enter the worker patch review tutorial."
+          "summary": "Enter a scoped product build workflow."
         }
       },
       {
         "id": "probe",
         "type": "orpad.probe",
-        "label": "Discover one candidate",
+        "label": "Discover build item",
         "config": {
-          "lens": "tutorial",
+          "lens": "product-build",
           "candidateLimitPolicy": "strict"
         }
       },
       {
         "id": "queue",
         "type": "orpad.workQueue",
-        "label": "Hold candidate work",
+        "label": "Build queue",
         "config": {
           "queueRoot": "harness/generated/latest-run/queue",
           "schema": "orpad.workItem.v1"
@@ -36,7 +36,7 @@
       {
         "id": "triage",
         "type": "orpad.triage",
-        "label": "Prioritize work",
+        "label": "Triage build item",
         "config": {
           "queueRef": "queue"
         }
@@ -44,7 +44,7 @@
       {
         "id": "dispatcher",
         "type": "orpad.dispatcher",
-        "label": "Claim one item",
+        "label": "Claim build item",
         "config": {
           "queueRef": "queue",
           "workerLoopRef": "worker"
@@ -53,7 +53,7 @@
       {
         "id": "worker",
         "type": "orpad.workerLoop",
-        "label": "Apply tutorial fixture",
+        "label": "Apply build fixture",
         "config": {
           "queueRef": "queue",
           "reviewRequired": true
@@ -62,7 +62,7 @@
       {
         "id": "patch-review",
         "type": "orpad.patchReview",
-        "label": "Review patch",
+        "label": "Review build patch",
         "config": {
           "reviewMode": "user-selected-files"
         }
@@ -70,9 +70,9 @@
       {
         "id": "exit",
         "type": "orpad.exit",
-        "label": "Finish tutorial",
+        "label": "Finish build flow",
         "config": {
-          "summary": "Tutorial complete after the patch is approved or skipped."
+          "summary": "Product build flow complete after the patch is approved or skipped."
         }
       }
     ],

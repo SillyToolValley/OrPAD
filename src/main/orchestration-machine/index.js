@@ -21,6 +21,10 @@ const machine = require('./machine');
 const metadataStore = require('./metadata-store');
 const nodeLifecycle = require('./node-lifecycle');
 const nodePacks = require('./node-packs');
+const nodePackInstaller = require('./node-pack-installer');
+const nodePackAuthoring = require('./node-pack-authoring');
+const nodePackRegistry = require('./node-pack-registry');
+const nodePackWorkspaceLock = require('./node-pack-workspace-lock');
 const patches = require('./patches');
 const patchReviewClassifier = require('./patch-review-classifier');
 const pathResolver = require('./path-resolver');
@@ -69,7 +73,11 @@ module.exports = {
   ...machine,
   ...metadataStore,
   ...nodeLifecycle,
+  ...nodePackInstaller,
+  ...nodePackAuthoring,
   ...nodePacks,
+  ...nodePackRegistry,
+  ...nodePackWorkspaceLock,
   ...patches,
   ...patchReviewClassifier,
   ...pathResolver,

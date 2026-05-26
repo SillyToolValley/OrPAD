@@ -1,5 +1,5 @@
 # .NET Lab Code Starter Pack
 
-This built-in starter pack packages a code-focused lens for C#/.NET teaching labs.
+Reusable metadata-only authoring guidance for .NET lab code, tests, and focused implementation review.
 
-Generated pipelines use it when the prompt or workspace combines C# source, project files, Program.cs examples, lab READMEs, slides, and runnable validation. The pack pushes probes to decide whether each lab needs code edits, documentation edits, or explicit no-code-change evidence.
+This starter pack declares graph, skill, and rule assets only; it does not provide executable handlers.

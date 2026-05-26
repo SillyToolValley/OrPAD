@@ -540,7 +540,37 @@ harness command assembled by main process.
   that claimed work completed.
 - Node pack compatibility is metadata-only in this phase. Normal install validation rejects npm
   lifecycle scripts, executable handlers, community overrides of the reserved `orpad.*`
-  namespace, incompatible pack formats, and capability-denied packs before any code can run.
+  namespace, incompatible pack formats, unsafe pack-relative paths, and user-node type
+  conflicts before activation. Untrusted, capability-denied, and review-required packs may
+  be present on disk for inspection, but Machine execution keeps them non-runnable until
+  OrPAD-owned trust evidence, review evidence, and exact capability grants resolve them.
+- Node pack sharing installs use a main-process safe transaction. Local installs pre-audit the
+  source folder, copy only manifest-declared files into a staging directory, re-run Machine
+  discovery/validation, then atomically activate under `<userData>/nodes/<pack-id>/` and update
+  `<userData>/nodes/orpad-node-packs.lock.json`. Registry installs fetch the manifest plus
+  declared raw files only; normal install does not run git, npm, archive extraction, lifecycle
+  scripts, native builds, or pack-provided commands.
+- Registry signatures are verified only when OrPAD-owned trusted registry public keys are
+  configured. A verified registry signature can turn registry-declared version signature,
+  checksum, and approved review metadata into Machine-owned trust evidence; unsigned or
+  untrusted registries do not. Registry installs compare the fetched manifest and declared
+  asset bytes against registry SHA-256 checksums before activation, and checksum mismatches
+  fail closed without replacing the active pack.
+- Registry governance separates official OrPAD Registry metadata from custom Registry
+  discovery. Official entries use the `orpad-pr-reviewed` review model and are accepted through
+  maintainer-reviewed Registry pull requests in `OrPAD-Lab/orpad-registry`; custom or
+  third-party Registry sources are labeled separately in Package Manager and their review claims
+  do not become OrPAD-owned approval evidence.
+- Node pack updates reuse the same safe install transaction. Pinned installs are skipped by
+  default, failed updates leave the active pack untouched, and successful replacements store
+  the previous lock entry plus backup path for an explicit rollback command.
+- Node pack authoring tools are validation and metadata-generation tools only. `node-packs
+  registry-entry create` computes SHA-256 checksums from manifest-declared files but never
+  claims verified trust, never creates a registry signature, and never marks review status as
+  approved. Publishing remains a manual registry pull request and review flow.
+- Workspace-local node pack locks are metadata-only sharing state. Workspaces can declare
+  required packs, but install state remains user-level app data and restore/install still routes
+  through the Machine safe transaction instead of trusting workspace files as authority.
 - Missing or incompatible community nodes are represented as lossless placeholders for graph
   round-trip; placeholder metadata is not executable.
 
@@ -567,17 +597,17 @@ features that intentionally launch configured/user-requested child processes.
 
 | Channel | Type | What it does | Sender-frame check | Path validation |
 |---------|------|-------------|-------------------|----------------|
-| `ai-keys-status` | handle | Return key presence/masks | ??| userData only |
-| `ai-key-set` | handle | Encrypt and save provider API key | ??| userData only |
-| `ai-key-get-decrypted` | handle | Reject legacy key export attempts | ??| No plaintext key returned |
-| `ai-key-remove` | handle | Delete provider API key | ??| userData only |
+| `ai-keys-status` | handle | Return key presence/masks | n/a | userData only |
+| `ai-key-set` | handle | Encrypt and save provider API key | n/a | userData only |
+| `ai-key-get-decrypted` | handle | Reject legacy key export attempts | n/a | No plaintext key returned |
+| `ai-key-remove` | handle | Delete provider API key | n/a | userData only |
 | `ai-provider-chat` | handle | Main-process AI provider proxy using stored keys | reads `event.sender` | No plaintext key returned |
 | `ai-provider-cancel` | handle | Cancel a main-process AI provider request | reads `event.sender` | Sender-owned request only |
-| `ai-conversations-list` | handle | List `.orpad/conversations` summaries | ??| Workspace subdir guard |
-| `ai-conversation-load` | handle | Load one conversation JSON | ??| Workspace subdir guard |
-| `ai-conversation-save` | handle | Save one conversation JSON | ??| Workspace subdir guard |
-| `ai-conversation-delete` | handle | Delete one conversation JSON | ??| Workspace subdir guard |
-| `ai-conversations-search` | handle | Substring search conversation JSON | ??| Workspace subdir guard |
+| `ai-conversations-list` | handle | List `.orpad/conversations` summaries | n/a | Workspace subdir guard |
+| `ai-conversation-load` | handle | Load one conversation JSON | n/a | Workspace subdir guard |
+| `ai-conversation-save` | handle | Save one conversation JSON | n/a | Workspace subdir guard |
+| `ai-conversation-delete` | handle | Delete one conversation JSON | n/a | Workspace subdir guard |
+| `ai-conversations-search` | handle | Substring search conversation JSON | n/a | Workspace subdir guard |
 | `get-app-info` | handle | Return version + isPackaged | — | — |
 | `get-system-theme` | handle | Return system dark/light | — | — |
 | `get-locale` | handle | Return locale code + mtime | — | — |
@@ -690,38 +720,29 @@ and AI suggestions are presented as drafts/prefills rather than executed.
 
 ## Dependency audit
 
-Run: `npm audit --omit=dev --audit-level=high` (exit 0)
+Run on 2026-05-26 for v1.0.0-beta.4 readiness:
 
 ```
-uuid  <14.0.0
-Severity: moderate
-uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided
-https://github.com/advisories/GHSA-w5hq-g745-h8pq
-fix available via `npm audit fix --force`
-Will install mermaid@9.1.7, which is a breaking change
-node_modules/uuid
-  mermaid  >=9.2.0-rc1
-  Depends on vulnerable versions of uuid
-
-2 moderate severity vulnerabilities
+npm audit --omit=dev --audit-level=high
+found 0 vulnerabilities
 ```
 
-`npm audit --omit=dev --audit-level=critical` → **exit 0** (no critical or high findings).
+`npm audit --omit=dev --audit-level=critical` -> **exit 0** (no critical or high findings).
 
-Full `npm audit --audit-level=high` currently reports high findings through `electron@33`
-and `electron-builder` transitive tooling. Production runtime audit remains clean at high
-severity, but Electron itself is the packaged runtime, so the Electron major upgrade path
-should be evaluated before final public release. Tracked as Follow-up #10.
+Full `npm audit --audit-level=high` still reports dev/build-tool findings through
+`electron@33`, `electron-builder`, `workbox-cli`, and related transitive tooling.
+Production dependency audit is clean at high severity, but Electron itself is the
+packaged runtime, so the Electron major upgrade path remains a release-readiness follow-up.
+Tracked as Follow-up #10.
 
 **Triage:**
-- The uuid buffer-bounds check issue (GHSA-w5hq-g745-h8pq) only manifests when an optional
-  second `buf` argument is passed with a length < 16 bytes. OrPAD does not call uuid
-  directly; it is a transitive dep of mermaid. Severity: **moderate**, exploitability: low
-  (no user-supplied buf argument in the call path).
-- Fixing requires downgrading mermaid to 9.1.7 (breaking), which would lose diagram features.
-  Tracked as Follow-up #5.
+- v1.0.0-beta.4 updates production transitive dependencies including `fast-uri`,
+  `hono`, `ip-address`, `qs`, `brace-expansion`, `mermaid`, and `uuid` through
+  `npm audit fix --omit=dev`.
+- Remaining high findings are dev/build pipeline findings or Electron runtime findings
+  that require dedicated major-version upgrade work.
 
-**js-yaml 4.1.1 — `load()` safety:** In js-yaml v4.x the default `load()` function uses
+**js-yaml 4.1.1 `load()` safety:** In js-yaml v4.x the default `load()` function uses
 `DEFAULT_SCHEMA` (equivalent to the old v3 `safeLoad` / `DEFAULT_SAFE_SCHEMA`). JavaScript-type
 constructors (`!!js/function`, `!!js/regexp`, `!!js/undefined`) were removed in v4.0. The
 `safeLoad` export is a deprecated compatibility alias for `load`. **No code change required.**
@@ -757,9 +778,11 @@ No `eval` or dynamic code execution in the parser. **PASS.**
    deployment target ever changes.
    Priority: **P3**. Owner: maintainer.
 
-5. **(Moderate dep) uuid < 14.0.0 via mermaid** — Upgrade path requires mermaid 9.1.7
-   (breaking). Evaluate when mermaid publishes a non-breaking uuid-14 compatible release.
-   Priority: **P2**. Owner: maintainer.
+5. **(Low) Mermaid/parser dependency watch** -> The production audit issue previously
+   tracked through Mermaid/uuid is resolved for v1.0.0-beta.4. Keep Mermaid and its
+   parser dependencies on the release audit watchlist because diagram parsing and
+   sanitization remain user-content surfaces.
+   Priority: **P3**. Owner: maintainer.
 
 6. **(Medium) MCP custom server review** — Before public release, decide whether the MCP
    server editor should remain fully custom-command capable or ship with a stricter allowlist

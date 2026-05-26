@@ -119,6 +119,18 @@ contextBridge.exposeInMainWorld('orpad', {
     generatePipeline: (request) => ipcRenderer.invoke('orchestration-generate-pipeline', request),
     cancelGeneratePipeline: (requestId) => ipcRenderer.invoke('orchestration-cancel-generate-pipeline', requestId),
     listNodePacks: (request = {}) => ipcRenderer.invoke('orchestration-list-node-packs', request),
+    listNodePackRegistry: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-registry-list', request),
+    searchNodePackRegistry: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-registry-search', request),
+    installNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-install', request),
+    updateNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-update', request),
+    enableNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-enable', request),
+    disableNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-disable', request),
+    removeNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-remove', request),
+    rollbackNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-rollback', request),
+    exportNodePackList: () => ipcRenderer.invoke('orchestration-node-pack-export-list'),
+    readNodePackWorkspaceLock: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-workspace-lock-read', request),
+    writeNodePackWorkspaceLock: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-workspace-lock-write', request),
+    upsertNodePackWorkspaceLock: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-workspace-lock-upsert', request),
     onGenerateEvent: (cb) => {
       const listener = (_event, payload) => cb(payload);
       ipcRenderer.on('orchestration-generate-pipeline-event', listener);

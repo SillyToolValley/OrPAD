@@ -2,32 +2,32 @@
   "kind": "orpad.pipeline",
   "schemaVersion": "1.0",
   "version": "1.0",
-  "id": "maintenance-workstream-example",
-  "title": "Maintenance Workstream Example",
-  "description": "Self-contained walkthrough of the maintenance workstream pattern: three parallel probes (product, bug-risk, UX/UI) feed a barrier, then queue, triage, dispatcher, worker loop, artifact contract, and patch review. Use this as a tutorial reference for how the workstream nodes wire together.",
+  "id": "maintenance-quality-workstream",
+  "title": "Maintenance Quality Workstream",
+  "description": "Maintenance template for collecting product, bug-risk, and UX/UI findings, merging them into a queue, triaging duplicates, dispatching focused work, checking evidence, and reviewing patches before exit.",
   "template": true,
   "trustLevel": "local-authored",
   "entryGraph": "graphs/main.or-graph",
   "graphs": {
     "main": {
       "file": "graphs/main.or-graph",
-      "description": "End-to-end maintenance pattern with parallel discovery, queue ingestion, dispatch, worker loop, evidence contract, and patch review."
+      "description": "Maintenance pattern with parallel discovery, queue ingestion, queue validation, triage, dispatch, worker loop, evidence contract, and patch review."
     }
   },
   "nodePacks": [
     {
       "id": "orpad.core",
-      "version": ">=1.0.0-beta.3"
+      "version": ">=1.0.0-beta.4"
     },
     {
       "id": "orpad.workstream",
-      "version": ">=0.1.0"
+      "version": ">=1.0.0-beta.4"
     }
   ],
   "executionPolicy": {
     "mode": "template-only",
     "copyBeforeRun": true,
-    "description": "Built-in examples are templates. Copy this pipeline into a workspace before executing so run evidence files are not written into the app bundle."
+    "description": "Built-in maintenance template. Copy this pipeline into a workspace before executing so run evidence files stay with the project."
   },
   "run": {
     "artifactRoot": ".orpad/harness/generated/latest-run/artifacts",

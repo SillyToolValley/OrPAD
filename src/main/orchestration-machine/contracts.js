@@ -13,6 +13,7 @@ const SCHEMA_VERSIONS = Object.freeze({
   adapterResult: 'orpad.workerResult.v1',
   machineAdapter: 'orpad.machineAdapter.v2',
   contentEditorialEvaluation: 'orpad.contentEditorialEvaluation.v1',
+  nodePackRegistry: 'orpad.nodePackRegistry.v1',
 });
 
 const CONTRACT_SCHEMA_FILES = Object.freeze({
@@ -26,6 +27,7 @@ const CONTRACT_SCHEMA_FILES = Object.freeze({
   adapterResult: 'adapter-result.schema.json',
   machineAdapter: 'machine-adapter.schema.json',
   contentEditorialEvaluation: 'content-editorial-evaluation.schema.json',
+  nodePackRegistry: 'node-pack-registry.schema.json',
 });
 
 const CONTRACT_SCHEMA_NAMES = Object.freeze(Object.keys(CONTRACT_SCHEMA_FILES));

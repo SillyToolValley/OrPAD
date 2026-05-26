@@ -1,16 +1,20 @@
 import prd from './prd.js';
+import releaseChecklist from './release-checklist.js';
+import nodePackSubmission from './node-pack-submission.js';
+import uxReview from './ux-review.js';
 import handover from './handover.js';
 import specSheet from './spec-sheet.js';
 import taskList from './task-list.js';
 import adr from './adr.js';
 import sessionLog from './session-log.js';
+import runEvidence from './run-evidence.js';
 
 const templates = new Map();
 
 function slug(value) {
   return String(value || 'untitled')
     .toLowerCase()
-    .replace(/[^a-z0-9가-힣_-]+/gi, '-')
+    .replace(/[^\p{Letter}\p{Number}._-]+/gu, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80) || 'untitled';
 }
@@ -88,9 +92,13 @@ export function createTemplateFile(id, opts = {}) {
 
 [
   prd,
+  releaseChecklist,
+  nodePackSubmission,
+  uxReview,
   handover,
   specSheet,
   taskList,
   adr,
   sessionLog,
+  runEvidence,
 ].forEach(registerTemplate);

@@ -2,28 +2,28 @@
   "kind": "orpad.pipeline",
   "schemaVersion": "1.0",
   "version": "1.0",
-  "id": "tutorial-gate-decision",
-  "title": "Tutorial: Gate decision",
-  "description": "Smallest example of an orpad.gate node guarding the rest of the flow. The gate evaluates two pipeline-level criteria with onFail=warn so a missing condition surfaces as a warning instead of failing the run. Read the gate config to learn how criteria, supportedCriteria, and onFail behave together.",
+  "id": "product-decision-gate",
+  "title": "Product Decision Gate",
+  "description": "Decision template for checking whether a product change is ready to enter implementation. It frames problem evidence, ownership, acceptance criteria, non-goals, and release risk before the build starts.",
   "template": true,
   "trustLevel": "local-authored",
   "entryGraph": "graphs/main.or-graph",
   "graphs": {
     "main": {
       "file": "graphs/main.or-graph",
-      "description": "Single-path graph: entry -> context -> gate -> exit."
+      "description": "Product readiness graph: entry -> product context -> readiness gate -> decision record -> exit."
     }
   },
   "nodePacks": [
     {
       "id": "orpad.core",
-      "version": ">=1.0.0-beta.3"
+      "version": ">=1.0.0-beta.4"
     }
   ],
   "executionPolicy": {
     "mode": "template-only",
     "copyBeforeRun": true,
-    "description": "Built-in tutorial. Copy the pipeline into a workspace before running so any generated evidence stays out of the app bundle."
+    "description": "Built-in product template. Copy this pipeline into a workspace before running so generated evidence stays with the project."
   },
   "run": {
     "artifactRoot": ".orpad/harness/generated/latest-run/artifacts",

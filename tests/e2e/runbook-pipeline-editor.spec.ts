@@ -52,6 +52,97 @@ async function expectFittedGraphNodesClearOfFloatingInspector(win: Page, label: 
   ).toEqual([]);
 }
 
+function nodePackManagerRow(win: Page, label: string): Locator {
+  return win.locator('.node-pack-manager-pack').filter({ hasText: label });
+}
+
+async function openNodePackManagerRowDetail(win: Page, row: Locator): Promise<Locator> {
+  const button = row.locator('[data-node-pack-manager-detail-open]');
+  await row.evaluate((element) => {
+    const list = element.closest<HTMLElement>('.node-pack-manager-list');
+    if (!list) {
+      element.scrollIntoView({ block: 'center', inline: 'nearest' });
+      return;
+    }
+    const rowRect = element.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    list.scrollTop += rowRect.top - listRect.top - ((list.clientHeight - rowRect.height) / 2);
+  });
+  await win.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  await button.click();
+  const modal = win.locator('.node-pack-manager-detail-modal');
+  await expect(modal).toBeVisible();
+  return modal;
+}
+
+async function closeNodePackManagerRowDetail(win: Page): Promise<void> {
+  await win.locator('[data-node-pack-manager-detail-close]').click();
+  await expect(win.locator('.node-pack-manager-detail-modal')).toHaveCount(0);
+}
+
+async function expectNodePackManagerInspectorUsable(win: Page, label: string, expectedPackCount?: number): Promise<void> {
+  await win.locator('.node-pack-manager-list').evaluate((list) => {
+    list.scrollTop = list.scrollHeight;
+  });
+  await win.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+
+  const layout = await win.locator('.node-pack-manager').evaluate((manager) => {
+    const modalBody = document.querySelector('#fmt-modal-body');
+    const shell = manager.querySelector<HTMLElement>('.node-pack-manager-shell');
+    const list = manager.querySelector<HTMLElement>('.node-pack-manager-list');
+    const rows = [...manager.querySelectorAll<HTMLElement>('.node-pack-manager-pack')];
+    const managerRect = manager.getBoundingClientRect();
+    const bodyRect = modalBody?.getBoundingClientRect();
+    const shellRect = shell?.getBoundingClientRect();
+    const listRect = list?.getBoundingClientRect();
+    const rowRects = rows.map(row => row.getBoundingClientRect());
+    const rowActionCounts = rows.map(row => row.querySelectorAll('.node-pack-manager-package-row-actions button').length);
+    const tolerance = 1;
+    return {
+      widthFits: manager.scrollWidth <= manager.clientWidth + tolerance,
+      packCount: rows.length,
+      managerFitsModalBody: !!bodyRect && managerRect.bottom <= bodyRect.bottom + tolerance,
+      managerFitsModalBodyHorizontally: !!bodyRect
+        && managerRect.left >= bodyRect.left - tolerance
+        && managerRect.right <= bodyRect.right + tolerance,
+      shellFitsManager: !!shellRect && shellRect.bottom <= managerRect.bottom + tolerance,
+      shellFitsManagerHorizontally: !!shellRect
+        && shellRect.left >= managerRect.left - tolerance
+        && shellRect.right <= managerRect.right + tolerance,
+      panesFitShell: !!shellRect && !!listRect
+        && listRect.bottom <= shellRect.bottom + tolerance,
+      panesFitShellHorizontally: !!shellRect && !!listRect
+        && listRect.left >= shellRect.left - tolerance
+        && listRect.right <= shellRect.right + tolerance,
+      listHasViewport: !!list && list.clientHeight > 0,
+      listWidthFits: !!list && list.scrollWidth <= list.clientWidth + tolerance,
+      rowsStayInList: !!listRect && rowRects.every(rect => rect.left >= listRect.left - tolerance && rect.right <= listRect.right + tolerance),
+      rowsHaveExpectedActions: rowActionCounts.every(count => count === 2),
+      debug: {
+        listScrollTop: list?.scrollTop ?? null,
+        listScrollHeight: list?.scrollHeight ?? null,
+        listClientHeight: list?.clientHeight ?? null,
+        rowActionCounts,
+      },
+    };
+  });
+
+  expect(layout.widthFits, `${label}: manager should not overflow horizontally`).toBe(true);
+  expect(layout.managerFitsModalBody, `${label}: manager should fit inside the modal body`).toBe(true);
+  expect(layout.managerFitsModalBodyHorizontally, `${label}: manager should not be clipped by the modal body ${JSON.stringify(layout)}`).toBe(true);
+  expect(layout.shellFitsManager, `${label}: inspector shell should fit inside the manager`).toBe(true);
+  expect(layout.shellFitsManagerHorizontally, `${label}: inspector shell should not be clipped horizontally ${JSON.stringify(layout)}`).toBe(true);
+  expect(layout.panesFitShell, `${label}: list and inspector panes should fit inside the shell ${JSON.stringify(layout)}`).toBe(true);
+  expect(layout.panesFitShellHorizontally, `${label}: list and inspector panes should not overflow the shell ${JSON.stringify(layout)}`).toBe(true);
+  expect(layout.listHasViewport, `${label}: package list should have visible height`).toBe(true);
+  expect(layout.listWidthFits, `${label}: package list should not require horizontal scroll ${JSON.stringify(layout)}`).toBe(true);
+  expect(layout.rowsStayInList, `${label}: package rows should stay inside the list ${JSON.stringify(layout)}`).toBe(true);
+  expect(layout.rowsHaveExpectedActions, `${label}: package rows should expose Detail and Import actions ${JSON.stringify(layout)}`).toBe(true);
+  if (typeof expectedPackCount === 'number') {
+    expect(layout.packCount, `${label}: pack count`).toBe(expectedPackCount);
+  }
+}
+
 async function readInlineDiagnosticColorTreatment(field: Locator): Promise<{
   className: string;
   color: string;
@@ -232,6 +323,999 @@ async function setNodePackManagerThrowingMock(win: Page, message: string): Promi
     (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
     (window as any).__orpadNodePackListPacks = mockListNodePacks;
   }, message);
+}
+
+async function setNodePackRegistryInstallMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    let installed = false;
+    const registryEntry = {
+      id: 'community.registry-pack',
+      name: 'Registry Community Pack',
+      description: '<strong>Registry prose stays text.</strong>',
+      latestVersion: '0.1.0',
+      versionCount: 1,
+      sourceRepository: 'https://github.com/example/registry-pack',
+      sourceRef: 'v0.1.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      capabilities: ['read.workspace'],
+      keywords: ['registry'],
+      categories: ['Testing'],
+      author: { name: 'Fixture Author', repository: 'https://github.com/example/registry-pack' },
+      license: 'MIT',
+      installable: true,
+    };
+    const installedResponse = () => ({
+      success: true,
+      ok: true,
+      nodePacks: installed ? [{
+        id: registryEntry.id,
+        name: registryEntry.name,
+        version: registryEntry.latestVersion,
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'untrusted',
+        capabilities: ['read.workspace'],
+        description: registryEntry.description,
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.registry-pack',
+          manifestPath: '/packs/community.registry-pack/orpad.node-pack.json',
+        },
+        nodes: [],
+      }] : [],
+      diagnostics: [],
+      conflicts: [],
+    });
+    const mockListNodePacks = async () => installedResponse();
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackRegistrySource = 'https://registry.example/orpad-node-packs.json';
+    (window as any).__orpadNodePackRegistryList = async () => ({
+      success: true,
+      ok: true,
+      registry: {
+        registryId: 'orpad.test',
+        name: 'Fixture Registry',
+      },
+      source: 'https://registry.example/orpad-node-packs.json',
+      entries: [registryEntry],
+      diagnostics: [],
+    });
+    (window as any).__orpadNodePackRegistrySearch = async () => ({
+      success: true,
+      ok: true,
+      registry: {
+        registryId: 'orpad.test',
+        name: 'Fixture Registry',
+      },
+      source: 'https://registry.example/orpad-node-packs.json',
+      entries: [registryEntry],
+      diagnostics: [],
+      query: 'registry',
+    });
+    (window as any).__orpadNodePackInstall = async ({ packId }: { packId: string }) => {
+      if (packId !== registryEntry.id) {
+        return { success: false, ok: false, error: 'unexpected pack id' };
+      }
+      installed = true;
+      return { success: true, ok: true, action: 'install', nodePack: installedResponse().nodePacks[0], diagnostics: [] };
+    };
+  });
+}
+
+async function setNodePackMissingResolutionRegistryMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    let installed = false;
+    const registryEntry = {
+      id: 'community.missing-pack',
+      name: 'Missing Pack Candidate',
+      description: 'Candidate pack that resolves a shared pipeline dependency.',
+      latestVersion: '9.9.1',
+      versionCount: 1,
+      sourceRepository: 'https://github.com/example/missing-pack',
+      sourceRef: 'v9.9.1',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      capabilities: ['read.workspace'],
+      nodeTypes: ['community.sharedNode'],
+      keywords: ['missing', 'shared'],
+      categories: ['Testing'],
+      author: { name: 'Fixture Author', repository: 'https://github.com/example/missing-pack' },
+      license: 'MIT',
+      installable: true,
+    };
+    const installedResponse = () => ({
+      success: true,
+      ok: true,
+      nodePacks: installed ? [{
+        id: registryEntry.id,
+        name: registryEntry.name,
+        version: registryEntry.latestVersion,
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'resolved',
+        validationStatus: 'valid',
+        capabilities: ['read.workspace'],
+        description: registryEntry.description,
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.missing-pack',
+          manifestPath: '/packs/community.missing-pack/orpad.node-pack.json',
+        },
+        nodes: [{
+          type: 'community.sharedNode',
+          path: 'nodes/shared.or-node',
+          runtimeHandlerKind: 'metadata-only',
+          capabilities: ['read.workspace'],
+        }],
+      }] : [],
+      diagnostics: [],
+      conflicts: [],
+    });
+    const mockListNodePacks = async () => installedResponse();
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackRegistrySource = 'https://registry.example/orpad-node-packs.json';
+    const registryResponse = (query = '') => ({
+      success: true,
+      ok: true,
+      registry: {
+        registryId: 'orpad.test',
+        name: 'Fixture Registry',
+      },
+      source: 'https://registry.example/orpad-node-packs.json',
+      entries: [registryEntry],
+      diagnostics: [],
+      query,
+    });
+    (window as any).__orpadNodePackRegistryList = async () => registryResponse('');
+    (window as any).__orpadNodePackRegistrySearch = async ({ query }: { query?: string }) => registryResponse(query || '');
+    (window as any).__orpadNodePackInstall = async ({ packId }: { packId: string }) => {
+      if (packId !== registryEntry.id) {
+        return { success: false, ok: false, error: 'unexpected pack id' };
+      }
+      installed = true;
+      return { success: true, ok: true, action: 'install', nodePack: installedResponse().nodePacks[0], diagnostics: [] };
+    };
+  });
+}
+
+async function setNodePackRegistryUpdateMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    let installedVersion = '0.1.0';
+    const registryEntry = {
+      id: 'community.update-pack',
+      name: 'Registry Update Pack',
+      description: 'Update candidate prose.',
+      latestVersion: '0.2.0',
+      versionCount: 2,
+      sourceRepository: 'https://github.com/example/update-pack',
+      sourceRef: 'v0.2.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'declared',
+      checksumStatus: 'manifest-and-files-declared',
+      reviewStatus: 'approved',
+      capabilities: ['read.workspace'],
+      keywords: ['update'],
+      categories: ['Testing'],
+      author: { name: 'Fixture Author', repository: 'https://github.com/example/update-pack' },
+      license: 'MIT',
+      installable: true,
+    };
+    const installedPack = () => ({
+      id: registryEntry.id,
+      name: registryEntry.name,
+      version: installedVersion,
+      origin: 'user-installed',
+      trustLevel: 'community',
+      resolutionState: 'resolved',
+      validationStatus: 'valid',
+      capabilities: ['read.workspace'],
+      description: registryEntry.description,
+      discovery: {
+        rootKind: 'user',
+        packDir: '/packs/community.update-pack',
+        manifestPath: '/packs/community.update-pack/orpad.node-pack.json',
+      },
+      nodes: [],
+    });
+    const installedResponse = () => ({
+      success: true,
+      ok: true,
+      nodePacks: [installedPack()],
+      diagnostics: [],
+      conflicts: [],
+    });
+    const mockListNodePacks = async () => installedResponse();
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackRegistrySource = 'https://registry.example/orpad-node-packs.json';
+    (window as any).__orpadNodePackRegistryList = async () => ({
+      success: true,
+      ok: true,
+      registry: {
+        registryId: 'orpad.test',
+        name: 'Fixture Registry',
+      },
+      source: 'https://registry.example/orpad-node-packs.json',
+      entries: [registryEntry],
+      diagnostics: [],
+    });
+    (window as any).__orpadNodePackUpdate = async ({ packId }: { packId: string }) => {
+      if (packId !== registryEntry.id) {
+        return { success: false, ok: false, error: 'unexpected pack id' };
+      }
+      installedVersion = registryEntry.latestVersion;
+      return {
+        success: true,
+        ok: true,
+        action: 'update',
+        results: [{ success: true, ok: true, action: 'install', nodePack: installedPack(), diagnostics: [] }],
+        nodePack: installedPack(),
+        diagnostics: [],
+      };
+    };
+  });
+}
+
+async function setNodePackWorkspaceLockMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    const workspaceRegistrySource = 'https://registry.example/workspace-lock.json';
+    const defaultRegistrySource = 'https://registry.example/default.json';
+    let installedVersion = '0.1.0';
+    let missingInstalled = false;
+    const registryCalls: string[] = [];
+    const workspaceLockUpserts: any[] = [];
+    const installRequests: any[] = [];
+    const lockedEntry = {
+      id: 'community.locked-pack',
+      name: 'Workspace Locked Pack',
+      description: 'Workspace lock drift fixture package.',
+      latestVersion: '0.2.0',
+      versionCount: 2,
+      sourceRepository: 'https://github.com/example/workspace-locked-pack',
+      sourceRef: 'v0.2.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'declared',
+      checksumStatus: 'manifest-and-files-declared',
+      reviewStatus: 'approved',
+      capabilities: ['read.workspace'],
+      nodeTypes: ['community.lockedNode'],
+      categories: ['Testing'],
+      installable: true,
+    };
+    const missingEntry = {
+      id: 'community.missing-pack',
+      name: 'Workspace Lock Missing Candidate',
+      description: 'Candidate selected from workspace lock metadata.',
+      latestVersion: '9.9.1',
+      versionCount: 1,
+      sourceRepository: 'https://github.com/example/workspace-missing-pack',
+      sourceRef: 'v9.9.1',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'declared',
+      checksumStatus: 'manifest-and-files-declared',
+      reviewStatus: 'approved',
+      capabilities: ['read.workspace'],
+      nodeTypes: ['community.sharedNode'],
+      categories: ['Testing'],
+      installable: true,
+    };
+    const unsafeEntry = {
+      id: 'community.locked-unsafe',
+      name: 'Workspace Lock Unsafe Pack',
+      description: 'Unsafe package remains blocked even when lock metadata exists.',
+      latestVersion: '0.9.0',
+      versionCount: 1,
+      sourceRepository: 'https://github.com/example/workspace-unsafe-pack',
+      sourceRef: 'v0.9.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'declared',
+      checksumStatus: 'mismatch',
+      reviewStatus: 'approved',
+      capabilities: ['read.workspace', 'use.credentials'],
+      highRiskCapabilities: ['use.credentials'],
+      nodeTypes: ['community.unsafeNode'],
+      categories: ['Testing'],
+      installable: true,
+    };
+    let workspaceLock = {
+      kind: 'orpad.workspaceNodePackLock',
+      schemaVersion: '1.0',
+      updatedAt: '2026-05-26T00:00:00.000Z',
+      packs: [{
+        id: lockedEntry.id,
+        version: '0.2.0',
+        registrySource: workspaceRegistrySource,
+        source: 'registry',
+        sourceRepository: lockedEntry.sourceRepository,
+        sourceRef: lockedEntry.sourceRef,
+        manifestPath: lockedEntry.manifestPath,
+        signatureStatus: lockedEntry.signatureStatus,
+        checksumStatus: lockedEntry.checksumStatus,
+        reviewStatus: lockedEntry.reviewStatus,
+        trustLevel: lockedEntry.trustLevel,
+        capabilities: lockedEntry.capabilities,
+        resolvedNodeTypes: lockedEntry.nodeTypes,
+        metadataTrust: 'registry-discovery-only',
+        diagnostics: [],
+      }, {
+        id: missingEntry.id,
+        version: missingEntry.latestVersion,
+        registrySource: workspaceRegistrySource,
+        source: 'registry',
+        sourceRepository: missingEntry.sourceRepository,
+        sourceRef: missingEntry.sourceRef,
+        manifestPath: missingEntry.manifestPath,
+        signatureStatus: missingEntry.signatureStatus,
+        checksumStatus: missingEntry.checksumStatus,
+        reviewStatus: missingEntry.reviewStatus,
+        trustLevel: missingEntry.trustLevel,
+        capabilities: missingEntry.capabilities,
+        resolvedNodeTypes: missingEntry.nodeTypes,
+        metadataTrust: 'registry-discovery-only',
+        diagnostics: [],
+      }, {
+        id: unsafeEntry.id,
+        version: unsafeEntry.latestVersion,
+        registrySource: workspaceRegistrySource,
+        source: 'registry',
+        checksumStatus: unsafeEntry.checksumStatus,
+        reviewStatus: unsafeEntry.reviewStatus,
+        highRiskCapabilities: unsafeEntry.highRiskCapabilities,
+        resolvedNodeTypes: unsafeEntry.nodeTypes,
+        metadataTrust: 'registry-discovery-only',
+        diagnostics: [],
+      }],
+    };
+    const installedPack = () => ({
+      id: lockedEntry.id,
+      name: lockedEntry.name,
+      version: installedVersion,
+      origin: 'user-installed',
+      trustLevel: 'community',
+      resolutionState: 'resolved',
+      validationStatus: 'valid',
+      capabilities: ['read.workspace'],
+      description: lockedEntry.description,
+      discovery: {
+        rootKind: 'user',
+        packDir: '/packs/community.locked-pack',
+        manifestPath: '/packs/community.locked-pack/orpad.node-pack.json',
+      },
+      nodes: [{
+        type: 'community.lockedNode',
+        path: 'nodes/locked.or-node',
+        runtimeHandlerKind: 'metadata-only',
+        capabilities: ['read.workspace'],
+      }],
+    });
+    const missingInstalledPack = () => ({
+      id: missingEntry.id,
+      name: missingEntry.name,
+      version: missingEntry.latestVersion,
+      origin: 'user-installed',
+      trustLevel: 'community',
+      resolutionState: 'resolved',
+      validationStatus: 'valid',
+      capabilities: ['read.workspace'],
+      description: missingEntry.description,
+      discovery: {
+        rootKind: 'user',
+        packDir: '/packs/community.missing-pack',
+        manifestPath: '/packs/community.missing-pack/orpad.node-pack.json',
+      },
+      nodes: [{
+        type: 'community.sharedNode',
+        path: 'nodes/shared.or-node',
+        runtimeHandlerKind: 'metadata-only',
+        capabilities: ['read.workspace'],
+      }],
+    });
+    const installedResponse = () => ({
+      success: true,
+      ok: true,
+      nodePacks: [
+        installedPack(),
+        ...(missingInstalled ? [missingInstalledPack()] : []),
+      ],
+      diagnostics: [],
+      conflicts: [],
+    });
+    const lockResponse = () => ({
+      success: true,
+      ok: true,
+      path: '/workspace/.orpad/orpad-node-packs.lock.json',
+      lockPath: '/workspace/.orpad/orpad-node-packs.lock.json',
+      lock: workspaceLock,
+      packs: workspaceLock.packs,
+      diagnostics: [],
+    });
+    const mockListNodePacks = async () => installedResponse();
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadDefaultNodePackRegistrySource = defaultRegistrySource;
+    (window as any).__orpadNodePackRegistrySource = defaultRegistrySource;
+    (window as any).__orpadNodePackWorkspaceLockRead = async () => lockResponse();
+    (window as any).__orpadNodePackWorkspaceLockWrite = async ({ lock }: { lock: any }) => {
+      workspaceLock = { ...workspaceLock, ...(lock || {}), packs: Array.isArray(lock?.packs) ? lock.packs : workspaceLock.packs };
+      return lockResponse();
+    };
+    (window as any).__orpadNodePackWorkspaceLockUpsert = async ({ entry }: { entry: any }) => {
+      workspaceLockUpserts.push(entry);
+      workspaceLock = {
+        ...workspaceLock,
+        updatedAt: '2026-05-26T01:00:00.000Z',
+        packs: [
+          ...workspaceLock.packs.filter(item => item.id !== entry.id),
+          { ...entry, metadataTrust: 'registry-discovery-only' },
+        ].sort((left, right) => left.id.localeCompare(right.id)),
+      };
+      return lockResponse();
+    };
+    (window as any).__orpadNodePackWorkspaceLockUpserts = workspaceLockUpserts;
+    (window as any).__orpadNodePackRegistryCalls = registryCalls;
+    const registryResponse = ({ registry, query = '' }: { registry?: string; query?: string } = {}) => {
+      const source = registry || defaultRegistrySource;
+      registryCalls.push(source);
+      return {
+        success: true,
+        ok: true,
+        registry: {
+          registryId: source === workspaceRegistrySource ? 'orpad.workspace-lock-fixture' : 'orpad.default-fixture',
+          name: source === workspaceRegistrySource ? 'Workspace Lock Fixture Registry' : 'Default Fixture Registry',
+        },
+        source,
+        sourceKind: 'url',
+        entries: [lockedEntry, missingEntry, unsafeEntry],
+        diagnostics: [],
+        query,
+      };
+    };
+    (window as any).__orpadNodePackRegistryList = async (request: { registry?: string } = {}) => registryResponse(request);
+    (window as any).__orpadNodePackRegistrySearch = async (request: { registry?: string; query?: string } = {}) => registryResponse(request);
+    (window as any).__orpadNodePackInstallRequests = installRequests;
+    (window as any).__orpadNodePackInstall = async (request: { packId: string; version?: string; registry?: string }) => {
+      installRequests.push({ ...request });
+      if (request.packId === lockedEntry.id) {
+        installedVersion = request.version || lockedEntry.latestVersion;
+        return { success: true, ok: true, action: 'install', nodePack: installedPack(), diagnostics: [] };
+      }
+      if (request.packId === missingEntry.id) {
+        missingInstalled = true;
+        return { success: true, ok: true, action: 'install', nodePack: missingInstalledPack(), diagnostics: [] };
+      }
+      return { success: false, ok: false, action: 'install', error: 'unsafe or unexpected package should have been blocked before IPC', diagnostics: [] };
+    };
+    (window as any).__orpadNodePackUpdate = async ({ packId }: { packId: string }) => {
+      if (packId !== lockedEntry.id) {
+        return { success: false, ok: false, action: 'update', error: 'unexpected pack id', diagnostics: [] };
+      }
+      installedVersion = lockedEntry.latestVersion;
+      return {
+        success: true,
+        ok: true,
+        action: 'update',
+        results: [{ success: true, ok: true, action: 'install', nodePack: installedPack(), diagnostics: [] }],
+        nodePack: installedPack(),
+        diagnostics: [],
+      };
+    };
+  });
+}
+
+async function setNodePackInstalledLifecycleMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    let installed = true;
+    let installedVersion = '0.2.0';
+    let previousInstall = {
+      backupPath: '/backups/community.lifecycle-pack-0.1.0',
+      replacedAt: '2026-05-25T01:00:00.000Z',
+      previousEntry: {
+        id: 'community.lifecycle-pack',
+        version: '0.1.0',
+        source: 'registry:orpad.test',
+      },
+    };
+    const installedPack = () => ({
+      id: 'community.lifecycle-pack',
+      name: 'Lifecycle Package',
+      version: installedVersion,
+      origin: 'user-installed',
+      trustLevel: 'community',
+      resolutionState: 'resolved',
+      validationStatus: 'valid',
+      capabilities: ['read.workspace'],
+      description: 'Lifecycle package prose.',
+      discovery: {
+        rootKind: 'user',
+        packDir: '/packs/community.lifecycle-pack',
+        manifestPath: '/packs/community.lifecycle-pack/orpad.node-pack.json',
+      },
+      nodes: [],
+    });
+    const lockEntry = () => ({
+      id: 'community.lifecycle-pack',
+      version: installedVersion,
+      enabled: true,
+      source: 'registry:orpad.test',
+      installedAt: '2026-05-25T02:00:00.000Z',
+      installedBy: 'node-pack-manager',
+      previousInstall,
+      capabilities: ['read.workspace'],
+      diagnostics: [],
+    });
+    const installedResponse = () => ({
+      success: true,
+      ok: true,
+      nodePacks: installed ? [installedPack()] : [],
+      diagnostics: [],
+      conflicts: [],
+    });
+    const exportResponse = () => ({
+      success: true,
+      ok: true,
+      action: 'export-list',
+      lockPath: '/userData/nodes/orpad-node-packs.lock.json',
+      packs: installed ? [lockEntry()] : [],
+      discovery: {
+        ok: true,
+        diagnostics: [],
+        conflicts: [],
+        nodePackIds: installed ? ['community.lifecycle-pack'] : [],
+      },
+      diagnostics: [],
+    });
+    const mockListNodePacks = async () => installedResponse();
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackExportList = async () => exportResponse();
+    (window as any).__orpadNodePackRollback = async ({ packId }: { packId: string }) => {
+      if (packId !== 'community.lifecycle-pack') {
+        return { success: false, ok: false, action: 'rollback', error: 'unexpected pack id', diagnostics: [] };
+      }
+      installedVersion = '0.1.0';
+      previousInstall = {
+        backupPath: '/backups/community.lifecycle-pack-0.2.0',
+        replacedAt: '2026-05-25T03:00:00.000Z',
+        previousEntry: {
+          id: 'community.lifecycle-pack',
+          version: '0.2.0',
+          source: 'registry:orpad.test',
+        },
+      };
+      return {
+        success: true,
+        ok: true,
+        action: 'rollback',
+        nodePack: installedPack(),
+        backupPath: previousInstall.backupPath,
+        diagnostics: [{
+          level: 'warning',
+          code: 'NODE_PACK_ROLLBACK_RESTORED_BACKUP',
+          message: 'Installed package was restored from rollback backup.',
+          packId,
+        }],
+      };
+    };
+    (window as any).__orpadNodePackRemove = async ({ packId }: { packId: string }) => {
+      if (packId !== 'community.lifecycle-pack') {
+        return { success: false, ok: false, action: 'remove', error: 'unexpected pack id', diagnostics: [] };
+      }
+      installed = false;
+      return {
+        success: true,
+        ok: true,
+        action: 'remove',
+        backupPath: '/backups/community.lifecycle-pack-removed',
+        diagnostics: [{
+          level: 'warning',
+          code: 'NODE_PACK_INSTALL_REMOVED_TO_BACKUP',
+          message: 'Installed package was moved to a backup directory instead of being deleted.',
+          packId,
+        }],
+      };
+    };
+  });
+}
+
+async function setNodePackRegistryUpdateFailureMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    const registryEntry = {
+      id: 'community.update-failure',
+      name: 'Registry Update Failure Pack',
+      description: 'Update failure candidate prose.',
+      latestVersion: '0.2.0',
+      versionCount: 2,
+      sourceRepository: 'https://github.com/example/update-failure-pack',
+      sourceRef: 'v0.2.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'declared',
+      checksumStatus: 'manifest-and-files-declared',
+      reviewStatus: 'approved',
+      capabilities: ['read.workspace'],
+      keywords: ['update'],
+      categories: ['Testing'],
+      author: { name: 'Fixture Author', repository: 'https://github.com/example/update-failure-pack' },
+      license: 'MIT',
+      installable: true,
+    };
+    const installedPack = () => ({
+      id: registryEntry.id,
+      name: registryEntry.name,
+      version: '0.1.0',
+      origin: 'user-installed',
+      trustLevel: 'community',
+      resolutionState: 'resolved',
+      validationStatus: 'valid',
+      capabilities: ['read.workspace'],
+      description: registryEntry.description,
+      discovery: {
+        rootKind: 'user',
+        packDir: '/packs/community.update-failure',
+        manifestPath: '/packs/community.update-failure/orpad.node-pack.json',
+      },
+      nodes: [],
+    });
+    const installedResponse = () => ({
+      success: true,
+      ok: true,
+      nodePacks: [installedPack()],
+      diagnostics: [],
+      conflicts: [],
+    });
+    const mockListNodePacks = async () => installedResponse();
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackRegistrySource = 'https://registry.example/orpad-node-packs.json';
+    (window as any).__orpadNodePackRegistryList = async () => ({
+      success: true,
+      ok: true,
+      registry: {
+        registryId: 'orpad.test',
+        name: 'Fixture Registry',
+      },
+      source: 'https://registry.example/orpad-node-packs.json',
+      entries: [registryEntry],
+      diagnostics: [],
+    });
+    (window as any).__orpadNodePackExportList = async () => ({
+      success: true,
+      ok: true,
+      action: 'export-list',
+      lockPath: '/userData/nodes/orpad-node-packs.lock.json',
+      packs: [{
+        id: registryEntry.id,
+        version: '0.1.0',
+        enabled: true,
+        source: 'registry:orpad.test',
+        installedAt: '2026-05-25T02:00:00.000Z',
+        capabilities: ['read.workspace'],
+        diagnostics: [],
+      }],
+      discovery: {
+        ok: true,
+        diagnostics: [],
+        conflicts: [],
+        nodePackIds: [registryEntry.id],
+      },
+      diagnostics: [],
+    });
+    (window as any).__orpadNodePackUpdate = async ({ packId }: { packId: string }) => {
+      if (packId !== registryEntry.id) {
+        return { success: false, ok: false, error: 'unexpected pack id' };
+      }
+      return {
+        success: false,
+        ok: false,
+        action: 'update',
+        error: 'checksum mismatch',
+        diagnostics: [{
+          level: 'error',
+          code: 'NODE_PACK_INSTALL_DECLARED_FILE_CHECKSUM_MISMATCH',
+          message: 'Declared package file checksum did not match registry metadata.',
+          packId,
+        }],
+      };
+    };
+  });
+}
+
+async function setNodePackRegistrySourceManagementMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    const defaultSource = 'https://registry.example/default.json';
+    const customSource = 'https://registry.example/custom.json';
+    localStorage.removeItem('orpad.nodePackRegistrySource');
+    localStorage.removeItem('orpad.nodePackRegistryRecentSources');
+    const registryCalls: string[] = [];
+    const officialGovernance = {
+      registryTrust: 'official',
+      reviewModel: 'orpad-pr-reviewed',
+      submissions: { type: 'pull-request', url: 'https://github.com/orpad/registry/pulls' },
+      reviewPolicyUrl: 'https://orpad.dev/docs/package-registry-review',
+      maintainer: 'OrPAD maintainers',
+      notes: 'Fixture official registry metadata is admitted by maintainer-reviewed PRs.',
+    };
+    const customGovernance = {
+      registryTrust: 'official',
+      reviewModel: 'orpad-pr-reviewed',
+      submissions: { type: 'pull-request', url: 'https://registry.example/custom/pulls' },
+      reviewPolicyUrl: 'https://registry.example/custom/review-policy',
+      maintainer: 'Custom registry maintainers',
+      notes: 'Fixture custom registry metadata claims official review but remains discovery-only in OrPAD.',
+    };
+    const registryEntry = {
+      id: 'community.source-pack',
+      name: 'Registry Source Pack',
+      description: 'Registry source management fixture package.',
+      latestVersion: '0.2.0',
+      versionCount: 2,
+      sourceRepository: 'https://github.com/example/source-pack',
+      sourceRef: 'v0.2.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'missing',
+      checksumStatus: 'missing',
+      reviewStatus: 'unreviewed',
+      capabilities: ['read.workspace'],
+      keywords: ['registry', 'source'],
+      categories: ['Testing'],
+      author: { name: 'Fixture Author', repository: 'https://github.com/example/source-pack' },
+      license: 'MIT',
+      installable: true,
+    };
+    const installedPack = () => ({
+      id: registryEntry.id,
+      name: registryEntry.name,
+      version: '0.1.0',
+      origin: 'user-installed',
+      trustLevel: 'community',
+      resolutionState: 'resolved',
+      validationStatus: 'valid',
+      capabilities: ['read.workspace'],
+      description: registryEntry.description,
+      discovery: {
+        rootKind: 'user',
+        packDir: '/packs/community.source-pack',
+        manifestPath: '/packs/community.source-pack/orpad.node-pack.json',
+      },
+      nodes: [],
+    });
+    const mockListNodePacks = async () => ({
+      success: true,
+      ok: true,
+      nodePacks: [installedPack()],
+      diagnostics: [],
+      conflicts: [],
+    });
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadDefaultNodePackRegistrySource = defaultSource;
+    (window as any).__orpadNodePackRegistrySource = '';
+    (window as any).__orpadNodePackRegistryCalls = registryCalls;
+    const registryResponse = ({ registry, query = '' }: { registry?: string; query?: string } = {}) => {
+      const source = registry || defaultSource;
+      registryCalls.push(source);
+      if (source === customSource) {
+        return {
+          success: true,
+          ok: true,
+          registry: {
+            registryId: 'orpad.cached-custom',
+            name: 'Cached Custom Fixture Registry',
+            governance: customGovernance,
+            metadataTrust: 'orpad-official-registry-reviewed',
+          },
+          source,
+          sourceKind: 'url',
+          fromCache: true,
+          entries: [registryEntry],
+          diagnostics: [{
+            level: 'warning',
+            code: 'NODE_PACK_REGISTRY_SOURCE_FAILED_CACHE_USED',
+            message: 'Node pack registry source failed; using last valid cache.',
+            source,
+          }],
+          query,
+        };
+      }
+      return {
+        success: true,
+        ok: true,
+        registry: {
+          registryId: 'orpad.default-fixture',
+          name: 'Default Fixture Registry',
+          governance: officialGovernance,
+          metadataTrust: 'orpad-official-registry-reviewed',
+        },
+        source,
+        sourceKind: 'url',
+        entries: [registryEntry],
+        diagnostics: [],
+        query,
+      };
+    };
+    (window as any).__orpadNodePackRegistryList = async (request: { registry?: string } = {}) => registryResponse(request);
+    (window as any).__orpadNodePackRegistrySearch = async (request: { registry?: string; query?: string } = {}) => registryResponse(request);
+  });
+}
+
+async function setNodePackRegistryTrustReviewMock(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    const registrySource = 'https://registry.example/trust-review.json';
+    localStorage.removeItem('orpad.nodePackRegistrySource');
+    localStorage.removeItem('orpad.nodePackRegistryRecentSources');
+    let warningPackInstalled = false;
+    const installCalls: string[] = [];
+    const updateCalls: string[] = [];
+    const warningEntry = {
+      id: 'community.warning-pack',
+      name: 'Registry Warning Pack',
+      description: 'Unsigned registry entry that still requires explicit confirmation.',
+      latestVersion: '0.1.0',
+      versionCount: 1,
+      sourceRepository: 'https://github.com/example/warning-pack',
+      sourceRef: 'v0.1.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'missing',
+      checksumStatus: 'missing',
+      reviewStatus: 'unreviewed',
+      capabilities: ['read.workspace'],
+      installable: true,
+    };
+    const blockedEntry = {
+      id: 'community.unsafe-pack',
+      name: 'Registry Unsafe Pack',
+      description: 'Unsafe registry entry should never look installable.',
+      latestVersion: '0.3.0',
+      versionCount: 2,
+      sourceRepository: 'https://github.com/example/unsafe-pack',
+      sourceRef: 'v0.3.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'missing',
+      checksumStatus: 'mismatch',
+      reviewStatus: 'unreviewed',
+      capabilities: ['read.workspace', 'use.credentials'],
+      highRiskCapabilities: ['use.credentials'],
+      installable: true,
+    };
+    const reviewedHighRiskEntry = {
+      id: 'community.reviewed-high-risk',
+      name: 'Registry Reviewed High Risk Pack',
+      description: 'Reviewed package that still carries high-risk capability warnings.',
+      latestVersion: '0.5.0',
+      versionCount: 1,
+      sourceRepository: 'https://github.com/example/reviewed-high-risk',
+      sourceRef: 'v0.5.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'declared',
+      checksumStatus: 'manifest-and-files-declared',
+      reviewStatus: 'approved',
+      reviewedAt: '2026-05-25T00:00:00.000Z',
+      reviewId: 'third-party-review-7',
+      reviewedBy: 'fixture-registry-reviewers',
+      approvedCapabilities: ['read.workspace', 'use.network'],
+      metadataTrust: 'third-party-registry-reviewed',
+      capabilities: ['read.workspace', 'use.network'],
+      highRiskCapabilities: ['use.network'],
+      installable: true,
+    };
+    const updateEntry = {
+      id: 'community.unsafe-update',
+      name: 'Registry Unsafe Update Pack',
+      description: 'Unsafe update candidate should be visible but blocked.',
+      latestVersion: '0.2.0',
+      versionCount: 2,
+      sourceRepository: 'https://github.com/example/unsafe-update',
+      sourceRef: 'v0.2.0',
+      manifestPath: 'orpad.node-pack.json',
+      trustLevel: 'community',
+      signatureStatus: 'declared',
+      checksumStatus: 'mismatch',
+      reviewStatus: 'approved',
+      metadataTrust: 'third-party-registry-reviewed',
+      capabilities: ['read.workspace'],
+      installable: true,
+    };
+    const warningPack = () => ({
+      id: warningEntry.id,
+      name: warningEntry.name,
+      version: warningEntry.latestVersion,
+      origin: 'user-installed',
+      trustLevel: 'community',
+      resolutionState: 'resolved',
+      validationStatus: 'valid',
+      capabilities: ['read.workspace'],
+      discovery: {
+        rootKind: 'user',
+        packDir: '/packs/community.warning-pack',
+        manifestPath: '/packs/community.warning-pack/orpad.node-pack.json',
+      },
+      nodes: [],
+    });
+    const installedResponse = () => ({
+      success: true,
+      ok: true,
+      nodePacks: [
+        {
+          id: updateEntry.id,
+          name: updateEntry.name,
+          version: '0.1.0',
+          origin: 'user-installed',
+          trustLevel: 'community',
+          resolutionState: 'resolved',
+          validationStatus: 'valid',
+          capabilities: ['read.workspace'],
+          discovery: {
+            rootKind: 'user',
+            packDir: '/packs/community.unsafe-update',
+            manifestPath: '/packs/community.unsafe-update/orpad.node-pack.json',
+          },
+          nodes: [],
+        },
+        ...(warningPackInstalled ? [warningPack()] : []),
+      ],
+      diagnostics: [],
+      conflicts: [],
+    });
+    const mockListNodePacks = async () => installedResponse();
+    (mockListNodePacks as any).orpadTestOverride = true;
+    (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackListPacks = mockListNodePacks;
+    (window as any).__orpadNodePackRegistrySource = registrySource;
+    (window as any).__orpadNodePackTrustReviewInstallCalls = installCalls;
+    (window as any).__orpadNodePackTrustReviewUpdateCalls = updateCalls;
+    const registryResponse = () => ({
+      success: true,
+      ok: true,
+      registry: {
+        registryId: 'orpad.trust-review',
+        name: 'Trust Review Fixture Registry',
+        governance: {
+          registryTrust: 'community',
+          reviewModel: 'third-party-reviewed',
+          submissions: { type: 'pull-request', url: 'https://registry.example/trust-review/pulls' },
+          reviewPolicyUrl: 'https://registry.example/trust-review/policy',
+          maintainer: 'Fixture registry maintainers',
+        },
+        metadataTrust: 'registry-discovery-only',
+      },
+      source: registrySource,
+      sourceKind: 'url',
+      entries: [warningEntry, reviewedHighRiskEntry, blockedEntry, updateEntry],
+      diagnostics: [],
+    });
+    (window as any).__orpadNodePackRegistryList = async () => registryResponse();
+    (window as any).__orpadNodePackRegistrySearch = async () => registryResponse();
+    (window as any).__orpadNodePackInstall = async ({ packId }: { packId: string }) => {
+      installCalls.push(packId);
+      if (packId !== warningEntry.id) {
+        return { success: false, ok: false, action: 'install', error: 'unexpected install pack id', diagnostics: [] };
+      }
+      warningPackInstalled = true;
+      return { success: true, ok: true, action: 'install', nodePack: warningPack(), diagnostics: [] };
+    };
+    (window as any).__orpadNodePackUpdate = async ({ packId }: { packId: string }) => {
+      updateCalls.push(packId);
+      return { success: false, ok: false, action: 'update', error: 'unsafe update should have been blocked before IPC', diagnostics: [] };
+    };
+  });
 }
 
 test('pipeline details preview exposes editable contract fields', async () => {
@@ -445,16 +1529,67 @@ test('pipeline details surfaces missing node pack diagnostics inline', async () 
   await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
 
   const nodePacksSection = win.locator('.pipeline-node-packs-section');
-  await expect(nodePacksSection).toContainText('Node Packs');
+  await expect(nodePacksSection).toContainText('Packages');
   await expect(nodePacksSection).toContainText('community.missing-pack');
   await expect(nodePacksSection).toContainText('>=9.9.0');
   await expect(nodePacksSection).toContainText('user-installed');
   await expect(nodePacksSection).toContainText('PIPELINE_NODE_PACK_UNKNOWN');
   await expect(nodePacksSection.locator('.pipeline-inline-diagnostic')).toContainText('community.missing-pack');
-  await expect(nodePacksSection.locator('[data-node-pack-manager-open]').first()).toContainText('Resolve in Pack Manager');
+  await expect(nodePacksSection.locator('[data-node-pack-manager-open]').first()).toContainText('Resolve in Package Manager');
 
   await win.locator('button[data-pipeline-mode="readwrite"]').click();
+  await expect(nodePacksSection).toContainText('Packages JSON (nodePacks)');
   await expect(win.locator('[data-pipeline-json-section="nodePacks"]')).toHaveValue(/community\.missing-pack/);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager opens registry candidates for a missing pipeline pack', async () => {
+  test.setTimeout(60_000);
+  const { workspace, pipelinePath } = writePipelineWorkspace();
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.nodePacks = [
+    { id: 'community.missing-pack', version: '>=9.9.0', origin: 'user-installed' },
+  ];
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await setNodePackMissingResolutionRegistryMock(win);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
+
+  await win.locator('.pipeline-node-packs-section [data-node-pack-manager-open]').first().click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-tab', 'browse');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('resolution candidate');
+  const missingPack = nodePackManagerRow(win, 'Missing Pack Candidate');
+  await expect(missingPack).toContainText('Fixture Author');
+  const missingPackDetail = await openNodePackManagerRowDetail(win, missingPack);
+  await expect(missingPackDetail).toContainText('community.missing-pack');
+  await closeNodePackManagerRowDetail(win);
+
+  const missingInstallDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Package id: community.missing-pack');
+    expect(dialog.message()).toContain('Registry source: https://registry.example/orpad-node-packs.json');
+    await dialog.accept();
+  });
+  await missingPack.locator('[data-node-pack-manager-registry-install="community.missing-pack"]').click();
+  await missingInstallDialog;
+  await expect(win.locator('.node-pack-manager-status')).toContainText('Installed community.missing-pack');
+  await expect(missingPack.locator('[data-node-pack-manager-registry-install="community.missing-pack"]')).toHaveText('Imported');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -479,6 +1614,24 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
   await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
   await win.locator('#btn-preview').click();
   await expect(win.locator('[data-node-pack-manager-open]')).toBeVisible();
+  await win.setViewportSize({ width: 1200, height: 620 });
+  const toolbarPlacement = await win.locator('#toolbar').evaluate((toolbar) => {
+    const packageButton = toolbar.querySelector<HTMLElement>('#btn-package-manager');
+    const themeButton = toolbar.querySelector<HTMLElement>('#btn-theme');
+    const packageRect = packageButton?.getBoundingClientRect();
+    const themeRect = themeButton?.getBoundingClientRect();
+    return {
+      packageVisible: !!packageRect && packageRect.width > 0 && packageRect.height > 0,
+      themeVisible: !!themeRect && themeRect.width > 0 && themeRect.height > 0,
+      packageLeftOfTheme: !!packageRect && !!themeRect && packageRect.right <= themeRect.left + 1,
+      packageThemeGap: packageRect && themeRect ? themeRect.left - packageRect.right : null,
+    };
+  });
+  expect(toolbarPlacement.packageVisible, 'Package Manager toolbar button should be visible').toBe(true);
+  expect(toolbarPlacement.themeVisible, 'Theme toolbar button should be visible').toBe(true);
+  expect(toolbarPlacement.packageLeftOfTheme, `Package Manager should sit left of Theme ${JSON.stringify(toolbarPlacement)}`).toBe(true);
+  expect(toolbarPlacement.packageThemeGap, `Package Manager should stay adjacent to Theme ${JSON.stringify(toolbarPlacement)}`).not.toBeNull();
+  expect(toolbarPlacement.packageThemeGap!, `Package Manager should stay adjacent to Theme ${JSON.stringify(toolbarPlacement)}`).toBeLessThanOrEqual(8);
 
   await setNodePackManagerMock(win, {
     success: true,
@@ -519,6 +1672,43 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
         ],
       },
       {
+        id: 'orpad.starter.frontend-ux',
+        name: 'Frontend UX Starter Pack',
+        version: '0.1.0',
+        origin: 'built-in',
+        trustLevel: 'official',
+        description: 'Reusable orchestration hints for renderer UI and e2e verification.',
+        capabilities: ['read.workspace', 'write.runArtifacts'],
+        discovery: {
+          rootKind: 'built-in',
+          packDir: '/app/nodes/orpad.starter.frontend-ux',
+          manifestPath: '/app/nodes/orpad.starter.frontend-ux/orpad.node-pack.json',
+        },
+        nodes: [],
+        graphs: [
+          {
+            id: 'frontend-ux-workstream',
+            path: 'graphs/frontend-ux-workstream.or-graph',
+            role: 'reusable',
+            description: 'Discovery and verification lens for UI workflows.',
+          },
+        ],
+        skills: [
+          {
+            id: 'frontend-ux-audit',
+            path: 'skills/frontend-ux-audit.md',
+            description: 'Guides UI state, layout, interaction, accessibility, screenshot, and e2e evidence.',
+          },
+        ],
+        rules: [
+          {
+            id: 'frontend-ux-scope',
+            path: 'rules/frontend-ux-scope.or-rule',
+            description: 'Includes renderer UI, styles, Playwright/e2e tests, and browser-facing assets.',
+          },
+        ],
+      },
+      {
         id: 'community.review-required',
         name: 'Review Required Pack',
         version: '0.4.0',
@@ -552,62 +1742,688 @@ test('node pack manager lists metadata and safe pack prose states', async () => 
     conflicts: [],
   }, 100);
 
-  await win.locator('[data-node-pack-manager-open]').click();
+  await win.locator('#btn-package-manager').click();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Package Manager');
   await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'loading');
-  await expect(win.locator('.node-pack-manager-status')).toContainText('Loading installed node packs');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('Loading installed packages');
   await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
-  const corePack = win.locator('.node-pack-manager-pack').filter({ hasText: 'OrPAD Core Nodes' });
-  await expect(corePack).toContainText('orpad.core');
+  const corePack = nodePackManagerRow(win, 'OrPAD Core Nodes');
   await expect(corePack).toContainText('built-in');
-  await expect(corePack).toContainText('official');
-  await expect(corePack).toContainText('0 diagnostics');
-  const safePack = win.locator('.node-pack-manager-pack').filter({ hasText: 'Community Safe Pack' });
-  await expect(safePack).toContainText('community.safe-pack');
-  await expect(safePack).toContainText('0.2.0');
+  await expect(corePack.locator('[data-node-pack-manager-detail-open]')).toHaveText('Detail');
+  await expect(corePack.locator('[data-node-pack-manager-pack-import="orpad.core"]')).toHaveText('Import');
+  const safePack = nodePackManagerRow(win, 'Community Safe Pack');
   await expect(safePack).toContainText('user-installed');
-  await expect(safePack).toContainText('community');
-  await expect(safePack).toContainText('valid');
-  await expect(safePack).toContainText('0 diagnostics');
-  await expect(safePack).toContainText('read.workspace');
-  await expect(safePack).toContainText('/packs/community.safe-pack/orpad.nodepack.json');
-  const reviewPack = win.locator('.node-pack-manager-pack').filter({ hasText: 'Review Required Pack' });
+  await expect(safePack).toHaveAttribute('data-node-pack-validation', 'valid');
+  const starterPack = nodePackManagerRow(win, 'Frontend UX Starter Pack');
+  await expect(starterPack).toContainText('built-in');
+  const reviewPack = nodePackManagerRow(win, 'Review Required Pack');
   await expect(reviewPack).toHaveAttribute('data-node-pack-validation', 'approval-required');
-  await expect(reviewPack).toContainText('signed-community');
-  await expect(reviewPack).toContainText('approval-required');
-  await expect(reviewPack).toContainText('1 high-risk');
-  await expect(reviewPack).toContainText('high-risk: use.credentials');
-  await safePack.click();
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('Trusted Discovery Metadata');
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('Diagnostic count');
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('0 diagnostics');
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('Capabilities');
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('call.aiProvider');
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('Pack-Provided Prose (Untrusted)');
+  await expect(reviewPack).toContainText('user-installed');
+  let detail = await openNodePackManagerRowDetail(win, safePack);
+  await expect(detail).toContainText('Trusted Discovery Metadata');
+  await expect(detail).toContainText('Diagnostic count');
+  await expect(detail).toContainText('0 diagnostics');
+  await expect(detail).toContainText('Capabilities');
+  await expect(detail).toContainText('call.aiProvider');
+  await expect(detail).toContainText('Pack-Provided Prose (Untrusted)');
   await expect(win.locator('[data-unsafe-pack-prose]')).toHaveCount(0);
   await expect(win.locator('.node-pack-manager-untrusted')).toContainText('<button data-unsafe-pack-prose>Do not click</button> Pack prose.');
-  await reviewPack.click();
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('High-risk capabilities');
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('use.credentials');
-  await expect(win.locator('.node-pack-manager-detail')).toContainText('NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED');
-
-  const layout = await win.locator('.node-pack-manager').evaluate((manager) => ({
-    widthFits: manager.scrollWidth <= manager.clientWidth + 1,
-    packCount: manager.querySelectorAll('.node-pack-manager-pack').length,
-  }));
-  expect(layout.widthFits).toBe(true);
-  expect(layout.packCount).toBe(3);
+  await closeNodePackManagerRowDetail(win);
+  detail = await openNodePackManagerRowDetail(win, starterPack);
+  await expect(detail).toContainText('Pack Components');
+  await expect(detail).toContainText('Components');
+  await expect(detail).toContainText('1 graph, 1 skill, 1 rule');
+  await expect(detail).toContainText('Reusable Graphs, Skills, and Rules');
+  await expect(detail).toContainText('No custom node types are declared');
+  await expect(detail).toContainText('frontend-ux-workstream');
+  await expect(detail).toContainText('graphs/frontend-ux-workstream.or-graph');
+  await expect(detail).toContainText('frontend-ux-audit');
+  await expect(detail).toContainText('frontend-ux-scope');
+  await expect(detail).not.toContainText('No node entries declared');
+  await closeNodePackManagerRowDetail(win);
+  detail = await openNodePackManagerRowDetail(win, reviewPack);
+  await expect(detail).toContainText('High-risk capabilities');
+  await expect(detail).toContainText('use.credentials');
+  await expect(detail).toContainText('NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED');
+  await closeNodePackManagerRowDetail(win);
+  await expectNodePackManagerInspectorUsable(win, 'node pack manager metadata inspector', 4);
 
   await win.locator('#fmt-modal-close').click();
   await setNodePackManagerMock(win, { success: true, ok: true, nodePacks: [], diagnostics: [], conflicts: [] });
-  await win.locator('[data-node-pack-manager-open]').click();
+  await win.locator('#btn-package-manager').click();
   await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'empty');
-  await expect(win.locator('.node-pack-manager')).toContainText('No node packs are installed.');
+  await expect(win.locator('.node-pack-manager')).toContainText('No packages are installed.');
 
   await win.locator('#fmt-modal-close').click();
   await setNodePackManagerMock(win, { success: false, ok: false, error: 'fixture discovery failure' });
-  await win.locator('[data-node-pack-manager-open]').click();
+  await win.locator('#btn-package-manager').click();
   await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'error');
   await expect(win.locator('.node-pack-manager-error')).toContainText('fixture discovery failure');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager browses registry entries and installs through the manager action', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackRegistryInstallMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'empty');
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-tab', 'browse');
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await expect(win.locator('.node-pack-manager')).toContainText('Fixture Registry');
+  const registryPack = nodePackManagerRow(win, 'Registry Community Pack');
+  await expect(registryPack).toContainText('Fixture Author');
+  await expect(registryPack).toHaveAttribute('data-node-pack-validation', 'available');
+  const registryDetail = await openNodePackManagerRowDetail(win, registryPack);
+  await expect(registryDetail).toContainText('Registry Metadata');
+  await expect(registryDetail).toContainText('Registry metadata is discovery input, not trust evidence.');
+  await expect(registryDetail).toContainText('<strong>Registry prose stays text.</strong>');
+  await expect(registryDetail.locator('strong')).toHaveCount(0);
+  await closeNodePackManagerRowDetail(win);
+
+  const registryInstallDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Package id: community.registry-pack');
+    expect(dialog.message()).toContain('Version: 0.1.0');
+    expect(dialog.message()).toContain('Registry source: https://registry.example/orpad-node-packs.json');
+    await dialog.accept();
+  });
+  await registryPack.locator('[data-node-pack-manager-registry-install="community.registry-pack"]').click();
+  await registryInstallDialog;
+  await expect(win.locator('.node-pack-manager-status')).toContainText('Installed community.registry-pack');
+  await expect(registryPack.locator('[data-node-pack-manager-registry-install="community.registry-pack"]')).toHaveText('Imported');
+  await win.locator('[data-node-pack-manager-tab="installed"]').click();
+  await expect(win.locator('.node-pack-manager')).toContainText('Registry Community Pack');
+  await expect(nodePackManagerRow(win, 'Registry Community Pack')).toContainText('user-installed');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager manages registry source defaults recents and offline cache state', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackRegistrySourceManagementMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('Default OrPAD Registry');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Default OrPAD Registry');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://registry.example/default.json');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Registry metadata is discovery input, not trust evidence.');
+
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Default Fixture Registry');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('loaded');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('official PR-reviewed');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('OrPAD official review');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://github.com/orpad/registry/pulls');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://orpad.dev/docs/package-registry-review');
+
+  await win.locator('[data-node-pack-manager-registry-source]').fill('https://registry.example/custom.json');
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Cached Custom Fixture Registry');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('custom registry');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Discovery metadata only');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://registry.example/custom/pulls');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://registry.example/custom/review-policy');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Recent Registry source');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('offline cache');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('fromCache');
+  await expect(win.locator('.node-pack-manager-diagnostics')).toContainText('NODE_PACK_REGISTRY_SOURCE_FAILED_CACHE_USED');
+  await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('Recent Registry source');
+  await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('https://registry.example/custom.json');
+
+  await win.locator('[data-node-pack-manager-tab="updates"]').click();
+  await expect(win.locator('.node-pack-manager-status')).toContainText('1 update candidate');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('Against Recent Registry source.');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('https://registry.example/custom.json');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('offline cache');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager blocks non-HTTPS registry source before browsing', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackRegistrySourceManagementMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  await win.locator('[data-node-pack-manager-registry-source]').fill('http://registry.example/insecure.json');
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'error');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('blocked source');
+  await expect(win.locator('.node-pack-manager-error')).toContainText('Registry source must use HTTPS.');
+  await expect(win.locator('.node-pack-manager-diagnostics')).toContainText('NODE_PACK_REGISTRY_SOURCE_BLOCKED');
+  const registryCallCount = await win.evaluate(() => ((window as any).__orpadNodePackRegistryCalls || []).length);
+  expect(registryCallCount).toBe(0);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager shows registry trust review warnings and blocks unsafe package actions', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackRegistryTrustReviewMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('.node-pack-manager')).toContainText('Trust Review Fixture Registry');
+
+  const warningPack = nodePackManagerRow(win, 'Registry Warning Pack');
+  await expect(warningPack.locator('[data-node-pack-manager-registry-install="community.warning-pack"]')).toBeEnabled();
+  let detail = await openNodePackManagerRowDetail(win, warningPack);
+  await expect(detail).toContainText('Package Risk Review');
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_SIGNATURE_MISSING');
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_CHECKSUM_MISSING');
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_REVIEW_MISSING');
+  await closeNodePackManagerRowDetail(win);
+
+  const reviewedHighRiskPack = nodePackManagerRow(win, 'Registry Reviewed High Risk Pack');
+  await expect(reviewedHighRiskPack.locator('[data-node-pack-manager-registry-install="community.reviewed-high-risk"]')).toBeEnabled();
+  detail = await openNodePackManagerRowDetail(win, reviewedHighRiskPack);
+  await expect(detail).toContainText('Third-party review');
+  await expect(detail).toContainText('third-party-review-7');
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_THIRD_PARTY_REVIEW');
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_HIGH_RISK_CAPABILITY_DECLARED');
+  await expect(detail).toContainText('use.network');
+  await closeNodePackManagerRowDetail(win);
+
+  const unsafePack = nodePackManagerRow(win, 'Registry Unsafe Pack');
+  await expect(unsafePack).toHaveAttribute('data-node-pack-validation', 'blocked');
+  detail = await openNodePackManagerRowDetail(win, unsafePack);
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_CHECKSUM_UNSAFE');
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_HIGH_RISK_REVIEW_REQUIRED');
+  await closeNodePackManagerRowDetail(win);
+  const unsafeImport = unsafePack.locator('[data-node-pack-manager-registry-install="community.unsafe-pack"]');
+  await expect(unsafeImport).toBeDisabled();
+  await expect(unsafeImport).toHaveText('Import blocked');
+  await expect(unsafeImport).toHaveAttribute('title', /checksum status blocks/);
+
+  await win.locator('[data-node-pack-manager-tab="updates"]').click();
+  const unsafeUpdate = nodePackManagerRow(win, 'Registry Unsafe Update Pack');
+  await expect(unsafeUpdate).toHaveAttribute('data-node-pack-validation', 'update-blocked');
+  detail = await openNodePackManagerRowDetail(win, unsafeUpdate);
+  await expect(detail).toContainText('Package Risk Review');
+  await expect(detail).toContainText('NODE_PACK_REGISTRY_CHECKSUM_UNSAFE');
+  await closeNodePackManagerRowDetail(win);
+  await expect(unsafeUpdate.locator('[data-node-pack-manager-registry-update="community.unsafe-update"]')).toBeDisabled();
+  await expect(unsafeUpdate.locator('[data-node-pack-manager-registry-update="community.unsafe-update"]')).toHaveText('Import blocked');
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  const warningInstallDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    const message = dialog.message();
+    expect(message).toContain('Package id: community.warning-pack');
+    expect(message).toContain('Version: 0.1.0');
+    expect(message).toContain('Registry source: https://registry.example/trust-review.json');
+    expect(message).toContain('NODE_PACK_REGISTRY_SIGNATURE_MISSING');
+    expect(message).toContain('Registry metadata is discovery input, not trust evidence.');
+    await dialog.accept();
+  });
+  await warningPack.locator('[data-node-pack-manager-registry-install="community.warning-pack"]').click();
+  await warningInstallDialog;
+  await expect(win.locator('.node-pack-manager-status')).toContainText('Installed community.warning-pack');
+  const callCounts = await win.evaluate(() => ({
+    installs: ((window as any).__orpadNodePackTrustReviewInstallCalls || []).slice(),
+    updates: ((window as any).__orpadNodePackTrustReviewUpdateCalls || []).slice(),
+  }));
+  expect(callCounts.installs).toEqual(['community.warning-pack']);
+  expect(callCounts.updates).toEqual([]);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager applies an available registry update from the updates tab', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackRegistryUpdateMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('.node-pack-manager')).toContainText('Registry Update Pack');
+  await win.locator('[data-node-pack-manager-tab="updates"]').click();
+  await expect(win.locator('.node-pack-manager-status')).toContainText('1 update candidate');
+  const updatePack = nodePackManagerRow(win, 'Registry Update Pack');
+  const updateDetail = await openNodePackManagerRowDetail(win, updatePack);
+  await expect(updateDetail).toContainText('Installed version');
+  await expect(updateDetail).toContainText('0.1.0');
+  await expect(updateDetail).toContainText('0.2.0');
+  await closeNodePackManagerRowDetail(win);
+  const registryUpdateDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Package id: community.update-pack');
+    expect(dialog.message()).toContain('Version: 0.2.0');
+    expect(dialog.message()).toContain('Registry source: https://registry.example/orpad-node-packs.json');
+    await dialog.accept();
+  });
+  await updatePack.locator('[data-node-pack-manager-registry-update="community.update-pack"]').click();
+  await registryUpdateDialog;
+  await win.locator('[data-node-pack-manager-tab="installed"]').click();
+  const installedUpdateDetail = await openNodePackManagerRowDetail(win, nodePackManagerRow(win, 'Registry Update Pack'));
+  await expect(installedUpdateDetail).toContainText('0.2.0');
+  await closeNodePackManagerRowDetail(win);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager shows workspace lock drift and syncs registry update metadata', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackWorkspaceLockMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await expect(win.locator('[data-node-pack-manager-workspace-lock-panel]')).toContainText('/workspace/.orpad/orpad-node-packs.lock.json');
+  await expect(win.locator('[data-node-pack-manager-workspace-lock-panel]')).toContainText('It is not trust evidence.');
+  const lockedPack = nodePackManagerRow(win, 'Workspace Locked Pack');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('workspace drift');
+  let detail = await openNodePackManagerRowDetail(win, lockedPack);
+  await expect(detail).toContainText('Workspace Lock');
+  await expect(detail).toContainText('Workspace lock expects 0.2.0; installed package is 0.1.0.');
+  await closeNodePackManagerRowDetail(win);
+
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  await win.locator('[data-node-pack-manager-registry-source]').fill('https://registry.example/workspace-lock.json');
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Workspace Lock Fixture Registry');
+  const unsafePack = nodePackManagerRow(win, 'Workspace Lock Unsafe Pack');
+  await expect(unsafePack).toHaveAttribute('data-node-pack-validation', 'blocked');
+  await expect(unsafePack.locator('[data-node-pack-manager-registry-install="community.locked-unsafe"]')).toBeDisabled();
+  detail = await openNodePackManagerRowDetail(win, unsafePack);
+  await expect(detail).toContainText('A workspace lock match only records reproducible metadata');
+  await closeNodePackManagerRowDetail(win);
+
+  await win.locator('[data-node-pack-manager-tab="updates"]').click();
+  await expect(win.locator('.node-pack-manager-status')).toContainText('1 update candidate');
+  const updateDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Package id: community.locked-pack');
+    expect(dialog.message()).toContain('Registry source: https://registry.example/workspace-lock.json');
+    await dialog.accept();
+  });
+  await nodePackManagerRow(win, 'Workspace Locked Pack').locator('[data-node-pack-manager-registry-update="community.locked-pack"]').click();
+  await updateDialog;
+  await win.locator('[data-node-pack-manager-tab="installed"]').click();
+  const syncedLockedPack = nodePackManagerRow(win, 'Workspace Locked Pack');
+  detail = await openNodePackManagerRowDetail(win, syncedLockedPack);
+  await expect(detail).toContainText('Workspace lock version 0.2.0.');
+  await closeNodePackManagerRowDetail(win);
+
+  await win.locator('[data-node-pack-manager-export-workspace-lock]').click();
+  const exportModal = win.locator('.node-pack-manager-detail-modal');
+  await expect(exportModal).toContainText('Exported Workspace Lock Summary');
+  await expect(exportModal).toContainText('community.locked-pack');
+  await expect(exportModal).toContainText('https://registry.example/workspace-lock.json');
+  await expect(exportModal).toContainText('registry-discovery-only');
+  const upserts = await win.evaluate(() => ((window as any).__orpadNodePackWorkspaceLockUpserts || []).map((entry: any) => ({
+    id: entry.id,
+    version: entry.version,
+    registrySource: entry.registrySource,
+    metadataTrust: entry.metadataTrust,
+  })));
+  expect(upserts).toContainEqual({
+    id: 'community.locked-pack',
+    version: '0.2.0',
+    registrySource: 'https://registry.example/workspace-lock.json',
+    metadataTrust: 'registry-discovery-only',
+  });
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager dry-runs workspace lock apply before package install', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackWorkspaceLockMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await win.locator('[data-node-pack-manager-tab="workspace"]').click();
+  await expect(win.locator('.node-pack-manager-status')).toContainText('dry-run required');
+  await win.locator('[data-node-pack-manager-workspace-dry-run]').click();
+  await expect(win.locator('.node-pack-manager-status')).toContainText('ready');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('2 missing');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('1 drift');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('1 blocked');
+
+  const driftLocked = nodePackManagerRow(win, 'Workspace Locked Pack');
+  await expect(driftLocked).toHaveAttribute('data-node-pack-validation', 'ready to update');
+  await expect(driftLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Import');
+  const updateDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Package id: community.locked-pack');
+    expect(dialog.message()).toContain('Version: 0.2.0');
+    expect(dialog.message()).toContain('Registry source: https://registry.example/workspace-lock.json');
+    await dialog.accept();
+  });
+  await driftLocked.locator('[data-node-pack-manager-workspace-apply]').click();
+  await updateDialog;
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('Updated Package');
+  await expect(nodePackManagerRow(win, 'community.locked-pack')).toHaveAttribute('data-node-pack-validation', 'synced');
+
+  const unsafeLocked = nodePackManagerRow(win, 'Workspace Lock Unsafe Pack');
+  await expect(unsafeLocked).toHaveAttribute('data-node-pack-validation', 'blocked');
+  const unsafeDetail = await openNodePackManagerRowDetail(win, unsafeLocked);
+  await expect(unsafeDetail).toContainText('Package checksum status blocks install and update.');
+  await closeNodePackManagerRowDetail(win);
+  await expect(unsafeLocked.locator('[data-node-pack-manager-workspace-apply]')).toBeDisabled();
+  await expect(unsafeLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Import blocked');
+
+  const missingLocked = nodePackManagerRow(win, 'Workspace Lock Missing Candidate');
+  await expect(missingLocked).toHaveAttribute('data-node-pack-validation', 'ready to install');
+  const missingDetail = await openNodePackManagerRowDetail(win, missingLocked);
+  await expect(missingDetail).toContainText('Dry-Run Registry Match');
+  await expect(missingDetail).toContainText('Registry metadata is discovery input, not trust evidence.');
+  await closeNodePackManagerRowDetail(win);
+  await expect(missingLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Import');
+
+  const applyDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Package id: community.missing-pack');
+    expect(dialog.message()).toContain('Version: 9.9.1');
+    expect(dialog.message()).toContain('Registry source: https://registry.example/workspace-lock.json');
+    expect(dialog.message()).toContain('Registry metadata is discovery input, not trust evidence.');
+    await dialog.accept();
+  });
+  await missingLocked.locator('[data-node-pack-manager-workspace-apply]').click();
+  await applyDialog;
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('Installed Package');
+  await expect(nodePackManagerRow(win, 'community.missing-pack')).toHaveAttribute('data-node-pack-validation', 'synced');
+
+  const installRequests = await win.evaluate(() => ((window as any).__orpadNodePackInstallRequests || []).map((request: any) => ({
+    packId: request.packId,
+    version: request.version,
+    registry: request.registry,
+  })));
+  expect(installRequests).toContainEqual({
+    packId: 'community.locked-pack',
+    version: '0.2.0',
+    registry: 'https://registry.example/workspace-lock.json',
+  });
+  expect(installRequests).toContainEqual({
+    packId: 'community.missing-pack',
+    version: '9.9.1',
+    registry: 'https://registry.example/workspace-lock.json',
+  });
+  const workspaceLockUpserts = await win.evaluate(() => ((window as any).__orpadNodePackWorkspaceLockUpserts || []).slice());
+  expect(workspaceLockUpserts).toEqual([]);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager prefers workspace lock registry source for missing package resolution', async () => {
+  test.setTimeout(60_000);
+  const { workspace, pipelinePath } = writePipelineWorkspace();
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.nodePacks = [
+    { id: 'community.missing-pack', version: '>=9.9.0', origin: 'user-installed' },
+  ];
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await setNodePackWorkspaceLockMock(win);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await win.locator('.pipeline-editor-tabs button').filter({ hasText: 'Details' }).click();
+
+  await win.locator('.pipeline-node-packs-section [data-node-pack-manager-open]').first().click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-tab', 'browse');
+  await expect(win.locator('.node-pack-manager-status')).toContainText('workspace lock source');
+  await expect(win.locator('[data-node-pack-manager-workspace-lock-panel]')).toContainText('community.missing-pack -> https://registry.example/workspace-lock.json');
+  const missingCandidate = nodePackManagerRow(win, 'Workspace Lock Missing Candidate');
+  await expect(missingCandidate).toContainText('https://github.com/example/workspace-missing-pack');
+  const missingCandidateDetail = await openNodePackManagerRowDetail(win, missingCandidate);
+  await expect(missingCandidateDetail).toContainText('community.missing-pack');
+  await closeNodePackManagerRowDetail(win);
+  const registryCalls = await win.evaluate(() => ((window as any).__orpadNodePackRegistryCalls || []).slice());
+  expect(registryCalls[0]).toBe('https://registry.example/workspace-lock.json');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager exposes installed lifecycle export rollback and remove actions', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackInstalledLifecycleMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  const lifecyclePack = nodePackManagerRow(win, 'Lifecycle Package');
+  await expect(lifecyclePack).toContainText('user-installed');
+  let lifecycleDetail = await openNodePackManagerRowDetail(win, lifecyclePack);
+  await expect(lifecycleDetail).toContainText('Installed Lifecycle');
+  await expect(lifecycleDetail).toContainText('Rollback');
+  await expect(lifecycleDetail).toContainText('Available to 0.1.0');
+  await expect(lifecycleDetail.locator('[data-node-pack-manager-action="rollback"]')).toBeEnabled();
+  await closeNodePackManagerRowDetail(win);
+
+  await win.locator('[data-node-pack-manager-export-list]').click();
+  const exportModal = win.locator('.node-pack-manager-detail-modal');
+  await expect(exportModal).toContainText('Exported Installed List');
+  await expect(exportModal).toContainText('community.lifecycle-pack');
+  await expect(exportModal).toContainText('/userData/nodes/orpad-node-packs.lock.json');
+  await closeNodePackManagerRowDetail(win);
+  await expectNodePackManagerInspectorUsable(win, 'node pack manager installed lifecycle inspector', 1);
+
+  lifecycleDetail = await openNodePackManagerRowDetail(win, lifecyclePack);
+  const rollbackDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Rollback package "Lifecycle Package"?');
+    await dialog.accept();
+  });
+  await lifecycleDetail.locator('[data-node-pack-manager-action="rollback"]').click();
+  await rollbackDialog;
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('Rolled Back Package');
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('NODE_PACK_ROLLBACK_RESTORED_BACKUP');
+  lifecycleDetail = await openNodePackManagerRowDetail(win, lifecyclePack);
+  await expect(lifecycleDetail).toContainText('Available to 0.2.0');
+
+  const removeDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Remove package "Lifecycle Package"?');
+    await dialog.accept();
+  });
+  await lifecycleDetail.locator('[data-node-pack-manager-action="remove"]').click();
+  await removeDialog;
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('Removed Package');
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('moved to backup');
+  await expect(win.locator('.node-pack-manager')).toContainText('No packages are installed.');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('node pack manager keeps update candidates visible when a registry update fails', async () => {
+  test.setTimeout(60_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await setNodePackRegistryUpdateFailureMock(win);
+
+  await win.locator('[data-node-pack-manager-open]').click();
+  await win.locator('[data-node-pack-manager-tab="browse"]').click();
+  await win.locator('[data-node-pack-manager-registry-load]').click();
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  await win.locator('[data-node-pack-manager-tab="updates"]').click();
+  await expect(win.locator('.node-pack-manager-status')).toContainText('1 update candidate');
+  const updateFailurePack = nodePackManagerRow(win, 'Registry Update Failure Pack');
+  const registryUpdateFailureDialog = win.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.message()).toContain('Package id: community.update-failure');
+    expect(dialog.message()).toContain('Version: 0.2.0');
+    expect(dialog.message()).toContain('Registry source: https://registry.example/orpad-node-packs.json');
+    await dialog.accept();
+  });
+  await updateFailurePack.locator('[data-node-pack-manager-registry-update="community.update-failure"]').click();
+  await registryUpdateFailureDialog;
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('Update Failed');
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('active package');
+  await expect(win.locator('.node-pack-manager-action-notice')).toContainText('NODE_PACK_INSTALL_DECLARED_FILE_CHECKSUM_MISMATCH');
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-tab', 'updates');
+  await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
+  const updateFailureDetail = await openNodePackManagerRowDetail(win, updateFailurePack);
+  await expect(updateFailureDetail).toContainText('0.1.0');
+  await expect(updateFailureDetail).toContainText('0.2.0');
+  await closeNodePackManagerRowDetail(win);
+  await win.locator('[data-node-pack-manager-tab="installed"]').click();
+  const installedFailureDetail = await openNodePackManagerRowDetail(win, nodePackManagerRow(win, 'Registry Update Failure Pack'));
+  await expect(installedFailureDetail).toContainText('0.1.0');
+  await closeNodePackManagerRowDetail(win);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -632,6 +2448,7 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
   await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
   await win.locator('#btn-preview').click();
   await expect(win.locator('[data-node-pack-manager-open]')).toBeVisible();
+  await win.setViewportSize({ width: 820, height: 620 });
 
   await setNodePackManagerMock(win, {
     success: true,
@@ -759,7 +2576,44 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
   await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
   await expect(win.locator('.node-pack-manager-status')).toContainText('1 conflict');
   const diagnostics = win.locator('.node-pack-manager-diagnostics');
-  await expect(diagnostics).toContainText('Discovery roots');
+  const rootSummary = win.locator('.node-pack-manager-root-summary');
+  await expect(rootSummary).toContainText('Discovery roots');
+  await expect(rootSummary).toContainText('built-in');
+  await expect(rootSummary).toContainText('/app/nodes');
+  await expect(rootSummary).toContainText('user');
+  await expect(rootSummary).toContainText('/bad/nodes');
+  await expect(win.locator('.node-pack-manager-diagnostics .node-pack-manager-roots')).toHaveCount(0);
+  await expect(diagnostics).not.toContainText('Discovery roots');
+  const rootSummaryLayout = await win.locator('.node-pack-manager').evaluate((manager) => {
+    const tabs = [...manager.querySelectorAll<HTMLElement>('[data-node-pack-manager-tab]')];
+    const lastTab = tabs[tabs.length - 1] || null;
+    const summary = manager.querySelector<HTMLElement>('.node-pack-manager-root-summary');
+    const label = manager.querySelector<HTMLElement>('.node-pack-manager-root-summary-label');
+    const chips = [...manager.querySelectorAll<HTMLElement>('.node-pack-manager-root-chip')];
+    const managerRect = manager.getBoundingClientRect();
+    const lastTabRect = lastTab?.getBoundingClientRect();
+    const summaryRect = summary?.getBoundingClientRect();
+    const labelRect = label?.getBoundingClientRect();
+    const chipRects = chips.map(chip => chip.getBoundingClientRect());
+    const chipWidths = chips.map(chip => chip.getBoundingClientRect().width);
+    const tolerance = 2;
+    return {
+      anchoredAfterLastTab: !!lastTabRect && !!summaryRect && summaryRect.left <= lastTabRect.right + 12,
+      stretchesToManagerRight: !!summaryRect && summaryRect.right >= managerRect.right - tolerance,
+      labelSharesFirstRootLine: !!labelRect && chipRects.length > 0
+        && chipRects[0].top <= labelRect.bottom + tolerance
+        && chipRects[0].bottom >= labelRect.top - tolerance,
+      rootChipsStacked: chipRects.length > 1
+        ? chipRects.slice(1).every((rect, index) => rect.top >= chipRects[index].bottom - tolerance)
+        : true,
+      minChipWidth: chipWidths.length ? Math.min(...chipWidths) : 0,
+    };
+  });
+  expect(rootSummaryLayout.anchoredAfterLastTab, `Discovery roots should start next to the final Package Manager tab ${JSON.stringify(rootSummaryLayout)}`).toBe(true);
+  expect(rootSummaryLayout.stretchesToManagerRight, `Discovery roots should fill the row to the right edge ${JSON.stringify(rootSummaryLayout)}`).toBe(true);
+  expect(rootSummaryLayout.labelSharesFirstRootLine, `Discovery roots label should stay on the first root line ${JSON.stringify(rootSummaryLayout)}`).toBe(true);
+  expect(rootSummaryLayout.rootChipsStacked, `Discovery root paths should render on separate lines ${JSON.stringify(rootSummaryLayout)}`).toBe(true);
+  expect(rootSummaryLayout.minChipWidth, `Discovery root chips should have room for path text ${JSON.stringify(rootSummaryLayout)}`).toBeGreaterThanOrEqual(140);
   await expect(diagnostics).toContainText('NODE_PACK_DISCOVERY_ROOT_UNREADABLE');
   await expect(diagnostics).toContainText('Root path');
   await expect(diagnostics).toContainText('/bad/nodes');
@@ -774,30 +2628,32 @@ test('node pack manager surfaces discovery diagnostics and conflicts', async () 
 
   await expect(win.locator('.node-pack-manager-pack.has-conflict')).toHaveCount(2);
   const alphaPack = win.locator('.node-pack-manager-pack.has-conflict').filter({ hasText: 'Community Alpha Pack' });
-  await expect(alphaPack).toContainText('conflict');
   await expect(alphaPack).toHaveAttribute('data-node-pack-validation', 'conflict');
-  const detail = win.locator('.node-pack-manager-detail');
+  let detail = await openNodePackManagerRowDetail(win, alphaPack);
   await expect(detail.locator('.node-pack-manager-detail-header.has-conflict')).toBeVisible();
   await expect(detail).toContainText('Conflict state');
   await expect(detail).toContainText('NODE_PACK_DISCOVERY_VALIDATION_FAILED');
   await expect(detail).toContainText('NODE_PACK_DISCOVERY_DUPLICATE_ID');
   await expect(detail).toContainText('NODE_PACK_TYPE_CONFLICT');
+  await closeNodePackManagerRowDetail(win);
 
-  await win.locator('.node-pack-manager-pack.has-conflict').filter({ hasText: 'Community Beta Pack' }).click();
+  detail = await openNodePackManagerRowDetail(win, win.locator('.node-pack-manager-pack.has-conflict').filter({ hasText: 'Community Beta Pack' }));
   await expect(detail.locator('.node-pack-manager-detail-header.has-conflict')).toBeVisible();
   await expect(detail).toContainText('NODE_PACK_TYPE_CONFLICT');
   await expect(detail).toContainText('community.beta');
   await expect(detail).toContainText('community.shared');
+  await closeNodePackManagerRowDetail(win);
 
-  const brokenPack = win.locator('.node-pack-manager-pack').filter({ hasText: 'Community Broken Pack' });
+  const brokenPack = nodePackManagerRow(win, 'Community Broken Pack');
   await expect(brokenPack).toHaveAttribute('data-node-pack-validation', 'validation-error');
-  await expect(brokenPack).toContainText('validation-error');
-  await brokenPack.click();
+  detail = await openNodePackManagerRowDetail(win, brokenPack);
   await expect(detail.locator('.node-pack-manager-detail-header.has-conflict')).toHaveCount(0);
   await expect(detail).toContainText('Validation status');
   await expect(detail).toContainText('validation-error');
   await expect(detail).toContainText('/packs/community.broken/orpad.node-pack.json');
   await expect(detail).toContainText('NODE_PACK_VERSION_MISSING');
+  await closeNodePackManagerRowDetail(win);
+  await expectNodePackManagerInspectorUsable(win, 'node pack manager diagnostics inspector', 3);
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -939,12 +2795,12 @@ test('add node browser surfaces node pack discovery failure fallback state', asy
 
   const alert = win.locator('.orch-node-browser-alert');
   await expect(alert).toBeVisible();
-  await expect(alert).toContainText('Degraded node pack catalog');
+  await expect(alert).toContainText('Degraded package catalog');
   await expect(alert).toContainText('built-in fallback packs only');
   await expect(alert).toContainText('User-installed packs may be missing');
   await expect(alert).toContainText('fixture discovery failure');
   await expect(alert.locator('[data-orch-node-browser-retry]')).toContainText('Retry discovery');
-  await expect(alert.locator('[data-node-pack-manager-open]')).toContainText('Open Pack Manager');
+  await expect(alert.locator('[data-node-pack-manager-open]')).toContainText('Open Package Manager');
 
   await expect(win.locator('.orch-node-browser-tab[data-orch-node-pack-status="valid"]')).toHaveCount(0);
   const fallbackTab = win.locator('.orch-node-browser-tab').filter({ hasText: 'OrPAD Workstream Nodes' });

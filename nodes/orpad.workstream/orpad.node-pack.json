@@ -3,7 +3,7 @@
   "schemaVersion": "1.0",
   "id": "orpad.workstream",
   "name": "OrPAD Workstream Nodes",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "origin": "built-in",
   "trustLevel": "official",
   "mutable": false,
@@ -20,7 +20,7 @@
   },
   "license": "MIT",
   "compatibility": {
-    "orpad": ">=1.0.0-beta.3",
+    "orpad": ">=1.0.0-beta.4",
     "pipelineSchema": ">=1.0",
     "graphSchema": ">=1.0",
     "nodeContractSchema": ">=1.0",
@@ -33,7 +33,7 @@
   "dependsOn": [
     {
       "id": "orpad.core",
-      "version": ">=1.0.0-beta.3"
+      "version": ">=1.0.0-beta.4"
     }
   ],
   "capabilities": [
@@ -109,14 +109,16 @@
   ],
   "examples": [
     {
-      "id": "maintenance-workstream-example",
-      "path": "examples/maintenance-workstream.or-pipeline"
+      "id": "maintenance-quality-workstream",
+      "path": "examples/maintenance-workstream.or-pipeline",
+      "label": "Maintenance Quality Workstream",
+      "description": "Parallel product, bug-risk, and UX/UI probes feeding queue validation, triage, dispatch, worker, evidence, and patch review."
     },
     {
-      "id": "tutorial-worker-patch-review",
-      "path": "examples/tutorial-worker-patch-review/pipeline.or-pipeline",
-      "label": "Tutorial: Worker patch review",
-      "description": "Single-candidate machine flow with a deterministic harness fixture so the Review Patch modal has a concrete diff to inspect."
+      "id": "product-build-workstream",
+      "path": "examples/product-build-workstream/pipeline.or-pipeline",
+      "label": "Product Build Workstream",
+      "description": "Executable product-build flow with a deterministic harness fixture and patch review handoff."
     }
   ]
 }

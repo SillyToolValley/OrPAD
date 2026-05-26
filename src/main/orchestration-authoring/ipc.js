@@ -19,6 +19,24 @@ const {
   discoverNodePackManifests,
   HIGH_RISK_NODE_PACK_CAPABILITIES,
 } = require('../orchestration-machine/node-packs');
+const {
+  exportInstalledNodePackList,
+  installRegistryNodePack,
+  removeInstalledNodePack,
+  rollbackInstalledNodePack,
+  setInstalledNodePackEnabled,
+  updateInstalledNodePacks,
+} = require('../orchestration-machine/node-pack-installer');
+const {
+  loadNodePackRegistrySource,
+  searchNodePackRegistryEntries,
+  summarizeNodePackRegistry,
+} = require('../orchestration-machine/node-pack-registry');
+const {
+  readWorkspaceNodePackLock,
+  upsertWorkspaceNodePackLockEntry,
+  writeWorkspaceNodePackLock,
+} = require('../orchestration-machine/node-pack-workspace-lock');
 
 // Providers that can act as the Generate authoring agent. The renderer modal
 // is the source of truth for the user-facing list, but the backend re-checks
@@ -298,6 +316,102 @@ function trustedNodePackAuthoringEvidence(request = {}) {
       || request.highRiskCapabilityReviewByPack
       || request.capabilityReviewByPack
       || request.securityReviewByPack,
+  };
+}
+
+function rendererRegistrySourceDiagnostic(source) {
+  if (!source) {
+    return {
+      level: 'error',
+      code: 'NODE_PACK_REGISTRY_SOURCE_MISSING',
+      message: 'A node pack registry source is required.',
+    };
+  }
+  try {
+    const url = new URL(String(source));
+    if (url.protocol === 'https:') return null;
+  } catch {}
+  return {
+    level: 'error',
+    code: 'NODE_PACK_REGISTRY_SOURCE_BLOCKED',
+    message: 'Renderer node pack registry access is limited to explicit HTTPS registry URLs.',
+    source: String(source || ''),
+  };
+}
+
+function nodePackRegistrySourceForRequest(request = {}) {
+  const source = String(request.registry || request.registryUrl || request.registrySource || '').trim();
+  const diagnostic = rendererRegistrySourceDiagnostic(source);
+  return { source, diagnostic };
+}
+
+function nodePackManagerInstallOptions(app) {
+  return {
+    userDataDir: appUserDataDir(app),
+    builtInNodePacksRoot: appBuiltInNodePacksRoot(app),
+    installMode: 'normal',
+    installedBy: 'node-pack-manager',
+  };
+}
+
+function publicNodePackInstallResult(result = {}) {
+  const discovery = result.discovery && typeof result.discovery === 'object' ? result.discovery : {};
+  const diagnostics = [
+    ...(Array.isArray(result.diagnostics) ? result.diagnostics : []),
+    ...(Array.isArray(discovery.diagnostics) ? discovery.diagnostics : []),
+  ];
+  return {
+    ...result,
+    nodePack: result.nodePack
+      ? publicNodePackManifest(result.nodePack, {
+        diagnostics,
+        conflicts: discovery.conflicts || [],
+      })
+      : null,
+    discovery: discovery && Array.isArray(discovery.nodePacks)
+      ? {
+        ok: discovery.ok,
+        roots: discovery.roots || [],
+        diagnostics: discovery.diagnostics || [],
+        conflicts: discovery.conflicts || [],
+        nodePacks: discovery.nodePacks.map(pack => publicNodePackManifest(pack, {
+          diagnostics: discovery.diagnostics || [],
+          conflicts: discovery.conflicts || [],
+        })),
+      }
+      : discovery,
+  };
+}
+
+function publicNodePackUpdateResult(result = {}) {
+  return {
+    ...result,
+    results: Array.isArray(result.results)
+      ? result.results.map(item => publicNodePackInstallResult(item))
+      : [],
+    nodePack: result.nodePack
+      ? publicNodePackInstallResult({ ...result, results: [] }).nodePack
+      : null,
+  };
+}
+
+function publicWorkspaceNodePackLockResult(result = {}) {
+  const lock = result.lock && typeof result.lock === 'object' ? result.lock : { packs: [] };
+  const packs = Array.isArray(result.packs)
+    ? result.packs
+    : (Array.isArray(lock.packs) ? lock.packs : []);
+  return {
+    success: result.success !== false && result.ok !== false,
+    ok: result.ok !== false,
+    path: result.path || result.lockPath || '',
+    lockPath: result.lockPath || result.path || '',
+    lock: {
+      ...lock,
+      packs,
+    },
+    packs,
+    diagnostics: Array.isArray(result.diagnostics) ? result.diagnostics : [],
+    error: result.error || '',
   };
 }
 
@@ -2497,6 +2611,203 @@ function registerOrchestrationAuthoringHandlers({ ipcMain, app, authority }) {
       };
     } catch (err) {
       return { success: false, ok: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-workspace-lock-read', async (event, request = {}) => {
+    try {
+      const workspaceRoot = await authority.assertWorkspacePath(event.sender, request.workspacePath, {
+        label: 'Node pack workspace lock',
+      });
+      return publicWorkspaceNodePackLockResult(await readWorkspaceNodePackLock({ workspacePath: workspaceRoot }));
+    } catch (err) {
+      return { success: false, ok: false, path: '', lockPath: '', packs: [], diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-workspace-lock-write', async (event, request = {}) => {
+    try {
+      const workspaceRoot = await authority.assertWorkspacePath(event.sender, request.workspacePath, {
+        label: 'Node pack workspace lock',
+      });
+      const lock = request.lock || request.workspaceLock || { packs: request.packs || [] };
+      return publicWorkspaceNodePackLockResult(await writeWorkspaceNodePackLock(lock, { workspacePath: workspaceRoot }));
+    } catch (err) {
+      return { success: false, ok: false, path: '', lockPath: '', packs: [], diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-workspace-lock-upsert', async (event, request = {}) => {
+    try {
+      const workspaceRoot = await authority.assertWorkspacePath(event.sender, request.workspacePath, {
+        label: 'Node pack workspace lock',
+      });
+      const entry = request.entry || request.lockEntry || request.package || null;
+      return publicWorkspaceNodePackLockResult(await upsertWorkspaceNodePackLockEntry(entry, { workspacePath: workspaceRoot }));
+    } catch (err) {
+      return { success: false, ok: false, path: '', lockPath: '', packs: [], diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-registry-list', async (_event, request = {}) => {
+    try {
+      const { source, diagnostic } = nodePackRegistrySourceForRequest(request);
+      if (diagnostic) {
+        return {
+          success: false,
+          ok: false,
+          registry: null,
+          entries: [],
+          diagnostics: [diagnostic],
+          error: diagnostic.message,
+        };
+      }
+      const result = await loadNodePackRegistrySource(source, {
+        userDataDir: appUserDataDir(app),
+      });
+      const registry = result.registry ? summarizeNodePackRegistry(result.registry) : null;
+      return {
+        success: result.ok,
+        ok: result.ok,
+        registry,
+        entries: registry?.entries || [],
+        source: result.source || source,
+        sourceKind: result.sourceKind || '',
+        fromCache: result.fromCache === true,
+        diagnostics: result.diagnostics || [],
+      };
+    } catch (err) {
+      return { success: false, ok: false, registry: null, entries: [], diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-registry-search', async (_event, request = {}) => {
+    try {
+      const { source, diagnostic } = nodePackRegistrySourceForRequest(request);
+      if (diagnostic) {
+        return {
+          success: false,
+          ok: false,
+          registry: null,
+          entries: [],
+          diagnostics: [diagnostic],
+          error: diagnostic.message,
+        };
+      }
+      const result = await loadNodePackRegistrySource(source, {
+        userDataDir: appUserDataDir(app),
+      });
+      const registry = result.registry ? summarizeNodePackRegistry(result.registry) : null;
+      const entries = result.ok
+        ? searchNodePackRegistryEntries(result.entries, request.query || '', {
+          category: request.category || request.categories,
+          capability: request.capability || request.capabilities,
+          registry: result.registry || {},
+        })
+        : [];
+      return {
+        success: result.ok,
+        ok: result.ok,
+        registry,
+        entries,
+        source: result.source || source,
+        sourceKind: result.sourceKind || '',
+        fromCache: result.fromCache === true,
+        diagnostics: result.diagnostics || [],
+        query: request.query || '',
+      };
+    } catch (err) {
+      return { success: false, ok: false, registry: null, entries: [], diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-install', async (_event, request = {}) => {
+    try {
+      const { source, diagnostic } = nodePackRegistrySourceForRequest(request);
+      if (diagnostic) {
+        return {
+          success: false,
+          ok: false,
+          action: 'install',
+          diagnostics: [diagnostic],
+          error: diagnostic.message,
+        };
+      }
+      const result = await installRegistryNodePack({
+        registry: source,
+        packId: request.packId || request.id,
+        version: request.version || '',
+      }, nodePackManagerInstallOptions(app));
+      return publicNodePackInstallResult(result);
+    } catch (err) {
+      return { success: false, ok: false, action: 'install', diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-update', async (_event, request = {}) => {
+    try {
+      const { source, diagnostic } = nodePackRegistrySourceForRequest(request);
+      if (diagnostic) {
+        return {
+          success: false,
+          ok: false,
+          action: 'update',
+          diagnostics: [diagnostic],
+          error: diagnostic.message,
+        };
+      }
+      const result = await updateInstalledNodePacks({
+        registry: source,
+        packId: request.packId || request.id || '',
+        includePinned: request.includePinned === true,
+      }, nodePackManagerInstallOptions(app));
+      return publicNodePackUpdateResult(result);
+    } catch (err) {
+      return { success: false, ok: false, action: 'update', diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-enable', async (_event, request = {}) => {
+    try {
+      const result = await setInstalledNodePackEnabled(request.packId || request.id, true, nodePackManagerInstallOptions(app));
+      return publicNodePackInstallResult(result);
+    } catch (err) {
+      return { success: false, ok: false, action: 'enable', diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-disable', async (_event, request = {}) => {
+    try {
+      const result = await setInstalledNodePackEnabled(request.packId || request.id, false, nodePackManagerInstallOptions(app));
+      return publicNodePackInstallResult(result);
+    } catch (err) {
+      return { success: false, ok: false, action: 'disable', diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-remove', async (_event, request = {}) => {
+    try {
+      const result = await removeInstalledNodePack(request.packId || request.id, nodePackManagerInstallOptions(app));
+      return publicNodePackInstallResult(result);
+    } catch (err) {
+      return { success: false, ok: false, action: 'remove', diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-rollback', async (_event, request = {}) => {
+    try {
+      const result = await rollbackInstalledNodePack(request.packId || request.id, nodePackManagerInstallOptions(app));
+      return publicNodePackInstallResult(result);
+    } catch (err) {
+      return { success: false, ok: false, action: 'rollback', diagnostics: [], error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('orchestration-node-pack-export-list', async () => {
+    try {
+      return await exportInstalledNodePackList(nodePackManagerInstallOptions(app));
+    } catch (err) {
+      return { success: false, ok: false, action: 'export-list', packs: [], diagnostics: [], error: err?.message || String(err) };
     }
   });
 

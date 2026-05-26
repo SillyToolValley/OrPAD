@@ -438,7 +438,7 @@ const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
-// Live event log state — Phase 1.2:
+// Live event log state -Phase 1.2:
 //   stickRunIds: runIds whose event log auto-scrolls to bottom on render.
 //     Default ON; user toggles off when they want to inspect older events.
 //   lastRendered: tracks the highest event sequence rendered per runId so
@@ -447,8 +447,8 @@ const machineRunListCache = new Map();
 const machineRunReplayStickRunIds = new Set();
 const lastReplayRenderedSequence = new Map();
 const machineRunReplayStickDefault = true;
-// Time travel state — Phase 2.4:
-//   replayPositionByRunId: runId → 1-based event index. When set,
+// Time travel state -Phase 2.4:
+//   replayPositionByRunId: runId -1-based event index. When set,
 //     renders truncate events to events[0..position] so the entire UI
 //     reflects the run state AT THAT POINT. null / unset = live view.
 const machineRunReplayPosition = new Map();
@@ -462,11 +462,10 @@ function machineRunTransientScopeKey(runbookPath, runId) {
   const normalizedRunbook = runbookNormalizePath(runbookPath || selectedRunbookPath || '').toLowerCase();
   return `${normalizedWorkspace}::${normalizedRunbook}::${normalizedRunId}`;
 }
-// Breakpoints — Phase 3.7:
+// Breakpoints -Phase 3.7:
 //   per-pipeline (NOT per-run) Set<nodePath>. Persists across runs in
 //   localStorage so the user does not have to re-mark them each time.
-//   These are renderer-only visual markers + pre-run confirmation —
-//   the dispatcher does not halt automatically. A "Bypass once" toggle
+//   These are renderer-only visual markers + pre-run confirmation - the dispatcher does not halt automatically. A "Bypass once" toggle
 //   lets Continue dispatch despite an active breakpoint.
 const MACHINE_BREAKPOINTS_STORAGE_PREFIX = 'orpad-machine-breakpoints:';
 const machineBreakpointBypass = new Set(); // runId where bypass is armed
@@ -955,6 +954,7 @@ document.getElementById('btn-theme').addEventListener('click', () => {
     renderThemePanel();
   }
 });
+document.getElementById('btn-package-manager')?.addEventListener('click', () => openOrchNodePackManager());
 document.getElementById('theme-panel-close').addEventListener('click', () => themePanel.classList.add('hidden'));
 document.addEventListener('mousedown', (e) => {
   if (!themePanel.classList.contains('hidden') && !themePanel.contains(e.target) && !e.target.closest('#btn-theme')) {
@@ -3226,7 +3226,7 @@ function pipelineDiagnosticStatusText(validation) {
 
 function pipelineValidationDiagnostics(validation) {
   return (Array.isArray(validation?.diagnostics) ? validation.diagnostics : [])
-    .filter(issue => isDiagnosticError(issue) || isEntryGraphDeclarationWarning(issue) || isPipelineNodePackDiagnostic(issue));
+    .filter(issue => isDiagnosticError(issue) || isEntryGraphDeclarationWarning(issue) || isNodePackResolutionDiagnostic(issue));
 }
 
 function pipelineInlineDiagnosticText(issue) {
@@ -3607,6 +3607,31 @@ function renderOrchInspectorCheckbox(label, field, path, checked, hint = '') {
   `;
 }
 
+function renderOrchTransitionField(label, field, edgeId, value, options = {}) {
+  const valueKindAttr = options.valueKind ? ` data-orch-value-kind="${escapeHtml(options.valueKind)}"` : '';
+  const placeholderAttr = options.placeholder ? ` placeholder="${escapeHtml(options.placeholder)}"` : '';
+  const typeAttr = options.type ? ` type="${escapeHtml(options.type)}"` : '';
+  return `
+    <label>
+      <span>${escapeHtml(label)}</span>
+      <input${typeAttr} data-orch-transition-edit="${escapeHtml(field)}" data-orch-edge="${escapeHtml(edgeId)}"${valueKindAttr}${placeholderAttr} value="${escapeHtml(String(value ?? ''))}">
+    </label>
+  `;
+}
+
+function renderOrchTransitionSelect(label, field, edgeId, value, options = []) {
+  return `
+    <label>
+      <span>${escapeHtml(label)}</span>
+      <select data-orch-transition-edit="${escapeHtml(field)}" data-orch-edge="${escapeHtml(edgeId)}">
+        ${options.map(option => `
+          <option value="${escapeHtml(option.value)}" ${option.value === value ? 'selected' : ''}>${escapeHtml(option.label)}</option>
+        `).join('')}
+      </select>
+    </label>
+  `;
+}
+
 function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress = false, activeRecord = null) {
   if (runInProgress) return { state: 'warn', text: 'Run in progress.' };
   if (!validation) return { state: '', text: 'Not checked yet.' };
@@ -3628,7 +3653,7 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
       return { state: 'warn', text: 'This pipeline needs a runnable adapter before it can start.' };
     }
     // The pipeline itself is valid, but an existing active run may be
-    // mid-flight (waiting / blocked / approval-required) — in that case
+    // mid-flight (waiting / blocked / approval-required) -in that case
     // "Ready to start" is misleading because the user's attention should
     // be on resolving the existing run, not starting a fresh one. Reflect
     // the active run's state in the chip so it lines up with the gate
@@ -3670,24 +3695,24 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
       }
       const gateBlocked = (sharedGateBlockedNodes(activeRecord) || []).length > 0;
       const failed = (sharedFailedAdapterCalls(activeRecord) || []).length > 0;
-      if (gateBlocked) return { state: 'warn', text: 'Run paused at gate — provide evidence or skip.' };
-      if (failed) return { state: 'warn', text: 'Run paused — failed adapter call needs review.' };
-      return { state: 'warn', text: 'Run paused — click Continue to proceed.' };
+      if (gateBlocked) return { state: 'warn', text: 'Run paused at gate - provide evidence or skip.' };
+      if (failed) return { state: 'warn', text: 'Run paused - failed adapter call needs review.' };
+      return { state: 'warn', text: 'Run paused - click Continue to proceed.' };
     }
     if (lifecycle === 'cancelling') {
       return { state: 'warn', text: 'Cancelling run...' };
     }
     if (['failed', 'cancelled', 'canceled'].includes(lifecycle)) {
-      return { state: 'warn', text: `Last run ${lifecycle === 'failed' ? 'failed' : 'cancelled'} — Start to begin a new one.` };
+      return { state: 'warn', text: `Last run ${lifecycle === 'failed' ? 'failed' : 'cancelled'} - Start to begin a new one.` };
     }
     if (lifecycle === 'completed' && summary === 'blocked') {
-      return { state: 'warn', text: 'Last run closed as blocked — Start to begin a new one.' };
+      return { state: 'warn', text: 'Last run closed as blocked - Start to begin a new one.' };
     }
     if (lifecycle === 'completed' && summary === 'partial') {
-      return { state: 'good', text: 'Last run partial — Start to address residual work.' };
+      return { state: 'good', text: 'Last run partial - Start to address residual work.' };
     }
     if (lifecycle === 'completed' && summary === 'done') {
-      return { state: 'good', text: 'Last run complete — ready for a new run.' };
+      return { state: 'good', text: 'Last run complete - ready for a new run.' };
     }
     return { state: 'good', text: 'Ready to start.' };
   }
@@ -3809,7 +3834,7 @@ function renderMachineBudgetIndicatorHtml(pipelineDoc) {
   if (perRun > 0) parts.push(`$${perRun.toFixed(2)}/run`);
   if (perCall > 0) parts.push(`$${perCall.toFixed(2)}/call`);
   parts.push(hardStop);
-  return `<span class="pipeline-runbar-status pipe-budget-chip" title="Pipeline budget config (estimate, not provider invoice). hardStop=true는 router가 perCall/perRun 초과 attempt를 즉시 거부.">Budget · ${escapeHtml(parts.join(' · '))}</span>`;
+  return `<span class="pipeline-runbar-status pipe-budget-chip" title="Pipeline budget config (estimate, not provider invoice). hardStop=true stops attempts when perCall/perRun limits are exceeded.">Budget - ${escapeHtml(parts.join(' - '))}</span>`;
 }
 
 function renderMachineLifecycleEventNoticesHtml(record, runbookPathArg = '', options = {}) {
@@ -3941,21 +3966,20 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
 
   // Surface gate-style blocked nodes (exit / barrier / artifactContract /
   // patchReview / gate / workQueue) here even while the run is still
-  // running — they are normal lifecycle blocks that need user attention but
+  // running -they are normal lifecycle blocks that need user attention but
   // are NOT system failures. Skip-node would just re-trigger them; the user
   // needs to address evidence / approval / merge instead.
   const gateBlocked = sharedGateBlockedNodes(record);
   // Has any failed adapter call? If so, the honest fix path is "Retry
-  // the failed probe" — surfaced inline at the bottom of the gate
+  // the failed probe" -surfaced inline at the bottom of the gate
   // banner along with Skip. Without this the gate banner reads "provide
   // evidence" but the AI is the one expected to gather evidence and the
   // user has no way to do so manually.
   const failedForGate = sharedFailedAdapterCalls(record) || [];
   let gateBanner = '';
   // User report 2026-05-15: when ALL gates are evidence-incomplete exit
-  // gates, the title "Gate is blocked — needs decision" + remedy
-  // "Continue remaining queued work first" reads as "click Continue" —
-  // misleading because the user can't do that, no Continue button is
+  // gates, the title "Gate is blocked - needs decision" + remedy
+  // "Continue remaining queued work first" reads as "click Continue" - misleading because the user can't do that, no Continue button is
   // surfaced for evidence-incomplete (it's a terminal block until the
   // user either reruns upstream nodes or skips the exit gate).
   const totalMissingArtifacts = gateBlocked.reduce((sum, g) => {
@@ -3986,7 +4010,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
         : '';
       // Map the gate reason to plain-language guidance. The default
       // banner used to say "provide evidence or approval" which is
-      // misleading for an AI-driven harness — the user can't manually
+      // misleading for an AI-driven harness -the user can't manually
       // produce candidate-inventory.json. Be explicit about the actual
       // remedy.
       const reason = String(g.reason || '');
@@ -4005,8 +4029,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
         const more = missingItems.length > 6 ? `, +${missingItems.length - 6} more` : '';
         // User report 2026-05-15: previous wording said "Continue remaining
         // queued work first" which users read as "click the Continue
-        // button." There is no Continue button for evidence-incomplete —
-        // the only ways out are (a) rerun upstream nodes to produce the
+        // button." There is no Continue button for evidence-incomplete - the only ways out are (a) rerun upstream nodes to produce the
         // missing artifacts, or (b) Skip exit gate to end the run.
         remedy = missingText
           ? `${missingItems.length} required artifact${missingItems.length === 1 ? '' : 's'} not produced (${missingText}${more}). Rerun the upstream nodes that should have produced them, or Skip exit gate to end the run as-is.`
@@ -4041,11 +4064,11 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
       `;
     }).join('');
     const retryAllHint = failedForGate.length
-      ? `<div class="pipe-lifecycle-banner-remedy">${escapeHtml(`${failedForGate.length} failed probe${failedForGate.length === 1 ? '' : 's'} below — Retry probe on each card to re-run, or skip the gate to accept the missing evidence.`)}</div>`
+      ? `<div class="pipe-lifecycle-banner-remedy">${escapeHtml(`${failedForGate.length} failed probe${failedForGate.length === 1 ? '' : 's'} below - Retry probe on each card to re-run, or skip the gate to accept the missing evidence.`)}</div>`
       : '';
     const gateTitle = allExitEvidenceIncomplete && totalMissingArtifacts > 0
-      ? `Run paused at exit gate — ${totalMissingArtifacts} artifact${totalMissingArtifacts === 1 ? '' : 's'} missing`
-      : 'Gate is blocked — needs decision';
+      ? `Run paused at exit gate - ${totalMissingArtifacts} artifact${totalMissingArtifacts === 1 ? '' : 's'} missing`
+      : 'Gate is blocked - needs decision';
     gateBanner = `
       <div class="pipe-lifecycle-banner pipe-lifecycle-banner--warn">
         <div class="pipe-lifecycle-banner-title">${escapeHtml(gateTitle)}</div>
@@ -4056,7 +4079,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
   }
 
   if (!lifecycle && !summary) return `${gateBanner}${eventNotices}`;
-  // 진행 중 / 초기 상태는 banner 없이 기존 status chip만.
+  // Progress and initial-state banners already have status chip coverage.
   if (['running', 'waiting', 'created', 'cancelling'].includes(lifecycle)) return `${gateBanner}${eventNotices}`;
 
   const summaryAbs = runRoot ? `${runRoot.replace(/[\\/]+$/, '')}/summary.md` : '';
@@ -4081,7 +4104,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
   // "Approval marker is set but no payload loaded yet" placeholder card.
   // In practice that fallback fired permanently whenever every approval
   // had already been decided but the lifecycleStatus event remained at
-  // 'approval-required' — leaving a ghost banner with no actionable
+  // 'approval-required' -leaving a ghost banner with no actionable
   // content. The honest behavior is to suppress the banner when nothing
   // is actually pending; the lifecycle projection (run.status events)
   // is the source of truth for whether the run is paused.
@@ -4119,7 +4142,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
       kind: 'warn',
       title: pending.length === 1 ? 'Approval needed' : `${pending.length} approvals`,
       detail: 'Decide each request inline. After Allow/Decline, click Continue to resume the run.',
-      conclusion: 'This run is paused — decide approvals inline below, then Continue to resume.',
+      conclusion: 'This run is paused - decide approvals inline below, then Continue to resume.',
       extraHtml: `<div class="pipe-interrupt-card-list">${approvalCards}</div>`,
       actions: [linkBtn('events.jsonl', eventsAbs), cancelBtn],
     };
@@ -4154,7 +4177,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
     } else if (summary === 'done') {
       banner = {
         kind: 'success',
-        title: 'Run complete · all required evidence collected',
+        title: 'Run complete - all required evidence collected',
         detail: patchOutcome
           ? machinePatchOutcomeText(patchOutcome)
           : 'No active or deferred work items remain. Summary file holds the final state.',
@@ -4174,7 +4197,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
       banner = {
         kind: 'error',
         title: 'Run closed as blocked',
-        detail: 'Run reached a terminal close but cannot be marked done — requires decision, fix, or capability grant.',
+        detail: 'Run reached a terminal close but cannot be marked done - requires decision, fix, or capability grant.',
         conclusion: 'This run is blocked. Resolve the blocker (decision, fix, or capability) and start a new run.',
         actions: [linkBtn('summary.md', summaryAbs), linkBtn('events.jsonl', eventsAbs), startNewRunBtn],
       };
@@ -4248,8 +4271,8 @@ function renderMachineFailedAdaptersHtml(record) {
   const queue = machineQueueInventoryCounts(queueInventory);
   const runHasLiveWork = ['running', 'created', 'cancelling'].includes(lifecycleStatus)
     && (queue.activeCount > 0 || queue.queuedCount > 0 || queue.candidateCount > 0);
-  // Cancelled / created / running 상태에서는 사용자 의도된 상태이므로 fallback
-  // 표시 안 함. 실제 실패한 adapter 카드(failures.length>0)는 그대로 표시.
+  // Cancelled / created / running states fall back to the standard lifecycle banner.
+  // Re-display adapter cards when later retry evidence is available.
   const lifecycleHidesFallback = sharedLifecycleSuppressesFallback(lifecycleStatus);
   const runIsFailing = !lifecycleHidesFallback
     && (lifecycleStatus === 'failed' || summaryStatus === 'blocked');
@@ -4313,7 +4336,7 @@ function renderMachineFailedAdaptersHtml(record) {
 
   return `
     <div class="pipe-failed-probes">
-      <div class="pipe-failed-probes-title">${failures.length ? `Failed adapter calls (${failures.length})` : 'Run is in a failed/blocked state'} — click to inspect</div>
+      <div class="pipe-failed-probes-title">${failures.length ? `Failed adapter calls (${failures.length})` : 'Run is in a failed/blocked state'} - click to inspect</div>
       ${items || fallbackBlock}
     </div>
   `;
@@ -4331,7 +4354,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const agentReady = isAgentOrchestratedPipeline(validation);
   const localDisabled = checked && validation?.canExecute !== true;
   const handoffDisabled = checked && !agentReady;
-  // Pipeline setup panel reflects the ACTIVE run only — clicking around
+  // Pipeline setup panel reflects the ACTIVE run only -clicking around
   // in History never re-targets the run-bar / lifecycle banner / failure
   // cards. To bring an inspected run into this panel the user must
   // press Recover from the sidebar History detail.
@@ -4393,7 +4416,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   if (isMachineApiAvailable() && !machineRuntimeStatus && !machineRuntimeStatusLoading) {
     void refreshMachineRuntimeStatus();
   }
-  // Aggregate progress metrics for the sticky run-bar — current node,
+  // Aggregate progress metrics for the sticky run-bar -current node,
   // X/N completed, elapsed since run.created. All derive from the
   // active record's events; no new IPC.
   const runHeaderMetrics = harnessSupersedesRunDetails
@@ -4436,7 +4459,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
             <button data-pipeline-run-action="managed-ask" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Debug mode: ask before LLM CLI permission bypass instead of auto-driving to patch review.')}">Start Run (Ask Permissions)</button>
             <button data-pipeline-run-action="managed-auto-apply" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Fully autonomous: auto-approve and apply every patch the worker produces. No human gate at patchReview. Use only for trusted pipelines.')}">Start Run (Auto-Apply Patches)</button>
             <button data-pipeline-run-action="handoff" data-path="${escapeHtml(runbookPath)}" ${handoffDisabled || harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : (handoffDisabled ? 'No handoff is required for this pipeline.' : 'Prepare instructions for running this pipeline with an external agent.'))}">Prepare Handoff</button>
-            <button data-pipeline-run-action="choose-adapter" data-path="${escapeHtml(runbookPath)}" ${harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Choose AI provider and model for this pipeline.')}">Choose AI Provider…</button>
+            <button data-pipeline-run-action="choose-adapter" data-path="${escapeHtml(runbookPath)}" ${harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Choose AI provider and model for this pipeline.')}">Choose AI Provider</button>
             <button data-pipeline-run-action="check" data-path="${escapeHtml(runbookPath)}" ${harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Check this pipeline.')}">Check</button>
           </div>
         </details>
@@ -4835,6 +4858,15 @@ function isPipelineNodePackDiagnostic(issue) {
   return String(issue?.code || '').startsWith('PIPELINE_NODE_PACK_');
 }
 
+function isGraphNodePackResolutionDiagnostic(issue) {
+  const code = String(issue?.code || '');
+  return code === 'GRAPH_NODE_TYPE_UNKNOWN' || code.startsWith('GRAPH_NODE_PACK_');
+}
+
+function isNodePackResolutionDiagnostic(issue) {
+  return isPipelineNodePackDiagnostic(issue) || isGraphNodePackResolutionDiagnostic(issue);
+}
+
 function pipelineNodePackDiagnosticState(issue) {
   const code = String(issue?.code || '').toUpperCase();
   if (code.includes('UNKNOWN') || code.includes('MISSING')) return 'missing';
@@ -4940,7 +4972,7 @@ function pipelineUnmatchedNodePackDiagnostics(diagnostics = [], entries = []) {
   entries.forEach(entry => {
     pipelineNodePackDiagnosticsForEntry(diagnostics, entry).forEach(issue => matched.add(issue));
   });
-  return diagnostics.filter(issue => isPipelineNodePackDiagnostic(issue) && !matched.has(issue));
+  return diagnostics.filter(issue => isNodePackResolutionDiagnostic(issue) && !matched.has(issue));
 }
 
 function pipelineNodePackStatusForEntry(validation, entry, diagnostics = []) {
@@ -4992,12 +5024,12 @@ function renderPipelineNodePackSummary(doc, validation, diagnostics = []) {
   const entries = pipelineNodePackEntries(doc);
   const unmatchedDiagnostics = pipelineUnmatchedNodePackDiagnostics(diagnostics, entries);
   if (!entries.length && !unmatchedDiagnostics.length) {
-    return '<div class="runbook-empty">No node packs declared.</div>';
+    return '<div class="runbook-empty">No packages declared.</div>';
   }
   const rows = entries.map((entry) => {
     const status = pipelineNodePackStatusForEntry(validation, entry, diagnostics);
     const action = pipelineNodePackNeedsManager(status)
-      ? '<button data-node-pack-manager-open>Resolve in Pack Manager</button>'
+      ? '<button data-node-pack-manager-open>Resolve in Package Manager</button>'
       : '';
     return `
       <div class="pipeline-node-pack-row ${status.issues.length ? 'has-inline-diagnostic' : ''}" data-pipeline-node-pack-id="${escapeHtml(pipelineNodePackEntryId(entry))}">
@@ -5026,18 +5058,18 @@ function renderPipelineNodePacksSection(doc, readwrite, validation, diagnostics 
   const hasValue = value !== undefined;
   const json = hasValue ? JSON.stringify(value, null, 2) : '';
   const entries = pipelineNodePackEntries(doc);
-  const nodePackDiagnostics = diagnostics.filter(isPipelineNodePackDiagnostic);
+  const nodePackDiagnostics = diagnostics.filter(isNodePackResolutionDiagnostic);
   const blocking = entries.some(entry => pipelineNodePackNeedsManager(pipelineNodePackStatusForEntry(validation, entry, diagnostics)))
     || nodePackDiagnostics.some(isDiagnosticError);
   return `
     <section class="runbook-panel-section pipeline-node-packs-section" data-pipeline-node-packs-section>
       <header class="pipeline-section-header">
         <div>
-          <h3>Node Packs</h3>
-          <p>Built-in and custom node packs required by this pipeline.</p>
+          <h3>Packages</h3>
+          <p>Built-in and custom packages required by this pipeline. Packages can contribute node types, graphs, skills, and rules.</p>
         </div>
         <span class="runbook-chip ${blocking ? 'danger' : (nodePackDiagnostics.length ? 'warn' : '')}">${entries.length ? machineCountLabel(entries.length, 'pack') : 'not set'}</span>
-        <button data-node-pack-manager-open>${blocking ? 'Resolve in Pack Manager' : 'Open Pack Manager'}</button>
+        <button data-node-pack-manager-open>${blocking ? 'Resolve in Package Manager' : 'Open Package Manager'}</button>
       </header>
       <div class="pipeline-node-pack-list">
         ${renderPipelineNodePackSummary(doc, validation, diagnostics)}
@@ -5046,7 +5078,7 @@ function renderPipelineNodePacksSection(doc, readwrite, validation, diagnostics 
         <summary>${readwrite ? 'Advanced JSON edit' : 'Raw JSON'}</summary>
         ${readwrite ? `
           <label class="pipeline-field span-2">
-            <span>Node Packs JSON</span>
+            <span>Packages JSON (nodePacks)</span>
             <textarea data-pipeline-json-section="nodePacks" rows="10">${escapeHtml(json)}</textarea>
           </label>
         ` : hasValue ? `
@@ -5735,7 +5767,7 @@ function defaultOrchTransitionPoint(source, target, style = 'curve', edge = null
   // Forward (typical): place control point slightly below source by 0.48 * span.
   // Apply fanOut on x so sibling edges from the same source don't overlap; same
   // for fanIn on the target side. Parallel (same source+target) gets a stronger
-  // offset on top of those so two patchReview→worker style pairs read apart.
+  // offset on top of those so two patchReview/worker style pairs read apart.
   const midX = (x1 + x2) / 2 + (fanOut + fanIn) / 2 + parallel;
   return {
     x: Math.round(midX),
@@ -5987,7 +6019,7 @@ function collectOrchStateGraph(doc) {
     // Count nodes whose vertical band overlaps the source/target band AND
     // whose X column is within one node-width of the midpoint between source
     // and target. This is the real number of node rectangles the edge would
-    // pass through if drawn straight — more accurate than the raw index gap.
+    // pass through if drawn straight -more accurate than the raw index gap.
     const sourceNode = nodes.find(item => item.path === edge.source);
     const targetNode = nodes.find(item => item.path === edge.target);
     if (sourceNode && targetNode) {
@@ -6431,7 +6463,12 @@ function showOrchContextMenu({ x, y, path = '', edgeId = '', readwrite = false, 
         items.push(['failure-details', 'Failure details']);
       }
     }
-    if (canMutate && isGraphView && path && selectedOrchNodePath && selectedOrchNodePath !== path) {
+    if (canMutate
+      && isGraphView
+      && isOrchGraphStateLayer()
+      && isGraphNodePath(path)
+      && isGraphNodePath(selectedOrchNodePath)
+      && selectedOrchNodePath !== path) {
       items.push(['connect-selected', 'Connect selected']);
     }
     if (canMutate && path) {
@@ -6464,7 +6501,13 @@ function showOrchContextMenu({ x, y, path = '', edgeId = '', readwrite = false, 
       const contextPoint = button.dataset.orchGraphX
         ? { x: Number(button.dataset.orchGraphX), y: Number(button.dataset.orchGraphY) }
         : null;
-      const actionPath = action === 'add-node-browser' && isGraphView && !path
+      const actionPath = isGraphView && !path && [
+        'add-node-browser',
+        'add-context',
+        'add-skill',
+        'add-decorator',
+        'insert-subtree',
+      ].includes(action)
         ? ''
         : (button.dataset.orchPath || targetPath);
       closeOrchContextMenu();
@@ -6526,6 +6569,21 @@ function addGraphTransition(draft, fromPath, toPath) {
   graph.transitions.push({ id: uniqueGraphTransitionId(graph, from.id, to.id), from: from.id, to: to.id });
 }
 
+function freezeOrchGraphNodeLayout(draft) {
+  if (!isOrchGraphStateLayer()) return;
+  const graph = collectOrchStateGraph(draft);
+  if (!Array.isArray(graph.nodes) || !graph.nodes.length) return;
+  mutateCurrentOrchMeta((meta) => {
+    for (const item of graph.nodes) {
+      if (!item?.path) continue;
+      meta.layout.nodes[item.path] = {
+        x: Math.round(item.x),
+        y: Math.round(item.y),
+      };
+    }
+  });
+}
+
 function addGraphNode(draft, sourcePath, type, position = null) {
   const graph = ensureOrchGraphDoc(draft);
   const node = createOrchNode(type, [], graph.nodes);
@@ -6544,8 +6602,8 @@ function addOrchLinkedNode(draft, path, type, position = null) {
   else addOrchChild(draft, path, type);
 }
 
-function insertOrchLinkedSubtree(draft, path) {
-  if (isOrchGraphStateLayer()) addGraphNode(draft, path, 'orpad.tree');
+function insertOrchLinkedSubtree(draft, path, position = null) {
+  if (isOrchGraphStateLayer()) addGraphNode(draft, path, 'orpad.tree', position);
   else insertOrchSubtree(draft, path);
 }
 
@@ -6635,10 +6693,93 @@ function edgeTargetPath(edgeId) {
   return String(edgeId || '').split('->')[1] || '';
 }
 
+function edgeSourcePath(edgeId) {
+  return String(edgeId || '').split('->')[0] || '';
+}
+
+function graphNodePathForId(graph = {}, nodeId = '') {
+  const index = (Array.isArray(graph.nodes) ? graph.nodes : [])
+    .findIndex(node => String(node?.id || '') === String(nodeId || ''));
+  return index >= 0 ? `graph.nodes.${index}` : '';
+}
+
+function graphNodeOptionsForTransition(doc = {}) {
+  const graph = doc?.graph && typeof doc.graph === 'object' && !Array.isArray(doc.graph) ? doc.graph : {};
+  return (Array.isArray(graph.nodes) ? graph.nodes : [])
+    .map(node => {
+      const value = String(node?.id || '');
+      if (!value) return null;
+      const label = node?.label && node.label !== value ? `${node.label} (${value})` : value;
+      return { value, label };
+    })
+    .filter(Boolean);
+}
+
+function orchGraphTransitionForEdgeId(doc = {}, edgeId = '') {
+  const sourcePath = edgeSourcePath(edgeId);
+  const targetPath = edgeTargetPath(edgeId);
+  if (!isGraphNodePath(sourcePath) || !isGraphNodePath(targetPath)) return null;
+  const graph = doc?.graph && typeof doc.graph === 'object' && !Array.isArray(doc.graph) ? doc.graph : null;
+  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.transitions)) return null;
+  const source = orchValueAtPath(doc, sourcePath);
+  const target = orchValueAtPath(doc, targetPath);
+  if (!source?.id || !target?.id) return null;
+  const index = graph.transitions.findIndex(item => item?.from === source.id && item?.to === target.id);
+  if (index < 0) return null;
+  return {
+    graph,
+    transition: graph.transitions[index],
+    index,
+    source,
+    target,
+    sourcePath,
+    targetPath,
+  };
+}
+
+function edgeGeometryFromGraph(graph = {}, edgeId = '') {
+  const edge = (graph.edges || []).find(item => item.id === edgeId);
+  if (!edge) return null;
+  const source = (graph.nodes || []).find(item => item.path === edge.source);
+  const target = (graph.nodes || []).find(item => item.path === edge.target);
+  if (!source || !target) return null;
+  return { edge, source, target };
+}
+
+function orchEdgeGeometry(doc = {}, edgeId = '') {
+  const sourcePath = edgeSourcePath(edgeId);
+  if (!sourcePath || !doc || typeof doc !== 'object') return null;
+  if (isGraphNodePath(sourcePath)) return edgeGeometryFromGraph(collectOrchStateGraph(doc), edgeId);
+  const embeddedTreeMarker = '.tree.root';
+  const embeddedTreeIndex = sourcePath.indexOf(embeddedTreeMarker);
+  if (embeddedTreeIndex >= 0) {
+    const nodePath = sourcePath.slice(0, embeddedTreeIndex);
+    const node = orchValueAtPath(doc, nodePath);
+    if (node?.tree?.root) {
+      return edgeGeometryFromGraph(collectOrchGraph(node.tree, 0, `${nodePath}.tree.root`), edgeId);
+    }
+  }
+  for (const { tree, index, rootPath } of orchTreeEntriesFromDoc(doc)) {
+    const geometry = edgeGeometryFromGraph(collectOrchGraph(tree, index, rootPath), edgeId);
+    if (geometry) return geometry;
+  }
+  return null;
+}
+
+function orchTransitionPointForInspector(doc = {}, edgeId = '') {
+  const geometry = orchEdgeGeometry(doc, edgeId);
+  if (!geometry) return null;
+  const point = orchTransitionPoint(edgeId, geometry.source, geometry.target, geometry.edge);
+  return {
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+  };
+}
+
 function deleteOrchTransition(draft, edgeId) {
   const targetPath = edgeTargetPath(edgeId);
   if (!targetPath) return;
-  const sourcePath = String(edgeId || '').split('->')[0] || '';
+  const sourcePath = edgeSourcePath(edgeId);
   if (getActiveTab()?.viewType === 'orch-graph' && isGraphNodePath(sourcePath) && isGraphNodePath(targetPath)) {
     const graph = ensureOrchGraphDoc(draft);
     const source = orchValueAtPath(draft, sourcePath);
@@ -6712,8 +6853,6 @@ async function chooseNodeModelOverrideForPath(path, doc = null, baseFilePath = g
     notifyFormatError('Node model', new Error('Missing pipeline path or node path.'));
     return;
   }
-  const token = await requestMachineCapabilityToken();
-  if (!token) return;
   await openNodeAdapterPickerDialog(runbookPath, nodePath);
 }
 
@@ -6820,10 +6959,10 @@ function fallbackOrchNodePackCatalog() {
   ];
 }
 
-function buildOrchNodePackFallbackCatalog(reason = 'Node pack discovery failed.', code = 'NODE_PACK_DISCOVERY_FAILED') {
+function buildOrchNodePackFallbackCatalog(reason = 'Package discovery failed.', code = 'NODE_PACK_DISCOVERY_FAILED') {
   const message = reason
-    ? `Node pack discovery failed; Add Node is showing built-in fallback packs only. ${reason}`
-    : 'Node pack discovery failed; Add Node is showing built-in fallback packs only.';
+    ? `Package discovery failed; Add Node is showing built-in fallback packages only. ${reason}`
+    : 'Package discovery failed; Add Node is showing built-in fallback packages only.';
   const diagnostic = {
     level: 'warning',
     code,
@@ -6837,7 +6976,7 @@ function buildOrchNodePackFallbackCatalog(reason = 'Node pack discovery failed.'
     fallbackReason: reason,
     nodePacks: fallbackOrchNodePackCatalog().map(pack => ({
       ...pack,
-      description: `${pack.description || 'Built-in OrPAD nodes.'} Shown from the fallback catalog because node pack discovery did not complete.`,
+      description: `${pack.description || 'Built-in OrPAD nodes.'} Shown from the fallback catalog because package discovery did not complete.`,
       origin: 'built-in-fallback',
       trustLevel: 'fallback',
       validationStatus: 'fallback',
@@ -6880,6 +7019,12 @@ function resolveOrchNodePackListPacks() {
   return window.orpad?.orchestration?.listNodePacks;
 }
 
+function resolveNodePackManagerApi(overrideName, apiName) {
+  const overrideCandidate = typeof window[overrideName] === 'function' ? window[overrideName] : null;
+  if (overrideCandidate) return overrideCandidate;
+  return window.orpad?.orchestration?.[apiName];
+}
+
 async function loadOrchNodePackCatalog(options = {}) {
   const listNodePacks = resolveOrchNodePackListPacks();
   const bypassCache = options.forceRefresh === true
@@ -6888,7 +7033,7 @@ async function loadOrchNodePackCatalog(options = {}) {
   if (orchNodePackCatalogCache && !bypassCache) return orchNodePackCatalogCache;
   if (typeof listNodePacks !== 'function') {
     return cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
-      'The OrPAD node pack list API is not available.',
+      'The OrPAD package list API is not available.',
       'NODE_PACK_DISCOVERY_API_UNAVAILABLE',
     )).nodePacks;
   }
@@ -6896,7 +7041,7 @@ async function loadOrchNodePackCatalog(options = {}) {
     const response = await listNodePacks({ workspacePath });
     if (response?.success === false) {
       return cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
-        response.error || 'The OrPAD node pack discovery service returned an error.',
+        response.error || 'The OrPAD package discovery service returned an error.',
         'NODE_PACK_DISCOVERY_FAILED',
       )).nodePacks;
     }
@@ -6909,7 +7054,7 @@ async function loadOrchNodePackCatalog(options = {}) {
     )).nodePacks;
   } catch (err) {
     return cacheOrchNodePackCatalog(buildOrchNodePackFallbackCatalog(
-      err?.message || String(err) || 'The OrPAD node pack discovery service threw an error.',
+      err?.message || String(err) || 'The OrPAD package discovery service threw an error.',
       'NODE_PACK_DISCOVERY_EXCEPTION',
     )).nodePacks;
   }
@@ -6958,6 +7103,11 @@ function nodePackManagerOrigin(pack = {}) {
 function nodePackManagerPackPath(pack = {}) {
   return nodePackManagerString(pack.sourcePath || pack.discovery?.manifestPath || pack.manifestPath || pack.discovery?.packDir || pack.path, '');
 }
+
+const NODE_PACK_MANAGER_DEFAULT_REGISTRY_SOURCE = 'https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/node-packs.json';
+const NODE_PACK_MANAGER_REGISTRY_SOURCE_KEY = 'orpad.nodePackRegistrySource';
+const NODE_PACK_MANAGER_RECENT_REGISTRY_SOURCES_KEY = 'orpad.nodePackRegistryRecentSources';
+const NODE_PACK_MANAGER_RECENT_REGISTRY_LIMIT = 5;
 
 const NODE_PACK_MANAGER_CONFLICT_CODES = new Set([
   'NODE_PACK_DISCOVERY_DUPLICATE_ID',
@@ -7106,6 +7256,9 @@ function nodePackManagerIssueMatchesPack(issue, pack = {}) {
   const tokens = [
     pack.id,
     pack.name,
+    pack.manifestPath,
+    pack.sourceRepository,
+    pack.sourceRef,
     pack.discovery?.manifestPath,
     pack.discovery?.packDir,
   ].map(value => nodePackManagerString(value, '').toLowerCase()).filter(Boolean);
@@ -7254,7 +7407,7 @@ function nodePackManagerStatusForPack(pack = {}, catalog = {}) {
 }
 
 function renderNodePackManagerButton() {
-  return '<button class="orch-toolbar-button" data-node-pack-manager-open>Node Packs</button>';
+  return '<button class="orch-toolbar-button" data-node-pack-manager-open>Package Manager</button>';
 }
 
 function renderNodePackManagerMetaRow(label, value, options = {}) {
@@ -7312,21 +7465,21 @@ function renderNodePackManagerIssueCards(title, issues = [], options = {}) {
   `;
 }
 
-function renderNodePackManagerRoots(roots = []) {
+function renderNodePackManagerRootSummary(roots = []) {
   const visibleRoots = (Array.isArray(roots) ? roots : []).filter(root => root && typeof root === 'object');
   if (!visibleRoots.length) return '';
   return `
-    <section class="node-pack-manager-roots">
-      <h4>Discovery roots</h4>
-      <div class="node-pack-manager-root-list">
-        ${visibleRoots.map(root => `
-          <span class="node-pack-manager-root">
-            <span>${escapeHtml(nodePackManagerString(root.kind, 'root'))}</span>
-            <code>${escapeHtml(nodePackManagerString(root.root, 'path not reported'))}</code>
-          </span>
-        `).join('')}
-      </div>
-    </section>
+    <span class="node-pack-manager-root-summary-label">Discovery roots</span>
+    ${visibleRoots.map(root => {
+      const kind = nodePackManagerString(root.kind, 'root');
+      const rootPath = nodePackManagerString(root.root, 'path not reported');
+      return `
+        <span class="node-pack-manager-root-chip" title="${escapeHtml(`${kind}: ${rootPath}`)}">
+          <span>${escapeHtml(kind)}</span>
+          <code>${escapeHtml(rootPath)}</code>
+        </span>
+      `;
+    }).join('')}
   `;
 }
 
@@ -7334,7 +7487,6 @@ function renderNodePackManagerCatalogDiagnostics(catalog = {}) {
   const diagnostics = Array.isArray(catalog.diagnostics) ? catalog.diagnostics : [];
   const conflicts = nodePackManagerCatalogConflictIssues(catalog);
   return [
-    renderNodePackManagerRoots(catalog.roots),
     renderNodePackManagerIssueCards('Discovery diagnostics', diagnostics, { className: 'node-pack-manager-discovery-issues' }),
     renderNodePackManagerIssueCards('Conflict states', conflicts, { className: 'node-pack-manager-conflict-issues' }),
   ].filter(Boolean).join('');
@@ -7357,9 +7509,169 @@ function renderNodePackManagerNodeAsset(node = {}, packConflicts = []) {
   `;
 }
 
-function renderNodePackManagerDetail(pack = null, catalog = {}) {
+function nodePackManagerReusableAssets(pack = {}) {
+  const groups = [
+    ['graph', Array.isArray(pack.graphs) ? pack.graphs : []],
+    ['skill', Array.isArray(pack.skills) ? pack.skills : []],
+    ['rule', Array.isArray(pack.rules) ? pack.rules : []],
+  ];
+  return groups.flatMap(([kind, assets]) => assets
+    .filter(asset => asset && typeof asset === 'object')
+    .map(asset => ({
+      kind,
+      id: nodePackManagerString(asset.id || asset.name || asset.path, `${kind} asset`),
+      path: nodePackManagerString(asset.path || asset.file || asset.ref, ''),
+      description: nodePackManagerString(asset.description || asset.summary, ''),
+      role: nodePackManagerString(asset.role || asset.kind, ''),
+    })));
+}
+
+function nodePackManagerComponentCounts(pack = {}) {
+  return {
+    nodes: Array.isArray(pack.nodes) ? pack.nodes.length : 0,
+    graphs: Array.isArray(pack.graphs) ? pack.graphs.length : 0,
+    skills: Array.isArray(pack.skills) ? pack.skills.length : 0,
+    rules: Array.isArray(pack.rules) ? pack.rules.length : 0,
+  };
+}
+
+function nodePackManagerComponentSummary(pack = {}) {
+  const counts = nodePackManagerComponentCounts(pack);
+  const parts = [
+    counts.nodes ? machineCountLabel(counts.nodes, 'node type') : '',
+    counts.graphs ? machineCountLabel(counts.graphs, 'graph') : '',
+    counts.skills ? machineCountLabel(counts.skills, 'skill') : '',
+    counts.rules ? machineCountLabel(counts.rules, 'rule') : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'no declared components';
+}
+
+function renderNodePackManagerReusableAsset(asset = {}) {
+  const role = asset.role ? `<span class="runbook-chip">${escapeHtml(asset.role)}</span>` : '';
+  return `
+    <div class="node-pack-manager-asset node-pack-manager-reusable-asset">
+      <div class="node-pack-manager-asset-head">
+        <span class="runbook-chip">${escapeHtml(asset.kind || 'asset')}</span>
+        ${role}
+      </div>
+      <strong>${escapeHtml(asset.id || 'asset')}</strong>
+      ${asset.path ? `<code>${escapeHtml(asset.path)}</code>` : ''}
+      ${asset.description ? `<p>${escapeHtml(asset.description)}</p>` : ''}
+    </div>
+  `;
+}
+
+function renderNodePackManagerContentSections(pack = {}, nodes = [], packConflicts = []) {
+  const reusableAssets = nodePackManagerReusableAssets(pack);
+  const nodeGroup = nodes.length ? `
+    <div class="node-pack-manager-component-group">
+      <h5>Node Types</h5>
+      <div class="node-pack-manager-assets">
+        ${nodes.map(node => renderNodePackManagerNodeAsset(node, packConflicts)).join('')}
+      </div>
+    </div>
+  ` : '';
+  const reusableIntro = nodes.length
+    ? 'Additional graph, skill, and rule assets this pack can contribute during authoring.'
+    : 'No custom node types are declared. This pack contributes reusable graph, skill, and rule assets for authoring.';
+  const reusableGroup = reusableAssets.length ? `
+    <div class="node-pack-manager-component-group">
+      <h5>Reusable Graphs, Skills, and Rules</h5>
+      <p class="node-pack-manager-section-note">${escapeHtml(reusableIntro)}</p>
+      <div class="node-pack-manager-assets">
+        ${reusableAssets.map(renderNodePackManagerReusableAsset).join('')}
+      </div>
+    </div>
+  ` : '';
+  if (nodeGroup || reusableGroup) {
+    return `
+      <section class="node-pack-manager-section">
+        <h4>Pack Components</h4>
+        <p class="node-pack-manager-section-note">${escapeHtml(nodePackManagerComponentSummary(pack))}</p>
+        ${nodeGroup}
+        ${reusableGroup}
+      </section>
+    `;
+  }
+  return `
+    <section class="node-pack-manager-section">
+      <h4>Pack Contents</h4>
+      <span class="node-pack-manager-muted">No node types, reusable graphs, skills, or rules were declared.</span>
+    </section>
+  `;
+}
+
+function nodePackManagerLifecycleEntry(pack = {}, state = {}) {
+  const packId = nodePackManagerString(pack.id, '');
+  if (!packId) return null;
+  const lockEntries = Array.isArray(state.lifecycle?.packs) ? state.lifecycle.packs : [];
+  return lockEntries.find(entry => nodePackManagerString(entry?.id, '') === packId)
+    || (pack.lockEntry && typeof pack.lockEntry === 'object' ? pack.lockEntry : null)
+    || (pack.installLock && typeof pack.installLock === 'object' ? pack.installLock : null)
+    || null;
+}
+
+function nodePackManagerRollbackInfo(pack = {}, state = {}) {
+  const entry = nodePackManagerLifecycleEntry(pack, state) || {};
+  const previousInstall = (entry.previousInstall && typeof entry.previousInstall === 'object')
+    ? entry.previousInstall
+    : ((pack.previousInstall && typeof pack.previousInstall === 'object') ? pack.previousInstall : null);
+  const previousEntry = previousInstall?.previousEntry && typeof previousInstall.previousEntry === 'object'
+    ? previousInstall.previousEntry
+    : {};
+  const backupPath = nodePackManagerString(previousInstall?.backupPath, '');
+  return {
+    available: Boolean(backupPath),
+    backupPath,
+    previousVersion: nodePackManagerString(previousEntry.version || previousInstall?.version, ''),
+    replacedAt: nodePackManagerString(previousInstall?.replacedAt, ''),
+    previousEntry,
+  };
+}
+
+function renderNodePackManagerLifecycleSection(pack = {}, state = {}) {
+  const packId = nodePackManagerString(pack.id, '');
+  const rootKind = nodePackManagerString(pack.discovery?.rootKind || pack.origin, '');
+  if (!packId || rootKind === 'built-in' || pack.origin === 'built-in') {
+    return `
+      <section class="node-pack-manager-section">
+        <h4>Installed Lifecycle</h4>
+        <span class="node-pack-manager-muted">Built-in packages are managed by the app.</span>
+      </section>
+    `;
+  }
+  const entry = nodePackManagerLifecycleEntry(pack, state);
+  const rollback = nodePackManagerRollbackInfo(pack, state);
+  const lifecycleUnavailable = !entry && state.lifecycle?.status !== 'success';
+  const packResolutionState = nodePackManagerString(
+    pack.resolutionState || pack.validation?.resolutionState || pack.validation?.state,
+    '',
+  ).toLowerCase();
+  const enabled = entry
+    ? (entry.enabled === false ? 'Disabled' : 'Enabled')
+    : (packResolutionState === 'disabled' ? 'Disabled' : 'Enabled');
+  return `
+    <section class="node-pack-manager-section">
+      <h4>Installed Lifecycle</h4>
+      ${lifecycleUnavailable ? '<p class="node-pack-manager-section-note">Install lock metadata is not available yet; actions still use main-process package APIs.</p>' : ''}
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Enabled', enabled)}
+        ${renderNodePackManagerMetaRow('Installed source', entry?.source || nodePackManagerOrigin(pack), { code: true })}
+        ${renderNodePackManagerMetaRow('Installed at', entry?.installedAt || 'Not reported')}
+        ${renderNodePackManagerMetaRow('Pinned', entry?.pinned === true ? 'Yes' : 'No')}
+        ${renderNodePackManagerMetaRow('Rollback', rollback.available
+    ? `Available${rollback.previousVersion ? ` to ${rollback.previousVersion}` : ''}`
+    : 'No rollback backup reported')}
+        ${rollback.replacedAt ? renderNodePackManagerMetaRow('Rollback point', rollback.replacedAt) : ''}
+        ${rollback.backupPath ? renderNodePackManagerMetaRow('Rollback backup', rollback.backupPath, { code: true }) : ''}
+      </dl>
+    </section>
+  `;
+}
+
+function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
   if (!pack) {
-    return '<div class="node-pack-manager-empty">Select a node pack to inspect its metadata.</div>';
+    return '<div class="node-pack-manager-empty">Select a package to inspect its metadata.</div>';
   }
   const capabilities = nodePackManagerCapabilities(pack);
   const highRiskCapabilities = nodePackManagerHighRiskCapabilities(pack, catalog);
@@ -7389,6 +7701,7 @@ function renderNodePackManagerDetail(pack = null, catalog = {}) {
         ${renderNodePackManagerMetaRow('Origin / source', nodePackManagerOrigin(pack))}
         ${renderNodePackManagerMetaRow('Trust level', pack.trustLevel || 'unknown')}
         ${renderNodePackManagerMetaRow('Validation status', status.label)}
+        ${renderNodePackManagerMetaRow('Components', nodePackManagerComponentSummary(pack))}
         ${renderNodePackManagerMetaRow('High-risk capabilities', highRiskCapabilities.length ? highRiskCapabilities.join(', ') : 'None reported')}
         ${renderNodePackManagerMetaRow('Diagnostic count', issueCount.total ? `${issueCount.total} issue${issueCount.total === 1 ? '' : 's'}` : '0 diagnostics')}
         ${renderNodePackManagerMetaRow('Source path', nodePackManagerPackPath(pack), { code: true })}
@@ -7404,16 +7717,13 @@ function renderNodePackManagerDetail(pack = null, catalog = {}) {
       <h4>High-Risk Capability Review</h4>
       <div class="node-pack-manager-capabilities">${highRiskCapabilities.length ? renderNodePackManagerCapabilities(highRiskCapabilities) : '<span class="node-pack-manager-muted">No high-risk capabilities reported.</span>'}</div>
     </section>
+    ${renderNodePackManagerLifecycleSection(pack, state)}
+    ${renderNodePackManagerWorkspaceLockSection(pack, state)}
     <section class="node-pack-manager-section node-pack-manager-untrusted">
       <h4>Pack-Provided Prose (Untrusted)</h4>
       <p>${escapeHtml(nodePackManagerString(pack.description, 'No description declared.'))}</p>
     </section>
-    <section class="node-pack-manager-section">
-      <h4>Nodes</h4>
-      <div class="node-pack-manager-assets">
-        ${nodes.length ? nodes.map(node => renderNodePackManagerNodeAsset(node, packConflicts)).join('') : '<span class="node-pack-manager-muted">No node entries declared.</span>'}
-      </div>
-    </section>
+    ${renderNodePackManagerContentSections(pack, nodes, packConflicts)}
     ${renderNodePackManagerIssueCards('Pack diagnostics', packDiagnostics)}
     ${renderNodePackManagerIssueCards('Pack conflicts', packConflicts, { className: 'node-pack-manager-conflict-issues' })}
   `;
@@ -7422,65 +7732,2389 @@ function renderNodePackManagerDetail(pack = null, catalog = {}) {
 async function listNodePacksForManager(request = {}) {
   const listNodePacks = resolveOrchNodePackListPacks();
   if (typeof listNodePacks !== 'function') {
-    throw new Error('The OrPAD node pack list API is not available.');
+    throw new Error('The OrPAD package list API is not available.');
   }
   const response = await listNodePacks(request);
   if (response?.success === false) {
-    throw new Error(response.error || 'Node pack discovery failed.');
+    throw new Error(response.error || 'Package discovery failed.');
   }
   const catalog = normalizeOrchNodePackCatalogResponse(response || { success: true, ok: true, nodePacks: [] });
   return cacheOrchNodePackCatalog(catalog);
 }
 
-function openOrchNodePackManager() {
+function normalizeNodePackRegistryResponse(response = {}, request = {}) {
+  const rawRegistry = response?.registry && typeof response.registry === 'object' ? response.registry : null;
+  const rawGovernance = rawRegistry?.governance && typeof rawRegistry.governance === 'object' ? rawRegistry.governance : {};
+  const responseSource = nodePackManagerString(response?.source || response?.registrySource || request.registry || request.registrySource, '');
+  const isDefaultRegistrySource = Boolean(responseSource && responseSource === nodePackManagerDefaultRegistrySource());
+  return {
+    success: response?.success !== false,
+    ok: response?.ok !== false,
+    registry: rawRegistry ? {
+      ...rawRegistry,
+      governance: {
+        registryTrust: nodePackManagerString(rawGovernance.registryTrust, ''),
+        reviewModel: nodePackManagerString(rawGovernance.reviewModel, ''),
+        submissions: rawGovernance.submissions && typeof rawGovernance.submissions === 'object' ? {
+          type: nodePackManagerString(rawGovernance.submissions.type, ''),
+          url: nodePackManagerString(rawGovernance.submissions.url, ''),
+        } : {},
+        reviewPolicyUrl: nodePackManagerString(rawGovernance.reviewPolicyUrl, ''),
+        maintainer: nodePackManagerString(rawGovernance.maintainer, ''),
+        notes: nodePackManagerString(rawGovernance.notes, ''),
+      },
+      metadataTrust: nodePackManagerSourceScopedMetadataTrust(rawRegistry.metadataTrust, {
+        reviewStatus: 'approved',
+      }, isDefaultRegistrySource),
+    } : null,
+    source: responseSource,
+    sourceKind: nodePackManagerString(response?.sourceKind, ''),
+    fromCache: response?.fromCache === true,
+    query: nodePackManagerString(response?.query, ''),
+    entries: (Array.isArray(response?.entries) ? response.entries : [])
+      .filter(entry => entry && typeof entry === 'object')
+      .map(entry => ({
+        id: nodePackManagerString(entry.id, ''),
+        name: nodePackManagerString(entry.name || entry.id, 'Node Pack'),
+        description: nodePackManagerString(entry.description, ''),
+        latestVersion: nodePackManagerString(entry.latestVersion || entry.version, ''),
+        versionCount: Number(entry.versionCount || 0) || 0,
+        versions: (Array.isArray(entry.versions) ? entry.versions : [])
+          .filter(version => version && typeof version === 'object')
+          .map(version => ({
+            version: nodePackManagerString(version.version, ''),
+            sourceRepository: nodePackManagerString(version.sourceRepository || version.repository, ''),
+            sourceRef: nodePackManagerString(version.sourceRef || version.ref, ''),
+            manifestPath: nodePackManagerString(version.manifestPath, ''),
+            manifestSha256: nodePackManagerString(version.manifestSha256 || version.checksum || version.sha256, ''),
+            signatureStatus: nodePackManagerString(version.signatureStatus, ''),
+            checksumStatus: nodePackManagerString(version.checksumStatus, ''),
+            reviewStatus: nodePackManagerString(version.reviewStatus, ''),
+            reviewedAt: nodePackManagerString(version.reviewedAt, ''),
+            reviewId: nodePackManagerString(version.reviewId, ''),
+            reviewedBy: nodePackManagerString(version.reviewedBy, ''),
+            approvedCapabilities: Array.isArray(version.approvedCapabilities) ? version.approvedCapabilities.map(item => nodePackManagerString(item, '')).filter(Boolean) : [],
+          }))
+          .filter(version => version.version),
+        sourceRepository: nodePackManagerString(entry.sourceRepository || entry.repository || entry.author?.repository, ''),
+        sourceRef: nodePackManagerString(entry.sourceRef, ''),
+        manifestPath: nodePackManagerString(entry.manifestPath, ''),
+        manifestSha256: nodePackManagerString(entry.manifestSha256 || entry.checksum || entry.sha256, ''),
+        trustLevel: nodePackManagerString(entry.trustLevel, 'community'),
+        capabilities: Array.isArray(entry.capabilities) ? entry.capabilities.map(item => nodePackManagerString(item, '')).filter(Boolean) : [],
+        nodeTypes: Array.isArray(entry.nodeTypes) ? entry.nodeTypes.map(item => nodePackManagerString(item, '')).filter(Boolean) : [],
+        keywords: Array.isArray(entry.keywords) ? entry.keywords.map(item => nodePackManagerString(item, '')).filter(Boolean) : [],
+        categories: Array.isArray(entry.categories) ? entry.categories.map(item => nodePackManagerString(item, '')).filter(Boolean) : [],
+        author: entry.author && typeof entry.author === 'object' ? entry.author : {},
+        license: nodePackManagerString(entry.license, ''),
+        installable: entry.installable !== false,
+        signatureStatus: nodePackManagerString(entry.signatureStatus, 'missing'),
+        checksumStatus: nodePackManagerString(entry.checksumStatus, 'missing'),
+        reviewStatus: nodePackManagerString(entry.reviewStatus, 'unreviewed'),
+        reviewedAt: nodePackManagerString(entry.reviewedAt, ''),
+        reviewId: nodePackManagerString(entry.reviewId, ''),
+        reviewedBy: nodePackManagerString(entry.reviewedBy, ''),
+        approvedCapabilities: Array.isArray(entry.approvedCapabilities) ? entry.approvedCapabilities.map(item => nodePackManagerString(item, '')).filter(Boolean) : [],
+        metadataTrust: nodePackManagerSourceScopedMetadataTrust(entry.metadataTrust, entry, isDefaultRegistrySource),
+        highRiskCapabilities: Array.isArray(entry.highRiskCapabilities) ? entry.highRiskCapabilities.map(item => nodePackManagerString(item, '')).filter(Boolean) : [],
+        diagnostics: Array.isArray(entry.diagnostics) ? entry.diagnostics : [],
+        validation: entry.validation && typeof entry.validation === 'object' ? entry.validation : null,
+        capabilityRisk: entry.capabilityRisk && typeof entry.capabilityRisk === 'object' ? entry.capabilityRisk : null,
+      }))
+      .filter(entry => entry.id),
+    diagnostics: Array.isArray(response?.diagnostics) ? response.diagnostics : [],
+    error: nodePackManagerString(response?.error, ''),
+  };
+}
+
+function nodePackManagerLocalStorageGet(key, fallback = '') {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function nodePackManagerLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+function nodePackManagerDefaultRegistrySource() {
+  return nodePackManagerString(
+    window.__orpadDefaultNodePackRegistrySource || window.__orpadNodePackDefaultRegistrySource,
+    NODE_PACK_MANAGER_DEFAULT_REGISTRY_SOURCE,
+  );
+}
+
+function nodePackManagerStoredRegistrySource() {
+  return nodePackManagerLocalStorageGet(NODE_PACK_MANAGER_REGISTRY_SOURCE_KEY, '');
+}
+
+function nodePackManagerStoredRecentRegistrySources(defaultSource = '') {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(NODE_PACK_MANAGER_RECENT_REGISTRY_SOURCES_KEY) || '[]');
+    return nodePackManagerUniqueStrings(Array.isArray(parsed) ? parsed : [])
+      .filter(source => source !== defaultSource)
+      .slice(0, NODE_PACK_MANAGER_RECENT_REGISTRY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function nodePackManagerStoreRecentRegistrySource(source, defaultSource = '') {
+  const sourceText = nodePackManagerString(source, '');
+  if (!sourceText || sourceText === defaultSource) return [];
+  const nextSources = nodePackManagerUniqueStrings([
+    sourceText,
+    ...nodePackManagerStoredRecentRegistrySources(defaultSource),
+  ])
+    .filter(item => item !== defaultSource)
+    .slice(0, NODE_PACK_MANAGER_RECENT_REGISTRY_LIMIT);
+  nodePackManagerLocalStorageSet(NODE_PACK_MANAGER_RECENT_REGISTRY_SOURCES_KEY, JSON.stringify(nextSources));
+  return nextSources;
+}
+
+function nodePackManagerStoreRegistrySource(source, defaultSource = '') {
+  const sourceText = nodePackManagerString(source, '');
+  if (!sourceText) return [];
+  nodePackManagerLocalStorageSet(NODE_PACK_MANAGER_REGISTRY_SOURCE_KEY, sourceText);
+  return nodePackManagerStoreRecentRegistrySource(sourceText, defaultSource);
+}
+
+function nodePackManagerRegistrySourceDiagnostic(source) {
+  const sourceText = nodePackManagerString(source, '');
+  if (!sourceText) {
+    return {
+      level: 'error',
+      code: 'NODE_PACK_REGISTRY_SOURCE_MISSING',
+      message: 'A Registry source is required.',
+    };
+  }
+  try {
+    const url = new URL(sourceText);
+    if (url.protocol === 'https:') return null;
+  } catch {}
+  return {
+    level: 'error',
+    code: 'NODE_PACK_REGISTRY_SOURCE_BLOCKED',
+    message: 'Registry source must use HTTPS.',
+    source: sourceText,
+  };
+}
+
+function nodePackManagerRegistrySourceKind(source, registryState = {}) {
+  const sourceText = nodePackManagerString(source, '');
+  if (!sourceText) return 'missing';
+  if (sourceText === registryState.defaultSource) return 'default';
+  if ((registryState.recentSources || []).includes(sourceText)) return 'recent';
+  return 'custom';
+}
+
+function nodePackManagerRegistrySourceKindLabel(source, registryState = {}) {
+  const kind = nodePackManagerRegistrySourceKind(source, registryState);
+  if (kind === 'default') return 'Default OrPAD Registry';
+  if (kind === 'recent') return 'Recent Registry source';
+  if (kind === 'custom') return 'User Registry source';
+  return 'No Registry source';
+}
+
+function nodePackManagerRegistrySourceHealth(registryState = {}) {
+  const diagnostic = nodePackManagerRegistrySourceDiagnostic(registryState.source);
+  if (diagnostic?.code === 'NODE_PACK_REGISTRY_SOURCE_BLOCKED') {
+    return { label: 'blocked source', tone: 'danger', message: diagnostic.message };
+  }
+  if (diagnostic?.code === 'NODE_PACK_REGISTRY_SOURCE_MISSING') {
+    return { label: 'not configured', tone: 'warn', message: 'Enter an HTTPS Registry source.' };
+  }
+  if (registryState.status === 'loading') {
+    return { label: 'loading', tone: 'warn', message: 'Loading Registry source.' };
+  }
+  if (registryState.status === 'error') {
+    return { label: 'load failed', tone: 'danger', message: registryState.error || 'Registry source load failed.' };
+  }
+  if (registryState.status === 'success' && registryState.catalog?.fromCache) {
+    return { label: 'offline cache', tone: 'warn', message: 'Loaded from offline cache after the Registry source could not be reached.' };
+  }
+  if (registryState.status === 'success') {
+    return { label: 'loaded', tone: 'good', message: 'Registry source loaded.' };
+  }
+  return { label: 'ready', tone: 'good', message: 'Registry source ready.' };
+}
+
+function nodePackManagerRegistryGovernance(registryState = {}) {
+  const governance = registryState.catalog?.registry?.governance || {};
+  const reviewModel = nodePackManagerString(governance.reviewModel, '');
+  const registryTrust = nodePackManagerString(governance.registryTrust, '');
+  const sourceKind = nodePackManagerRegistrySourceKind(registryState.source, registryState);
+  if (entryTruthy(registryState.catalog?.registry) && sourceKind !== 'default') {
+    return {
+      label: 'custom registry',
+      tone: 'warn',
+      metadataTrust: 'registry-discovery-only',
+      message: 'Custom registry metadata is discovery input until the user or workspace explicitly trusts it.',
+    };
+  }
+  if (sourceKind === 'default' && reviewModel === 'orpad-pr-reviewed' && registryTrust === 'official') {
+    return {
+      label: 'official PR-reviewed',
+      tone: 'good',
+      metadataTrust: 'orpad-official-registry-reviewed',
+      message: 'Official registry entries are admitted through maintainer-reviewed OrPAD registry pull requests.',
+    };
+  }
+  if (reviewModel && reviewModel !== 'registry-discovery-only') {
+    return {
+      label: 'third-party reviewed',
+      tone: 'warn',
+      metadataTrust: 'third-party-registry-reviewed',
+      message: 'This registry reports its own review metadata; it is not an OrPAD official approval.',
+    };
+  }
+  return {
+    label: sourceKind === 'default' ? 'default registry' : 'registry-discovery-only',
+    tone: sourceKind === 'default' ? 'warn' : 'warn',
+    metadataTrust: 'registry-discovery-only',
+    message: 'Registry metadata is discovery input, not trust evidence.',
+  };
+}
+
+function nodePackManagerMetadataTrustLabel(value = '') {
+  const trust = nodePackManagerString(value, 'registry-discovery-only');
+  if (trust === 'orpad-official-registry-reviewed') return 'OrPAD official review';
+  if (trust === 'third-party-registry-reviewed') return 'Third-party review';
+  return 'Discovery metadata only';
+}
+
+function nodePackManagerSourceScopedMetadataTrust(value = '', entry = {}, isDefaultRegistrySource = false) {
+  const trust = nodePackManagerString(value, 'registry-discovery-only');
+  if (trust === 'orpad-official-registry-reviewed' && !nodePackManagerRegistryReviewApproved(entry)) {
+    return 'registry-discovery-only';
+  }
+  if (isDefaultRegistrySource) return trust;
+  if (trust === 'orpad-official-registry-reviewed') {
+    return nodePackManagerRegistryReviewApproved(entry)
+      ? 'third-party-registry-reviewed'
+      : 'registry-discovery-only';
+  }
+  return trust || 'registry-discovery-only';
+}
+
+function entryTruthy(value) {
+  return Boolean(value && typeof value === 'object');
+}
+
+function nodePackManagerRegistrySourceOptions(registryState = {}) {
+  const options = [];
+  const seen = new Set();
+  const add = (value, label) => {
+    const sourceText = nodePackManagerString(value, '');
+    if (!sourceText || seen.has(sourceText)) return;
+    seen.add(sourceText);
+    options.push({ value: sourceText, label });
+  };
+  add(registryState.defaultSource, 'Default OrPAD Registry');
+  for (const source of registryState.recentSources || []) add(source, 'Recent Registry source');
+  const storedSource = nodePackManagerString(nodePackManagerStoredRegistrySource(), '');
+  if (storedSource && storedSource !== registryState.defaultSource) add(storedSource, 'Last used Registry source');
+  const currentSource = nodePackManagerString(registryState.source, '');
+  if (currentSource && !seen.has(currentSource)) {
+    add(currentSource, nodePackManagerRegistrySourceKindLabel(currentSource, registryState));
+  }
+  return options;
+}
+
+function renderNodePackManagerRegistrySourceOptions(registryState = {}) {
+  const selectedSource = nodePackManagerString(registryState.source, '');
+  return nodePackManagerRegistrySourceOptions(registryState).map(option => `
+    <option value="${escapeHtml(option.value)}" ${option.value === selectedSource ? 'selected' : ''}>${escapeHtml(option.label)} - ${escapeHtml(option.value)}</option>
+  `).join('');
+}
+
+function renderNodePackManagerRegistrySourcePanel(registryState = {}) {
+  const source = nodePackManagerString(registryState.source, '');
+  const catalog = registryState.catalog || {};
+  const registry = catalog.registry || {};
+  const health = nodePackManagerRegistrySourceHealth(registryState);
+  const kindLabel = nodePackManagerRegistrySourceKindLabel(source, registryState);
+  const loadedSource = nodePackManagerString(catalog.source || registryState.lastLoadedSource, '');
+  const registryName = nodePackManagerString(registry.name || registry.registryId, '');
+  const registryId = nodePackManagerString(registry.registryId || registry.id, '');
+  const diagnostics = catalog.diagnostics || [];
+  const governance = nodePackManagerRegistryGovernance(registryState);
+  const rawGovernance = registry.governance || {};
+  const submissionsUrl = nodePackManagerString(rawGovernance.submissions?.url, '');
+  const reviewPolicyUrl = nodePackManagerString(rawGovernance.reviewPolicyUrl, '');
+  const rows = [
+    ['Selected source', source || 'Not configured', true],
+    ['Source type', kindLabel, false],
+    ['Registry governance', governance.message, false],
+    ['Metadata trust', nodePackManagerMetadataTrustLabel(governance.metadataTrust), false],
+    ['Status', health.message, false],
+    registryName ? ['Loaded registry', registryName, false] : null,
+    registryId ? ['Registry id', registryId, true] : null,
+    rawGovernance.reviewModel ? ['Review model', rawGovernance.reviewModel, true] : null,
+    submissionsUrl ? ['Submission flow', submissionsUrl, true] : null,
+    reviewPolicyUrl ? ['Review policy', reviewPolicyUrl, true] : null,
+    loadedSource && loadedSource !== source ? ['Loaded from', loadedSource, true] : null,
+    registryState.query ? ['Search query', registryState.query, true] : null,
+    registryState.lastLoadedAt ? ['Last loaded', registryState.lastLoadedAt, false] : null,
+  ].filter(Boolean);
+  return `
+    <section class="node-pack-manager-registry-source-panel" data-node-pack-manager-registry-source-panel>
+      <div class="node-pack-manager-registry-source-head">
+        <div>
+          <h4>Registry source</h4>
+          <p>${escapeHtml(governance.message)}</p>
+        </div>
+        <div class="node-pack-manager-pack-chips">
+          <span class="runbook-chip">${escapeHtml(kindLabel)}</span>
+          <span class="runbook-chip ${escapeHtml(governance.tone)}">${escapeHtml(governance.label)}</span>
+          <span class="runbook-chip ${escapeHtml(health.tone)}">${escapeHtml(health.label)}</span>
+          ${catalog.fromCache ? '<span class="runbook-chip warn">fromCache</span>' : ''}
+          ${diagnostics.length ? `<span class="runbook-chip warn">${escapeHtml(String(diagnostics.length))} diagnostic${diagnostics.length === 1 ? '' : 's'}</span>` : ''}
+        </div>
+      </div>
+      <dl class="node-pack-manager-registry-source-meta">
+        ${rows.map(([label, value, code]) => `
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${code ? `<code>${escapeHtml(value)}</code>` : escapeHtml(value)}</dd>
+        `).join('')}
+      </dl>
+    </section>
+  `;
+}
+
+function nodePackManagerUniqueStrings(values = []) {
+  const seen = new Set();
+  const result = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = nodePackManagerString(value, '').trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    result.push(text);
+  }
+  return result;
+}
+
+function nodePackManagerResolutionContextFromDiagnostics(diagnostics = []) {
+  const missingPackIds = [];
+  const missingNodeTypes = [];
+  for (const issue of Array.isArray(diagnostics) ? diagnostics : []) {
+    const code = nodePackManagerString(issue?.code, '');
+    const packId = nodePackManagerString(issue?.packId || issue?.nodePackId || issue?.id, '');
+    const nodeType = nodePackManagerString(issue?.nodeType || issue?.type, '');
+    if ((code === 'PIPELINE_NODE_PACK_UNKNOWN' || code === 'GRAPH_NODE_PACK_MISSING') && packId) {
+      missingPackIds.push(packId);
+    }
+    if ((code === 'GRAPH_NODE_TYPE_UNKNOWN' || code === 'GRAPH_NODE_PACK_MISSING') && nodeType) {
+      missingNodeTypes.push(nodeType);
+    }
+  }
+  const normalized = {
+    missingPackIds: nodePackManagerUniqueStrings(missingPackIds),
+    missingNodeTypes: nodePackManagerUniqueStrings(missingNodeTypes),
+    diagnostics: Array.isArray(diagnostics) ? diagnostics : [],
+  };
+  normalized.active = Boolean(normalized.missingPackIds.length || normalized.missingNodeTypes.length);
+  normalized.query = normalized.missingPackIds[0] || normalized.missingNodeTypes[0] || '';
+  return normalized;
+}
+
+function nodePackManagerCurrentResolutionContext() {
+  const activePath = getActiveTab()?.filePath || '';
+  const pipelineContext = pipelineContextForPath(activePath);
+  const pipelinePath = pipelineContext?.pipelinePath || activePath;
+  const validation = selectedPipelineValidation(pipelinePath);
+  const context = nodePackManagerResolutionContextFromDiagnostics(pipelineValidationDiagnostics(validation));
+  return {
+    ...context,
+    pipelinePath,
+  };
+}
+
+function nodePackRegistryEntryResolutionMatch(entry = {}, context = {}) {
+  if (!context?.active) return null;
+  const missingPackIds = new Set(context.missingPackIds || []);
+  if (entry.id && missingPackIds.has(entry.id)) {
+    return { kind: 'pack-id', label: `pack id ${entry.id}` };
+  }
+  const missingNodeTypes = new Set(context.missingNodeTypes || []);
+  const nodeTypes = Array.isArray(entry.nodeTypes) ? entry.nodeTypes : [];
+  const matchedNodeType = nodeTypes.find(nodeType => missingNodeTypes.has(nodeType));
+  if (matchedNodeType) {
+    return { kind: 'node-type', label: `node type ${matchedNodeType}` };
+  }
+  return null;
+}
+
+function nodePackRegistryEntriesForResolution(entries = [], context = {}) {
+  if (!context?.active) return entries;
+  return entries.filter(entry => nodePackRegistryEntryResolutionMatch(entry, context));
+}
+
+async function loadNodePackRegistryForManager(request = {}) {
+  const apiName = request.query ? 'searchNodePackRegistry' : 'listNodePackRegistry';
+  const overrideName = request.query ? '__orpadNodePackRegistrySearch' : '__orpadNodePackRegistryList';
+  const api = resolveNodePackManagerApi(overrideName, apiName);
+  if (typeof api !== 'function') {
+    throw new Error('The OrPAD package registry API is not available.');
+  }
+  const response = await api(request);
+  if (response?.success === false) {
+    throw nodePackManagerResultError('registry', response, 'Package registry browse failed.');
+  }
+  return normalizeNodePackRegistryResponse(response || { success: true, ok: true, entries: [] }, request);
+}
+
+async function installNodePackFromManager(request = {}) {
+  const api = resolveNodePackManagerApi('__orpadNodePackInstall', 'installNodePack');
+  if (typeof api !== 'function') throw new Error('The OrPAD package install API is not available.');
+  const response = await api(request);
+  if (response?.success === false) throw nodePackManagerResultError('install', response, 'Package install failed.');
+  return response || {};
+}
+
+async function updateNodePackFromManager(request = {}) {
+  const api = resolveNodePackManagerApi('__orpadNodePackUpdate', 'updateNodePack');
+  if (typeof api !== 'function') throw new Error('The OrPAD package update API is not available.');
+  const response = await api(request);
+  if (response?.success === false) throw nodePackManagerResultError('update', response, 'Package update failed.');
+  return response || {};
+}
+
+async function mutateInstalledNodePackFromManager(action, packId) {
+  const apiNames = {
+    enable: 'enableNodePack',
+    disable: 'disableNodePack',
+    remove: 'removeNodePack',
+    rollback: 'rollbackNodePack',
+  };
+  const overrideNames = {
+    enable: '__orpadNodePackEnable',
+    disable: '__orpadNodePackDisable',
+    remove: '__orpadNodePackRemove',
+    rollback: '__orpadNodePackRollback',
+  };
+  const apiName = apiNames[action];
+  const overrideName = overrideNames[action];
+  if (!apiName || !overrideName) throw new Error(`Unsupported package action: ${action}`);
+  const api = resolveNodePackManagerApi(overrideName, apiName);
+  if (typeof api !== 'function') throw new Error(`The OrPAD package ${action} API is not available.`);
+  const response = await api({ packId });
+  if (response?.success === false) throw nodePackManagerResultError(action, response, `Package ${action} failed.`);
+  return response || {};
+}
+
+function nodePackManagerResultError(action, response = {}, fallback = 'Package action failed.') {
+  const error = new Error(response?.error || response?.message || fallback);
+  error.action = action;
+  error.result = response;
+  return error;
+}
+
+async function exportNodePackListFromManager() {
+  const api = resolveNodePackManagerApi('__orpadNodePackExportList', 'exportNodePackList');
+  if (typeof api !== 'function') throw new Error('The OrPAD package export API is not available.');
+  const response = await api();
+  if (response?.success === false) throw nodePackManagerResultError('export-list', response, 'Package export failed.');
+  return normalizeNodePackManagerExportResponse(response || {});
+}
+
+function normalizeNodePackManagerExportResponse(response = {}) {
+  return {
+    success: response?.success !== false,
+    ok: response?.ok !== false,
+    action: nodePackManagerString(response?.action, 'export-list'),
+    lockPath: nodePackManagerString(response?.lockPath, ''),
+    packs: (Array.isArray(response?.packs) ? response.packs : []).filter(pack => pack && typeof pack === 'object'),
+    discovery: response?.discovery && typeof response.discovery === 'object' ? response.discovery : null,
+    diagnostics: Array.isArray(response?.diagnostics) ? response.diagnostics : [],
+    error: nodePackManagerString(response?.error, ''),
+  };
+}
+
+function normalizeNodePackWorkspaceLockEntry(entry = {}) {
+  if (!entry || typeof entry !== 'object') return null;
+  const id = nodePackManagerString(entry.id || entry.packId, '');
+  if (!id) return null;
+  return {
+    id,
+    version: nodePackManagerString(entry.version || entry.latestVersion || entry.requiredVersion, ''),
+    registrySource: nodePackManagerString(entry.registrySource || entry.registry || entry.registryUrl, ''),
+    source: nodePackManagerString(entry.source, entry.registrySource || entry.registry ? 'registry' : 'workspace-lock'),
+    sourceRepository: nodePackManagerString(entry.sourceRepository || entry.repository || entry.author?.repository, ''),
+    sourceRef: nodePackManagerString(entry.sourceRef || entry.ref, ''),
+    manifestPath: nodePackManagerString(entry.manifestPath || entry.discovery?.manifestPath, ''),
+    manifestSha256: nodePackManagerString(entry.manifestSha256 || entry.checksum || entry.sha256, ''),
+    checksum: nodePackManagerString(entry.checksum || entry.manifestSha256 || entry.sha256, ''),
+    signatureStatus: nodePackManagerString(entry.signatureStatus, ''),
+    checksumStatus: nodePackManagerString(entry.checksumStatus, ''),
+    reviewStatus: nodePackManagerString(entry.reviewStatus, ''),
+    trustLevel: nodePackManagerString(entry.trustLevel || entry.trust, ''),
+    capabilities: nodePackManagerUniqueStrings(Array.isArray(entry.capabilities) ? entry.capabilities : []),
+    highRiskCapabilities: nodePackManagerUniqueStrings(Array.isArray(entry.highRiskCapabilities) ? entry.highRiskCapabilities : []),
+    resolvedNodeTypes: nodePackManagerUniqueStrings(Array.isArray(entry.resolvedNodeTypes) ? entry.resolvedNodeTypes : entry.nodeTypes),
+    installedAt: nodePackManagerString(entry.installedAt, ''),
+    installedBy: nodePackManagerString(entry.installedBy, ''),
+    resolvedAt: nodePackManagerString(entry.resolvedAt, ''),
+    action: nodePackManagerString(entry.action, ''),
+    metadataTrust: 'registry-discovery-only',
+    diagnostics: Array.isArray(entry.diagnostics) ? entry.diagnostics : [],
+  };
+}
+
+function normalizeNodePackWorkspaceLockResponse(response = {}) {
+  const lock = response?.lock && typeof response.lock === 'object' ? response.lock : {};
+  const packs = (Array.isArray(response?.packs) ? response.packs : (Array.isArray(lock.packs) ? lock.packs : []))
+    .map(normalizeNodePackWorkspaceLockEntry)
+    .filter(Boolean)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    success: response?.success !== false,
+    ok: response?.ok !== false,
+    path: nodePackManagerString(response?.path || response?.lockPath, ''),
+    lockPath: nodePackManagerString(response?.lockPath || response?.path, ''),
+    lock: {
+      kind: nodePackManagerString(lock.kind, 'orpad.workspaceNodePackLock'),
+      schemaVersion: nodePackManagerString(lock.schemaVersion, '1.0'),
+      updatedAt: nodePackManagerString(lock.updatedAt, ''),
+      packs,
+    },
+    packs,
+    diagnostics: Array.isArray(response?.diagnostics) ? response.diagnostics : [],
+    error: nodePackManagerString(response?.error, ''),
+  };
+}
+
+async function readNodePackWorkspaceLockForManager(request = {}) {
+  const api = resolveNodePackManagerApi('__orpadNodePackWorkspaceLockRead', 'readNodePackWorkspaceLock');
+  if (typeof api !== 'function') throw new Error('The OrPAD workspace package lock API is not available.');
+  const response = await api(request);
+  if (response?.success === false) throw nodePackManagerResultError('workspace-lock-read', response, 'Workspace package lock read failed.');
+  return normalizeNodePackWorkspaceLockResponse(response || {});
+}
+
+async function writeNodePackWorkspaceLockForManager(request = {}) {
+  const api = resolveNodePackManagerApi('__orpadNodePackWorkspaceLockWrite', 'writeNodePackWorkspaceLock');
+  if (typeof api !== 'function') throw new Error('The OrPAD workspace package lock write API is not available.');
+  const response = await api(request);
+  if (response?.success === false) throw nodePackManagerResultError('workspace-lock-write', response, 'Workspace package lock write failed.');
+  return normalizeNodePackWorkspaceLockResponse(response || {});
+}
+
+async function upsertNodePackWorkspaceLockForManager(request = {}) {
+  const api = resolveNodePackManagerApi('__orpadNodePackWorkspaceLockUpsert', 'upsertNodePackWorkspaceLock');
+  if (typeof api !== 'function') throw new Error('The OrPAD workspace package lock update API is not available.');
+  const response = await api(request);
+  if (response?.success === false) throw nodePackManagerResultError('workspace-lock-upsert', response, 'Workspace package lock update failed.');
+  return normalizeNodePackWorkspaceLockResponse(response || {});
+}
+
+function nodePackManagerPackId(value = {}) {
+  return nodePackManagerString(value?.id || value?.packId, '');
+}
+
+function nodePackManagerWorkspaceLockEntryById(packId, state = {}) {
+  const id = nodePackManagerString(packId, '');
+  if (!id) return null;
+  const entries = Array.isArray(state.workspaceLock?.packs) ? state.workspaceLock.packs : [];
+  return entries.find(entry => nodePackManagerString(entry?.id, '') === id) || null;
+}
+
+function nodePackManagerWorkspaceLockEntryForPack(pack = {}, state = {}) {
+  return nodePackManagerWorkspaceLockEntryById(nodePackManagerPackId(pack), state);
+}
+
+function nodePackManagerWorkspaceLockStatusForPack(pack = {}, state = {}) {
+  const packId = nodePackManagerPackId(pack);
+  const rootKind = nodePackManagerString(pack.discovery?.rootKind || pack.origin, '');
+  if (!packId || rootKind === 'built-in' || pack.origin === 'built-in') {
+    return { kind: 'app-managed', label: 'app managed', tone: '', entry: null, message: 'Built-in packages are managed by the app.' };
+  }
+  const entry = nodePackManagerWorkspaceLockEntryById(packId, state);
+  if (!entry) {
+    return { kind: 'untracked', label: 'not in workspace lock', tone: 'warn', entry: null, message: 'This installed package is not recorded in the workspace lock.' };
+  }
+  const installedVersion = nodePackManagerString(pack.version, '');
+  const lockedVersion = nodePackManagerString(entry.version, '');
+  if (installedVersion && lockedVersion && installedVersion !== lockedVersion) {
+    return { kind: 'drift', label: 'workspace drift', tone: 'danger', entry, message: `Workspace lock expects ${lockedVersion}; installed package is ${installedVersion}.` };
+  }
+  return { kind: 'locked', label: 'workspace locked', tone: 'good', entry, message: lockedVersion ? `Workspace lock version ${lockedVersion}.` : 'Workspace lock has no explicit version.' };
+}
+
+function nodePackManagerWorkspaceLockStatusForRegistryEntry(entry = {}, state = {}) {
+  const lockEntry = nodePackManagerWorkspaceLockEntryById(entry.id, state);
+  if (!lockEntry) return null;
+  const lockedVersion = nodePackManagerString(lockEntry.version, '');
+  const latestVersion = nodePackManagerString(entry.latestVersion || entry.version, '');
+  if (lockedVersion && latestVersion && lockedVersion !== latestVersion) {
+    return { kind: 'target-differs', label: `lock ${lockedVersion}`, tone: 'warn', entry: lockEntry };
+  }
+  return { kind: 'locked', label: 'workspace lock', tone: 'good', entry: lockEntry };
+}
+
+function nodePackManagerWorkspaceLockSummary(state = {}) {
+  const packs = Array.isArray(state.packs) ? state.packs : [];
+  const entries = Array.isArray(state.workspaceLock?.packs) ? state.workspaceLock.packs : [];
+  const installedIds = new Set();
+  let locked = 0;
+  let drift = 0;
+  let untracked = 0;
+  for (const pack of packs) {
+    const packId = nodePackManagerPackId(pack);
+    if (!packId) continue;
+    const rootKind = nodePackManagerString(pack.discovery?.rootKind || pack.origin, '');
+    if (rootKind === 'built-in' || pack.origin === 'built-in') continue;
+    installedIds.add(packId);
+    const status = nodePackManagerWorkspaceLockStatusForPack(pack, state);
+    if (status.kind === 'drift') drift += 1;
+    else if (status.kind === 'untracked') untracked += 1;
+    else if (status.kind === 'locked') locked += 1;
+  }
+  const missing = entries.filter(entry => !installedIds.has(nodePackManagerString(entry.id, ''))).length;
+  return {
+    entries: entries.length,
+    locked,
+    drift,
+    untracked,
+    missing,
+  };
+}
+
+function nodePackManagerWorkspaceApplyDiagnostic(level, code, message, details = {}) {
+  return { level, code, message, ...details };
+}
+
+function nodePackManagerWorkspaceApplyStatusLabel(item = {}) {
+  if (item.status === 'synced') return 'synced';
+  if (item.status === 'ready') return item.action === 'update' ? 'ready to update' : 'ready to install';
+  if (item.status === 'blocked') return 'blocked';
+  if (item.status === 'applied') return 'applied';
+  if (item.status === 'failed') return 'failed';
+  if (item.action === 'install') return 'needs install';
+  if (item.action === 'update') return 'needs update';
+  return item.kind || 'review';
+}
+
+function nodePackManagerWorkspaceApplyTone(item = {}) {
+  if (item.status === 'synced' || item.status === 'applied') return 'good';
+  if (item.status === 'blocked' || item.status === 'failed') return 'danger';
+  if (item.status === 'ready') return item.risk?.tone || 'warn';
+  return item.kind === 'synced' ? 'good' : 'warn';
+}
+
+function nodePackManagerWorkspaceApplyBaseItems(state = {}) {
+  const entries = Array.isArray(state.workspaceLock?.packs) ? state.workspaceLock.packs : [];
+  const installedById = new Map();
+  for (const pack of Array.isArray(state.packs) ? state.packs : []) {
+    const packId = nodePackManagerPackId(pack);
+    if (packId) installedById.set(packId, pack);
+  }
+  return entries.map((lockEntry) => {
+    const packId = nodePackManagerPackId(lockEntry);
+    const installed = installedById.get(packId) || null;
+    const targetVersion = nodePackManagerString(lockEntry.version, '');
+    const installedVersion = nodePackManagerString(installed?.version, '');
+    const registrySource = nodePackManagerString(lockEntry.registrySource, '');
+    const diagnostics = [];
+    const rootKind = nodePackManagerString(installed?.discovery?.rootKind || installed?.origin, '');
+    const installedStatus = installed ? nodePackManagerStatusForPack(installed, state.catalog || {}) : null;
+    let kind = 'synced';
+    let action = 'none';
+    let status = 'synced';
+
+    if (!packId) {
+      diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_ID_MISSING',
+        'Workspace lock entry is missing a package id.',
+      ));
+      kind = 'blocked';
+      status = 'blocked';
+    } else if (installed && (rootKind === 'built-in' || installed.origin === 'built-in')) {
+      diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_APP_MANAGED',
+        'Workspace lock cannot replace an app-managed built-in package.',
+        { packId },
+      ));
+      kind = 'blocked';
+      status = 'blocked';
+    } else if (!targetVersion) {
+      diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_VERSION_MISSING',
+        'Workspace lock apply requires an exact package version.',
+        { packId },
+      ));
+      kind = 'blocked';
+      status = 'blocked';
+    } else if (!installed) {
+      kind = 'missing';
+      action = 'install';
+      status = 'pending';
+    } else if (installedVersion !== targetVersion) {
+      kind = 'drift';
+      action = 'update';
+      status = 'pending';
+    } else if (installedStatus?.tone === 'danger') {
+      diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_INSTALLED_UNSAFE',
+        'Installed package matches the workspace lock version but is not in a runnable safe state.',
+        { packId, installedStatus: installedStatus.label },
+      ));
+      kind = 'blocked';
+      status = 'blocked';
+    }
+
+    if (action !== 'none' && !registrySource) {
+      diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_REGISTRY_SOURCE_MISSING',
+        'Workspace lock apply requires the Registry source recorded in the lock entry.',
+        { packId },
+      ));
+      kind = 'blocked';
+      status = 'blocked';
+      action = 'none';
+    }
+
+    return {
+      id: packId,
+      kind,
+      action,
+      status,
+      lockEntry,
+      installed,
+      installedVersion,
+      targetVersion,
+      registrySource,
+      registry: null,
+      registryEntry: null,
+      risk: null,
+      diagnostics,
+      error: '',
+    };
+  });
+}
+
+function nodePackManagerWorkspaceApplySummary(items = []) {
+  const summary = {
+    total: items.length,
+    missing: 0,
+    drift: 0,
+    ready: 0,
+    blocked: 0,
+    synced: 0,
+    pending: 0,
+  };
+  for (const item of Array.isArray(items) ? items : []) {
+    if (item.kind === 'missing') summary.missing += 1;
+    if (item.kind === 'drift') summary.drift += 1;
+    if (item.status === 'ready') summary.ready += 1;
+    if (item.status === 'blocked') summary.blocked += 1;
+    if (item.status === 'synced') summary.synced += 1;
+    if (item.status === 'pending') summary.pending += 1;
+  }
+  return summary;
+}
+
+function nodePackManagerWorkspaceApplyVersionEntry(registryEntry = {}, targetVersion = '') {
+  const version = nodePackManagerString(targetVersion, '');
+  if (!version) return null;
+  return (Array.isArray(registryEntry.versions) ? registryEntry.versions : [])
+    .find(item => nodePackManagerString(item.version, '') === version) || null;
+}
+
+function nodePackManagerWorkspaceApplyReviewEntry(registryEntry = {}, lockEntry = {}) {
+  const targetVersion = nodePackManagerString(lockEntry.version, '');
+  if (!targetVersion) return null;
+  const exactVersion = nodePackManagerWorkspaceApplyVersionEntry(registryEntry, targetVersion);
+  if (exactVersion) {
+    return {
+      ...registryEntry,
+      latestVersion: targetVersion,
+      sourceRepository: exactVersion.sourceRepository || registryEntry.sourceRepository,
+      sourceRef: exactVersion.sourceRef || registryEntry.sourceRef,
+      manifestPath: exactVersion.manifestPath || registryEntry.manifestPath,
+      manifestSha256: exactVersion.manifestSha256 || registryEntry.manifestSha256,
+      signatureStatus: exactVersion.signatureStatus || registryEntry.signatureStatus,
+      checksumStatus: exactVersion.checksumStatus || registryEntry.checksumStatus,
+      reviewStatus: exactVersion.reviewStatus || registryEntry.reviewStatus,
+    };
+  }
+  if (targetVersion === nodePackManagerString(registryEntry.latestVersion, '')) return registryEntry;
+  return null;
+}
+
+async function nodePackManagerDryRunWorkspaceApply(state = {}) {
+  const items = nodePackManagerWorkspaceApplyBaseItems(state);
+  const diagnostics = [];
+  const registryBySource = new Map();
+  for (const item of items) {
+    if (item.status === 'blocked' || item.action === 'none') continue;
+    const sourceDiagnostic = nodePackManagerRegistrySourceDiagnostic(item.registrySource);
+    if (sourceDiagnostic) {
+      item.status = 'blocked';
+      item.diagnostics.push({
+        ...sourceDiagnostic,
+        packId: item.id,
+      });
+      diagnostics.push(item.diagnostics[item.diagnostics.length - 1]);
+      continue;
+    }
+    let registry = registryBySource.get(item.registrySource);
+    if (!registry) {
+      try {
+        registry = await loadNodePackRegistryForManager({ registry: item.registrySource });
+        registryBySource.set(item.registrySource, registry);
+      } catch (err) {
+        const failure = normalizeNodePackRegistryResponse({
+          ...(err?.result || {}),
+          success: false,
+          ok: false,
+          source: err?.result?.source || item.registrySource,
+          error: err?.message || err?.result?.error || String(err),
+        });
+        registry = failure;
+        registryBySource.set(item.registrySource, registry);
+      }
+    }
+    item.registry = registry;
+    if (Array.isArray(registry.diagnostics)) diagnostics.push(...registry.diagnostics);
+    if (registry.success === false || registry.ok === false) {
+      item.status = 'blocked';
+      item.diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_REGISTRY_UNAVAILABLE',
+        registry.error || 'Workspace lock Registry source could not be loaded for dry-run.',
+        { packId: item.id, registrySource: item.registrySource },
+      ));
+      continue;
+    }
+    const registryEntry = (registry.entries || []).find(entry => entry.id === item.id) || null;
+    if (!registryEntry) {
+      item.status = 'blocked';
+      item.diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_REGISTRY_ENTRY_MISSING',
+        'Workspace lock package id was not found in the recorded Registry source.',
+        { packId: item.id, registrySource: item.registrySource },
+      ));
+      continue;
+    }
+    const reviewEntry = nodePackManagerWorkspaceApplyReviewEntry(registryEntry, item.lockEntry);
+    if (!reviewEntry) {
+      item.status = 'blocked';
+      item.registryEntry = registryEntry;
+      item.diagnostics.push(nodePackManagerWorkspaceApplyDiagnostic(
+        'error',
+        'NODE_PACK_WORKSPACE_APPLY_REGISTRY_VERSION_MISSING',
+        'Workspace lock package version was not found in the recorded Registry source.',
+        { packId: item.id, version: item.targetVersion, registrySource: item.registrySource },
+      ));
+      continue;
+    }
+    const risk = nodePackManagerRegistryEntryRisk(reviewEntry, {
+      catalog: {
+        ...(registry.catalog || {}),
+        diagnostics: registry.diagnostics || [],
+      },
+    });
+    item.registryEntry = reviewEntry;
+    item.risk = risk;
+    item.diagnostics.push(...(risk.diagnostics || []));
+    item.status = risk.blocked ? 'blocked' : 'ready';
+  }
+  return {
+    status: 'ready',
+    items,
+    diagnostics: nodePackManagerUniqueIssues(diagnostics),
+    checkedAt: new Date().toLocaleString(),
+  };
+}
+
+function nodePackManagerWorkspaceLockEntryMatchesResolution(entry = {}, context = {}) {
+  if (!context?.active) return false;
+  const packId = nodePackManagerString(entry.id, '');
+  if (packId && (context.missingPackIds || []).includes(packId)) return true;
+  const missingNodeTypes = new Set(context.missingNodeTypes || []);
+  const nodeTypes = Array.isArray(entry.resolvedNodeTypes) ? entry.resolvedNodeTypes : [];
+  return nodeTypes.some(nodeType => missingNodeTypes.has(nodeType));
+}
+
+function nodePackManagerWorkspaceLockResolutionPreference(state = {}) {
+  const context = state.resolution || {};
+  if (!context.active) return null;
+  const entries = Array.isArray(state.workspaceLock?.packs) ? state.workspaceLock.packs : [];
+  const entry = entries.find(item => nodePackManagerWorkspaceLockEntryMatchesResolution(item, context));
+  const registrySource = nodePackManagerString(entry?.registrySource, '');
+  if (!entry || !registrySource) return null;
+  return { entry, registrySource };
+}
+
+function applyNodePackManagerWorkspaceLockResolutionPreference(state = {}) {
+  const preference = nodePackManagerWorkspaceLockResolutionPreference(state);
+  if (!preference) {
+    if (state.registry) state.registry.preferredByWorkspaceLock = false;
+    if (state.workspaceLock) state.workspaceLock.preferredResolution = null;
+    return null;
+  }
+  state.registry.source = preference.registrySource;
+  state.registry.preferredByWorkspaceLock = true;
+  state.workspaceLock.preferredResolution = preference;
+  if (!state.registry.query) state.registry.query = preference.entry.id || state.resolution?.query || '';
+  return preference;
+}
+
+function nodePackManagerWorkspaceLockEntryFromRegistry(entry = {}, options = {}) {
+  const result = options.result && typeof options.result === 'object' ? options.result : {};
+  const installedPack = options.installedPack && typeof options.installedPack === 'object'
+    ? options.installedPack
+    : (result.nodePack && typeof result.nodePack === 'object' ? result.nodePack : {});
+  const resolvedNodeTypes = nodePackManagerUniqueStrings([
+    ...(Array.isArray(entry.nodeTypes) ? entry.nodeTypes : []),
+    ...(Array.isArray(installedPack.nodes) ? installedPack.nodes.map(node => node?.type) : []),
+  ]);
+  return normalizeNodePackWorkspaceLockEntry({
+    id: entry.id || installedPack.id || options.packId,
+    version: entry.latestVersion || entry.version || installedPack.version,
+    registrySource: options.registrySource,
+    source: options.registrySource ? 'registry' : 'workspace-lock',
+    sourceRepository: entry.sourceRepository || entry.repository || entry.author?.repository || installedPack.sourceRepository,
+    sourceRef: entry.sourceRef || installedPack.sourceRef,
+    manifestPath: entry.manifestPath || installedPack.manifestPath || installedPack.discovery?.manifestPath,
+    manifestSha256: entry.manifestSha256 || installedPack.manifestSha256,
+    checksum: entry.checksum || installedPack.checksum,
+    signatureStatus: entry.signatureStatus,
+    checksumStatus: entry.checksumStatus,
+    reviewStatus: entry.reviewStatus,
+    trustLevel: entry.trustLevel || installedPack.trustLevel,
+    capabilities: entry.capabilities || installedPack.capabilities,
+    highRiskCapabilities: entry.highRiskCapabilities || installedPack.highRiskCapabilities,
+    resolvedNodeTypes,
+    installedAt: installedPack.installedAt || result.installedAt,
+    installedBy: 'node-pack-manager',
+    resolvedAt: new Date().toISOString(),
+    action: options.action || result.action,
+    diagnostics: [
+      ...(Array.isArray(entry.diagnostics) ? entry.diagnostics : []),
+      ...(Array.isArray(result.diagnostics) ? result.diagnostics : []),
+    ],
+  });
+}
+
+function renderNodePackManagerWorkspaceLockPanel(state = {}) {
+  const lockState = state.workspaceLock || {};
+  const summary = nodePackManagerWorkspaceLockSummary(state);
+  if (lockState.status === 'success' && summary.entries === 0 && !state.resolution?.active) {
+    return '';
+  }
+  const path = nodePackManagerString(lockState.path || lockState.lockPath, '');
+  const preferred = lockState.preferredResolution;
+  const tone = lockState.status === 'error'
+    ? 'danger'
+    : (summary.drift || summary.untracked || summary.missing ? 'warn' : 'good');
+  const statusLabel = lockState.status === 'loading'
+    ? 'loading'
+    : (lockState.status === 'error' ? 'unavailable' : (summary.drift || summary.untracked || summary.missing ? 'needs sync' : 'synced'));
+  const rows = [
+    ['Path', path || 'No workspace path available', true],
+    ['Updated', lockState.lock?.updatedAt || 'Not written yet', false],
+    ['Entries', String(summary.entries), false],
+    ['Installed locked', String(summary.locked), false],
+    ['Drift', String(summary.drift), false],
+    ['Untracked installed', String(summary.untracked), false],
+    ['Missing from install', String(summary.missing), false],
+    preferred ? ['Resolution source', `${preferred.entry.id} -> ${preferred.registrySource}`, true] : null,
+    lockState.error ? ['Error', lockState.error, false] : null,
+  ].filter(Boolean);
+  return `
+    <section class="node-pack-manager-registry-source-panel node-pack-manager-workspace-lock-panel ${tone}" data-node-pack-manager-workspace-lock-panel>
+      <div class="node-pack-manager-registry-source-head">
+        <div>
+          <h4>Workspace lock</h4>
+          <p>Workspace lock records reproducible package ids, versions, and Registry source. It is not trust evidence.</p>
+        </div>
+        <div class="node-pack-manager-pack-chips">
+          <span class="runbook-chip ${escapeHtml(tone)}">${escapeHtml(statusLabel)}</span>
+          <span class="runbook-chip">${escapeHtml(String(summary.entries))} entr${summary.entries === 1 ? 'y' : 'ies'}</span>
+          ${summary.drift ? `<span class="runbook-chip danger">${escapeHtml(String(summary.drift))} drift</span>` : ''}
+          ${summary.missing ? `<span class="runbook-chip warn">${escapeHtml(String(summary.missing))} missing</span>` : ''}
+          ${summary.untracked ? `<span class="runbook-chip warn">${escapeHtml(String(summary.untracked))} untracked</span>` : ''}
+        </div>
+      </div>
+      <dl class="node-pack-manager-registry-source-meta">
+        ${rows.map(([label, value, code]) => `
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${code ? `<code>${escapeHtml(value)}</code>` : escapeHtml(value)}</dd>
+        `).join('')}
+      </dl>
+    </section>
+  `;
+}
+
+function renderNodePackManagerWorkspaceLockSection(pack = {}, state = {}) {
+  const status = nodePackManagerWorkspaceLockStatusForPack(pack, state);
+  const entry = status.entry || {};
+  return `
+    <section class="node-pack-manager-section node-pack-manager-workspace-lock-section ${escapeHtml(status.tone || '')}">
+      <h4>Workspace Lock</h4>
+      <p class="node-pack-manager-section-note">Workspace lock metadata supports reproducible installs; it is not trust evidence.</p>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Status', status.message)}
+        ${renderNodePackManagerMetaRow('Locked version', entry.version || 'Not recorded', { code: Boolean(entry.version) })}
+        ${renderNodePackManagerMetaRow('Registry source', entry.registrySource || 'Not recorded', { code: Boolean(entry.registrySource) })}
+        ${renderNodePackManagerMetaRow('Metadata trust', entry.metadataTrust || 'registry-discovery-only')}
+        ${renderNodePackManagerMetaRow('Resolved node types', entry.resolvedNodeTypes?.length ? entry.resolvedNodeTypes.join(', ') : 'Not recorded')}
+      </dl>
+    </section>
+  `;
+}
+
+function renderNodePackManagerRegistryWorkspaceLockSection(entry = {}, state = {}) {
+  const lockStatus = nodePackManagerWorkspaceLockStatusForRegistryEntry(entry, state);
+  if (!lockStatus) {
+    return `
+      <section class="node-pack-manager-section">
+        <h4>Workspace Lock</h4>
+        <p class="node-pack-manager-section-note">This registry entry is not recorded in the workspace lock.</p>
+      </section>
+    `;
+  }
+  const lockEntry = lockStatus.entry || {};
+  return `
+    <section class="node-pack-manager-section node-pack-manager-workspace-lock-section ${escapeHtml(lockStatus.tone || '')}">
+      <h4>Workspace Lock</h4>
+      <p class="node-pack-manager-section-note">A workspace lock match only records reproducible metadata; install and update still require risk review.</p>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Status', lockStatus.label)}
+        ${renderNodePackManagerMetaRow('Locked version', lockEntry.version || 'Not recorded', { code: Boolean(lockEntry.version) })}
+        ${renderNodePackManagerMetaRow('Registry source', lockEntry.registrySource || 'Not recorded', { code: Boolean(lockEntry.registrySource) })}
+        ${renderNodePackManagerMetaRow('Metadata trust', lockEntry.metadataTrust || 'registry-discovery-only')}
+      </dl>
+    </section>
+  `;
+}
+
+function nodePackManagerDiagnosticsFromResult(result = {}) {
+  const diagnostics = [];
+  if (Array.isArray(result?.diagnostics)) diagnostics.push(...result.diagnostics);
+  if (Array.isArray(result?.discovery?.diagnostics)) diagnostics.push(...result.discovery.diagnostics);
+  if (Array.isArray(result?.workspaceLock?.diagnostics)) diagnostics.push(...result.workspaceLock.diagnostics);
+  if (Array.isArray(result?.results)) {
+    for (const item of result.results) {
+      if (Array.isArray(item?.diagnostics)) diagnostics.push(...item.diagnostics);
+      if (Array.isArray(item?.discovery?.diagnostics)) diagnostics.push(...item.discovery.diagnostics);
+    }
+  }
+  return nodePackManagerUniqueIssues(diagnostics);
+}
+
+function renderNodePackManagerActionNotice(notice = null) {
+  if (!notice) return '';
+  const tone = ['good', 'warn', 'danger'].includes(notice.tone) ? notice.tone : 'warn';
+  const diagnostics = nodePackManagerDiagnosticsFromResult(notice.result || { diagnostics: notice.diagnostics || [] });
+  const details = Array.isArray(notice.details) ? notice.details.filter(Boolean) : [];
+  const jsonText = nodePackManagerString(notice.json, '');
+  return `
+    <div class="node-pack-manager-action-notice ${tone}">
+      <div class="node-pack-manager-action-notice-head">
+        <h4>${escapeHtml(notice.title || 'Package action')}</h4>
+        <span class="runbook-chip ${tone}">${escapeHtml(tone === 'good' ? 'complete' : (tone === 'danger' ? 'failed' : 'review'))}</span>
+      </div>
+      ${notice.message ? `<p>${escapeHtml(notice.message)}</p>` : ''}
+      ${details.length ? `<ul>${details.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
+      ${diagnostics.length ? renderNodePackManagerIssueCards('Action diagnostics', diagnostics, { className: 'node-pack-manager-action-diagnostics' }) : ''}
+      ${jsonText ? `<pre>${escapeHtml(jsonText)}</pre>` : ''}
+    </div>
+  `;
+}
+
+function openNodePackManagerExportModal({ title, message = '', rows = [], diagnostics = [], json = '' } = {}) {
+  const summaryRows = (Array.isArray(rows) ? rows : [])
+    .filter(row => row && nodePackManagerString(row.value, ''))
+    .map(row => renderNodePackManagerMetaRow(row.label, row.value, { code: row.code === true }))
+    .join('');
+  const jsonText = nodePackManagerString(json, '');
+  openNodePackManagerDetailModal({
+    title,
+    html: `
+      <section class="node-pack-manager-section node-pack-manager-export-summary">
+        <h4>${escapeHtml(title || 'Export')}</h4>
+        ${message ? `<p class="node-pack-manager-section-note">${escapeHtml(message)}</p>` : ''}
+        ${summaryRows ? `<dl class="node-pack-manager-metadata">${summaryRows}</dl>` : ''}
+      </section>
+      ${diagnostics?.length ? renderNodePackManagerIssueCards('Export diagnostics', diagnostics, { className: 'node-pack-manager-action-diagnostics' }) : ''}
+      ${jsonText ? `
+        <section class="node-pack-manager-section">
+          <h4>Export JSON</h4>
+          <pre class="node-pack-manager-export-json">${escapeHtml(jsonText)}</pre>
+        </section>
+      ` : ''}
+    `,
+  });
+}
+
+function nodePackManagerStatusHasAny(value, tokens = []) {
+  const text = nodePackManagerString(value, '').toLowerCase();
+  return tokens.some(token => text.includes(token));
+}
+
+function nodePackManagerRegistryReviewApproved(entry = {}) {
+  const reviewStatus = nodePackManagerString(entry.reviewStatus, '').toLowerCase();
+  if (nodePackManagerStatusHasAny(reviewStatus, [
+    'unreviewed',
+    'unapproved',
+    'not reviewed',
+    'not-approved',
+    'notapproved',
+    'not approved',
+    'missing',
+    'none',
+    'pending',
+    'unknown',
+    'rejected',
+    'blocked',
+    'denied',
+  ])) {
+    return false;
+  }
+  return ['approved', 'reviewed', 'trusted'].includes(reviewStatus)
+    || reviewStatus.includes('approved')
+    || reviewStatus.includes('review-approved');
+}
+
+function nodePackManagerRegistryRiskDiagnostic(level, code, message, entry = {}, details = {}) {
+  return {
+    level,
+    code,
+    message,
+    packId: nodePackManagerString(entry.id, ''),
+    packageId: nodePackManagerString(entry.id, ''),
+    ...details,
+  };
+}
+
+function nodePackManagerRegistryEntryRisk(entry = {}, registryState = {}) {
+  const diagnostics = [];
+  const highRiskCapabilities = nodePackManagerHighRiskCapabilities(entry, registryState.catalog || {});
+  const signatureStatus = nodePackManagerString(entry.signatureStatus, 'missing');
+  const checksumStatus = nodePackManagerString(entry.checksumStatus, 'missing');
+  const reviewStatus = nodePackManagerString(entry.reviewStatus, 'unreviewed');
+  const metadataTrust = nodePackManagerString(entry.metadataTrust, 'registry-discovery-only');
+
+  if (entry.installable === false) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'error',
+      'NODE_PACK_REGISTRY_ENTRY_NOT_INSTALLABLE',
+      'Registry entry is not marked installable.',
+      entry,
+    ));
+  }
+
+  if (nodePackManagerStatusHasAny(signatureStatus, ['invalid', 'mismatch', 'failed', 'failure', 'untrusted', 'revoked', 'tampered'])) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'error',
+      'NODE_PACK_REGISTRY_SIGNATURE_UNSAFE',
+      'Package signature status blocks install and update.',
+      entry,
+      { signatureStatus },
+    ));
+  } else if (nodePackManagerStatusHasAny(signatureStatus, ['missing', 'none', 'not declared', 'unknown'])) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'warning',
+      'NODE_PACK_REGISTRY_SIGNATURE_MISSING',
+      'Package signature is missing; Registry metadata alone is not trust evidence.',
+      entry,
+      { signatureStatus },
+    ));
+  }
+
+  if (nodePackManagerStatusHasAny(checksumStatus, ['mismatch', 'invalid', 'failed', 'failure', 'tampered', 'unsafe'])) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'error',
+      'NODE_PACK_REGISTRY_CHECKSUM_UNSAFE',
+      'Package checksum status blocks install and update.',
+      entry,
+      { checksumStatus },
+    ));
+  } else if (nodePackManagerStatusHasAny(checksumStatus, ['missing', 'none', 'not declared', 'unknown'])) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'warning',
+      'NODE_PACK_REGISTRY_CHECKSUM_MISSING',
+      'Package checksum coverage is missing.',
+      entry,
+      { checksumStatus },
+    ));
+  }
+
+  if (nodePackManagerStatusHasAny(reviewStatus, ['rejected', 'blocked', 'unsafe', 'malicious', 'failed', 'denied'])) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'error',
+      'NODE_PACK_REGISTRY_REVIEW_BLOCKED',
+      'Package review status blocks install and update.',
+      entry,
+      { reviewStatus },
+    ));
+  } else if (nodePackManagerStatusHasAny(reviewStatus, ['missing', 'none', 'unreviewed', 'pending', 'unknown'])) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'warning',
+      'NODE_PACK_REGISTRY_REVIEW_MISSING',
+      'Package has not been reviewed by this Package Manager.',
+      entry,
+      { reviewStatus },
+    ));
+  }
+
+  if (metadataTrust === 'third-party-registry-reviewed') {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'warning',
+      'NODE_PACK_REGISTRY_THIRD_PARTY_REVIEW',
+      'Package review was declared by a non-official Registry source.',
+      entry,
+      { metadataTrust },
+    ));
+  } else if (metadataTrust !== 'orpad-official-registry-reviewed' && nodePackManagerRegistryReviewApproved(entry)) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'warning',
+      'NODE_PACK_REGISTRY_REVIEW_NOT_OFFICIAL',
+      'Package review metadata is not an OrPAD official registry approval.',
+      entry,
+      { metadataTrust },
+    ));
+  }
+
+  if (highRiskCapabilities.length && !nodePackManagerRegistryReviewApproved(entry)) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'error',
+      'NODE_PACK_REGISTRY_HIGH_RISK_REVIEW_REQUIRED',
+      'High-risk capabilities require approved review before install or update.',
+      entry,
+      { capabilities: highRiskCapabilities },
+    ));
+  } else if (highRiskCapabilities.length) {
+    diagnostics.push(nodePackManagerRegistryRiskDiagnostic(
+      'warning',
+      'NODE_PACK_REGISTRY_HIGH_RISK_CAPABILITY_DECLARED',
+      'Package declares high-risk capabilities; confirm the Registry source and package metadata before continuing.',
+      entry,
+      { capabilities: highRiskCapabilities },
+    ));
+  }
+
+  const allDiagnostics = nodePackManagerUniqueIssues([
+    ...diagnostics,
+    ...nodePackManagerPackDiagnostics(entry, registryState.catalog || {}),
+  ]);
+  const blockingDiagnostics = allDiagnostics.filter(issue => nodePackManagerIssueTone(issue) === 'danger');
+  const warningDiagnostics = allDiagnostics.filter(issue => nodePackManagerIssueTone(issue) !== 'danger');
+  return {
+    diagnostics: allDiagnostics,
+    blockingDiagnostics,
+    warningDiagnostics,
+    highRiskCapabilities,
+    blocked: blockingDiagnostics.length > 0,
+    tone: blockingDiagnostics.length ? 'danger' : (warningDiagnostics.length ? 'warn' : 'good'),
+    label: blockingDiagnostics.length ? 'blocked' : (warningDiagnostics.length ? 'review warnings' : 'no blocking risk'),
+  };
+}
+
+function nodePackManagerRegistryEntryActionState(action, entry = {}, managerState = {}, installed = null) {
+  const risk = nodePackManagerRegistryEntryRisk(entry, managerState.registry || managerState);
+  const actionLabel = action === 'update' ? 'Update' : 'Install';
+  if (action === 'install' && installed) {
+    return {
+      risk,
+      disabled: true,
+      text: `Installed as ${nodePackManagerString(installed.version, 'unknown version')}`,
+      reason: 'Package is already installed.',
+    };
+  }
+  if (risk.blocked) {
+    return {
+      risk,
+      disabled: true,
+      text: `${actionLabel} blocked`,
+      reason: nodePackManagerIssueMessage(risk.blockingDiagnostics[0]) || 'Package risk review blocks this action.',
+    };
+  }
+  return {
+    risk,
+    disabled: false,
+    text: actionLabel,
+    reason: '',
+  };
+}
+
+function nodePackManagerRegistryActionSource(registryState = {}) {
+  return nodePackManagerString(registryState.catalog?.source || registryState.lastLoadedSource || registryState.source, '');
+}
+
+function nodePackManagerRegistryRiskDialogLines(risk = {}) {
+  const diagnostics = risk.diagnostics || [];
+  if (!diagnostics.length) return ['Risk diagnostics: No blocking risk reported by Package Manager precheck.'];
+  return [
+    'Risk diagnostics:',
+    ...diagnostics.slice(0, 8).map(issue => `- ${nodePackManagerIssueText(issue)}`),
+  ];
+}
+
+function confirmNodePackManagerRegistryAction(action, entry = {}, managerState = {}, actionState = null) {
+  const risk = actionState?.risk || nodePackManagerRegistryEntryRisk(entry, managerState.registry || managerState);
+  const registrySource = nodePackManagerRegistryActionSource(managerState.registry || managerState);
+  const governance = nodePackManagerRegistryGovernance(managerState.registry || managerState);
+  const packageName = nodePackManagerString(entry.name || entry.id, entry.id || 'Package');
+  const packageId = nodePackManagerString(entry.id, 'missing-package-id');
+  const version = nodePackManagerString(entry.latestVersion || entry.version, 'unversioned');
+  const actionLabel = action === 'update' ? 'Update' : 'Install';
+  const message = [
+    `${actionLabel} package "${packageName}"?`,
+    '',
+    `Package id: ${packageId}`,
+    `Version: ${version}`,
+    `Registry source: ${registrySource || 'Not reported'}`,
+    `Registry trust: ${governance.label}`,
+    `Metadata trust: ${nodePackManagerMetadataTrustLabel(entry.metadataTrust || governance.metadataTrust)}`,
+    `Signature status: ${nodePackManagerString(entry.signatureStatus, 'missing')}`,
+    `Checksum status: ${nodePackManagerString(entry.checksumStatus, 'missing')}`,
+    `Review status: ${nodePackManagerString(entry.reviewStatus, 'unreviewed')}`,
+    ...nodePackManagerRegistryRiskDialogLines(risk),
+    '',
+    'Registry metadata is discovery input, not trust evidence.',
+  ].join('\n');
+  return window.confirm(message);
+}
+
+function renderNodePackManagerRegistryRiskReview(entry = {}, registryState = {}) {
+  const risk = nodePackManagerRegistryEntryRisk(entry, registryState);
+  const highRiskCapabilities = risk.highRiskCapabilities || [];
+  const issues = risk.diagnostics || [];
+  return `
+    <section class="node-pack-manager-section node-pack-manager-risk-review ${risk.tone}">
+      <div class="node-pack-manager-risk-review-head">
+        <h4>Package Risk Review</h4>
+        <div class="node-pack-manager-pack-chips">
+          <span class="runbook-chip ${escapeHtml(risk.tone)}">${escapeHtml(risk.label)}</span>
+          ${highRiskCapabilities.length ? `<span class="runbook-chip danger">${escapeHtml(String(highRiskCapabilities.length))} high-risk</span>` : ''}
+        </div>
+      </div>
+      <p class="node-pack-manager-section-note">Registry metadata can guide discovery, but install and update still depend on package verification and explicit review.</p>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Signature risk', entry.signatureStatus || 'missing')}
+        ${renderNodePackManagerMetaRow('Checksum risk', entry.checksumStatus || 'missing')}
+        ${renderNodePackManagerMetaRow('Review risk', entry.reviewStatus || 'unreviewed')}
+        ${renderNodePackManagerMetaRow('High-risk capabilities', highRiskCapabilities.length ? highRiskCapabilities.join(', ') : 'None reported')}
+      </dl>
+      ${issues.length ? `
+        <ul class="node-pack-manager-risk-list">
+          ${issues.map(issue => `<li class="${escapeHtml(nodePackManagerIssueTone(issue))}"><code>${escapeHtml(nodePackManagerIssueCode(issue))}</code><span>${escapeHtml(nodePackManagerIssueMessage(issue) || nodePackManagerIssueText(issue))}</span></li>`).join('')}
+        </ul>
+      ` : '<span class="node-pack-manager-muted">No Package Manager risk diagnostics for this registry entry.</span>'}
+    </section>
+  `;
+}
+
+function renderNodePackWorkspaceApplyDetail(item = null, state = {}, options = {}) {
+  if (!item) {
+    return '<div class="node-pack-manager-empty">Run a workspace lock dry-run to review missing and drifted packages.</div>';
+  }
+  const hideActions = options?.hideActions === true;
+  const tone = nodePackManagerWorkspaceApplyTone(item);
+  const label = nodePackManagerWorkspaceApplyStatusLabel(item);
+  const actionText = item.action === 'update' ? 'Update to lock version' : 'Install from lock';
+  const canApply = item.status === 'ready' && item.action !== 'none' && item.registryEntry;
+  const currentStatus = item.installed
+    ? nodePackManagerStatusForPack(item.installed, state.catalog || {})
+    : null;
+  const diagnostics = nodePackManagerUniqueIssues(item.diagnostics || []);
+  const registryState = {
+    catalog: {
+      diagnostics: item.registry?.diagnostics || [],
+    },
+  };
+  return `
+    <div class="node-pack-manager-detail-header">
+      <div>
+        <h3>${escapeHtml(item.lockEntry?.id || item.id || 'Workspace lock package')}</h3>
+        <code>${escapeHtml(item.registrySource || 'registry source missing')}</code>
+      </div>
+      <div class="node-pack-manager-pack-chips">
+        <span class="runbook-chip ${escapeHtml(tone)}">${escapeHtml(label)}</span>
+        ${item.kind === 'missing' ? '<span class="runbook-chip warn">missing</span>' : ''}
+        ${item.kind === 'drift' ? '<span class="runbook-chip danger">drift</span>' : ''}
+        ${item.risk ? `<span class="runbook-chip ${escapeHtml(item.risk.tone)}">${escapeHtml(item.risk.label)}</span>` : ''}
+      </div>
+    </div>
+    <section class="node-pack-manager-section node-pack-manager-workspace-lock-section ${escapeHtml(tone)}">
+      <h4>Workspace Lock Target</h4>
+      <p class="node-pack-manager-section-note">Workspace lock records reproducible package metadata only. It is not trust evidence.</p>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Package id', item.id || 'Not recorded', { code: Boolean(item.id) })}
+        ${renderNodePackManagerMetaRow('Target version', item.targetVersion || 'Not recorded', { code: Boolean(item.targetVersion) })}
+        ${renderNodePackManagerMetaRow('Registry source', item.registrySource || 'Not recorded', { code: Boolean(item.registrySource) })}
+        ${renderNodePackManagerMetaRow('Metadata trust', item.lockEntry?.metadataTrust || 'registry-discovery-only')}
+      </dl>
+    </section>
+    <section class="node-pack-manager-section">
+      <h4>Current Install</h4>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Installed version', item.installedVersion || 'Not installed', { code: Boolean(item.installedVersion) })}
+        ${renderNodePackManagerMetaRow('Install status', currentStatus?.label || (item.installed ? 'installed' : 'missing'))}
+        ${renderNodePackManagerMetaRow('Install source', item.installed?.origin || item.installed?.discovery?.rootKind || 'Not installed')}
+      </dl>
+    </section>
+    ${item.registryEntry ? `
+      <section class="node-pack-manager-section">
+        <h4>Dry-Run Registry Match</h4>
+        <p class="node-pack-manager-section-note">This package was matched from the Registry source recorded in the workspace lock. Registry metadata is discovery input, not trust evidence.</p>
+        <dl class="node-pack-manager-metadata">
+          ${renderNodePackManagerMetaRow('Registry version', item.registryEntry.latestVersion || 'unversioned', { code: true })}
+          ${renderNodePackManagerMetaRow('Signature status', item.registryEntry.signatureStatus || 'missing')}
+          ${renderNodePackManagerMetaRow('Checksum status', item.registryEntry.checksumStatus || 'missing')}
+          ${renderNodePackManagerMetaRow('Review status', item.registryEntry.reviewStatus || 'unreviewed')}
+          ${renderNodePackManagerMetaRow('Source repository', item.registryEntry.sourceRepository || 'Not declared', { code: Boolean(item.registryEntry.sourceRepository) })}
+          ${renderNodePackManagerMetaRow('Source ref', item.registryEntry.sourceRef || 'Not declared', { code: Boolean(item.registryEntry.sourceRef) })}
+        </dl>
+      </section>
+      ${renderNodePackManagerRegistryRiskReview(item.registryEntry, registryState)}
+    ` : ''}
+    ${diagnostics.length ? renderNodePackManagerIssueCards('Workspace lock dry-run diagnostics', diagnostics, { className: 'node-pack-manager-action-diagnostics' }) : ''}
+    ${hideActions ? '' : `
+      <div class="node-pack-manager-actions">
+        ${canApply
+          ? `<button type="button" data-node-pack-manager-workspace-apply="${escapeHtml(String(item.index ?? ''))}" title="Apply the exact workspace lock package version after dry-run risk review.">${escapeHtml(actionText)}</button>`
+          : `<span class="node-pack-manager-muted">${escapeHtml(item.action === 'none' && item.status === 'synced' ? 'No install or update is needed.' : 'Run or resolve dry-run review before applying this package.')}</span>`}
+      </div>
+    `}
+  `;
+}
+
+function nodePackManagerActionTitle(action, success = true) {
+  const titles = {
+    enable: success ? 'Enabled Package' : 'Enable Failed',
+    disable: success ? 'Disabled Package' : 'Disable Failed',
+    remove: success ? 'Removed Package' : 'Remove Failed',
+    rollback: success ? 'Rolled Back Package' : 'Rollback Failed',
+    install: success ? 'Installed Package' : 'Install Failed',
+    update: success ? 'Updated Package' : 'Update Failed',
+    'export-list': success ? 'Exported Installed List' : 'Export Failed',
+    'export-workspace-lock': success ? 'Exported Workspace Lock Summary' : 'Workspace Lock Export Failed',
+  };
+  return titles[action] || (success ? 'Package Action Complete' : 'Package Action Failed');
+}
+
+function nodePackManagerActionVerb(action) {
+  return {
+    enable: 'Enabled',
+    disable: 'Disabled',
+    remove: 'Removed',
+    rollback: 'Rolled back',
+    install: 'Installed',
+    update: 'Updated',
+  }[action] || action;
+}
+
+function nodePackManagerSuccessNotice(action, packId, result = {}) {
+  const details = [];
+  const workspaceLockFailed = result.workspaceLock && result.workspaceLock.success === false;
+  if (result.backupPath) details.push(`Backup path: ${result.backupPath}`);
+  if (result.lockPath) details.push(`Install lock: ${result.lockPath}`);
+  if (result.workspaceLock?.path || result.workspaceLock?.lockPath) details.push(`Workspace lock: ${result.workspaceLock.path || result.workspaceLock.lockPath}`);
+  if (result.workspaceLock?.error) details.push(`Workspace lock: ${result.workspaceLock.error}`);
+  if (action === 'remove') details.push('Package content was moved to backup instead of being silently deleted.');
+  if (action === 'rollback') details.push('The replaced current package was backed up for another explicit rollback.');
+  if (action === 'update') details.push('If rollback metadata is available, the previous package can be restored from the Installed tab.');
+  return {
+    tone: workspaceLockFailed ? 'warn' : 'good',
+    title: nodePackManagerActionTitle(action, true),
+    message: `${nodePackManagerActionVerb(action)} ${packId}.`,
+    details,
+    result,
+  };
+}
+
+function nodePackManagerFailureNotice(action, packId, err) {
+  const result = err?.result || {};
+  const details = [];
+  if (action === 'update') {
+    details.push('The safe update transaction preserves the active package when an update fails.');
+  } else if (action === 'install') {
+    details.push('No package was activated because installation did not complete.');
+  } else if (action === 'rollback') {
+    details.push('Rollback restores the current active package if the backup restore fails.');
+  } else if (action === 'remove') {
+    details.push('Removal restores the active package if lock update fails.');
+  }
+  return {
+    tone: 'danger',
+    title: nodePackManagerActionTitle(action, false),
+    message: `${nodePackManagerActionVerb(action)} ${packId} failed: ${err?.message || String(err)}`,
+    details,
+    result,
+  };
+}
+
+function confirmNodePackManagerAction(action, packId, pack = {}) {
+  const packageName = nodePackManagerString(pack.name || packId, packId);
+  const messages = {
+    disable: `Disable package "${packageName}"?\n\nIts Pack Components will stop resolving until the package is enabled again.`,
+    remove: `Remove package "${packageName}"?\n\nThe package is moved to a backup, but dependent pipelines may stop resolving until it is installed or restored again.`,
+    rollback: `Rollback package "${packageName}"?\n\nThe current package will be replaced with the previous backup. The current version is backed up for another explicit rollback.`,
+  };
+  const message = messages[action];
+  if (!message) return true;
+  return window.confirm(message);
+}
+
+function nodePackManagerDefaultInstalledIndex(packs = [], catalog = {}) {
+  const conflictIndex = packs.findIndex(pack => nodePackManagerStatusForPack(pack, catalog).label === 'conflict');
+  return conflictIndex >= 0 ? conflictIndex : 0;
+}
+
+function renderNodePackManagerTabs(activeTab) {
+  const tabs = [
+    ['installed', 'Installed'],
+    ['browse', 'Browse'],
+    ['updates', 'Updates'],
+    ['workspace', 'Workspace Lock'],
+  ];
+  return tabs.map(([id, label]) => `
+    <button type="button" class="node-pack-manager-tab ${activeTab === id ? 'active' : ''}" data-node-pack-manager-tab="${id}" aria-pressed="${activeTab === id ? 'true' : 'false'}">${escapeHtml(label)}</button>
+  `).join('');
+}
+
+function nodePackManagerMakerLabel(pack = {}) {
+  const author = pack.author;
+  const authorName = typeof author === 'string'
+    ? author
+    : nodePackManagerString(author?.name || author?.displayName || author?.organization || author?.org || author?.email, '');
+  return nodePackManagerString(
+    authorName
+      || pack.maker
+      || pack.publisher
+      || pack.maintainer
+      || pack.owner
+      || pack.sourceRepository
+      || pack.repository
+      || author?.repository
+      || author?.github
+      || pack.origin
+      || pack.discovery?.rootKind,
+    'Unknown maker',
+  );
+}
+
+function renderNodePackManagerPackageRow(options = {}) {
+  const className = nodePackManagerString(options.className, '');
+  const validation = nodePackManagerString(options.validation, '');
+  const detailKind = nodePackManagerString(options.detailKind, 'package');
+  const detailIndex = nodePackManagerString(options.detailIndex, '');
+  const detailTitle = nodePackManagerString(options.detailTitle, 'Open package details.');
+  const importAttr = nodePackManagerString(options.importAttr, '');
+  const importValue = nodePackManagerString(options.importValue, '');
+  const importLabel = nodePackManagerString(options.importLabel, 'Import');
+  const importTitle = nodePackManagerString(options.importTitle, 'Import this package.');
+  const disabled = options.importDisabled === true;
+  const dataAttrs = Array.isArray(options.dataAttrs) ? options.dataAttrs : [];
+  const extraAttrs = dataAttrs
+    .filter(attr => attr && attr.name)
+    .map(attr => ` ${escapeHtml(attr.name)}="${escapeHtml(nodePackManagerString(attr.value, ''))}"`)
+    .join('');
+  const importDataAttr = importAttr
+    ? ` ${escapeHtml(importAttr)}="${escapeHtml(importValue)}"`
+    : '';
+  return `
+    <div class="node-pack-manager-pack node-pack-manager-package-row ${escapeHtml(className)}" data-node-pack-validation="${escapeHtml(validation)}" role="listitem"${extraAttrs}>
+      <div class="node-pack-manager-package-row-main">
+        <strong>${escapeHtml(nodePackManagerString(options.name, 'Node Pack'))}</strong>
+        <span class="node-pack-manager-package-maker">${escapeHtml(nodePackManagerMakerLabel(options.pack || options.entry || options.item || {}))}</span>
+      </div>
+      <div class="node-pack-manager-package-row-actions">
+        <button type="button" data-node-pack-manager-detail-open="${escapeHtml(detailKind)}" data-node-pack-manager-detail-index="${escapeHtml(detailIndex)}" title="${escapeHtml(detailTitle)}">Detail</button>
+        <button type="button"${importDataAttr} ${disabled ? 'disabled' : ''} title="${escapeHtml(importTitle)}">${escapeHtml(importLabel)}</button>
+      </div>
+    </div>
+  `;
+}
+
+let nodePackManagerDetailModalEl = null;
+let nodePackManagerDetailModalKeyHandler = null;
+
+function closeNodePackManagerDetailModal() {
+  if (nodePackManagerDetailModalKeyHandler) {
+    document.removeEventListener('keydown', nodePackManagerDetailModalKeyHandler, true);
+    nodePackManagerDetailModalKeyHandler = null;
+  }
+  nodePackManagerDetailModalEl?.remove();
+  nodePackManagerDetailModalEl = null;
+}
+
+function openNodePackManagerDetailModal({ title, html, bind } = {}) {
+  closeNodePackManagerDetailModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'node-pack-manager-detail-modal-backdrop';
+  overlay.innerHTML = `
+    <div class="node-pack-manager-detail-modal" role="dialog" aria-modal="true" aria-labelledby="node-pack-manager-detail-modal-title">
+      <div class="node-pack-manager-detail-modal-header">
+        <h2 id="node-pack-manager-detail-modal-title">${escapeHtml(nodePackManagerString(title, 'Package Detail'))}</h2>
+        <button type="button" data-node-pack-manager-detail-close aria-label="Close package detail">Close</button>
+      </div>
+      <div class="node-pack-manager-detail node-pack-manager-detail-modal-body" data-node-pack-manager-detail-modal-body>${html || ''}</div>
+    </div>
+  `;
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) closeNodePackManagerDetailModal();
+  });
+  nodePackManagerDetailModalKeyHandler = (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeNodePackManagerDetailModal();
+  };
+  document.addEventListener('keydown', nodePackManagerDetailModalKeyHandler, true);
+  overlay.querySelector('[data-node-pack-manager-detail-close]')?.addEventListener('click', closeNodePackManagerDetailModal);
+  document.body.appendChild(overlay);
+  nodePackManagerDetailModalEl = overlay;
+  if (typeof bind === 'function') bind(overlay);
+  overlay.querySelector('[data-node-pack-manager-detail-close]')?.focus();
+  return overlay;
+}
+
+function renderNodePackManagerInstalledActions(pack = {}, managerState = {}) {
+  const packId = nodePackManagerString(pack.id, '');
+  const rootKind = nodePackManagerString(pack.discovery?.rootKind || pack.origin, '');
+  if (!packId || rootKind === 'built-in' || pack.origin === 'built-in') {
+    return '<div class="node-pack-manager-actions"><span class="node-pack-manager-muted">Built-in packs are managed by the app.</span></div>';
+  }
+  const resolutionState = nodePackManagerString(pack.resolutionState || pack.validation?.resolutionState, '').toLowerCase();
+  const enableAction = resolutionState === 'disabled'
+    ? `<button type="button" data-node-pack-manager-action="enable" data-node-pack-id="${escapeHtml(packId)}">Enable</button>`
+    : `<button type="button" data-node-pack-manager-action="disable" data-node-pack-id="${escapeHtml(packId)}">Disable</button>`;
+  const rollback = nodePackManagerRollbackInfo(pack, managerState);
+  return `
+    <div class="node-pack-manager-actions">
+      ${enableAction}
+      <button type="button" data-node-pack-manager-action="rollback" data-node-pack-id="${escapeHtml(packId)}" ${rollback.available ? '' : 'disabled'}>Rollback</button>
+      <button type="button" class="danger" data-node-pack-manager-action="remove" data-node-pack-id="${escapeHtml(packId)}">Remove</button>
+    </div>
+  `;
+}
+
+function renderNodePackRegistryEntryDetail(entry = null, state = {}, options = {}) {
+  if (!entry) return '<div class="node-pack-manager-empty">Select a registry entry to inspect its metadata.</div>';
+  const hideActions = options?.hideActions === true;
+  const installed = (state.packs || []).find(pack => nodePackManagerString(pack.id, '') === entry.id);
+  const resolutionMatch = nodePackRegistryEntryResolutionMatch(entry, state.resolution);
+  const actionState = nodePackManagerRegistryEntryActionState('install', entry, state, installed);
+  const risk = actionState.risk;
+  return `
+    <div class="node-pack-manager-detail-header">
+      <div>
+        <h3>${escapeHtml(entry.name || entry.id)}</h3>
+        <code>${escapeHtml(entry.id)}</code>
+      </div>
+      <div class="node-pack-manager-pack-chips">
+        <span class="runbook-chip ${installed ? 'good' : (risk.blocked ? 'danger' : 'warn')}">${escapeHtml(installed ? 'installed' : (risk.blocked ? 'blocked' : 'available'))}</span>
+        <span class="runbook-chip ${escapeHtml(risk.tone)}">${escapeHtml(risk.label)}</span>
+      </div>
+    </div>
+    <section class="node-pack-manager-section">
+      <h4>Registry Metadata</h4>
+      <p class="node-pack-manager-section-note">Registry metadata is discovery input, not trust evidence.</p>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Latest version', entry.latestVersion || 'unversioned', { code: true })}
+        ${renderNodePackManagerMetaRow('Trust level', entry.trustLevel || 'community')}
+        ${renderNodePackManagerMetaRow('Signature status', entry.signatureStatus || 'missing')}
+        ${renderNodePackManagerMetaRow('Checksum status', entry.checksumStatus || 'missing')}
+        ${renderNodePackManagerMetaRow('Review status', entry.reviewStatus || 'unreviewed')}
+        ${renderNodePackManagerMetaRow('Metadata trust', nodePackManagerMetadataTrustLabel(entry.metadataTrust))}
+        ${entry.reviewId ? renderNodePackManagerMetaRow('Review id', entry.reviewId, { code: true }) : ''}
+        ${entry.reviewedAt ? renderNodePackManagerMetaRow('Reviewed at', entry.reviewedAt) : ''}
+        ${entry.reviewedBy ? renderNodePackManagerMetaRow('Reviewed by', entry.reviewedBy) : ''}
+        ${entry.approvedCapabilities?.length ? renderNodePackManagerMetaRow('Approved capabilities', entry.approvedCapabilities.join(', ')) : ''}
+        ${resolutionMatch ? renderNodePackManagerMetaRow('Resolution match', resolutionMatch.label) : ''}
+        ${renderNodePackManagerMetaRow('Source repository', entry.sourceRepository || 'Not declared', { code: true })}
+        ${renderNodePackManagerMetaRow('Source ref', entry.sourceRef || 'Not declared', { code: true })}
+        ${renderNodePackManagerMetaRow('Manifest path', entry.manifestPath || 'Not declared', { code: true })}
+        ${renderNodePackManagerMetaRow('License', entry.license || 'Not declared')}
+        ${renderNodePackManagerMetaRow('Categories', entry.categories.length ? entry.categories.join(', ') : 'None')}
+        ${renderNodePackManagerMetaRow('Node types', entry.nodeTypes.length ? entry.nodeTypes.join(', ') : 'Not declared')}
+      </dl>
+    </section>
+    ${renderNodePackManagerRegistryWorkspaceLockSection(entry, state)}
+    ${renderNodePackManagerRegistryRiskReview(entry, state.registry)}
+    <section class="node-pack-manager-section">
+      <h4>Capabilities</h4>
+      <div class="node-pack-manager-capabilities">${renderNodePackManagerCapabilities(entry.capabilities)}</div>
+    </section>
+    <section class="node-pack-manager-section node-pack-manager-untrusted">
+      <h4>Pack-Provided Prose (Untrusted)</h4>
+      <p>${escapeHtml(entry.description || 'No description declared.')}</p>
+    </section>
+    ${hideActions ? '' : `
+      <div class="node-pack-manager-actions">
+        <button type="button" data-node-pack-manager-registry-install="${escapeHtml(entry.id)}" ${actionState.disabled ? 'disabled' : ''} title="${escapeHtml(actionState.reason || 'Confirm package install with Registry source and risk diagnostics.')}">${escapeHtml(actionState.text)}</button>
+        ${actionState.reason ? `<span class="node-pack-manager-action-reason">${escapeHtml(actionState.reason)}</span>` : ''}
+      </div>
+    `}
+  `;
+}
+
+function renderNodePackUpdateEntryDetail(entry = null, installed = null, state = {}, options = {}) {
+  if (!entry || !installed) return '<div class="node-pack-manager-empty">Select an update candidate to inspect its metadata.</div>';
+  const hideActions = options?.hideActions === true;
+  const actionState = nodePackManagerRegistryEntryActionState('update', entry, state, installed);
+  const risk = actionState.risk;
+  return `
+    <div class="node-pack-manager-detail-header">
+      <div>
+        <h3>${escapeHtml(entry.name || entry.id)}</h3>
+        <code>${escapeHtml(entry.id)}</code>
+      </div>
+      <div class="node-pack-manager-pack-chips">
+        <span class="runbook-chip ${risk.blocked ? 'danger' : 'warn'}">${escapeHtml(risk.blocked ? 'update blocked' : 'update available')}</span>
+        <span class="runbook-chip ${escapeHtml(risk.tone)}">${escapeHtml(risk.label)}</span>
+      </div>
+    </div>
+    <section class="node-pack-manager-section">
+      <h4>Registry Metadata</h4>
+      <p class="node-pack-manager-section-note">Registry metadata is discovery input, not trust evidence.</p>
+      <dl class="node-pack-manager-metadata">
+        ${renderNodePackManagerMetaRow('Installed version', nodePackManagerString(installed.version, 'unknown'), { code: true })}
+        ${renderNodePackManagerMetaRow('Latest version', entry.latestVersion || 'unversioned', { code: true })}
+        ${renderNodePackManagerMetaRow('Trust level', entry.trustLevel || 'community')}
+        ${renderNodePackManagerMetaRow('Signature status', entry.signatureStatus || 'missing')}
+        ${renderNodePackManagerMetaRow('Checksum status', entry.checksumStatus || 'missing')}
+        ${renderNodePackManagerMetaRow('Review status', entry.reviewStatus || 'unreviewed')}
+        ${renderNodePackManagerMetaRow('Metadata trust', nodePackManagerMetadataTrustLabel(entry.metadataTrust))}
+        ${entry.reviewId ? renderNodePackManagerMetaRow('Review id', entry.reviewId, { code: true }) : ''}
+        ${entry.reviewedAt ? renderNodePackManagerMetaRow('Reviewed at', entry.reviewedAt) : ''}
+        ${renderNodePackManagerMetaRow('Source repository', entry.sourceRepository || 'Not declared', { code: true })}
+      </dl>
+    </section>
+    ${renderNodePackManagerRegistryWorkspaceLockSection(entry, state)}
+    ${renderNodePackManagerRegistryRiskReview(entry, state.registry)}
+    <section class="node-pack-manager-section node-pack-manager-untrusted">
+      <h4>Pack-Provided Prose (Untrusted)</h4>
+      <p>${escapeHtml(entry.description || 'No description declared.')}</p>
+    </section>
+    ${hideActions ? '' : `
+      <div class="node-pack-manager-actions">
+        <button type="button" data-node-pack-manager-registry-update="${escapeHtml(entry.id)}" ${actionState.disabled ? 'disabled' : ''} title="${escapeHtml(actionState.reason || 'Confirm package update with Registry source and risk diagnostics.')}">${escapeHtml(actionState.text)}</button>
+        ${actionState.reason ? `<span class="node-pack-manager-action-reason">${escapeHtml(actionState.reason)}</span>` : ''}
+      </div>
+    `}
+  `;
+}
+
+function openOrchNodePackManager(resolutionContext = null) {
+  const currentResolution = nodePackManagerCurrentResolutionContext();
+  const providedResolution = resolutionContext && typeof resolutionContext === 'object'
+    ? nodePackManagerResolutionContextFromDiagnostics(resolutionContext.diagnostics || [])
+    : null;
+  const resolution = resolutionContext && typeof resolutionContext === 'object'
+    ? {
+      ...providedResolution,
+      missingPackIds: nodePackManagerUniqueStrings([
+        ...(resolutionContext.missingPackIds || []),
+        ...(providedResolution?.missingPackIds || []),
+      ]),
+      missingNodeTypes: nodePackManagerUniqueStrings([
+        ...(resolutionContext.missingNodeTypes || []),
+        ...(providedResolution?.missingNodeTypes || []),
+      ]),
+      pipelinePath: resolutionContext.pipelinePath || currentResolution.pipelinePath || '',
+    }
+    : currentResolution;
+  resolution.active = Boolean(resolution.missingPackIds.length || resolution.missingNodeTypes.length);
+  resolution.query = resolution.query || resolution.missingPackIds[0] || resolution.missingNodeTypes[0] || '';
   const body = document.createElement('div');
   body.className = 'node-pack-manager';
   body.innerHTML = `
-    <div class="node-pack-manager-status" data-node-pack-manager-status>Loading node packs...</div>
+    <div class="node-pack-manager-tabs" data-node-pack-manager-tabs>${renderNodePackManagerTabs('installed')}</div>
+    <div class="node-pack-manager-installed-controls" data-node-pack-manager-installed-controls hidden>
+      <button type="button" data-node-pack-manager-export-list>Export Installed List</button>
+      <button type="button" data-node-pack-manager-export-workspace-lock>Export Workspace Lock Summary</button>
+    </div>
+    <div class="node-pack-manager-workspace-apply-controls" data-node-pack-manager-workspace-apply-controls hidden>
+      <button type="button" data-node-pack-manager-workspace-dry-run>Dry Run Apply</button>
+      <button type="button" data-node-pack-manager-workspace-refresh>Refresh Lock</button>
+    </div>
+    <div class="node-pack-manager-registry-controls" data-node-pack-manager-registry-controls hidden>
+      <select data-node-pack-manager-registry-source-select aria-label="Registry source"></select>
+      <input type="url" data-node-pack-manager-registry-source aria-label="Custom Registry source" placeholder="https://example.com/orpad-node-pack-registry.json" />
+      <input type="search" data-node-pack-manager-registry-query aria-label="Search packages" placeholder="Search packages" />
+      <button type="button" data-node-pack-manager-registry-load>Browse</button>
+    </div>
+    <div class="node-pack-manager-registry-source-panel-slot" data-node-pack-manager-registry-source-panel-slot hidden></div>
+    <div class="node-pack-manager-workspace-lock-panel-slot" data-node-pack-manager-workspace-lock-panel-slot></div>
+    <div class="node-pack-manager-status" data-node-pack-manager-status>Loading packages...</div>
+    <div class="node-pack-manager-action-notice-slot" data-node-pack-manager-action-notice></div>
     <div class="node-pack-manager-diagnostics" data-node-pack-manager-diagnostics></div>
     <div class="node-pack-manager-shell">
-      <div class="node-pack-manager-list" data-node-pack-manager-list role="listbox" aria-label="Installed node packs"></div>
-      <div class="node-pack-manager-detail" data-node-pack-manager-detail></div>
+      <div class="node-pack-manager-list" data-node-pack-manager-list role="list" aria-label="Packages"></div>
     </div>
   `;
+  const tabsEl = body.querySelector('[data-node-pack-manager-tabs]');
+  const installedControlsEl = body.querySelector('[data-node-pack-manager-installed-controls]');
+  const exportListButton = body.querySelector('[data-node-pack-manager-export-list]');
+  const exportWorkspaceLockButton = body.querySelector('[data-node-pack-manager-export-workspace-lock]');
+  const workspaceApplyControlsEl = body.querySelector('[data-node-pack-manager-workspace-apply-controls]');
+  const workspaceDryRunButton = body.querySelector('[data-node-pack-manager-workspace-dry-run]');
+  const workspaceRefreshButton = body.querySelector('[data-node-pack-manager-workspace-refresh]');
+  const registryControlsEl = body.querySelector('[data-node-pack-manager-registry-controls]');
+  const registrySourceSelect = body.querySelector('[data-node-pack-manager-registry-source-select]');
+  const registrySourceInput = body.querySelector('[data-node-pack-manager-registry-source]');
+  const registryQueryInput = body.querySelector('[data-node-pack-manager-registry-query]');
+  const registryLoadButton = body.querySelector('[data-node-pack-manager-registry-load]');
+  const registrySourcePanelEl = body.querySelector('[data-node-pack-manager-registry-source-panel-slot]');
+  const workspaceLockPanelEl = body.querySelector('[data-node-pack-manager-workspace-lock-panel-slot]');
   const statusEl = body.querySelector('[data-node-pack-manager-status]');
+  const actionNoticeEl = body.querySelector('[data-node-pack-manager-action-notice]');
   const diagnosticsEl = body.querySelector('[data-node-pack-manager-diagnostics]');
   const listEl = body.querySelector('[data-node-pack-manager-list]');
-  const detailEl = body.querySelector('[data-node-pack-manager-detail]');
+  const defaultRegistrySource = nodePackManagerDefaultRegistrySource();
+  const storedRegistrySource = nodePackManagerStoredRegistrySource();
+  const recentRegistrySources = nodePackManagerStoredRecentRegistrySources(defaultRegistrySource);
   const state = {
+    tab: resolution.active ? 'browse' : 'installed',
     status: 'loading',
     packs: [],
     selectedIndex: 0,
+    selectedPackId: '',
     catalog: { ok: true, roots: [], diagnostics: [], conflicts: [] },
     error: '',
+    actionMessage: '',
+    actionNotice: null,
+    lifecycle: {
+      status: 'idle',
+      packs: [],
+      lockPath: '',
+      discovery: null,
+      diagnostics: [],
+      error: '',
+    },
+    workspaceLock: {
+      status: 'idle',
+      path: '',
+      lockPath: '',
+      lock: { kind: 'orpad.workspaceNodePackLock', schemaVersion: '1.0', updatedAt: '', packs: [] },
+      packs: [],
+      diagnostics: [],
+      error: '',
+      preferredResolution: null,
+    },
+    workspaceApply: {
+      status: 'idle',
+      items: [],
+      selectedIndex: 0,
+      diagnostics: [],
+      error: '',
+      checkedAt: '',
+    },
+    registry: {
+      status: 'idle',
+      defaultSource: defaultRegistrySource,
+      source: nodePackManagerString(window.__orpadNodePackRegistrySource || storedRegistrySource || defaultRegistrySource, defaultRegistrySource),
+      query: resolution.active ? resolution.query : '',
+      recentSources: recentRegistrySources,
+      entries: [],
+      selectedIndex: 0,
+      updateSelectedIndex: 0,
+      catalog: { ok: true, diagnostics: [], entries: [] },
+      lastLoadedSource: '',
+      lastLoadedAt: '',
+      preferredByWorkspaceLock: false,
+      error: '',
+    },
+    resolution,
+  };
+
+  const applyWorkspaceItem = async (item, index, button) => {
+    if (!item || item.status !== 'ready' || item.action === 'none' || !item.registryEntry) return;
+    const actionState = {
+      risk: item.risk || nodePackManagerRegistryEntryRisk(item.registryEntry, { catalog: { diagnostics: item.registry?.diagnostics || [] } }),
+      disabled: false,
+      text: item.action === 'update' ? 'Update' : 'Install',
+      reason: '',
+    };
+    if (!confirmNodePackManagerRegistryAction(item.action === 'update' ? 'update' : 'install', item.registryEntry, {
+      registry: {
+        ...state.registry,
+        source: item.registrySource,
+        lastLoadedSource: item.registrySource,
+        catalog: {
+          ...(item.registry || {}),
+          source: item.registrySource,
+        },
+      },
+    }, actionState)) return;
+    state.workspaceApply.status = 'applying';
+    state.actionMessage = '';
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Importing...';
+    }
+    try {
+      const result = await installNodePackFromManager({
+        registry: item.registrySource,
+        packId: item.id,
+        version: item.targetVersion,
+      });
+      const response = await listNodePacksForManager({ workspacePath });
+      state.catalog = response;
+      state.packs = response.nodePacks;
+      state.status = state.packs.length ? 'success' : 'empty';
+      await refreshInstalledLifecycle({ silent: true });
+      await refreshWorkspaceLock({ silent: true });
+      const dryRun = await nodePackManagerDryRunWorkspaceApply(state);
+      state.workspaceApply = {
+        status: 'ready',
+        items: dryRun.items,
+        selectedIndex: Math.min(index, Math.max(0, dryRun.items.length - 1)),
+        diagnostics: dryRun.diagnostics,
+        error: '',
+        checkedAt: dryRun.checkedAt,
+      };
+      state.actionMessage = `${nodePackManagerActionVerb(item.action)} ${item.id}`;
+      state.actionNotice = nodePackManagerSuccessNotice(item.action, item.id, {
+        ...result,
+        workspaceLock: {
+          success: state.workspaceLock.status === 'success',
+          path: state.workspaceLock.path,
+          lockPath: state.workspaceLock.lockPath,
+        },
+      });
+    } catch (err) {
+      state.workspaceApply.status = 'ready';
+      state.actionNotice = nodePackManagerFailureNotice(item.action, item.id, err);
+    }
+    render();
+  };
+
+  const installRegistryEntry = async (entry, button) => {
+    const packId = nodePackManagerString(entry?.id, '');
+    if (!packId) return;
+    const installedPack = state.packs.find(pack => nodePackManagerString(pack.id, '') === entry.id);
+    const actionState = nodePackManagerRegistryEntryActionState('install', entry, state, installedPack);
+    if (actionState.disabled) return;
+    if (!confirmNodePackManagerRegistryAction('install', entry, state, actionState)) return;
+    state.actionMessage = '';
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Importing...';
+    }
+    try {
+      const registrySource = state.registry.catalog?.source || state.registry.lastLoadedSource || state.registry.source;
+      const result = await installNodePackFromManager({
+        registry: registrySource,
+        packId,
+      });
+      const response = await listNodePacksForManager({ workspacePath });
+      state.catalog = response;
+      state.packs = response.nodePacks;
+      state.status = state.packs.length ? 'success' : 'empty';
+      await refreshInstalledLifecycle({ silent: true });
+      const installedAfterAction = state.packs.find(pack => nodePackManagerString(pack.id, '') === entry.id);
+      const workspaceLock = await syncWorkspaceLockFromRegistryEntry(entry, {
+        action: 'install',
+        registrySource,
+        result,
+        installedPack: installedAfterAction,
+      });
+      state.actionMessage = `Installed ${packId}`;
+      state.actionNotice = nodePackManagerSuccessNotice('install', packId, { ...result, workspaceLock });
+      if (state.resolution.pipelinePath) {
+        await validateSelectedRunbook(state.resolution.pipelinePath);
+      }
+    } catch (err) {
+      state.actionNotice = nodePackManagerFailureNotice('install', packId, err);
+    }
+    render();
+  };
+
+  const updateRegistryEntry = async (entry, installedPack, button) => {
+    const packId = nodePackManagerString(entry?.id, '');
+    if (!packId) return;
+    const actionState = nodePackManagerRegistryEntryActionState('update', entry, state, installedPack);
+    if (actionState.disabled) return;
+    if (!confirmNodePackManagerRegistryAction('update', entry, state, actionState)) return;
+    state.actionMessage = '';
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Importing...';
+    }
+    try {
+      const registrySource = state.registry.catalog?.source || state.registry.lastLoadedSource || state.registry.source;
+      const result = await updateNodePackFromManager({
+        registry: registrySource,
+        packId,
+      });
+      const response = await listNodePacksForManager({ workspacePath });
+      state.catalog = response;
+      state.packs = response.nodePacks;
+      state.status = state.packs.length ? 'success' : 'empty';
+      await refreshInstalledLifecycle({ silent: true });
+      const installedAfterAction = state.packs.find(pack => nodePackManagerString(pack.id, '') === entry.id);
+      const workspaceLock = await syncWorkspaceLockFromRegistryEntry(entry, {
+        action: 'update',
+        registrySource,
+        result,
+        installedPack: installedAfterAction,
+      });
+      state.actionMessage = `Updated ${packId}`;
+      state.actionNotice = nodePackManagerSuccessNotice('update', packId, { ...result, workspaceLock });
+    } catch (err) {
+      state.actionNotice = nodePackManagerFailureNotice('update', packId, err);
+      try {
+        const response = await listNodePacksForManager({ workspacePath });
+        state.catalog = response;
+        state.packs = response.nodePacks;
+        state.status = state.packs.length ? 'success' : 'empty';
+        await refreshInstalledLifecycle({ silent: true });
+      } catch {}
+    }
+    render();
+  };
+
+  const mutateInstalledPackage = async (action, packId, actionPack, button) => {
+    if (!action || !packId) return;
+    if (!confirmNodePackManagerAction(action, packId, actionPack)) return;
+    if (button) button.disabled = true;
+    state.actionMessage = '';
+    try {
+      const result = await mutateInstalledNodePackFromManager(action, packId);
+      const response = await listNodePacksForManager({ workspacePath });
+      state.catalog = response;
+      state.packs = response.nodePacks;
+      await refreshInstalledLifecycle({ silent: true });
+      state.actionMessage = `${nodePackManagerActionVerb(action)} ${packId}`;
+      state.actionNotice = nodePackManagerSuccessNotice(action, packId, result);
+      state.status = state.packs.length ? 'success' : 'empty';
+      closeNodePackManagerDetailModal();
+    } catch (err) {
+      state.actionNotice = nodePackManagerFailureNotice(action, packId, err);
+    }
+    render();
+  };
+
+  const bindInstalledPackageDetailActions = (root, fallbackPack = null) => {
+    root.querySelectorAll('[data-node-pack-manager-action]').forEach(button => {
+      button.addEventListener('click', async () => {
+        const action = button.getAttribute('data-node-pack-manager-action') || '';
+        const packId = button.getAttribute('data-node-pack-id') || '';
+        const actionPack = state.packs.find(pack => nodePackManagerString(pack.id, '') === packId) || fallbackPack || {};
+        await mutateInstalledPackage(action, packId, actionPack, button);
+      });
+    });
   };
 
   const render = () => {
-    body.dataset.nodePackManagerState = state.status;
-    if (state.status === 'loading') {
-      statusEl.textContent = 'Loading installed node packs...';
+    body.dataset.nodePackManagerState = state.tab === 'installed' ? state.status : state.registry.status;
+    body.dataset.nodePackManagerTab = state.tab;
+    body.dataset.nodePackManagerSelected = state.selectedPackId || '';
+    tabsEl.innerHTML = `${renderNodePackManagerTabs(state.tab)}<div class="node-pack-manager-root-summary" data-node-pack-manager-root-summary>${renderNodePackManagerRootSummary(state.catalog?.roots)}</div>`;
+    tabsEl.querySelectorAll('[data-node-pack-manager-tab]').forEach(button => {
+      button.addEventListener('click', () => {
+        state.tab = button.dataset.nodePackManagerTab || 'installed';
+        state.actionMessage = '';
+        render();
+      });
+    });
+    if (installedControlsEl) installedControlsEl.hidden = state.tab !== 'installed';
+    if (exportListButton) exportListButton.disabled = state.lifecycle.status === 'exporting';
+    if (exportWorkspaceLockButton) exportWorkspaceLockButton.disabled = state.workspaceLock.status === 'loading';
+    if (workspaceApplyControlsEl) workspaceApplyControlsEl.hidden = state.tab !== 'workspace';
+    if (workspaceDryRunButton) {
+      workspaceDryRunButton.disabled = state.workspaceApply.status === 'dry-running' || state.workspaceLock.status === 'loading';
+      workspaceDryRunButton.textContent = state.workspaceApply.status === 'dry-running' ? 'Dry Running...' : 'Dry Run Apply';
+    }
+    if (workspaceRefreshButton) {
+      workspaceRefreshButton.disabled = state.workspaceLock.status === 'loading' || state.workspaceApply.status === 'dry-running';
+    }
+    if (actionNoticeEl) {
+      actionNoticeEl.innerHTML = renderNodePackManagerActionNotice(state.actionNotice);
+      actionNoticeEl.hidden = !state.actionNotice;
+    }
+    registryControlsEl.hidden = state.tab !== 'browse';
+    if (registrySourcePanelEl) {
+      registrySourcePanelEl.hidden = state.tab !== 'browse' && state.tab !== 'updates';
+      registrySourcePanelEl.innerHTML = state.tab === 'browse' || state.tab === 'updates'
+        ? renderNodePackManagerRegistrySourcePanel(state.registry)
+        : '';
+    }
+    if (workspaceLockPanelEl) {
+      workspaceLockPanelEl.innerHTML = renderNodePackManagerWorkspaceLockPanel(state);
+    }
+    if (registrySourceSelect) {
+      registrySourceSelect.innerHTML = renderNodePackManagerRegistrySourceOptions(state.registry);
+      registrySourceSelect.value = state.registry.source || state.registry.defaultSource || '';
+    }
+    if (registrySourceInput) registrySourceInput.value = state.registry.source;
+    if (registryQueryInput) registryQueryInput.value = state.registry.query;
+
+    if (state.tab === 'workspace') {
+      const baseItems = nodePackManagerWorkspaceApplyBaseItems(state);
+      const applyItems = state.workspaceApply.items.length ? state.workspaceApply.items : baseItems;
+      applyItems.forEach((item, index) => { item.index = index; });
+      if (state.workspaceApply.selectedIndex < 0 || state.workspaceApply.selectedIndex >= applyItems.length) {
+        state.workspaceApply.selectedIndex = 0;
+      }
+      const summary = nodePackManagerWorkspaceApplySummary(applyItems);
+      const lockSummary = nodePackManagerWorkspaceLockSummary(state);
+      statusEl.innerHTML = `
+        <span>Workspace lock dry-run checks missing and drifted packages before install or update.</span>
+        <span class="runbook-chip ${state.workspaceApply.status === 'ready' ? 'good' : 'warn'}">${escapeHtml(state.workspaceApply.status === 'idle' ? 'dry-run required' : state.workspaceApply.status)}</span>
+        <span class="runbook-chip">${escapeHtml(String(lockSummary.entries))} lock entr${lockSummary.entries === 1 ? 'y' : 'ies'}</span>
+        ${summary.missing ? `<span class="runbook-chip warn">${escapeHtml(String(summary.missing))} missing</span>` : ''}
+        ${summary.drift ? `<span class="runbook-chip danger">${escapeHtml(String(summary.drift))} drift</span>` : ''}
+        ${summary.ready ? `<span class="runbook-chip good">${escapeHtml(String(summary.ready))} ready</span>` : ''}
+        ${summary.blocked ? `<span class="runbook-chip danger">${escapeHtml(String(summary.blocked))} blocked</span>` : ''}
+        ${state.workspaceApply.checkedAt ? `<span>${escapeHtml(state.workspaceApply.checkedAt)}</span>` : ''}
+      `;
+      diagnosticsEl.innerHTML = renderNodePackManagerIssueCards(
+        'Workspace lock dry-run diagnostics',
+        nodePackManagerUniqueIssues([
+          ...(state.workspaceLock.diagnostics || []),
+          ...(state.workspaceApply.diagnostics || []),
+        ]),
+        { className: 'node-pack-manager-discovery-issues' },
+      );
+      if (!lockSummary.entries) {
+        listEl.innerHTML = '<div class="node-pack-manager-empty">No workspace lock entries are recorded for this workspace.</div>';
+        return;
+      }
+      listEl.innerHTML = applyItems.map((item, index) => {
+        const tone = nodePackManagerWorkspaceApplyTone(item);
+        const label = nodePackManagerWorkspaceApplyStatusLabel(item);
+        const canApply = item.status === 'ready' && item.action !== 'none' && item.registryEntry;
+        const importTitle = canApply
+          ? 'Import the exact package version recorded in the workspace lock.'
+          : (item.status === 'synced'
+            ? 'This workspace lock package is already imported.'
+            : 'Run or resolve dry-run review before importing this package.');
+        return renderNodePackManagerPackageRow({
+          name: item.lockEntry?.name || item.registryEntry?.name || item.lockEntry?.id || item.id || 'Workspace lock package',
+          pack: item.registryEntry || item.lockEntry || { origin: item.registrySource },
+          className: `node-pack-manager-pack-${tone}`,
+          validation: label,
+          detailKind: 'workspace',
+          detailIndex: index,
+          detailTitle: 'Open workspace lock package details.',
+          importAttr: 'data-node-pack-manager-workspace-apply',
+          importValue: String(index),
+          importLabel: item.status === 'synced' ? 'Imported' : (canApply ? 'Import' : 'Import blocked'),
+          importDisabled: !canApply,
+          importTitle,
+          item,
+          dataAttrs: [{ name: 'data-node-pack-manager-workspace-index', value: index }],
+        });
+      }).join('');
+      listEl.querySelectorAll('[data-node-pack-manager-detail-open="workspace"]').forEach(button => {
+        button.addEventListener('click', () => {
+          const index = Number(button.getAttribute('data-node-pack-manager-detail-index')) || 0;
+          const item = applyItems[index] || null;
+          state.workspaceApply.selectedIndex = index;
+          openNodePackManagerDetailModal({
+            title: item?.registryEntry?.name || item?.lockEntry?.name || item?.lockEntry?.id || item?.id || 'Workspace lock package',
+            html: renderNodePackWorkspaceApplyDetail(item, state, { hideActions: true }),
+          });
+        });
+      });
+      listEl.querySelectorAll('[data-node-pack-manager-workspace-apply]').forEach(button => {
+        button.addEventListener('click', async () => {
+          const index = Number(button.getAttribute('data-node-pack-manager-workspace-apply')) || 0;
+          await applyWorkspaceItem(applyItems[index], index, button);
+        });
+      });
+      return;
+    }
+
+    if (state.tab === 'browse') {
+      const registryState = state.registry;
+      diagnosticsEl.innerHTML = renderNodePackManagerIssueCards(
+        'Registry diagnostics',
+        registryState.catalog?.diagnostics || [],
+        { className: 'node-pack-manager-discovery-issues' },
+      );
+      if (registryState.status === 'idle') {
+        const health = nodePackManagerRegistrySourceHealth(registryState);
+        statusEl.textContent = health.tone === 'danger' || health.label === 'not configured'
+          ? health.message
+          : 'Registry source ready.';
+        listEl.innerHTML = '<div class="node-pack-manager-empty">No registry entries loaded.</div>';
+        return;
+      }
+      if (registryState.status === 'loading') {
+        statusEl.textContent = 'Loading package registry...';
+        listEl.innerHTML = '<div class="node-pack-manager-empty">Loading registry entries...</div>';
+        return;
+      }
+      if (registryState.status === 'error') {
+        statusEl.textContent = 'Package registry browse failed.';
+        listEl.innerHTML = '<div class="node-pack-manager-empty">No registry entries could be loaded.</div>';
+        listEl.insertAdjacentHTML('beforeend', `<div class="node-pack-manager-error">${escapeHtml(registryState.error || 'Unknown package registry error.')}</div>`);
+        return;
+      }
+      const browseEntries = nodePackRegistryEntriesForResolution(registryState.entries, state.resolution);
+      if (!browseEntries.length) {
+        statusEl.textContent = state.resolution.active
+          ? 'No registry entries matched the unresolved package diagnostics.'
+          : (registryState.query ? 'No registry entries matched the search.' : 'The registry did not report installable entries.');
+        listEl.innerHTML = '<div class="node-pack-manager-empty">No registry entries found.</div>';
+        return;
+      }
+      if (registryState.selectedIndex < 0 || registryState.selectedIndex >= browseEntries.length) registryState.selectedIndex = 0;
+      const sourceName = registryState.catalog?.registry?.name || registryState.source || 'registry';
+      statusEl.innerHTML = `
+        <span>${escapeHtml(sourceName)}: ${escapeHtml(String(browseEntries.length))} ${state.resolution.active ? 'resolution candidate' : 'entr'}${browseEntries.length === 1 ? (state.resolution.active ? '' : 'y') : (state.resolution.active ? 's' : 'ies')}.</span>
+        ${state.resolution.active ? '<span class="runbook-chip warn">filtered by missing package</span>' : ''}
+        ${state.registry.preferredByWorkspaceLock ? '<span class="runbook-chip good">workspace lock source</span>' : ''}
+        ${registryState.catalog?.fromCache ? '<span class="runbook-chip warn">offline cache</span>' : '<span class="runbook-chip good">registry loaded</span>'}
+        ${state.actionMessage ? `<span class="runbook-chip good">${escapeHtml(state.actionMessage)}</span>` : ''}
+      `;
+      listEl.innerHTML = browseEntries.map((entry, index) => {
+        const installed = state.packs.some(pack => nodePackManagerString(pack.id, '') === entry.id);
+        const resolutionMatch = nodePackRegistryEntryResolutionMatch(entry, state.resolution);
+        const risk = nodePackManagerRegistryEntryRisk(entry, registryState);
+        const installedPack = state.packs.find(pack => nodePackManagerString(pack.id, '') === entry.id);
+        const actionState = nodePackManagerRegistryEntryActionState('install', entry, state, installedPack);
+        const validation = installed ? 'installed' : (risk.blocked ? 'blocked' : 'available');
+        return renderNodePackManagerPackageRow({
+          name: entry.name || entry.id,
+          entry,
+          className: risk.blocked ? 'node-pack-manager-pack-danger' : '',
+          validation,
+          detailKind: 'registry',
+          detailIndex: index,
+          detailTitle: resolutionMatch ? `Open ${resolutionMatch.label}.` : 'Open registry package details.',
+          importAttr: 'data-node-pack-manager-registry-install',
+          importValue: entry.id,
+          importLabel: installed ? 'Imported' : (actionState.disabled ? 'Import blocked' : 'Import'),
+          importDisabled: actionState.disabled,
+          importTitle: actionState.reason || 'Import this package from the selected Registry source.',
+          dataAttrs: [{ name: 'data-node-pack-manager-registry-index', value: index }],
+        });
+      }).join('');
+      listEl.querySelectorAll('[data-node-pack-manager-detail-open="registry"]').forEach(button => {
+        button.addEventListener('click', () => {
+          const index = Number(button.getAttribute('data-node-pack-manager-detail-index')) || 0;
+          const entry = browseEntries[index] || null;
+          registryState.selectedIndex = index;
+          openNodePackManagerDetailModal({
+            title: entry?.name || entry?.id || 'Registry package',
+            html: renderNodePackRegistryEntryDetail(entry, state, { hideActions: true }),
+          });
+        });
+      });
+      listEl.querySelectorAll('[data-node-pack-manager-registry-install]').forEach(button => {
+        button.addEventListener('click', async () => {
+          const packId = button.getAttribute('data-node-pack-manager-registry-install') || '';
+          if (!packId) return;
+          const entry = browseEntries.find(item => item.id === packId);
+          await installRegistryEntry(entry, button);
+        });
+      });
+      return;
+    }
+
+    if (state.tab === 'updates') {
+      const installedById = new Map(state.packs.map(pack => [nodePackManagerString(pack.id, ''), pack]));
+      const registryEntries = state.registry.entries || [];
+      const updates = registryEntries.filter(entry => {
+        const installed = installedById.get(entry.id);
+        return installed && entry.latestVersion && nodePackManagerString(installed.version, '') !== entry.latestVersion;
+      });
+      if (state.registry.updateSelectedIndex < 0 || state.registry.updateSelectedIndex >= updates.length) state.registry.updateSelectedIndex = 0;
+      const comparedSource = nodePackManagerString(state.registry.catalog?.source || state.registry.lastLoadedSource || state.registry.source, '');
+      const comparedLabel = nodePackManagerRegistrySourceKindLabel(comparedSource, state.registry);
+      const workspaceSummary = nodePackManagerWorkspaceLockSummary(state);
+      statusEl.innerHTML = `
+        <span>${escapeHtml(String(updates.length))} update candidate${updates.length === 1 ? '' : 's'}.</span>
+        ${state.registry.status === 'success' ? `<span class="runbook-chip good">registry compared</span><span>Against ${escapeHtml(comparedLabel)}.</span>${comparedSource ? `<code class="node-pack-manager-status-source">${escapeHtml(comparedSource)}</code>` : ''}` : '<span class="runbook-chip warn">registry not loaded</span>'}
+        ${workspaceSummary.drift ? `<span class="runbook-chip warn">${escapeHtml(String(workspaceSummary.drift))} workspace drift</span>` : ''}
+        ${state.registry.catalog?.fromCache ? '<span class="runbook-chip warn">offline cache</span>' : ''}
+        ${state.actionMessage ? `<span class="runbook-chip good">${escapeHtml(state.actionMessage)}</span>` : ''}
+      `;
       diagnosticsEl.innerHTML = '';
-      listEl.innerHTML = '<div class="node-pack-manager-empty">Loading node packs...</div>';
-      detailEl.innerHTML = '<div class="node-pack-manager-empty">Discovery metadata will appear here.</div>';
+      if (!updates.length) {
+        listEl.innerHTML = '<div class="node-pack-manager-empty">No updates are available from the loaded registry.</div>';
+        return;
+      }
+      listEl.innerHTML = updates.map((entry, index) => {
+        const installed = installedById.get(entry.id);
+        const risk = nodePackManagerRegistryEntryRisk(entry, state.registry);
+        const actionState = nodePackManagerRegistryEntryActionState('update', entry, state, installed);
+        return renderNodePackManagerPackageRow({
+          name: entry.name || entry.id,
+          entry,
+          className: risk.blocked ? 'node-pack-manager-pack-danger' : '',
+          validation: risk.blocked ? 'update-blocked' : 'update-available',
+          detailKind: 'update',
+          detailIndex: index,
+          detailTitle: `Open update details for ${nodePackManagerString(installed?.version, 'installed')} to ${entry.latestVersion || 'latest'}.`,
+          importAttr: 'data-node-pack-manager-registry-update',
+          importValue: entry.id,
+          importLabel: actionState.disabled ? 'Import blocked' : 'Import',
+          importDisabled: actionState.disabled,
+          importTitle: actionState.reason || 'Import the latest package version from the selected Registry source.',
+          dataAttrs: [{ name: 'data-node-pack-manager-update-index', value: index }],
+        });
+      }).join('');
+      listEl.querySelectorAll('[data-node-pack-manager-detail-open="update"]').forEach(button => {
+        button.addEventListener('click', () => {
+          const index = Number(button.getAttribute('data-node-pack-manager-detail-index')) || 0;
+          const entry = updates[index] || null;
+          state.registry.updateSelectedIndex = index;
+          openNodePackManagerDetailModal({
+            title: entry?.name || entry?.id || 'Package update',
+            html: renderNodePackUpdateEntryDetail(entry, installedById.get(entry?.id), state, { hideActions: true }),
+          });
+        });
+      });
+      listEl.querySelectorAll('[data-node-pack-manager-registry-update]').forEach(button => {
+        button.addEventListener('click', async () => {
+          const packId = button.getAttribute('data-node-pack-manager-registry-update') || '';
+          if (!packId) return;
+          const entry = updates.find(item => item.id === packId);
+          await updateRegistryEntry(entry, installedById.get(packId), button);
+        });
+      });
+      return;
+    }
+
+    if (state.status === 'loading') {
+      statusEl.textContent = 'Loading installed packages...';
+      diagnosticsEl.innerHTML = '';
+      listEl.innerHTML = '<div class="node-pack-manager-empty">Loading packages...</div>';
       return;
     }
     if (state.status === 'error') {
-      statusEl.textContent = 'Node pack discovery failed.';
+      statusEl.textContent = 'Package discovery failed.';
       diagnosticsEl.innerHTML = '';
       listEl.innerHTML = '<div class="node-pack-manager-empty">No packs could be loaded.</div>';
-      detailEl.innerHTML = `<div class="node-pack-manager-error">${escapeHtml(state.error || 'Unknown node pack discovery error.')}</div>`;
+      listEl.insertAdjacentHTML('beforeend', `<div class="node-pack-manager-error">${escapeHtml(state.error || 'Unknown package discovery error.')}</div>`);
       return;
     }
     if (state.status === 'empty') {
-      statusEl.textContent = 'No installed node packs were reported by the OrPAD discovery service.';
+      statusEl.textContent = 'No installed packages were reported by the OrPAD discovery service.';
       diagnosticsEl.innerHTML = renderNodePackManagerCatalogDiagnostics(state.catalog);
-      listEl.innerHTML = '<div class="node-pack-manager-empty">No node packs are installed.</div>';
-      detailEl.innerHTML = '<div class="node-pack-manager-empty">Install or enable a built-in/user pack to inspect its metadata.</div>';
+      listEl.innerHTML = '<div class="node-pack-manager-empty">No packages are installed.</div>';
       return;
     }
-    const packs = state.packs;
-    if (state.selectedIndex < 0 || state.selectedIndex >= packs.length) state.selectedIndex = 0;
+      const packs = state.packs;
+      if (state.selectedPackId) {
+        const selectedPackIndex = packs.findIndex(pack => nodePackManagerString(pack.id, '') === state.selectedPackId);
+        if (selectedPackIndex >= 0) state.selectedIndex = selectedPackIndex;
+      }
+      if (state.selectedIndex < 0 || state.selectedIndex >= packs.length) state.selectedIndex = 0;
     const selectedPack = packs[state.selectedIndex];
+    state.selectedPackId = nodePackManagerString(selectedPack?.id, '');
     const counts = nodePackManagerCatalogIssueCounts(state.catalog);
     const issueCount = counts.diagnostics + counts.conflicts;
     const catalogTone = counts.conflicts || counts.conflictDiagnostics
@@ -7491,49 +10125,59 @@ function openOrchNodePackManager() {
       : (counts.conflictDiagnostics
         ? `${counts.conflictDiagnostics} conflict diagnostic${counts.conflictDiagnostics === 1 ? '' : 's'}`
         : (counts.diagnostics ? `${counts.diagnostics} diagnostic${counts.diagnostics === 1 ? '' : 's'}` : 'catalog valid'));
+    const workspaceSummary = nodePackManagerWorkspaceLockSummary(state);
     statusEl.innerHTML = `
-      <span>${escapeHtml(String(packs.length))} node pack${packs.length === 1 ? '' : 's'} discovered.</span>
+      <span>${escapeHtml(String(packs.length))} package${packs.length === 1 ? '' : 's'} discovered.</span>
       <span class="runbook-chip ${catalogTone}">${escapeHtml(catalogLabel)}</span>
       ${counts.diagnostics && counts.conflicts ? `<span class="runbook-chip warn">${escapeHtml(String(counts.diagnostics))} diagnostic${counts.diagnostics === 1 ? '' : 's'}</span>` : ''}
+      ${state.lifecycle.status === 'success' ? `<span class="runbook-chip good">${escapeHtml(String(state.lifecycle.packs.length))} lock entr${state.lifecycle.packs.length === 1 ? 'y' : 'ies'}</span>` : ''}
+      ${state.lifecycle.status === 'error' ? '<span class="runbook-chip warn">install lock unavailable</span>' : ''}
+      ${state.workspaceLock.status === 'success' ? `<span class="runbook-chip ${workspaceSummary.drift || workspaceSummary.untracked || workspaceSummary.missing ? 'warn' : 'good'}">${escapeHtml(String(workspaceSummary.entries))} workspace lock entr${workspaceSummary.entries === 1 ? 'y' : 'ies'}</span>` : ''}
+      ${workspaceSummary.drift ? `<span class="runbook-chip danger">${escapeHtml(String(workspaceSummary.drift))} workspace drift</span>` : ''}
+      ${state.actionMessage ? `<span class="runbook-chip good">${escapeHtml(state.actionMessage)}</span>` : ''}
     `;
     diagnosticsEl.innerHTML = renderNodePackManagerCatalogDiagnostics(state.catalog);
     listEl.innerHTML = packs.map((pack, index) => {
       const status = nodePackManagerStatusForPack(pack, state.catalog);
-      const capabilities = nodePackManagerCapabilities(pack);
-      const highRiskCapabilities = nodePackManagerHighRiskCapabilities(pack, state.catalog);
-      const pathText = nodePackManagerPackPath(pack);
-      const issueCount = nodePackManagerPackIssueCount(pack, state.catalog);
-      const selected = index === state.selectedIndex;
       const statusClass = [
         status.tone ? `node-pack-manager-pack-${status.tone}` : '',
         status.label === 'conflict' ? 'has-conflict' : '',
       ].filter(Boolean).join(' ');
-      return `
-        <button class="node-pack-manager-pack ${statusClass} ${selected ? 'active' : ''}" data-node-pack-manager-pack-index="${index}" data-node-pack-validation="${escapeHtml(status.label)}" role="option" aria-selected="${selected ? 'true' : 'false'}">
-          <span class="node-pack-manager-pack-title">
-            <strong>${escapeHtml(nodePackManagerString(pack.name || pack.id, 'Node Pack'))}</strong>
-            <code>${escapeHtml(nodePackManagerString(pack.id, 'missing-pack-id'))}</code>
-          </span>
-          <span class="node-pack-manager-pack-chips">
-            <span class="runbook-chip">${escapeHtml(nodePackManagerString(pack.trustLevel, 'unknown trust'))}</span>
-            <span class="runbook-chip ${status.tone}">${escapeHtml(status.label)}</span>
-            ${highRiskCapabilities.length ? `<span class="runbook-chip danger">${escapeHtml(highRiskCapabilities.length)} high-risk</span>` : ''}
-            <span class="runbook-chip node-pack-manager-pack-diagnostic-count ${issueCount.conflicts ? 'danger' : (issueCount.diagnostics ? 'warn' : '')}">${escapeHtml(issueCount.total ? `${issueCount.total} issue${issueCount.total === 1 ? '' : 's'}` : '0 diagnostics')}</span>
-          </span>
-          <span class="node-pack-manager-pack-meta">${escapeHtml(nodePackManagerString(pack.version, 'unversioned'))} - ${escapeHtml(nodePackManagerOrigin(pack))}</span>
-          <span class="node-pack-manager-pack-meta">${escapeHtml(capabilities.length ? capabilities.join(', ') : 'no capabilities declared')}</span>
-          ${highRiskCapabilities.length ? `<span class="node-pack-manager-pack-meta">high-risk: ${escapeHtml(highRiskCapabilities.join(', '))}</span>` : ''}
-          ${pathText ? `<code class="node-pack-manager-pack-path">${escapeHtml(pathText)}</code>` : '<span class="node-pack-manager-pack-meta">No manifest or pack path reported.</span>'}
-        </button>
-      `;
+      return renderNodePackManagerPackageRow({
+        name: nodePackManagerString(pack.name || pack.id, 'Node Pack'),
+        pack,
+        className: statusClass,
+        validation: status.label,
+        detailKind: 'installed',
+        detailIndex: index,
+        detailTitle: 'Open installed package details.',
+        importAttr: 'data-node-pack-manager-pack-import',
+        importValue: nodePackManagerString(pack.id, ''),
+        importLabel: 'Import',
+        importDisabled: true,
+        importTitle: 'This package is already imported.',
+        dataAttrs: [{ name: 'data-node-pack-manager-pack-index', value: index }],
+      });
     }).join('');
-    listEl.querySelectorAll('[data-node-pack-manager-pack-index]').forEach(button => {
+    listEl.querySelectorAll('[data-node-pack-manager-detail-open="installed"]').forEach(button => {
       button.addEventListener('click', () => {
-        state.selectedIndex = Number(button.dataset.nodePackManagerPackIndex) || 0;
-        render();
+        const index = Number(button.getAttribute('data-node-pack-manager-detail-index')) || 0;
+        const pack = state.packs[index] || null;
+        state.selectedIndex = index;
+        state.selectedPackId = nodePackManagerString(pack?.id, '');
+        let html = '';
+        try {
+          html = `${renderNodePackManagerDetail(pack, state.catalog, state)}${renderNodePackManagerInstalledActions(pack, state)}`;
+        } catch (err) {
+          html = `<div class="node-pack-manager-error">${escapeHtml(err?.message || String(err) || 'Package detail render failed.')}</div>`;
+        }
+        openNodePackManagerDetailModal({
+          title: nodePackManagerString(pack?.name || pack?.id, 'Installed package'),
+          html,
+          bind: (root) => bindInstalledPackageDetailActions(root, pack),
+        });
       });
     });
-    detailEl.innerHTML = renderNodePackManagerDetail(selectedPack, state.catalog);
   };
 
   const load = async () => {
@@ -7544,8 +10188,12 @@ function openOrchNodePackManager() {
       const response = await listNodePacksForManager({ workspacePath });
       state.catalog = response;
       state.packs = response.nodePacks;
-      state.selectedIndex = 0;
+      state.selectedIndex = nodePackManagerDefaultInstalledIndex(state.packs, state.catalog);
+      state.selectedPackId = nodePackManagerString(state.packs[state.selectedIndex]?.id, '');
       state.status = state.packs.length ? 'success' : 'empty';
+      await refreshInstalledLifecycle({ silent: true });
+      await refreshWorkspaceLock({ silent: true });
+      applyNodePackManagerWorkspaceLockResolutionPreference(state);
     } catch (err) {
       state.status = 'error';
       state.error = err?.message || String(err);
@@ -7555,20 +10203,385 @@ function openOrchNodePackManager() {
     render();
   };
 
+  const refreshInstalledLifecycle = async ({ silent = false } = {}) => {
+    state.lifecycle.status = silent ? state.lifecycle.status : 'exporting';
+    try {
+      const exported = await exportNodePackListFromManager();
+      state.lifecycle = {
+        status: 'success',
+        packs: exported.packs,
+        lockPath: exported.lockPath,
+        discovery: exported.discovery,
+        diagnostics: exported.diagnostics,
+        error: '',
+      };
+      return exported;
+    } catch (err) {
+      state.lifecycle = {
+        status: 'error',
+        packs: [],
+        lockPath: '',
+        discovery: null,
+        diagnostics: err?.result?.diagnostics || [],
+        error: err?.message || String(err),
+      };
+      if (!silent) state.actionNotice = nodePackManagerFailureNotice('export-list', 'installed packages', err);
+      return null;
+    }
+  };
+
+  const resetWorkspaceApply = () => {
+    state.workspaceApply = {
+      status: 'idle',
+      items: [],
+      selectedIndex: 0,
+      diagnostics: [],
+      error: '',
+      checkedAt: '',
+    };
+  };
+
+  const refreshWorkspaceLock = async ({ silent = false } = {}) => {
+    if (!workspacePath) {
+      state.workspaceLock = {
+        status: 'error',
+        path: '',
+        lockPath: '',
+        lock: { kind: 'orpad.workspaceNodePackLock', schemaVersion: '1.0', updatedAt: '', packs: [] },
+        packs: [],
+        diagnostics: [],
+        error: 'Workspace path is not available.',
+        preferredResolution: null,
+      };
+      resetWorkspaceApply();
+      return null;
+    }
+    state.workspaceLock.status = silent ? state.workspaceLock.status : 'loading';
+    try {
+      const lockResult = await readNodePackWorkspaceLockForManager({ workspacePath });
+      state.workspaceLock = {
+        status: 'success',
+        path: lockResult.path || lockResult.lockPath,
+        lockPath: lockResult.lockPath || lockResult.path,
+        lock: lockResult.lock,
+        packs: lockResult.packs,
+        diagnostics: lockResult.diagnostics,
+        error: '',
+        preferredResolution: state.workspaceLock.preferredResolution || null,
+      };
+      resetWorkspaceApply();
+      return lockResult;
+    } catch (err) {
+      state.workspaceLock = {
+        status: 'error',
+        path: '',
+        lockPath: '',
+        lock: { kind: 'orpad.workspaceNodePackLock', schemaVersion: '1.0', updatedAt: '', packs: [] },
+        packs: [],
+        diagnostics: err?.result?.diagnostics || [],
+        error: err?.message || String(err),
+        preferredResolution: null,
+      };
+      resetWorkspaceApply();
+      if (!silent) state.actionNotice = nodePackManagerFailureNotice('workspace-lock-read', 'workspace lock', err);
+      return null;
+    }
+  };
+
+  const syncWorkspaceLockFromRegistryEntry = async (entry = {}, options = {}) => {
+    if (!workspacePath || !entry) return null;
+    const lockEntry = nodePackManagerWorkspaceLockEntryFromRegistry(entry, options);
+    if (!lockEntry) return null;
+    try {
+      const lockResult = await upsertNodePackWorkspaceLockForManager({ workspacePath, entry: lockEntry });
+      state.workspaceLock = {
+        status: 'success',
+        path: lockResult.path || lockResult.lockPath,
+        lockPath: lockResult.lockPath || lockResult.path,
+        lock: lockResult.lock,
+        packs: lockResult.packs,
+        diagnostics: lockResult.diagnostics,
+        error: '',
+        preferredResolution: state.workspaceLock.preferredResolution || null,
+      };
+      resetWorkspaceApply();
+      return lockResult;
+    } catch (err) {
+      const failure = normalizeNodePackWorkspaceLockResponse(err?.result || {
+        success: false,
+        ok: false,
+        error: err?.message || String(err),
+      });
+      state.workspaceLock = {
+        status: 'error',
+        path: failure.path || state.workspaceLock.path || '',
+        lockPath: failure.lockPath || state.workspaceLock.lockPath || '',
+        lock: failure.lock,
+        packs: failure.packs,
+        diagnostics: failure.diagnostics,
+        error: failure.error || err?.message || String(err),
+        preferredResolution: null,
+      };
+      resetWorkspaceApply();
+      return { ...failure, success: false, ok: false };
+    }
+  };
+
+  const refreshWorkspaceApply = async () => {
+    state.workspaceApply.status = 'dry-running';
+    state.workspaceApply.error = '';
+    state.actionMessage = '';
+    state.actionNotice = null;
+    render();
+    try {
+      if (state.workspaceLock.status !== 'success') {
+        await refreshWorkspaceLock({ silent: true });
+      }
+      if (state.workspaceLock.status !== 'success') {
+        const err = new Error(state.workspaceLock.error || 'Workspace package lock is unavailable.');
+        err.result = {
+          diagnostics: state.workspaceLock.diagnostics || [],
+        };
+        throw err;
+      }
+      const dryRun = await nodePackManagerDryRunWorkspaceApply(state);
+      state.workspaceApply = {
+        status: 'ready',
+        items: dryRun.items,
+        selectedIndex: Math.min(state.workspaceApply.selectedIndex, Math.max(0, dryRun.items.length - 1)),
+        diagnostics: dryRun.diagnostics,
+        error: '',
+        checkedAt: dryRun.checkedAt,
+      };
+    } catch (err) {
+      state.workspaceApply = {
+        status: 'error',
+        items: nodePackManagerWorkspaceApplyBaseItems(state),
+        selectedIndex: 0,
+        diagnostics: err?.result?.diagnostics || [],
+        error: err?.message || String(err),
+        checkedAt: '',
+      };
+      state.actionNotice = nodePackManagerFailureNotice('workspace-lock-apply-dry-run', 'workspace lock', err);
+    }
+    render();
+  };
+
+  const loadRegistry = async () => {
+    const source = nodePackManagerString(registrySourceInput?.value || state.registry.source, '');
+    const query = nodePackManagerString(registryQueryInput?.value || '', '');
+    const sourceDiagnostic = nodePackManagerRegistrySourceDiagnostic(source);
+    state.registry.source = source;
+    state.registry.query = query;
+    state.registry.error = '';
+    state.registry.entries = [];
+    state.registry.selectedIndex = 0;
+    state.actionMessage = '';
+    state.actionNotice = null;
+    if (sourceDiagnostic) {
+      state.registry.status = 'error';
+      state.registry.error = sourceDiagnostic.message;
+      state.registry.catalog = {
+        ok: false,
+        success: false,
+        source,
+        query,
+        diagnostics: [sourceDiagnostic],
+        entries: [],
+      };
+      render();
+      return;
+    }
+    state.registry.status = 'loading';
+    state.registry.catalog = {
+      ok: true,
+      source,
+      query,
+      diagnostics: [],
+      entries: [],
+    };
+    render();
+    try {
+      const response = await loadNodePackRegistryForManager({
+        registry: source,
+        query,
+      });
+      response.source = response.source || source;
+      response.query = response.query || query;
+      state.registry.catalog = response;
+      state.registry.entries = response.entries;
+      state.registry.status = 'success';
+      state.registry.lastLoadedSource = response.source || source;
+      state.registry.lastLoadedAt = new Date().toLocaleString();
+      state.registry.recentSources = nodePackManagerStoreRegistrySource(source, state.registry.defaultSource);
+      if (!state.registry.recentSources.length) {
+        state.registry.recentSources = nodePackManagerStoredRecentRegistrySources(state.registry.defaultSource);
+      }
+    } catch (err) {
+      const failure = normalizeNodePackRegistryResponse({
+        ...(err?.result || {}),
+        source: err?.result?.source || source,
+        query: err?.result?.query || query,
+        error: err?.message || err?.result?.error || String(err),
+      });
+      if (failure.fromCache && failure.entries.length) {
+        state.registry.catalog = failure;
+        state.registry.entries = failure.entries;
+        state.registry.status = 'success';
+        state.registry.lastLoadedSource = failure.source || source;
+        state.registry.lastLoadedAt = new Date().toLocaleString();
+        state.registry.recentSources = nodePackManagerStoreRegistrySource(source, state.registry.defaultSource);
+        if (!state.registry.recentSources.length) {
+          state.registry.recentSources = nodePackManagerStoredRecentRegistrySources(state.registry.defaultSource);
+        }
+        render();
+        return;
+      }
+      state.registry.status = 'error';
+      state.registry.error = err?.message || String(err);
+      state.registry.catalog = {
+        ...failure,
+        ok: false,
+        success: false,
+        diagnostics: failure.diagnostics || [],
+        entries: failure.entries || [],
+      };
+      state.registry.entries = [];
+    }
+    render();
+  };
+
+  registryLoadButton?.addEventListener('click', loadRegistry);
+  workspaceDryRunButton?.addEventListener('click', refreshWorkspaceApply);
+  workspaceRefreshButton?.addEventListener('click', async () => {
+    state.workspaceApply = {
+      status: 'idle',
+      items: [],
+      selectedIndex: 0,
+      diagnostics: [],
+      error: '',
+      checkedAt: '',
+    };
+    await refreshWorkspaceLock({ silent: false });
+    render();
+  });
+  registrySourceSelect?.addEventListener('change', () => {
+    const source = nodePackManagerString(registrySourceSelect.value, '');
+    state.registry.source = source;
+    state.registry.error = '';
+    if (state.registry.status === 'error') {
+      state.registry.status = 'idle';
+      state.registry.catalog = { ok: true, source, diagnostics: [], entries: [] };
+      state.registry.entries = [];
+    }
+    if (registrySourceInput) registrySourceInput.value = source;
+    render();
+  });
+  exportListButton?.addEventListener('click', async () => {
+    state.actionMessage = '';
+    state.actionNotice = null;
+    if (exportListButton) {
+      exportListButton.disabled = true;
+      exportListButton.textContent = 'Exporting...';
+    }
+    const exported = await refreshInstalledLifecycle({ silent: false });
+    if (exported) {
+      const exportedJson = JSON.stringify({
+        kind: 'orpad.packageManager.installedList',
+        lockPath: exported.lockPath,
+        packages: exported.packs,
+        discovery: exported.discovery,
+      }, null, 2);
+      state.actionMessage = `Exported ${exported.packs.length} installed package${exported.packs.length === 1 ? '' : 's'}`;
+      openNodePackManagerExportModal({
+        title: nodePackManagerActionTitle('export-list', true),
+        message: `${exported.packs.length} installed package record${exported.packs.length === 1 ? '' : 's'} exported from the install lock.`,
+        rows: [
+          { label: 'Install lock', value: exported.lockPath, code: true },
+          { label: 'Packages', value: String(exported.packs.length) },
+          exported.discovery ? { label: 'Discovery packages', value: String((exported.discovery.nodePackIds || []).length || 0) } : null,
+        ].filter(Boolean),
+        diagnostics: exported.diagnostics,
+        json: exportedJson,
+      });
+    }
+    if (exportListButton) {
+      exportListButton.disabled = false;
+      exportListButton.textContent = 'Export Installed List';
+    }
+    render();
+  });
+  exportWorkspaceLockButton?.addEventListener('click', async () => {
+    state.actionMessage = '';
+    state.actionNotice = null;
+    if (exportWorkspaceLockButton) {
+      exportWorkspaceLockButton.disabled = true;
+      exportWorkspaceLockButton.textContent = 'Exporting...';
+    }
+    const lockResult = await refreshWorkspaceLock({ silent: false });
+    if (lockResult) {
+      const summary = nodePackManagerWorkspaceLockSummary(state);
+      const exportedJson = JSON.stringify({
+        kind: 'orpad.packageManager.workspaceLockSummary',
+        lockPath: lockResult.path || lockResult.lockPath,
+        summary,
+        packages: lockResult.packs,
+        metadataTrust: 'registry-discovery-only',
+      }, null, 2);
+      state.actionMessage = `Exported ${lockResult.packs.length} workspace lock entr${lockResult.packs.length === 1 ? 'y' : 'ies'}`;
+      openNodePackManagerExportModal({
+        title: nodePackManagerActionTitle('export-workspace-lock', true),
+        message: `${lockResult.packs.length} workspace lock entr${lockResult.packs.length === 1 ? 'y' : 'ies'} exported from the workspace lock.`,
+        rows: [
+          { label: 'Workspace lock', value: lockResult.path || lockResult.lockPath, code: true },
+          { label: 'Entries', value: String(lockResult.packs.length) },
+          { label: 'Metadata trust', value: 'registry-discovery-only' },
+        ],
+        diagnostics: lockResult.diagnostics,
+        json: exportedJson,
+      });
+    }
+    if (exportWorkspaceLockButton) {
+      exportWorkspaceLockButton.disabled = false;
+      exportWorkspaceLockButton.textContent = 'Export Workspace Lock Summary';
+    }
+    render();
+  });
+  registrySourceInput?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') loadRegistry();
+  });
+  registrySourceInput?.addEventListener('change', () => {
+    state.registry.source = nodePackManagerString(registrySourceInput.value, '');
+    if (state.registry.status === 'error') {
+      state.registry.status = 'idle';
+      state.registry.error = '';
+      state.registry.catalog = { ok: true, source: state.registry.source, diagnostics: [], entries: [] };
+      state.registry.entries = [];
+    }
+    render();
+  });
+  registryQueryInput?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') loadRegistry();
+  });
+
   openFmtModal({
-    title: 'Node Packs',
+    title: 'Package Manager',
     body,
+    onClose: closeNodePackManagerDetailModal,
     footer: [
       { label: 'Refresh', onClick: load },
       { label: 'Close', onClick: closeFmtModal },
     ],
   });
-  load();
+  void load().then(() => {
+    if (state.resolution.active && state.registry.source) return loadRegistry();
+    return null;
+  });
 }
 
 function bindNodePackManagerOpenControls(root = contentEl) {
   root.querySelectorAll('[data-node-pack-manager-open]').forEach(button => {
-    button.addEventListener('click', openOrchNodePackManager);
+    button.addEventListener('click', () => openOrchNodePackManager());
   });
 }
 
@@ -7680,7 +10693,7 @@ function orchNodeBrowserItemFromNode(pack, node, surface, catalog = {}, packSafe
   const safetyLabel = conflictIssues.length ? 'conflict' : (nodeBlocks ? nodeState : packSafety.label);
   const safetyTone = conflictIssues.length || nodeState === 'conflict' ? 'danger' : (nodeBlocks ? 'warn' : packSafety.tone);
   const nodeReason = nodeBlocks && nodeState
-    ? `Node type ${type} is ${nodeState}; resolve the node pack before activation.`
+    ? `Node type ${type} is ${nodeState}; resolve the package before activation.`
     : '';
   const safetyReason = conflictReason || nodeReason || (disabled ? packSafety.reason : '');
   return {
@@ -7799,7 +10812,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
   const addTemplate = (item) => {
     if (!item?.template) return;
     if (item.disabled) {
-      notifyFormatError('Node pack', new Error(item.safetyReason || 'This node pack must be resolved before its nodes can be added.'));
+      notifyFormatError('Package', new Error(item.safetyReason || 'This package must be resolved before its nodes can be added.'));
       return;
     }
     if (!ensureOrchContextMutationMode(baseFilePath)) return;
@@ -7817,10 +10830,10 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
       return;
     }
     const reason = nodePackManagerString(catalog.fallbackReason, '');
-    const title = catalog.fallback ? 'Degraded node pack catalog' : 'Node pack discovery needs review';
+    const title = catalog.fallback ? 'Degraded package catalog' : 'Package discovery needs review';
     const message = catalog.fallback
       ? 'Showing built-in fallback packs only. User-installed packs may be missing until discovery succeeds.'
-      : 'The discovery service did not report a fully valid node pack catalog.';
+      : 'The discovery service did not report a fully valid package catalog.';
     alertEl.hidden = false;
     alertEl.innerHTML = `
       <div class="orch-node-browser-alert-copy">
@@ -7830,7 +10843,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
       </div>
       <div class="orch-node-browser-alert-actions">
         <button type="button" data-orch-node-browser-retry>Retry discovery</button>
-        <button type="button" data-node-pack-manager-open>Open Pack Manager</button>
+        <button type="button" data-node-pack-manager-open>Open Package Manager</button>
       </div>
     `;
     alertEl.querySelector('[data-orch-node-browser-retry]')?.addEventListener('click', () => loadCatalog({ forceRefresh: true }));
@@ -7843,7 +10856,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
       tabsEl.innerHTML = '';
       listEl.innerHTML = '';
       emptyEl.hidden = false;
-      emptyEl.textContent = 'No node packs are available for this layer.';
+      emptyEl.textContent = 'No packages are available for this layer.';
       return;
     }
     if (!packs.some(pack => pack.id === activePackId)) activePackId = packs[0].id;
@@ -7877,7 +10890,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
       if (item.disabled) {
         button.disabled = true;
         button.setAttribute('aria-disabled', 'true');
-        button.title = item.safetyReason || 'This node pack must be resolved before adding nodes.';
+        button.title = item.safetyReason || 'This package must be resolved before adding nodes.';
       }
       button.innerHTML = `
         <span class="orch-node-browser-item-main">
@@ -7907,7 +10920,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
   loadCatalog = (options = {}) => {
     alertEl.hidden = true;
     alertEl.innerHTML = '';
-    listEl.innerHTML = '<div class="orch-node-browser-loading">Loading node packs...</div>';
+    listEl.innerHTML = '<div class="orch-node-browser-loading">Loading packages...</div>';
     emptyEl.hidden = true;
     return loadOrchNodePackCatalog(options)
       .then(rawPacks => {
@@ -7923,7 +10936,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
         ));
         packs = buildOrchNodeBrowserPacks(fallbackCatalog.nodePacks, orchNodeBrowserSurface());
         render();
-        notifyFormatError('Node packs', err);
+        notifyFormatError('Packages', err);
       });
   };
   loadCatalog();
@@ -7945,6 +10958,7 @@ function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, 
     'edit-repeat-count',
     'transition-curve',
     'transition-straight',
+    'transition-reset',
     'delete-transition',
     'auto-layout',
     'add-node-browser',
@@ -8017,6 +11031,15 @@ function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, 
     rerenderOrchTree();
     return;
   }
+  if (action === 'transition-reset') {
+    if (!edgeId) return;
+    setOrchTransitionMeta(edgeId, {
+      ...orchTransitionMeta(edgeId),
+      points: [],
+    });
+    rerenderOrchTree();
+    return;
+  }
   if (action === 'auto-layout') {
     resetOrchGraphLayout();
     return;
@@ -8032,8 +11055,12 @@ function runOrchContextAction(action, path, frame, edgeId = selectedOrchEdgeId, 
     if (action === 'add-context') addOrchLinkedNode(draft, path, isOrchGraphStateLayer() ? 'orpad.context' : 'Context', position);
     else if (action === 'add-skill') addOrchLinkedNode(draft, path, isOrchGraphStateLayer() ? 'orpad.skill' : 'Skill', position);
     else if (action === 'add-decorator') addOrchLinkedNode(draft, path, 'Decorator', position);
-    else if (action === 'insert-subtree') insertOrchLinkedSubtree(draft, path);
-    else if (action === 'connect-selected') addGraphTransition(draft, selectedOrchNodePath, path);
+    else if (action === 'insert-subtree') insertOrchLinkedSubtree(draft, path, position);
+    else if (action === 'connect-selected') {
+      if (!isOrchGraphStateLayer() || !isGraphNodePath(selectedOrchNodePath) || !isGraphNodePath(path)) return;
+      freezeOrchGraphNodeLayout(draft);
+      addGraphTransition(draft, selectedOrchNodePath, path);
+    }
     else if (action === 'delete-node') deleteOrchNodeAtPath(draft, path);
   });
 }
@@ -8144,7 +11171,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
     : runtime;
   const runtimeClass = displayRuntime ? ` runtime-${displayRuntime.state}` : '';
   // Phase 3.7: breakpoint marker. The dot is a renderer-only visual
-  // hint — Continue confirmation is enforced separately by the run
+  // hint -Continue confirmation is enforced separately by the run
   // dispatch path. Marker shown only when the node has a machine
   // nodePath and the user has set a breakpoint for it.
   const runbookForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
@@ -8152,7 +11179,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
   const hasBreakpoint = runbookForBp && machineNodePathForBp
     && getMachineBreakpoints(runbookForBp).has(machineNodePathForBp);
   const breakpointMarker = hasBreakpoint
-    ? `<span class="orch-graph-node-breakpoint" title="Breakpoint set on ${escapeHtml(machineNodePathForBp)} — Continue will warn before dispatching past this node.">●</span>`
+    ? `<span class="orch-graph-node-breakpoint" title="Breakpoint set on ${escapeHtml(machineNodePathForBp)}. Continue will warn before dispatching past this node.">BP</span>`
     : '';
   // Codex 2026-05-15 cross-review (Top 5 fix #5): blocked/failed nodes
   // need always-visible actions rather than burying them behind a
@@ -8209,7 +11236,7 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
 // behind a context menu. Event delegation: `data-orch-action` buttons
 // reuse the existing handler at the bottom of the graph rerender,
 // `data-probe-action` buttons go through the global probe-action
-// listener — both already know how to look up the node path / run id.
+// listener -both already know how to look up the node path / run id.
 function renderOrchGraphNodeActions({ path, machineNodePath, runId, nodeType, runtimeState, skipReason }) {
   const buttons = [];
   const stateNoun = runtimeState === 'failed' ? 'failure' : 'blocker';
@@ -8245,7 +11272,7 @@ function renderOrchGraphNodeActions({ path, machineNodePath, runId, nodeType, ru
 // queue-not-empty / queue-empty / selector-branch / etc. Each category gets a
 // distinct stroke colour + label colour via the .category-* CSS classes below.
 // The legend in renderOrchGraphCanvas mirrors these categories so users can
-// match colour → meaning without reading the JSON.
+// match colour -meaning without reading the JSON.
 function classifyOrchEdge(edge) {
   const cond = (edge.condition || '').toLowerCase();
   if (edge.isLoopBack) {
@@ -8268,11 +11295,11 @@ const ORCH_EDGE_CATEGORY_LABELS = Object.freeze({
   accept: { color: 'var(--orch-edge-accept, #9ece6a)', label: 'accept / pass' },
   reject: { color: 'var(--orch-edge-reject, #f7768e)', label: 'reject' },
   'queue-empty': { color: 'var(--orch-edge-queue-empty, #56c2c5)', label: 'queue empty' },
-  'queue-not-empty': { color: 'var(--orch-edge-queue-loop, #e0af68)', label: 'queue drain ↺' },
-  'loop-back': { color: 'var(--orch-edge-loopback, #e0af68)', label: 'loop-back ↺' },
-  'loop-revise': { color: 'var(--orch-edge-loop-revise, #e0af68)', label: 'gate revise ↺' },
-  'loop-reject': { color: 'var(--orch-edge-loop-reject, #f7768e)', label: 'patch reject ↺' },
-  'loop-fail': { color: 'var(--orch-edge-loop-fail, #e88787)', label: 'check fail ↺' },
+  'queue-not-empty': { color: 'var(--orch-edge-queue-loop, #e0af68)', label: 'queue drain loop' },
+  'loop-back': { color: 'var(--orch-edge-loopback, #e0af68)', label: 'loop-back' },
+  'loop-revise': { color: 'var(--orch-edge-loop-revise, #e0af68)', label: 'gate revise loop' },
+  'loop-reject': { color: 'var(--orch-edge-loop-reject, #f7768e)', label: 'patch reject loop' },
+  'loop-fail': { color: 'var(--orch-edge-loop-fail, #e88787)', label: 'check fail loop' },
 });
 
 // Codex 2026-05-15 cross-review (Top 5 fix #3): edge label placement
@@ -8283,7 +11310,7 @@ const ORCH_EDGE_CATEGORY_LABELS = Object.freeze({
 // control point and pick the first that does not collide with any node
 // rect or any label already placed in this render. Falls back to the
 // original "right of control point" position when every candidate
-// collides — better to draw a slightly overlapped label than to hide it.
+// collides -better to draw a slightly overlapped label than to hide it.
 const ORCH_LABEL_COLLISION_PAD = 4;
 
 function rectsOverlap(a, b, pad = 0) {
@@ -8298,7 +11325,7 @@ function rectsOverlap(a, b, pad = 0) {
 function placeOrchEdgeLabel(cx, cy, boxW, boxH, isLoopBack, nodeRects, placedLabels) {
   const baseOffset = isLoopBack ? 14 : 10;
   // Candidates are tried in order: each ring widens the search radius.
-  // Ring 0 (4 positions) covers the common case — clean graphs settle
+  // Ring 0 (4 positions) covers the common case -clean graphs settle
   // on "right of midpoint" without ever advancing. Ring 1 / Ring 2
   // unlock progressively further-out slots so dense graphs (kitchen
   // sink, multi-worker fan-in) still find a free spot before falling
@@ -8330,7 +11357,7 @@ function placeOrchEdgeLabel(cx, cy, boxW, boxH, isLoopBack, nodeRects, placedLab
     }
     if (!collides) return rect;
   }
-  // Every candidate collides — use the original default position. This
+  // Every candidate collides -use the original default position. This
   // lets the user still read the label even if it lands on a node.
   return { x: cx + baseOffset, y: cy - boxH / 2, w: boxW, h: boxH };
 }
@@ -8362,13 +11389,13 @@ function renderOrchEdge(edge, byPath, runProjection = null, layoutCtx = null) {
     </text>`
     : '';
   // Label: condition string ("rejected", "self-check-fail", "revise"...) with a
-  // ↺ prefix for loop-backs so it reads as a back-edge at a glance.
+  // -prefix for loop-backs so it reads as a back-edge at a glance.
   // Layout: small rounded background rect plus collision-aware placement
   // against the node rects and previously placed labels (see
   // placeOrchEdgeLabel above).
   const conditionText = edge.condition
-    ? (edge.isLoopBack ? `↺ ${edge.condition}` : edge.condition)
-    : (edge.isLoopBack ? '↺ loop-back' : '');
+    ? (edge.isLoopBack ? `back:${edge.condition}` : edge.condition)
+    : (edge.isLoopBack ? 'back:loop-back' : '');
   const labelEl = conditionText
     ? (() => {
       const charPx = 7.2;
@@ -8558,16 +11585,37 @@ function renderOrchDecoratorFields(path, node) {
 function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.filePath, runProjection = null) {
   if (selectedOrchEdgeId) {
     const transition = orchTransitionMeta(selectedOrchEdgeId);
+    const graphTransition = orchGraphTransitionForEdgeId(doc, selectedOrchEdgeId);
+    const point = orchTransitionPointForInspector(doc, selectedOrchEdgeId);
+    const nodeOptions = graphNodeOptionsForTransition(doc);
+    const styleOptions = [
+      { value: 'curve', label: 'Curve' },
+      { value: 'straight', label: 'Straight' },
+    ];
     return `
       <aside class="orch-inspector">
-        <h3>Transition</h3>
+        <h3>${readwrite ? 'Edit Transition' : 'Transition'}</h3>
         <dl>
           <dt>Style</dt><dd>${escapeHtml(transition.style === 'straight' ? 'Straight' : 'Curve')}</dd>
-          <dt>Target</dt><dd>${escapeHtml(edgeTargetPath(selectedOrchEdgeId))}</dd>
+          <dt>Source</dt><dd>${escapeHtml(graphTransition?.transition?.from || edgeSourcePath(selectedOrchEdgeId))}</dd>
+          <dt>Target</dt><dd>${escapeHtml(graphTransition?.transition?.to || edgeTargetPath(selectedOrchEdgeId))}</dd>
+          ${graphTransition?.transition?.condition ? `<dt>Condition</dt><dd>${escapeHtml(graphTransition.transition.condition)}</dd>` : ''}
+          ${point ? `<dt>Bend</dt><dd>${escapeHtml(`${point.x}, ${point.y}`)}</dd>` : ''}
         </dl>
-        ${readwrite ? `<div class="orch-inspector-actions">
+        ${readwrite ? `
+        <div class="orch-inspector-fields">
+          ${graphTransition ? renderOrchTransitionField('Transition key', 'id', selectedOrchEdgeId, graphTransition.transition.id || '', { placeholder: 'optional-edge-id' }) : ''}
+          ${graphTransition ? renderOrchTransitionSelect('From', 'from', selectedOrchEdgeId, graphTransition.transition.from || '', nodeOptions) : ''}
+          ${graphTransition ? renderOrchTransitionSelect('To', 'to', selectedOrchEdgeId, graphTransition.transition.to || '', nodeOptions) : ''}
+          ${graphTransition ? renderOrchTransitionField('Condition', 'condition', selectedOrchEdgeId, graphTransition.transition.condition || '', { placeholder: 'pass, accepted, queue-empty, ...' }) : ''}
+          ${renderOrchTransitionSelect('Line style', 'style', selectedOrchEdgeId, transition.style === 'straight' ? 'straight' : 'curve', styleOptions)}
+          ${point ? renderOrchTransitionField('Bend X', 'point.x', selectedOrchEdgeId, point.x, { type: 'number', valueKind: 'number' }) : ''}
+          ${point ? renderOrchTransitionField('Bend Y', 'point.y', selectedOrchEdgeId, point.y, { type: 'number', valueKind: 'number' }) : ''}
+        </div>
+        <div class="orch-inspector-actions">
           <button data-orch-action="transition-curve" data-orch-edge="${escapeHtml(selectedOrchEdgeId)}">Curve</button>
           <button data-orch-action="transition-straight" data-orch-edge="${escapeHtml(selectedOrchEdgeId)}">Straight</button>
+          <button data-orch-action="transition-reset" data-orch-edge="${escapeHtml(selectedOrchEdgeId)}">Reset bend</button>
           <button data-orch-action="delete-transition" data-orch-edge="${escapeHtml(selectedOrchEdgeId)}">Delete</button>
         </div>` : ''}
       </aside>
@@ -8631,6 +11679,96 @@ function renderOrchInspector(doc, readwrite, baseFilePath = getActiveTab()?.file
       </div>
     </aside>
   `;
+}
+
+function nextOrchTransitionPoint(doc, edgeId, patch = {}) {
+  const currentPoint = orchTransitionPointForInspector(doc, edgeId) || { x: 0, y: 0 };
+  const x = Number.isFinite(patch.x) ? patch.x : currentPoint.x;
+  const y = Number.isFinite(patch.y) ? patch.y : currentPoint.y;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
+function commitGraphTransitionEndpointEdit(draft, edgeId, field, value) {
+  const info = orchGraphTransitionForEdgeId(draft, edgeId);
+  if (!info) return;
+  const text = String(value || '').trim();
+  if (!text) return;
+  const nextFrom = field === 'from' ? text : info.transition.from;
+  const nextTo = field === 'to' ? text : info.transition.to;
+  if (!graphNodePathForId(info.graph, nextFrom) || !graphNodePathForId(info.graph, nextTo)) return;
+  const duplicate = info.graph.transitions.some((transition, index) => (
+    index !== info.index && transition?.from === nextFrom && transition?.to === nextTo
+  ));
+  if (duplicate) return;
+  info.transition[field] = text;
+  if (!info.transition.id) info.transition.id = uniqueGraphTransitionId(info.graph, nextFrom, nextTo);
+  const nextEdgeId = `${graphNodePathForId(info.graph, nextFrom)}->${graphNodePathForId(info.graph, nextTo)}`;
+  if (nextEdgeId && nextEdgeId !== edgeId) {
+    mutateCurrentOrchMeta((meta) => {
+      if (meta.transitions[edgeId] && !meta.transitions[nextEdgeId]) {
+        meta.transitions[nextEdgeId] = meta.transitions[edgeId];
+      }
+      delete meta.transitions[edgeId];
+    });
+    selectedOrchEdgeId = nextEdgeId;
+  }
+}
+
+function commitGraphTransitionMetadataEdit(draft, edgeId, field, value) {
+  const info = orchGraphTransitionForEdgeId(draft, edgeId);
+  if (!info) return;
+  const text = String(value || '').trim();
+  if (field === 'id') {
+    if (text) info.transition.id = text;
+    else delete info.transition.id;
+    return;
+  }
+  if (field === 'condition') {
+    if (text) info.transition.condition = text;
+    else delete info.transition.condition;
+  }
+}
+
+function bindOrchTransitionEditControls(doc = null) {
+  contentEl.querySelectorAll('[data-orch-transition-edit]').forEach(control => {
+    let lastCommittedEdit = '';
+    const commitTransitionEdit = () => {
+      const field = control.dataset.orchTransitionEdit;
+      const edgeId = control.dataset.orchEdge || selectedOrchEdgeId;
+      if (!field || !edgeId) return;
+      const value = control.value;
+      const editKey = JSON.stringify([field, edgeId, value]);
+      if (editKey === lastCommittedEdit) return;
+      lastCommittedEdit = editKey;
+      if (field === 'style') {
+        setOrchTransitionMeta(edgeId, {
+          ...orchTransitionMeta(edgeId),
+          style: value === 'straight' ? 'straight' : 'curve',
+        });
+        rerenderOrchPreview();
+        return;
+      }
+      if (field === 'point.x' || field === 'point.y') {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return;
+        const point = nextOrchTransitionPoint(doc || {}, edgeId, field === 'point.x' ? { x: numeric } : { y: numeric });
+        setOrchTransitionMeta(edgeId, {
+          ...orchTransitionMeta(edgeId),
+          points: [point],
+        });
+        rerenderOrchPreview();
+        return;
+      }
+      applyOrchTreeMutation((draft) => {
+        if (field === 'from' || field === 'to') {
+          commitGraphTransitionEndpointEdit(draft, edgeId, field, value);
+        } else if (field === 'id' || field === 'condition') {
+          commitGraphTransitionMetadataEdit(draft, edgeId, field, value);
+        }
+      });
+    };
+    control.addEventListener('change', commitTransitionEdit);
+  });
 }
 
 function renderOrchTreePreview(content) {
@@ -8957,13 +12095,14 @@ function renderOrchTreePreview(content) {
     control.addEventListener('change', commitOrchEdit);
     if (shouldCommitOrchEditOnInput(control)) control.addEventListener('input', commitOrchEdit);
   });
+  bindOrchTransitionEditControls(doc);
   contentEl.querySelectorAll('.orch-graph-node').forEach(nodeEl => {
     let drag = null;
     // The blocked/failed action footer lives inside the node element, so
     // pointer/click events on its buttons bubble to the node listeners.
     // We treat clicks that originated inside the footer as belonging to
     // the buttons and skip the node-selection / drag / context-menu
-    // handlers — the button's own listener takes it from here.
+    // handlers -the button's own listener takes it from here.
     const isFooterEvent = (event) => !!event.target?.closest?.('.orch-graph-node-actions');
     nodeEl.addEventListener('pointerdown', (event) => {
       if (isFooterEvent(event)) return;
@@ -9136,7 +12275,7 @@ function renderOrchTreePreview(content) {
         runOrchContextAction(action, path, contentEl.querySelector('[data-orch-frame]'), edgeId);
         return;
       }
-      if (action === 'transition-curve' || action === 'transition-straight' || action === 'delete-transition') {
+      if (action === 'transition-curve' || action === 'transition-straight' || action === 'transition-reset' || action === 'delete-transition') {
         runOrchContextAction(action, path, contentEl.querySelector('[data-orch-frame]'), edgeId);
         return;
       }
@@ -9144,7 +12283,7 @@ function renderOrchTreePreview(content) {
         resetOrchGraphLayout();
         return;
       }
-      // Node footer actions surfaced on blocked/failed cards — same
+      // Node footer actions surfaced on blocked/failed cards -same
       // handlers as the right-click menu.
       if (action === 'failure-details' || action === 'improve-node-prompt' || action === 'choose-node-model') {
         runOrchContextAction(action, path, contentEl.querySelector('[data-orch-frame]'), edgeId);
@@ -9396,6 +12535,7 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
     control.addEventListener('change', commitOrchEdit);
     if (shouldCommitOrchEditOnInput(control)) control.addEventListener('input', commitOrchEdit);
   });
+  bindOrchTransitionEditControls(graphDoc);
   contentEl.querySelectorAll('.orch-graph-node').forEach(nodeEl => {
     let drag = null;
     nodeEl.addEventListener('pointerdown', (event) => {
@@ -9535,7 +12675,7 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
       if (action === 'fit') { fitOrchGraphToFrame(); return; }
       if (action === 'snap-toggle') { orchGridSnapEnabled = !orchGridSnapEnabled; updateOrchViewportDom(); return; }
       if (action === 'open-subtree' || action === 'open-file') { runOrchContextAction(action, path, contentEl.querySelector('[data-orch-frame]'), edgeId, graphDoc, graphBaseFilePath); return; }
-      if (action === 'transition-curve' || action === 'transition-straight' || action === 'delete-transition') {
+      if (action === 'transition-curve' || action === 'transition-straight' || action === 'transition-reset' || action === 'delete-transition') {
         runOrchContextAction(action, path, contentEl.querySelector('[data-orch-frame]'), edgeId, graphDoc, graphBaseFilePath);
         return;
       }
@@ -13920,7 +17060,7 @@ function notifyMachineRunBusy(action) {
       new Error(`${action} is already in progress for this run. Wait for it to finish before retrying.`),
     );
   } catch {
-    // Toast surface may not be ready yet; silent fallback is fine — the
+    // Toast surface may not be ready yet; silent fallback is fine -the
     // IPC mutex still rejects the duplicate with MACHINE_RUN_BUSY.
   }
 }
@@ -14076,7 +17216,7 @@ function machineRuntimeNodeProjection(record) {
   // its claude/codex adapter returned status='failed' (the wrapper itself
   // finished, not the work). Without this override the graph badge would
   // show "Done" while the failure card still flags the same nodePath as
-  // FAILED — visually contradictory. We re-use the same failure detection
+  // FAILED -visually contradictory. We re-use the same failure detection
   // that drives the failure card so both surfaces agree.
   const failures = sharedFailedAdapterCalls(record);
   for (const failure of failures) {
@@ -14836,11 +17976,11 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
       .filter(e => String(e.eventType || '').startsWith('node.'))
       .map(e => {
         const lcLabel = (e.eventType || '').replace(/^node\./, '');
-        return `<span class="orch-inspector-runtime-step state-${escapeHtml(lcLabel)}" title="${escapeHtml(`seq ${e.sequence || ''} · ${e.timestamp || ''}`)}">${escapeHtml(lcLabel)}</span>`;
+        return `<span class="orch-inspector-runtime-step state-${escapeHtml(lcLabel)}" title="${escapeHtml(`seq ${e.sequence || ''} - ${e.timestamp || ''}`)}">${escapeHtml(lcLabel)}</span>`;
       }).join('');
     const diagnosticChips = evts
       .filter(e => !String(e.eventType || '').startsWith('node.'))
-      .map(e => `<span class="orch-inspector-runtime-step state-diagnostic" title="${escapeHtml(`seq ${e.sequence || ''} · ${e.eventType || ''}`)}">${escapeHtml(machineEventLabel(e))}</span>`)
+      .map(e => `<span class="orch-inspector-runtime-step state-diagnostic" title="${escapeHtml(`seq ${e.sequence || ''} - ${e.eventType || ''}`)}">${escapeHtml(machineEventLabel(e))}</span>`)
       .join('');
     const transcriptLinks = transcripts.length && cleanRoot
       ? `<div class="orch-inspector-runtime-links">
@@ -14864,7 +18004,7 @@ function renderMachineNodeRunInspector(node, orchPath, graphDoc, runProjection) 
     `;
   }).join('');
   // Node-level actions live ABOVE the attempt list, NOT inside each
-  // attempt block — Retry / Skip / Set breakpoint are operations on
+  // attempt block -Retry / Skip / Set breakpoint are operations on
   // the node, not on a specific past attempt. Putting them once at
   // the top eliminates the duplicated rows the user reported.
   const runbookPathForBp = pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
@@ -15006,7 +18146,7 @@ function machineNotifyNewFailures(record) {
   if (!failures.length) return;
   let seen = machineFailureToastSeen.get(runId);
   if (!seen) {
-    // First time seeing this run — seed the set so we don't toast for the
+    // First time seeing this run -seed the set so we don't toast for the
     // initial backfill; only future-arriving failures will fire toasts.
     seen = new Set(failures.map(machineFailureToastKey));
     machineFailureToastSeen.set(runId, seen);
@@ -15016,7 +18156,7 @@ function machineNotifyNewFailures(record) {
     const key = machineFailureToastKey(failure);
     if (seen.has(key)) continue;
     seen.add(key);
-    const summary = `${failure.nodePath || '?'} → ${failure.status}${failure.adapter ? ` (${failure.adapter})` : ''}`;
+    const summary = `${failure.nodePath || '?'} - ${failure.status}${failure.adapter ? ` (${failure.adapter})` : ''}`;
     notifyFormatError('Probe failure', new Error(summary));
   }
 }
@@ -15686,7 +18826,7 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
     const disabled = count === 0 && spec.id !== 'all' && !active;
     return `<button class="runbook-history-filter-chip ${active ? 'active' : ''}" ${disabled ? 'disabled' : ''} data-runbook-action="history-filter-set" data-path="${escapeHtml(runbookPath)}" data-filter-lifecycle="${escapeHtml(spec.id)}" title="${escapeHtml(spec.label)} (${count})">${escapeHtml(spec.label)} <span class="runbook-history-filter-count">${count}</span></button>`;
   }).join('');
-  const queryInput = `<input class="runbook-history-search" data-runbook-history-search data-path="${escapeHtml(runbookPath)}" placeholder="Search runId or status…" value="${escapeHtml(filter.query || '')}" type="search" autocomplete="off" />`;
+  const queryInput = `<input class="runbook-history-search" data-runbook-history-search data-path="${escapeHtml(runbookPath)}" placeholder="Search runId or status" value="${escapeHtml(filter.query || '')}" type="search" autocomplete="off" />`;
   const visibleRuns = filtered.slice(0, 24);
   const overflow = filtered.length - visibleRuns.length;
   const emptyState = !filtered.length
@@ -15718,12 +18858,12 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
             machineLifecycleStatusLabel(run.lifecycleStatus),
             machineSummaryStatusLabel(run.summaryStatus),
             machineRunDateLabel(run.updatedAt || run.createdAt),
-            isActive ? 'Active run' : (isInspected ? 'Inspecting (read-only) — press Recover to make active' : 'Click to inspect read-only'),
+            isActive ? 'Active run' : (isInspected ? 'Inspecting (read-only) - press Recover to make active' : 'Click to inspect read-only'),
           ].filter(Boolean).join(' - ');
           return `<button data-runbook-action="machine-select-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(run.runId || '')}"${classes.length ? ` class="${classes.join(' ')}"` : ''} title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
         }).join('')}
       </div>
-      ${overflow > 0 ? `<div class="runbook-muted">+${overflow} more match — refine the filter to see them.</div>` : ''}
+      ${overflow > 0 ? `<div class="runbook-muted">+${overflow} more match - refine the filter to see them.</div>` : ''}
       ${emptyState}
     </div>
   `;
@@ -15967,7 +19107,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
 
 // Read-only History inspection panel. Shown ONLY when the user has clicked
 // a past run in the History strip. Does not let the user mutate the run
-// directly — the only action is Recover, which transfers the snapshot to
+// directly -the only action is Recover, which transfers the snapshot to
 // the active run cache and unlocks the existing Latest Run controls.
 function renderMachineHistoryInspectionPanel(record, runbookPath) {
   if (!record) return '';
@@ -15986,7 +19126,7 @@ function renderMachineHistoryInspectionPanel(record, runbookPath) {
   const eventCount = (record.events || []).length;
   const objectives = normalizeRunbookTask(runState.metadata?.taskText || record.metadata?.taskText || '');
   const recoverButton = recoverPending
-    ? `<button class="runbook-history-recover-pending" disabled title="Recovering this run — please wait">
+    ? `<button class="runbook-history-recover-pending" disabled title="Recovering this run - please wait">
          <span class="runbook-spinner" aria-hidden="true"></span>
          Recovering...
        </button>`
@@ -16004,7 +19144,7 @@ function renderMachineHistoryInspectionPanel(record, runbookPath) {
       </div>
       ${objectives ? `<p class="runbook-muted"><strong>Objective</strong> ${escapeHtml(objectives)}</p>` : ''}
       <div class="runbook-muted runbook-history-inspection-meta">
-        ${escapeHtml(machineCountLabel(eventCount, 'event'))} ${failureCount ? `· ${escapeHtml(machineCountLabel(failureCount, 'failed adapter call'))}` : ''}
+        ${escapeHtml(machineCountLabel(eventCount, 'event'))} ${failureCount ? `- ${escapeHtml(machineCountLabel(failureCount, 'failed adapter call'))}` : ''}
       </div>
       <div class="runbook-action-row">
         ${recoverButton}
@@ -16224,14 +19364,14 @@ async function openAdapterPickerDialog(runbookPath, options = {}) {
   const scope = options.scope === 'node' ? 'node' : 'pipeline';
   const target = String(options.target || '').trim();
   const confirmLabel = String(options.confirmLabel || '').trim();
-  const titleText = options.title || (scope === 'node' ? 'Node LLM Override' : 'AI Provider 선택');
-  const subtitleText = options.subtitle || (scope === 'node' ? `${target || '(node)'} · ${runbookPath}` : runbookPath);
+  const titleText = options.title || (scope === 'node' ? 'Node LLM Override' : 'AI Provider Selection');
+  const subtitleText = options.subtitle || (scope === 'node' ? `${target || '(node)'} - ${runbookPath}` : runbookPath);
   const helpLines = Array.isArray(options.helpLines)
     ? options.helpLines
     : [
-      '<div><strong>저장 위치:</strong> 같은 폴더의 <code>&lt;pipeline-stem&gt;.adapter-overrides.json</code> (사용자의 pipeline.or-pipeline은 수정되지 않음)</div>',
-      '<div><strong>적용 시점:</strong> 다음 Machine run부터 events.jsonl의 providerId가 새 값으로 기록됨</div>',
-      '<div><strong>현 단계:</strong> codex-cli/claude-code는 실제 CLI를 실행. anthropic/openai/ollama는 plugin 있으나 invoke 일부 stub (메뉴에 표시).</div>',
+      '<div><strong>Save location:</strong> The override file is saved next to the pipeline as <code>&lt;pipeline-stem&gt;.adapter-overrides.json</code>.</div>',
+      '<div><strong>Applies when:</strong> The next Machine run records the selected providerId/model in events.jsonl.</div>',
+      '<div><strong>Implementation:</strong> codex-cli and claude-code spawn the real CLI. API providers are shown as stubs until their invoke plugin is implemented.</div>',
     ];
 
   return new Promise((resolve) => {
@@ -16274,7 +19414,7 @@ async function openAdapterPickerDialog(runbookPath, options = {}) {
     title.appendChild(titleSub);
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
-    closeButton.textContent = '✕';
+    closeButton.textContent = 'x';
     closeButton.style.cssText = 'background:none;border:0;color:#e6e6e6;font-size:18px;cursor:pointer;padding:0 6px;';
     closeButton.addEventListener('click', () => finish(false));
     header.appendChild(title);
@@ -16295,7 +19435,7 @@ async function openAdapterPickerDialog(runbookPath, options = {}) {
         pipelinePath: runbookPath,
         onCommit: async (response) => {
           if (response?.persistedTo) {
-            try { notifyFormatError('AI Provider', new Error(`Saved → ${response.persistedTo}`)); } catch {}
+            try { notifyFormatError('AI Provider', new Error(`Saved: ${response.persistedTo}`)); } catch {}
           }
           if (!confirmLabel) finish(true);
         },
@@ -16305,7 +19445,7 @@ async function openAdapterPickerDialog(runbookPath, options = {}) {
     } catch (err) {
       const fail = document.createElement('div');
       fail.style.cssText = 'color:#ffb4b4;font-size:12px;padding:10px;border:1px solid rgba(220,38,38,0.4);border-radius:6px;background:rgba(220,38,38,0.1);';
-      fail.textContent = `Picker mount 실패: ${err.message}`;
+      fail.textContent = `Picker mount failed: ${err.message}`;
       panel.appendChild(fail);
     }
 
@@ -16325,7 +19465,7 @@ async function openAdapterPickerDialog(runbookPath, options = {}) {
       confirmButton.addEventListener('click', async () => {
         if (!picker?.commit) return;
         confirmButton.disabled = true;
-        confirmButton.textContent = 'Saving…';
+        confirmButton.textContent = 'Saving...';
         try {
           const response = await picker.commit();
           if (response?.success === false || response?.ok === false || !response) {
@@ -16359,13 +19499,13 @@ async function openAdapterPickerDialog(runbookPath, options = {}) {
 
 async function confirmMachineRunProviderSelection(runbookPath) {
   return openAdapterPickerDialog(runbookPath, {
-    title: 'Run Machine 선택',
-    subtitle: '이 run을 실행할 provider와 model을 선택한 뒤 시작합니다.',
+    title: 'Run Machine Selection',
+    subtitle: 'Choose the provider and model before starting this run.',
     confirmLabel: 'Start Run',
     helpLines: [
-      '<div><strong>Run 시작 전 확인:</strong> 선택한 provider/model은 이번 Machine run의 pipeline default로 저장됩니다.</div>',
-      '<div><strong>노드별 override:</strong> graph 노드를 우클릭해 특정 노드만 다른 model로 실행할 수 있습니다.</div>',
-      '<div><strong>권장:</strong> orchestration/probe에는 빠른 모델, 구현 worker에는 더 강한 모델을 선택해 비용과 품질을 분리하세요.</div>',
+      '<div><strong>Run start confirmation:</strong> The selected provider/model becomes the default for this Machine run.</div>',
+      '<div><strong>Node override:</strong> Right-click a graph node to run a specific node with a different model.</div>',
+      '<div><strong>Recommendation:</strong> Use fast models for orchestration/probe nodes and stronger models for implementation workers when quality matters.</div>',
     ],
   });
 }
@@ -16375,11 +19515,11 @@ async function openNodeAdapterPickerDialog(runbookPath, nodePath) {
   return openAdapterPickerDialog(runbookPath, {
     scope: 'node',
     target: nodePath,
-    title: 'Node Model Override',
+    title: 'Choose Node Model',
     subtitle: nodePath,
     helpLines: [
-      '<div><strong>저장 위치:</strong> pipeline 옆 <code>&lt;pipeline-stem&gt;.adapter-overrides.json</code>의 nodeOverrides에 저장됩니다.</div>',
-      '<div><strong>적용 시점:</strong> 다음 Machine run에서 이 nodePath에만 선택한 provider/model이 적용됩니다.</div>',
+      '<div><strong>Save location:</strong> Node overrides are saved in <code>&lt;pipeline-stem&gt;.adapter-overrides.json</code>.</div>',
+      '<div><strong>Applies when:</strong> The next Machine run uses the selected provider/model only for this nodePath.</div>',
     ],
   });
 }
@@ -17582,14 +20722,14 @@ async function toggleRunbookSlot(runbookPath) {
     selectedRunbookValidation = null;
     lastRunRecord = null;
     lastMachineRunRecord = null;
-    renderRunbooksPanel();
+    renderRunbooksPanel({ force: true });
     return;
   }
   selectedRunbookPath = runbookPath;
   selectedRunbookValidation = getRunbookCache(runbookValidationCache, runbookPath);
   lastRunRecord = getRunbookCache(runbookRecordCache, runbookPath);
   lastMachineRunRecord = getRunbookCache(machineRunRecordCache, runbookPath);
-  renderRunbooksPanel();
+  renderRunbooksPanel({ force: true });
   await openPipelineEntryOrFile(runbookPath);
   await validateSelectedRunbook(runbookPath);
   void hydrateLatestMachineRunForSelection(runbookPath);
@@ -17761,7 +20901,7 @@ function machineReplayRunStateFromEvents(record, events) {
 
 // Apply replay snapshot if a position is set for this record's runId.
 // Returns a new record with events truncated to events[0..position-1].
-// Other fields are passed through unchanged — the recompute happens in
+// Other fields are passed through unchanged -the recompute happens in
 // the renderers (lifecycle banner / runtime projection / etc) which
 // derive from events.
 function applyReplaySnapshot(record, runbookPath = selectedRunbookPath) {
@@ -17836,14 +20976,14 @@ function renderReplayTimelineHtml(record, runbookPath, runId, events) {
     <div class="runbook-replay-timeline ${inReplay ? 'in-replay' : ''}">
       <div class="runbook-replay-timeline-head">
         <span class="runbook-replay-timeline-label">${inReplay ? 'Replaying' : 'Time travel'}</span>
-        <span class="runbook-replay-timeline-position">event ${replayPosition} of ${liveTotal}${positionLabel ? ` · ${escapeHtml(positionLabel)}` : ''}</span>
+        <span class="runbook-replay-timeline-position">event ${replayPosition} of ${liveTotal}${positionLabel ? ` - ${escapeHtml(positionLabel)}` : ''}</span>
         ${inReplay
           ? `<button class="runbook-replay-timeline-live" data-runbook-action="replay-live" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}" title="Return to the live view (latest events).">Live</button>`
           : ''}
       </div>
       <input type="range" class="runbook-replay-timeline-slider" min="1" max="${liveTotal}" value="${replayPosition}" data-runbook-replay-slider data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}" aria-label="Time travel: drag to inspect a past event">
       ${inReplay ? '<div class="runbook-replay-timeline-warning">Live action note: retry and patch review also use the live run.</div>' : ''}
-      ${inReplay ? '<div class="runbook-replay-timeline-warning">Replay mode — Continue / Cancel / Stop Work act on the live run, not on this snapshot.</div>' : ''}
+      ${inReplay ? '<div class="runbook-replay-timeline-warning">Replay mode - Continue / Cancel / Stop Work act on the live run, not on this snapshot.</div>' : ''}
     </div>
   `;
 }
@@ -17888,7 +21028,7 @@ function applyReplayStickAfterRender() {
       el.scrollTop = el.scrollHeight;
     }
     if (maxSeq > 0 && scopeKey) lastReplayRenderedSequence.set(scopeKey, maxSeq);
-    // Auto-disable stick when the user manually scrolls up — matches
+    // Auto-disable stick when the user manually scrolls up -matches
     // the LangGraph Studio / terminal UX where any upward gesture is
     // an intent to inspect history. Re-enable when they scroll back
     // to the bottom. Updates the toggle button class directly to
@@ -17901,7 +21041,7 @@ function applyReplayStickAfterRender() {
         const wasEnabled = isReplayStickEnabled(runbookPath, runId);
         if (atBottom !== wasEnabled) {
           setReplayStickEnabled(runbookPath, runId, atBottom);
-          // Targeted DOM update — find the matching toggle button and
+          // Targeted DOM update -find the matching toggle button and
           // flip its class without triggering a full re-render.
           const toggle = document.querySelector(`.runbook-replay-stick-toggle[data-run-id="${CSS.escape(runId)}"][data-path="${CSS.escape(runbookPath)}"]`)
             || document.querySelector(`.runbook-replay-stick-toggle[data-run-id="${CSS.escape(runId)}"]`);
@@ -17965,7 +21105,7 @@ function getActiveMachineRunRecord(runbookPath) {
   return selectedMatches ? applyReplaySnapshot(lastMachineRunRecord, runbookPath) : null;
 }
 
-// For Latest Run panel renderer — returns the LIVE record (no snapshot)
+// For Latest Run panel renderer -returns the LIVE record (no snapshot)
 // so the slider itself can show position out of total event count, and
 // so the auto-scroll/freshness logic operates on the actual feed even
 // while the user is scrubbing.
@@ -17981,7 +21121,7 @@ function getLiveMachineRunRecord(runbookPath) {
 async function selectMachineRunRecord(runbookPath, runId) {
   // History inspection: the user wants to look at a past run without
   // turning it into the current active run. The active run cache is
-  // intentionally NOT touched here — Recover is the explicit action
+  // intentionally NOT touched here -Recover is the explicit action
   // that adopts an inspected snapshot as the active run.
   const active = getActiveMachineRunRecord(runbookPath);
   const activeRunId = active?.runState?.runId || active?.runId || '';
@@ -18138,8 +21278,7 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOption
     events: created.event ? [created.event] : [],
   };
   setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
-  // Starting a fresh run always clears any History inspection overlay —
-  // the user explicitly asked for a new run, not to keep inspecting an
+  // Starting a fresh run always clears any History inspection overlay - the user explicitly asked for a new run, not to keep inspecting an
   // old one. Without this, the History detail panel would linger and
   // mask the fresh run's controls.
   clearHistoryInspection(runbookPath);
@@ -18165,7 +21304,7 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOption
 
 async function executeSelectedMachineRunStep(runbookPath, runId, providedExternalResearch = null, runOptions = {}) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.executeRunStep) {
-    console.warn('[execute-run-step] preconditions missing — silent return', { workspacePath, runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep) });
+    console.warn('[execute-run-step] preconditions missing - silent return', { workspacePath, runbookPath, runId, hasIPC: Boolean(window.orpad?.machine?.executeRunStep) });
     if (!runId) alert('Continue ignored: no run is selected. Pick a run from history first.');
     return;
   }
@@ -18189,7 +21328,7 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
       const more = activeBreakpoints.length > 5 ? ` and ${activeBreakpoints.length - 5} more` : '';
       const proceed = window.confirm(
         `Breakpoint${activeBreakpoints.length === 1 ? '' : 's'} set on: ${list}${more}.\n\n`
-        + 'OrPAD does not pause the dispatcher automatically — these are visual reminders. '
+        + 'OrPAD does not pause the dispatcher automatically - these are visual reminders. '
         + 'Continue will dispatch as usual.\n\n'
         + 'Press OK to dispatch once (bypass), or Cancel to keep the run paused.',
       );
@@ -18201,7 +21340,7 @@ async function executeSelectedMachineRunStep(runbookPath, runId, providedExterna
   } else {
     machineBreakpointBypass.delete(runId);
   }
-  // Synchronous mutation guard — same-run double clicks are rejected
+  // Synchronous mutation guard -same-run double clicks are rejected
   // before we touch IPC. The IPC layer also returns MACHINE_RUN_BUSY,
   // but bouncing in the renderer keeps the UX snappy.
   const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, runId);
@@ -18344,7 +21483,7 @@ async function resumeSelectedMachineRunInner(runbookPath, runId) {
 
 // Adopt the inspected History snapshot as the active run. The user's
 // mental model: clicking a History entry is read-only; pressing Recover
-// brings that run "back" — recovers stale claims if non-terminal, then
+// brings that run "back" -recovers stale claims if non-terminal, then
 // promotes the snapshot to the active cache so Continue / Cancel work
 // against it.
 async function recoverInspectedMachineRun(runbookPath, runId) {
@@ -18464,7 +21603,7 @@ async function cancelSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.cancelRun) return;
   // Cancel still acquires the mutation lock, but uses a distinct key
   // (runId + ":cancel") so it CAN run while executeRunStep holds the
-  // base (runId) lock — the IPC layer's withRunLifecycleQueued queues
+  // base (runId) lock -the IPC layer's withRunLifecycleQueued queues
   // the cancel state-write behind the in-flight step while the early
   // cancelMachineProcessRun call signals the subprocess immediately.
   // Same-key double cancel clicks are still rejected.
@@ -19331,7 +22470,7 @@ async function maybeOpenMachinePatchReviewModal(runbookPath, record, options = {
   if (!runbookPath || !runId) return false;
   if (isMachineRunInProgress(record, runbookPath)) return false;
   if (machinePatchBatchInFlight(record)) return false;
-  // Never replace a modal the user is currently looking at — openFmtModal would silently
+  // Never replace a modal the user is currently looking at -openFmtModal would silently
   // overwrite their pending decision. The next polling tick (or the modal's onClick chain)
   // will pick the next patch up after the current modal closes.
   if (fmtModalEl && !fmtModalEl.classList.contains('hidden')) return false;
@@ -19880,13 +23019,13 @@ function generateProviderCatalogForUi() {
   // Mirrors src/shared/ai/provider-catalog.js so the modal works even before any
   // Machine IPC is available. Keep these entries in sync with that catalog.
   return [
-    { id: 'codex-cli', displayName: 'OpenAI Codex CLI', family: 'cli', needsKey: false, defaultModel: 'codex', implementationStatus: 'ready', statusNote: 'codex CLI를 spawn. Windows shim 자동 탐지.', models: ['codex'] },
-    { id: 'claude-code', displayName: 'Anthropic Claude Code CLI', family: 'cli', needsKey: false, defaultModel: 'claude-code', implementationStatus: 'ready', statusNote: 'claude CLI를 spawn. PATH에 claude 바이너리 필요.', models: ['claude-code'] },
-    { id: 'anthropic', displayName: 'Anthropic API', family: 'api', needsKey: true, defaultModel: 'claude-3-5-sonnet-latest', implementationStatus: 'stub', statusNote: 'Generate authoring 경로 미구현 — follow-up PR. 현재는 CLI 옵션 사용.', models: ['claude-3-5-haiku-latest', 'claude-3-5-sonnet-latest', 'claude-3-opus-latest'] },
-    { id: 'openai', displayName: 'OpenAI API', family: 'api', needsKey: true, defaultModel: 'gpt-4o-mini', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현 — 이번 PR 범위 밖.', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] },
-    { id: 'openrouter', displayName: 'OpenRouter', family: 'api', needsKey: true, defaultModel: 'openrouter/auto', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현.', models: ['openrouter/auto'] },
-    { id: 'openai-compatible', displayName: 'OpenAI-compatible (custom endpoint)', family: 'api', needsKey: false, defaultModel: 'gpt-4o-mini', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현.', models: [] },
-    { id: 'ollama', displayName: 'Ollama (local)', family: 'api', needsKey: false, defaultModel: 'llama3', implementationStatus: 'stub', statusNote: 'Generate 경로 미구현.', models: ['llama3', 'llama3.1'] },
+    { id: 'codex-cli', displayName: 'OpenAI Codex CLI', family: 'cli', needsKey: false, defaultModel: 'codex', implementationStatus: 'ready', statusNote: 'Spawns the codex CLI. Windows shim is supported.', models: ['codex'] },
+    { id: 'claude-code', displayName: 'Anthropic Claude Code CLI', family: 'cli', needsKey: false, defaultModel: 'claude-code', implementationStatus: 'ready', statusNote: 'Spawns the claude CLI. Requires the claude binary on PATH.', models: ['claude-code'] },
+    { id: 'anthropic', displayName: 'Anthropic API', family: 'api', needsKey: true, defaultModel: 'claude-3-5-sonnet-latest', implementationStatus: 'stub', statusNote: 'Generate authoring path is not implemented yet; use a CLI provider for now.', models: ['claude-3-5-haiku-latest', 'claude-3-5-sonnet-latest', 'claude-3-opus-latest'] },
+    { id: 'openai', displayName: 'OpenAI API', family: 'api', needsKey: true, defaultModel: 'gpt-4o-mini', implementationStatus: 'stub', statusNote: 'Generate authoring path is not implemented yet in this PR.', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'] },
+    { id: 'openrouter', displayName: 'OpenRouter', family: 'api', needsKey: true, defaultModel: 'openrouter/auto', implementationStatus: 'stub', statusNote: 'Generate authoring path is not implemented yet.', models: ['openrouter/auto'] },
+    { id: 'openai-compatible', displayName: 'OpenAI-compatible (custom endpoint)', family: 'api', needsKey: false, defaultModel: 'gpt-4o-mini', implementationStatus: 'stub', statusNote: 'Generate authoring path is not implemented yet.', models: [] },
+    { id: 'ollama', displayName: 'Ollama (local)', family: 'api', needsKey: false, defaultModel: 'llama3', implementationStatus: 'stub', statusNote: 'Generate authoring path is not implemented yet.', models: ['llama3', 'llama3.1'] },
   ];
 }
 
@@ -19932,7 +23071,7 @@ function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg }
     const titleWrap = document.createElement('div');
     titleWrap.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
     const titleEl = document.createElement('div');
-    titleEl.textContent = 'AI 도구 선택 — Generate Pipeline';
+    titleEl.textContent = 'AI Tool Selection - Generate Pipeline';
     titleEl.style.cssText = 'font-size:15px;font-weight:600;';
     const subEl = document.createElement('div');
     subEl.style.cssText = 'font-size:11.5px;opacity:0.7;line-height:1.45;word-break:break-word;';
@@ -19941,7 +23080,7 @@ function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg }
     titleWrap.appendChild(subEl);
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
-    closeBtn.textContent = '✕';
+    closeBtn.textContent = 'x';
     closeBtn.style.cssText = 'background:none;border:0;color:#e6e6e6;font-size:18px;cursor:pointer;padding:0 6px;';
     closeBtn.addEventListener('click', () => finish(null));
     header.appendChild(titleWrap);
@@ -19951,9 +23090,9 @@ function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg }
     const helpBox = document.createElement('div');
     helpBox.style.cssText = 'margin-bottom:12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:6px;background:rgba(255,255,255,0.03);font-size:11.5px;line-height:1.5;opacity:0.85;';
     helpBox.innerHTML = [
-      '<div><strong>역할:</strong> 이 도구가 OrPAD authoring agent가 되어 그래프 spec을 작성하고 OrPAD CLI를 통해 pipeline을 materialize 합니다.</div>',
-      '<div><strong>고급 패턴:</strong> 강화된 시스템 프롬프트가 Ralph loop / Fork-Join / Cross-Validation / Sub-graph / RAG / Ontology / Multi-Agent 패턴 중 적합한 것을 선택하도록 안내합니다.</div>',
-      '<div><strong>저장:</strong> 마지막 선택은 이 워크스페이스에 한정되지 않고 다음 Generate 호출의 기본값으로 로컬에 보존됩니다.</div>',
+      '<div><strong>Output:</strong> The selected tool runs the OrPAD authoring agent, writes the graph/spec, and materializes the pipeline through the OrPAD CLI.</div>',
+      '<div><strong>Advanced patterns:</strong> The enhanced system prompt encourages Ralph loop, Fork-Join, Cross-Validation, Sub-graph, RAG, Ontology, and Multi-Agent patterns when they fit the task.</div>',
+      '<div><strong>Persistence:</strong> The final selection is saved locally and reused as the default for the next Generate request.</div>',
       `<div><strong>Workspace:</strong> ${escapeHtml(String(workspaceArg || ''))}</div>`,
     ].join('');
     panel.appendChild(helpBox);
@@ -19981,7 +23120,7 @@ function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg }
     const tierRow = document.createElement('div');
     tierRow.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:12px;';
     const tierLabel = document.createElement('div');
-    tierLabel.textContent = 'Quality tier (참고용)';
+    tierLabel.textContent = 'Quality tier (hint)';
     tierLabel.style.cssText = 'font-size:12px;font-weight:600;opacity:0.85;';
     const tierSelect = document.createElement('select');
     tierSelect.style.cssText = 'padding:7px 10px;background:#2a2d33;color:#e6e6e6;border:1px solid rgba(255,255,255,0.18);border-radius:5px;font-size:13px;cursor:pointer;';
@@ -20073,7 +23212,7 @@ function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg }
         card.appendChild(titleEl);
         const meta = document.createElement('div');
         meta.style.cssText = 'font-size:11px;opacity:0.75;';
-        meta.textContent = `${(provider.family || 'api').toUpperCase()} · ${provider.needsKey ? 'API key 필요' : 'Keyless'}`;
+        meta.textContent = `${(provider.family || 'api').toUpperCase()} - ${provider.needsKey ? 'API key required' : 'Keyless'}`;
         card.appendChild(meta);
         if (provider.statusNote) {
           const note = document.createElement('div');
@@ -20109,7 +23248,7 @@ function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg }
       if (!modelIds.includes(state.model) && modelIds.length) state.model = modelIds[0];
       modelSelect.value = state.model;
       if (provider.needsKey) {
-        setBanner(`${provider.displayName}는 API key가 ai-keys safeStorage에 저장되어 있어야 합니다. 실패하면 generate가 에러로 종료됩니다.`, 'warn');
+        setBanner(`${provider.displayName} requires an API key in ai-keys safeStorage. Generate will stop with an error if the key is missing.`, 'warn');
       } else {
         setBanner('', 'info');
       }
@@ -20119,7 +23258,7 @@ function pickGenerateProviderSelection({ taskText, workspacePath: workspaceArg }
 
     confirmBtn.addEventListener('click', () => {
       if (!GENERATE_PROVIDER_READY_IDS.has(state.providerId)) {
-        setBanner('이 provider는 Generate에서 아직 지원되지 않습니다. ready 표시된 도구를 선택하세요.', 'warn');
+        setBanner('This provider is not supported by Generate yet. Choose a ready tool.', 'warn');
         return;
       }
       const selection = {
@@ -20295,7 +23434,7 @@ async function createOrpadRunbookStarter(options = {}) {
     trustLevel: 'local-authored',
     entryGraph: 'graphs/main.or-graph',
     nodePacks: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.3', origin: 'built-in' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4', origin: 'built-in' },
       { id: 'orpad.workstream', version: '>=0.1.0', origin: 'built-in' },
     ],
     graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
@@ -20433,7 +23572,7 @@ async function startPipelineGenerationFromPanel() {
     providerSelection,
     status: 'queued',
     stage: 'queued',
-    message: `Starting Generate with ${providerSelection.providerId}…`,
+    message: `Starting Generate with ${providerSelection.providerId}.`,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     events: [],
@@ -20563,13 +23702,13 @@ contentEl?.addEventListener('click', async (event) => {
           });
           if (!opened) {
             // openFileInTab returns false (without throwing) when the
-            // backend read fails — typically because the file doesn't
+            // backend read fails -typically because the file doesn't
             // exist yet. summary.md in particular is only written when
             // the run finalizes; clicking it on a waiting/blocked run
             // would otherwise produce zero feedback.
             const hint = /summary\.md$/i.test(artifactPath)
               ? 'Summary is only written when the run finalizes (completed / cancelled / failed). Try again after the run terminates, or open events.jsonl.'
-              : 'File could not be opened — it may not exist yet for this run state.';
+              : 'File could not be opened - it may not exist yet for this run state.';
             notifyFormatError('Open file', new Error(`${hint}\nPath: ${artifactPath}`));
           }
         } catch (err) {
@@ -20689,7 +23828,7 @@ contentEl?.addEventListener('click', async (event) => {
       }
       probeButton.disabled = true;
       const previousLabel = probeButton.textContent;
-      probeButton.textContent = 'Scheduling retry…';
+      probeButton.textContent = 'Scheduling retry...';
       try {
         await retrySelectedMachineNode(runbookPath, runId, nodePath, nodeType, itemId);
       } catch (err) {
@@ -20708,7 +23847,7 @@ contentEl?.addEventListener('click', async (event) => {
         return;
       }
       probeButton.disabled = true;
-      probeButton.textContent = 'Skipping…';
+      probeButton.textContent = 'Skipping...';
       try {
         await skipSelectedMachineNodeAndContinue(runbookPath, runId, nodePath, nodeType, 'user-skipped-from-failed-card');
       } catch (err) {
@@ -20721,7 +23860,7 @@ contentEl?.addEventListener('click', async (event) => {
     return;
   }
   // Phase 2.5: lifecycle banner now embeds Allow/Decline buttons for
-  // pending approvals as inline cards — they use data-runbook-action
+  // pending approvals as inline cards -they use data-runbook-action
   // because the same handlers live in the sidebar. The runbooks
   // listener is bound to runbooksContentEl only, so we forward the
   // approval actions from contentEl here.
@@ -21048,7 +24187,7 @@ runbooksContentEl?.addEventListener('input', (event) => {
     return;
   }
   if (event.target.matches?.('[data-runbook-history-search]')) {
-    // Phase 3.8: debounce history search input — re-rendering the
+    // Phase 3.8: debounce history search input -re-rendering the
     // entire panel on every keystroke costs ~50ms and loses focus.
     const path = event.target.dataset.path || '';
     const value = event.target.value || '';

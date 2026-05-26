@@ -1,10 +1,11 @@
 // Builds the OrPAD web app into docs/ (GitHub Pages target).
 //
 // Inputs:
-//   src/web/entry.js              — installs the browser adapter then imports the renderer
-//   src/renderer/index.html       — desktop HTML shell (rewritten for web)
-//   src/renderer/styles/*.css     — style assets
-//   src/renderer/orpad-mark.png — welcome-screen icon
+//   src/web/entry.js              installs the browser adapter then imports the renderer
+//   src/renderer/index.html       desktop HTML shell (rewritten for web)
+//   src/renderer/styles/*.css     style assets
+//   src/renderer/orpad-mark.png   welcome-screen icon
+//   registry/*.json               public package Registry metadata
 //
 // Output tree in docs/:
 //   docs/index.html
@@ -15,6 +16,7 @@
 //   docs/manifest.webmanifest
 //   docs/sw.js
 //   docs/icons/*.png
+//   docs/registry/*.json
 //   docs/.nojekyll
 
 const esbuild = require('esbuild');
@@ -125,7 +127,7 @@ function copyPwaAssets() {
 async function main() {
   const minify = process.argv.includes('--minify');
 
-  console.log('OrPAD web build → ' + path.relative(ROOT, OUT));
+  console.log('OrPAD web build -> ' + path.relative(ROOT, OUT));
   emptyDir(OUT);
 
   // Bundle the renderer + adapter.
@@ -196,6 +198,12 @@ async function main() {
 
   // PWA assets
   copyPwaAssets();
+
+  // Public Package Manager registry
+  const registryDir = path.join(ROOT, 'registry');
+  if (fs.existsSync(registryDir)) {
+    copyDir(registryDir, path.join(OUT, 'registry'));
+  }
 
   // GitHub Pages: don't run through Jekyll
   fs.writeFileSync(path.join(OUT, '.nojekyll'), '', 'utf-8');

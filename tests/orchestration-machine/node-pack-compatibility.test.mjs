@@ -1531,6 +1531,9 @@ test('pipeline graph validation rejects custom node types not declared by select
   assert.equal(result.ok, false);
   assert.equal(codes.has('GRAPH_NODE_TYPE_UNKNOWN'), true);
   assert.equal(codes.has('GRAPH_NODE_PACK_RENDER_VALIDATE_ONLY'), false);
+  const unknownNodeType = result.diagnostics.find(item => item.code === 'GRAPH_NODE_TYPE_UNKNOWN');
+  assert.equal(unknownNodeType.registryCandidateKind, 'node-type');
+  assert.equal(unknownNodeType.registryCandidateQuery, 'community.undeclaredNode');
 });
 
 test('pipeline graph validation reports specific diagnostics for unresolved selected packs', async (t) => {
@@ -1626,6 +1629,12 @@ test('pipeline graph validation reports missing selected pack diagnostics when n
   assert.equal(codes.has('PIPELINE_NODE_PACK_UNKNOWN'), true);
   assert.equal(codes.has('GRAPH_NODE_PACK_MISSING'), true);
   assert.equal(codes.has('GRAPH_NODE_TYPE_UNKNOWN'), false);
+  const missingPack = result.diagnostics.find(item => item.code === 'PIPELINE_NODE_PACK_UNKNOWN');
+  const missingGraphPack = result.diagnostics.find(item => item.code === 'GRAPH_NODE_PACK_MISSING');
+  assert.equal(missingPack.registryCandidateKind, 'pack-id');
+  assert.equal(missingPack.registryCandidateQuery, 'community.missing-pack');
+  assert.equal(missingGraphPack.registryCandidateKind, 'pack-id');
+  assert.equal(missingGraphPack.registryCandidateQuery, 'community.missing-pack');
 });
 
 test('pipeline node pack resolver reports disabled and origin-mismatched packs', () => {

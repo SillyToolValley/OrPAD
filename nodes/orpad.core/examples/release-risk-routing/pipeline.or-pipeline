@@ -2,28 +2,28 @@
   "kind": "orpad.pipeline",
   "schemaVersion": "1.0",
   "version": "1.0",
-  "id": "tutorial-selector-branching",
-  "title": "Tutorial: Selector branching",
-  "description": "Demonstrates how an orpad.selector node forks execution down one of several declared options. The selector picks the default route at runtime; downstream context nodes show the chosen branch. Switch the default value or add custom selector kinds to explore branching behavior.",
+  "id": "release-risk-routing",
+  "title": "Release Risk Routing",
+  "description": "Release readiness template that routes a build toward ship, fix-forward, or hold based on evidence. Use it to keep release decisions explicit instead of burying them in notes.",
   "template": true,
   "trustLevel": "local-authored",
   "entryGraph": "graphs/main.or-graph",
   "graphs": {
     "main": {
       "file": "graphs/main.or-graph",
-      "description": "Branching graph: entry -> selector -> happy-path | escalation-path -> exit."
+      "description": "Release routing graph: entry -> release context -> selector -> ship, fix-forward, or hold branch -> exit."
     }
   },
   "nodePacks": [
     {
       "id": "orpad.core",
-      "version": ">=1.0.0-beta.3"
+      "version": ">=1.0.0-beta.4"
     }
   ],
   "executionPolicy": {
     "mode": "template-only",
     "copyBeforeRun": true,
-    "description": "Built-in tutorial. Copy the pipeline into a workspace before running so any generated evidence stays out of the app bundle."
+    "description": "Built-in release template. Copy this pipeline into a workspace before running so generated evidence stays with the project."
   },
   "run": {
     "artifactRoot": ".orpad/harness/generated/latest-run/artifacts",

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "source": "OrPad/nodes/orpad.core/examples/product-decision-gate/graphs/main.or-graph",
+  "layout": {
+    "nodes": {}
+  },
+  "transitions": {}
+}

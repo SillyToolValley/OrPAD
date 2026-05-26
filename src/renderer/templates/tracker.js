@@ -60,7 +60,7 @@ function isPlaceholderOnly(text) {
     .replace(/[_*~]/g, '')
     .replace(/\[[ xX]\]/g, '')
     .replace(/^[-*]\s*/gm, '')
-    .replace(/\b(describe|define|explain|paste|summarize|unset|none known|todo|tbd)\b/gi, '')
+    .replace(/\b(describe|define|explain|paste|summarize|unset|none known|todo|tbd|pending)\b/gi, '')
     .replace(/\b(primary|secondary|in scope|out of scope|risk|mitigation)\b/gi, '')
     .replace(/[.:|#]/g, '')
     .trim();
@@ -114,7 +114,7 @@ export function analyzeTemplate(markdown) {
     checklistTotal: checklist.total,
     checklistDone: checklist.done,
     checklistProgress,
-    summary: `${template.label} ${completed.length}/${required.length} sections · ${checklist.unchecked} unchecked`,
+    summary: `${template.label} ${completed.length}/${required.length} sections - ${checklist.unchecked} unchecked`,
   };
 }
 

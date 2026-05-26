@@ -3,7 +3,7 @@
   "schemaVersion": "1.0",
   "id": "orpad.core",
   "name": "OrPAD Core Nodes",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0-beta.4",
   "origin": "built-in",
   "trustLevel": "official",
   "mutable": false,
@@ -15,7 +15,7 @@
   },
   "license": "MIT",
   "compatibility": {
-    "orpad": ">=1.0.0-beta.3",
+    "orpad": ">=1.0.0-beta.4",
     "pipelineSchema": ">=1.0"
   },
   "capabilities": [],
@@ -71,16 +71,16 @@
   "rules": [],
   "examples": [
     {
-      "id": "tutorial-gate-decision",
-      "path": "examples/tutorial-gate-decision/pipeline.or-pipeline",
-      "label": "Tutorial: Gate decision",
-      "description": "Smallest pipeline with an orpad.gate guarding the rest of the flow."
+      "id": "product-decision-gate",
+      "path": "examples/product-decision-gate/pipeline.or-pipeline",
+      "label": "Product Decision Gate",
+      "description": "Product readiness gate for problem, owner, acceptance, non-goal, and release-risk evidence."
     },
     {
-      "id": "tutorial-selector-branching",
-      "path": "examples/tutorial-selector-branching/pipeline.or-pipeline",
-      "label": "Tutorial: Selector branching",
-      "description": "Demonstrates orpad.selector forking into named branches that converge at exit."
+      "id": "release-risk-routing",
+      "path": "examples/release-risk-routing/pipeline.or-pipeline",
+      "label": "Release Risk Routing",
+      "description": "Release readiness selector that routes evidence to ship, fix-forward, or hold decisions."
     }
   ]
 }

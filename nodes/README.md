@@ -39,4 +39,23 @@ The list command reports built-in packs, user-installed packs, manifest
 diagnostics, duplicate ids, and node type conflicts that need user selection
 before activation.
 
-Future support may add workspace-local node packs under `.orpad/nodes/`, workspace-level node pack locks, and project-portable custom pack resolution. These are intentionally not part of the initial node pack structure.
+To prepare a community pack for sharing:
+
+```text
+node bin/orpad-cli.mjs node-packs validate <path-to-pack> --json
+node bin/orpad-cli.mjs node-packs registry-entry create <path-to-pack> --source-repository https://github.com/<owner>/<repo> --source-ref <tag-or-commit> --json
+```
+
+`validate` checks the manifest, declared files, normal-install quarantine rules,
+README presence, broad capabilities, and deterministic authoring diagnostics.
+`registry-entry create` emits a draft registry entry with manifest and declared
+file SHA-256 checksums. Draft entries always start as community/unapproved
+metadata; registry maintainers add OrPAD-owned signatures or approved review
+evidence after review.
+
+Reproducibility in the sharing MVP is user-level. Pipelines declare required
+packs in `nodePacks`; installed user packs are tracked in the app-data
+`orpad-node-packs.lock.json`; and `node-packs export-list` can share that
+inventory for collaboration or support. Workspace-local packs, workspace-level
+node pack locks, and project-portable custom pack restoration are intentionally
+deferred until a separate design covers the restore flow.

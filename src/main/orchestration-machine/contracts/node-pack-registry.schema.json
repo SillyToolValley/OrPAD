@@ -1,0 +1,273 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.nodePackRegistry.v1",
+  "title": "OrPAD Node Pack Registry",
+  "type": "object",
+  "required": ["kind", "schemaVersion", "registryId", "name", "entries"],
+  "properties": {
+    "kind": {
+      "enum": ["orpad.nodePackRegistry"]
+    },
+    "schemaVersion": {
+      "enum": ["1.0"]
+    },
+    "registryId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "governance": {
+      "$ref": "#/definitions/governance"
+    },
+    "generatedAt": {
+      "type": "string"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/entry"
+      }
+    },
+    "signature": {
+      "$ref": "#/definitions/signature"
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "governance": {
+      "type": "object",
+      "properties": {
+        "registryTrust": {
+          "type": "string"
+        },
+        "reviewModel": {
+          "type": "string"
+        },
+        "submissions": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "reviewPolicyUrl": {
+          "type": "string"
+        },
+        "maintainer": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "entry": {
+      "type": "object",
+      "required": ["id", "name", "latestVersion", "versions"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "latestVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/version"
+          }
+        },
+        "author": {
+          "$ref": "#/definitions/author"
+        },
+        "license": {
+          "type": "string"
+        },
+        "trustLevel": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nodeTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "declaredNodeTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "links": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "version": {
+      "type": "object",
+      "required": ["version", "manifestUrl", "sourceRepository", "sourceRef", "manifestPath"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceRepository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceRoot": {
+          "type": "string"
+        },
+        "manifestPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checksums": {
+          "type": "object",
+          "properties": {
+            "manifestSha256": {
+              "type": "string"
+            },
+            "files": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        },
+        "signature": {
+          "$ref": "#/definitions/signature"
+        },
+        "review": {
+          "$ref": "#/definitions/review"
+        }
+      },
+      "additionalProperties": true
+    },
+    "author": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "github": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "signature": {
+      "type": "object",
+      "properties": {
+        "scheme": {
+          "type": "string"
+        },
+        "keyId": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "reviewedAt": {
+          "type": "string"
+        },
+        "reviewId": {
+          "type": "string"
+        },
+        "decisionId": {
+          "type": "string"
+        },
+        "reviewedBy": {
+          "type": "string"
+        },
+        "reviewer": {
+          "type": "string"
+        },
+        "approvedCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

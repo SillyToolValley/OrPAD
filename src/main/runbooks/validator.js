@@ -412,6 +412,12 @@ function graphNodePackDiagnosticMessage(resolutionState) {
 
 function pushGraphNodePackError(diagnostics, resolution, nodeId, currentPath) {
   const resolutionState = resolution?.state || 'missing';
+  const registryCandidateKind = resolutionState === 'missing'
+    ? (resolution?.packId ? 'pack-id' : 'node-type')
+    : undefined;
+  const registryCandidateQuery = resolutionState === 'missing'
+    ? (resolution?.packId || resolution?.nodeType || '')
+    : undefined;
   diagnostics.push(diagnostic(
     'error',
     graphNodePackDiagnosticCode(resolutionState),
@@ -424,6 +430,8 @@ function pushGraphNodePackError(diagnostics, resolution, nodeId, currentPath) {
       packVersion: resolution?.packVersion || undefined,
       resolutionState,
       declaration: resolution?.declaration || undefined,
+      registryCandidateKind,
+      registryCandidateQuery,
     },
   ));
 }
@@ -689,6 +697,8 @@ function validateGraphNode(node, currentPath, state, options, diagnostics) {
         path: currentPath,
         nodeType: type,
         packId: requestedPackId || undefined,
+        registryCandidateKind: 'node-type',
+        registryCandidateQuery: type,
       },
     ));
     return;
