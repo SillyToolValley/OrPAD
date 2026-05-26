@@ -1,6 +1,6 @@
 {
   "name": "orpad",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0",
   "productName": "OrPAD",
   "description": "OrPAD (Orchestration Pipeline Authoring & Development) is a local-first multi-format workspace for Markdown, structured data, diagrams, AI actions, MCP tools, terminals, Git status, and web/PWA workflows.",
   "main": "src/main/main.js",

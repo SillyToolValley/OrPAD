@@ -17,11 +17,11 @@
   "nodePacks": [
     {
       "id": "orpad.core",
-      "version": ">=1.0.0-beta.4"
+      "version": ">=1.0.0"
     },
     {
       "id": "orpad.workstream",
-      "version": ">=1.0.0-beta.4"
+      "version": ">=1.0.0"
     }
   ],
   "executionPolicy": {

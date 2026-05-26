@@ -23434,7 +23434,7 @@ async function createOrpadRunbookStarter(options = {}) {
     trustLevel: 'local-authored',
     entryGraph: 'graphs/main.or-graph',
     nodePacks: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.4', origin: 'built-in' },
+      { id: 'orpad.core', version: '>=1.0.0', origin: 'built-in' },
       { id: 'orpad.workstream', version: '>=0.1.0', origin: 'built-in' },
     ],
     graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],

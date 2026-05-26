@@ -5,7 +5,7 @@ export default {
   filename: (vars) => `release-${vars.slug(vars.version || vars.title)}.md`,
   fields: [
     { key: 'title', label: 'Release name', required: true, placeholder: 'OrPAD desktop beta' },
-    { key: 'version', label: 'Version', placeholder: '1.0.0-beta.4' },
+    { key: 'version', label: 'Version', placeholder: '1.0.0' },
     { key: 'owner', label: 'Release owner', placeholder: 'Engineering owner' },
   ],
   frontmatter: (vars) => ({

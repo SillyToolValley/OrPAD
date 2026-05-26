@@ -720,7 +720,7 @@ and AI suggestions are presented as drafts/prefills rather than executed.
 
 ## Dependency audit
 
-Run on 2026-05-26 for v1.0.0-beta.4 readiness:
+Run on 2026-05-26 for v1.0.0 readiness:
 
 ```
 npm audit --omit=dev --audit-level=high
@@ -736,7 +736,7 @@ packaged runtime, so the Electron major upgrade path remains a release-readiness
 Tracked as Follow-up #10.
 
 **Triage:**
-- v1.0.0-beta.4 updates production transitive dependencies including `fast-uri`,
+- v1.0.0 updates production transitive dependencies including `fast-uri`,
   `hono`, `ip-address`, `qs`, `brace-expansion`, `mermaid`, and `uuid` through
   `npm audit fix --omit=dev`.
 - Remaining high findings are dev/build pipeline findings or Electron runtime findings
@@ -779,7 +779,7 @@ No `eval` or dynamic code execution in the parser. **PASS.**
    Priority: **P3**. Owner: maintainer.
 
 5. **(Low) Mermaid/parser dependency watch** -> The production audit issue previously
-   tracked through Mermaid/uuid is resolved for v1.0.0-beta.4. Keep Mermaid and its
+   tracked through Mermaid/uuid is resolved for v1.0.0. Keep Mermaid and its
    parser dependencies on the release audit watchlist because diagram parsing and
    sanitization remain user-content surfaces.
    Priority: **P3**. Owner: maintainer.

@@ -464,7 +464,7 @@ test('choose node model opens provider and model picker instead of capability to
       main: { file: 'graphs/main.or-graph' },
     },
     nodePacks: [
-      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
+      { id: 'orpad.core', version: '>=1.0.0' },
     ],
   }, null, 2));
   fs.writeFileSync(path.join(pipelineDir, 'graphs', 'main.or-graph'), JSON.stringify({
