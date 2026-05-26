@@ -68,12 +68,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -171,12 +171,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -278,12 +278,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -383,12 +383,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -529,12 +529,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -652,12 +652,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -781,12 +781,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -907,12 +907,12 @@ const STARTER_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
       { id: 'orpad.workstream', version: '>=0.1.0' },
     ],
     installPolicy: {
@@ -1033,7 +1033,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     schemaVersion: '1.0',
     id: 'orpad.core',
     name: 'OrPAD Core Nodes',
-    version: '1.0.0',
+    version: '1.0.0-beta.4',
     origin: 'built-in',
     trustLevel: 'official',
     mutable: false,
@@ -1045,7 +1045,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       packFormat: 'orpad.nodePack.v1',
     },
@@ -1092,7 +1092,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     schemaVersion: '1.0',
     id: 'orpad.workstream',
     name: 'OrPAD Workstream Nodes',
-    version: '1.0.0',
+    version: '1.0.0-beta.4',
     origin: 'built-in',
     trustLevel: 'official',
     mutable: false,
@@ -1109,7 +1109,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
     },
     license: 'MIT',
     compatibility: {
-      orpad: '>=1.0.0',
+      orpad: '>=1.0.0-beta.4',
       pipelineSchema: '>=1.0',
       graphSchema: '>=1.0',
       nodeContractSchema: '>=1.0',
@@ -1120,7 +1120,7 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
       packFormat: 'orpad.nodePack.v1',
     },
     dependsOn: [
-      { id: 'orpad.core', version: '>=1.0.0' },
+      { id: 'orpad.core', version: '>=1.0.0-beta.4' },
     ],
     capabilities: [
       'read.workspace',
@@ -1948,7 +1948,7 @@ function validateCommunityNodePackMetadata(diagnostics, pack) {
 
 function validateNodePackManifest(pack, options = {}) {
   const diagnostics = [];
-  const currentOrpadVersion = options.currentOrpadVersion || '1.0.0';
+  const currentOrpadVersion = options.currentOrpadVersion || '1.0.0-beta.4';
   const installMode = options.installMode || 'normal';
   const grantedCapabilities = normalizeGrantedCapabilities(options.grantedCapabilities);
   const explicitCapabilityGrants = explicitNodePackCapabilityGrants(pack, options);

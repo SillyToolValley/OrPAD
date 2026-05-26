@@ -3,7 +3,7 @@
   "schemaVersion": "1.0",
   "id": "orpad.workstream",
   "name": "OrPAD Workstream Nodes",
-  "version": "1.0.0",
+  "version": "1.0.0-beta.4",
   "origin": "built-in",
   "trustLevel": "official",
   "mutable": false,
@@ -20,7 +20,7 @@
   },
   "license": "MIT",
   "compatibility": {
-    "orpad": ">=1.0.0",
+    "orpad": ">=1.0.0-beta.4",
     "pipelineSchema": ">=1.0",
     "graphSchema": ">=1.0",
     "nodeContractSchema": ">=1.0",
@@ -33,7 +33,7 @@
   "dependsOn": [
     {
       "id": "orpad.core",
-      "version": ">=1.0.0"
+      "version": ">=1.0.0-beta.4"
     }
   ],
   "capabilities": [

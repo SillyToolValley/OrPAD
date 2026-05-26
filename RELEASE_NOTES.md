@@ -1,8 +1,7 @@
-# OrPAD v1.0.0
+# OrPAD v1.0.0-beta.4
 
-OrPAD v1.0.0 is the first stable OrPAD release. It promotes the package
-sharing, Package Manager navigation, graph editor, and release-readiness work
-from the beta series into the stable channel.
+OrPAD v1.0.0-beta.4 focuses on package sharing readiness, Package Manager
+navigation, and release audit cleanup.
 
 ## Changes
 
@@ -21,5 +20,3 @@ from the beta series into the stable channel.
   and review-state tests for package sharing flows.
 - Updated release dependencies so `npm audit --omit=dev --audit-level=high`
   passes for production dependencies.
-- Updated the release workflow so stable `v*` tags publish as Latest releases
-  while beta tags remain prereleases.

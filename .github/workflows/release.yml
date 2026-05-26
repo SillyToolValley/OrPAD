@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*-beta.*'
 
 jobs:
   build:
@@ -89,8 +89,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: OrPAD ${{ github.ref_name }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}
+          prerelease: true
+          make_latest: false
           body_path: RELEASE_NOTES.md
           files: ${{ matrix.artifacts }}
           fail_on_unmatched_files: true
