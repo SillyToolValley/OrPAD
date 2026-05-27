@@ -396,6 +396,58 @@ test('generator honors explicit fork-join independent discovery probe requests',
   );
 });
 
+test('generator repairs authored specs that omit requested fork-join and content editorial gate', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-authored-spec-repair-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Authored spec repair fixture');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Define a task to detect rendering issues in the TUI tab of the UTerminal Window.',
+    timestamp: '2026-05-26T14:37:30.000Z',
+    requiredNodePackIds: ['orpad.starter.content-qa'],
+    workspaceSnapshot: {
+      files: ['README.md', 'docs/uterminal.md', 'src/renderer/terminal-window.js', 'tests/e2e/terminal.spec.ts'],
+    },
+    authoringSpec: {
+      title: 'UTerminal TUI rendering detection task',
+      description: 'Content editorial evidence is required for this authored-spec repair fixture.',
+      metadata: {
+        authoringNotes: 'Use independent probes before queueing work and include content editorial quality evidence.',
+      },
+      graph: {
+        id: 'uterminal-tui-rendering-detection',
+        label: 'UTerminal TUI rendering detection',
+        start: 'entry',
+        nodes: [
+          { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+          { id: 'context', type: 'orpad.context', label: 'Map TUI rendering surface' },
+          { id: 'probe-rendering', type: 'orpad.probe', label: 'Probe TUI rendering issue', config: { lens: 'terminal-rendering', maxCandidates: 5 } },
+          { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+        ],
+        transitions: [
+          { from: 'entry', to: 'context' },
+          { from: 'context', to: 'probe-rendering' },
+          { from: 'probe-rendering', to: 'exit' },
+        ],
+      },
+    },
+  });
+
+  assert.equal(result.qualityAudit.ok, true, JSON.stringify(result.qualityAudit.diagnostics, null, 2));
+
+  const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));
+  const probes = graph.graph.nodes.filter(node => node.type === 'orpad.probe');
+  const barrier = graph.graph.nodes.find(node => node.type === 'orpad.barrier');
+  const contentGate = graph.graph.nodes.find(node => node.id === 'content-editorial-quality-gate');
+
+  assert.ok(probes.length >= 2, `expected repaired fork-join to include at least two probes, got ${probes.length}`);
+  assert.ok(barrier, 'expected a generated discovery barrier');
+  assert.ok(barrier.config.waitFor.length >= 2);
+  assert.ok(contentGate, 'expected generated content editorial gate');
+  assert.equal(contentGate.config.evaluationMode, 'content-editorial-quality');
+});
+
 test('quality auditor fails explicit fork-join requests that collapse to one probe path', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fork-join-negative-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));

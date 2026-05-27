@@ -1,7 +1,6 @@
 const path = require('path');
 const fsp = require('fs/promises');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
+const { pathToFileURL } = require('url');
 const { isInsidePath } = require('../authority');
 const { validateRunbookFile, validateRunbookSource } = require('./validator');
 const { createRunRecord, readRunRecord, runRoot } = require('./storage');
@@ -24,7 +23,6 @@ const RUNBOOK_SCAN_IGNORED_DIRS = new Set([
 ]);
 const RUNBOOK_SCAN_MAX_DEPTH = 8;
 const RUNBOOK_SCAN_MAX_ENTRIES = 5000;
-const execFileAsync = promisify(execFile);
 const TRUSTED_NODE_PACK_VALIDATION_OPTIONS = Symbol('orpad.trustedNodePackValidationOptions');
 // Renderer IPC may tune validation metadata, but approval/trust evidence is
 // authoritative only when a main-process or CLI caller uses the trusted helper.
@@ -360,30 +358,17 @@ async function isRecordedPipelineRunDir(workspaceRoot, targetRunDir) {
   }
 }
 
-async function auditPipelineRunEvidence(pipelinePath) {
-  const appRoot = path.join(__dirname, '..', '..', '..');
+async function auditPipelineRunEvidence(app, pipelinePath) {
+  const appRoot = app?.getAppPath ? app.getAppPath() : path.join(__dirname, '..', '..', '..');
   const scriptPath = path.join(appRoot, 'scripts', 'audit-orpad-run.mjs');
-  const execBaseName = path.basename(process.execPath || '').toLowerCase();
-  const useElectronAsNode = execBaseName.includes('electron');
-  const nodeBinary = process.execPath || process.env.npm_node_execpath || process.env.NODE || 'node';
-  let stdout = '';
   try {
-    const result = await execFileAsync(nodeBinary, [scriptPath, pipelinePath], {
-      cwd: appRoot,
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024,
-      env: useElectronAsNode ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env,
-      windowsHide: true,
-    });
-    stdout = result.stdout || '';
+    const module = await import(pathToFileURL(scriptPath).href);
+    if (!module || typeof module.auditRun !== 'function') {
+      throw new Error('auditRun export missing.');
+    }
+    return await module.auditRun(pipelinePath);
   } catch (err) {
-    stdout = err?.stdout || '';
-    if (!stdout.trim()) throw err;
-  }
-  try {
-    return JSON.parse(stdout);
-  } catch (err) {
-    throw new Error(`Run evidence audit returned invalid JSON: ${err.message}`);
+    throw new Error(`Run evidence audit failed to load ${scriptPath}: ${err.message}`);
   }
 }
 
@@ -531,7 +516,7 @@ function registerRunbookHandlers({ ipcMain, app, authority }) {
       if (!/\.or-pipeline$/i.test(targetPipeline)) {
         throw new Error('Run evidence audit requires an .or-pipeline file.');
       }
-      return { success: true, ...(await auditPipelineRunEvidence(targetPipeline)) };
+      return { success: true, ...(await auditPipelineRunEvidence(app, targetPipeline)) };
     } catch (err) {
       return { success: false, ok: false, error: err.message, diagnostics: [{ level: 'error', code: 'RUN_AUDIT_FAILED', message: err.message }] };
     }

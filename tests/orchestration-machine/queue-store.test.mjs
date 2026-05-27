@@ -272,6 +272,59 @@ test('done queue items can be explicitly retried back to queued', async () => {
   assert.deepEqual(journal.map(event => event.action), ['ingest', 'triage', 'claim', 'close', 'retry']);
 });
 
+test('blocked queue items can be triaged to rejected', async () => {
+  const run = await makeRun();
+  await ingestCandidateProposal(run.runRoot, proposal(), {
+    runId: run.runId,
+    transitionId: 'ingest:item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'queued',
+    transitionId: 'triage:item:queued',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'claimed',
+    transitionId: 'claim:item',
+    itemPatch: {
+      claimId: 'claim-fixture',
+      claimedBy: 'test-worker',
+    },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    toState: 'blocked',
+    transitionId: 'close:item:blocked',
+    itemPatch: {
+      workerResultStatus: 'blocked',
+      blockedReason: 'Worker stopped without an applicable workspace patch.',
+    },
+  });
+
+  const rejected = await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'graph-editor-graph-specific-node-types',
+    expectedFromState: 'blocked',
+    toState: 'rejected',
+    transitionId: 'triage:item:rejected',
+    itemPatch: {
+      machineRejected: true,
+      rejectionReason: 'Non-runnable generated output.',
+    },
+  });
+
+  assert.equal(rejected.item.state, 'rejected');
+  assert.equal(rejected.item.machineRejected, true);
+  assert.equal((await findQueueItem(run.runRoot, rejected.item.id)).state, 'rejected');
+
+  const journal = await readJournal(run.runRoot);
+  assert.deepEqual(journal.map(event => event.action), ['ingest', 'triage', 'claim', 'close', 'triage']);
+});
+
 test('invalid queue transitions fail before mutating state', async () => {
   const run = await makeRun();
   await ingestCandidateProposal(run.runRoot, proposal(), {

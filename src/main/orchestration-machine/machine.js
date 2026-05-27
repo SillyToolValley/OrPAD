@@ -43,10 +43,14 @@ const { PATCH_REVIEW_REASONS, shouldRequestPatchReview } = require('./patch-revi
 const { runProposalProbe } = require('./probe-runner');
 const { runProposalTriage } = require('./triage-runner');
 const { runWorkerLoopOnce } = require('./worker-loop');
-const { readQueueItems } = require('./queue-store');
+const { readQueueItems, transitionQueueItem, writeLegacyJournalProjection } = require('./queue-store');
 const { dispatchAdapter } = require('./router/adapter-router');
 const { normalizeWriteSetPath } = require('./write-sets');
 const contentEditorialEvaluator = require('./content-editorial-evaluator');
+const {
+  isNonRunnableExternalGenerationWork,
+  nonRunnableExternalGenerationReason,
+} = require('./non-runnable-work');
 
 const fsp = fs.promises;
 const contractValidator = createContractValidator();
@@ -299,11 +303,51 @@ function isRunnableMachineAdapter(adapter) {
   return plugin.family === 'cli' || plugin.family === 'api';
 }
 
+function fileExists(filePath) {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function pathEntries() {
+  return String(process.env.PATH || '')
+    .split(path.delimiter)
+    .map(entry => entry.trim())
+    .filter(Boolean);
+}
+
+function findOnPath(name) {
+  for (const entry of pathEntries()) {
+    const candidate = path.join(entry, name);
+    if (fileExists(candidate)) return candidate;
+  }
+  return '';
+}
+
+function resolveNodeExecutableCandidate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (path.isAbsolute(raw) || /[\\/]/.test(raw)) return fileExists(raw) ? raw : '';
+  return findOnPath(raw)
+    || (process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(raw) ? findOnPath(`${raw}.exe`) : '');
+}
+
 function nodeExecutableForHarness() {
-  return process.env.ORPAD_MACHINE_NODE_EXEC_PATH
-    || process.env.npm_node_execpath
-    || process.env.NODE
-    || process.execPath;
+  const candidates = [
+    process.env.ORPAD_MACHINE_NODE_EXEC_PATH,
+    process.env.npm_node_execpath,
+    process.env.NODE,
+    process.platform === 'win32' ? 'node.exe' : 'node',
+    'node',
+    process.versions?.electron ? '' : process.execPath,
+  ];
+  for (const candidate of candidates) {
+    const resolved = resolveNodeExecutableCandidate(candidate);
+    if (resolved) return resolved;
+  }
+  return '';
 }
 
 function idSegment(value) {
@@ -1110,16 +1154,23 @@ function buildLiveWorkerPrompt(input = {}) {
       idempotencyKey: request.idempotencyKey,
       status: 'done',
       summary: 'short implementation summary, or why the item is blocked',
+      failingSymptom: 'specific failing behavior or detection gap this work item addressed',
+      rootCause: 'specific source-level cause or missing detector/test surface',
       changedFiles: ['relative/path/changed-in-overlay'],
+      filesChanged: ['relative/path/changed-in-overlay'],
       patchArtifact: '',
+      verificationCommands: ['focused validation command or inspection'],
       verification: [{
         command: 'focused validation command or inspection',
         status: 'passed|failed|blocked',
         summary: 'what was checked and the result',
       }],
+      residualRisk: 'remaining risk, blocked validation, or why no material residual risk remains',
       artifacts: [],
     }, null, 2),
     '',
+    'The artifact contract hard-requires these completed-task evidence fields: failingSymptom, rootCause, filesChanged, verificationCommands, residualRisk.',
+    'For status "done", every required evidence field must be present and non-empty. If a field is not obvious, write the concrete best-known evidence or residual risk instead of leaving it blank.',
     'Use status "done" only if you changed allowedFiles in the overlay toward the acceptance criteria.',
     'Use status "blocked" if the allowed files are insufficient or the change is unsafe.',
     'Always include verification evidence. If a recommended validation command is impractical in the overlay, record status "blocked" or "failed" for that check with the concrete reason.',
@@ -2982,15 +3033,142 @@ function isRequiredCompletionGate(node = {}) {
     config.kind,
     config.gateKind,
   ].map(value => String(value || '').toLowerCase()).join(' ');
-  return /\b(worker[-\s]?evidence|evidence[-\s]?gate|completion[-\s]?gate|quality[-\s]?gate|deterministic[-\s]?preflight|preflight|discovery[-\s]?coverage|triage[-\s]?priority|final[-\s]?cross[-\s]?validation|cross[-\s]?validation|done[-\s]?gate)\b/i.test(text);
+  return /\b(worker[-\s]?evidence|work[-\s]?item[-\s]?evidence|evidence[-\s]?gate|evidence[-\s]?quality|completion[-\s]?gate|quality[-\s]?gate|deterministic[-\s]?preflight|preflight|discovery[-\s]?coverage|triage[-\s]?priority|final[-\s]?cross[-\s]?validation|cross[-\s]?validation|done[-\s]?gate)\b/i.test(text);
 }
 
-function auditRequiredCompletionGates(events = [], orderedNodes = []) {
+function isWorkerDependentCompletionGate(node = {}) {
+  const config = node.config || {};
+  const text = [
+    node.id,
+    node.nodePath,
+    node.label,
+    config.evaluationMode,
+    config.kind,
+    config.gateKind,
+    ...(Array.isArray(config.criteria) ? config.criteria : []),
+  ].map(value => String(value || '').toLowerCase()).join(' ');
+  return /\b(worker|work[-\s]?item|work result|accepted worker proof|content[-\s]?editorial|editorial evaluation|evidence[-\s]?quality|queue empty)\b/i.test(text);
+}
+
+function latestAdapterResultFailures(events = []) {
+  const latestByCall = new Map();
+  for (const event of events) {
+    if (event?.eventType !== 'adapter.result') continue;
+    const callId = String(event.payload?.adapterCallId || event.payload?.idempotencyKey || event.sequence || '').trim();
+    latestByCall.set(callId, event);
+  }
+  return [...latestByCall.values()].filter(event => {
+    const status = String(event.payload?.status || '').toLowerCase();
+    if (!['blocked', 'failed', 'approval-required', 'rejected'].includes(status)) return false;
+    if ((Number(event.payload?.proposalCount) || 0) > 0) return false;
+    if ((Number(event.payload?.triageTransitionCount) || 0) > 0) return false;
+    return true;
+  }).map(event => ({
+    nodePath: event.nodePath || '',
+    adapterCallId: event.payload?.adapterCallId || '',
+    taskKind: event.payload?.taskKind || '',
+    status: event.payload?.status || '',
+    reason: event.payload?.deferredReason || event.reason || '',
+    infrastructureBlocked: event.payload?.infrastructureBlocked === true,
+    emptyPass: event.payload?.emptyPass || null,
+    eventSequence: event.sequence ?? null,
+  }));
+}
+
+function collectEvidenceText(value, options = {}) {
+  const {
+    depth = 0,
+    seen = new Set(),
+    output = [],
+  } = options;
+  if (output.length >= 200 || depth > 8 || value == null) return output.join('\n');
+  if (typeof value === 'string') {
+    output.push(value);
+    return output.join('\n');
+  }
+  if (typeof value !== 'object') return output.join('\n');
+  if (seen.has(value)) return output.join('\n');
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) collectEvidenceText(item, { depth: depth + 1, seen, output });
+    return output.join('\n');
+  }
+  for (const item of Object.values(value)) collectEvidenceText(item, { depth: depth + 1, seen, output });
+  return output.join('\n');
+}
+
+function inventoryLooksToolBlocked(inventory = null) {
+  const text = collectEvidenceText(inventory);
+  return /\b(windows sandbox:\s*spawn setup refresh|sandbox spawn setup|spawn setup refresh|failed before execution|terminal runner|filesystem reads failed before|could not read any source files|could not inspect local workspace|workspace inspection (?:was )?blocked)\b/i.test(text);
+}
+
+async function noActionableWorkDiscovered(runRoot, events = null) {
+  const machineEvents = events || await readMachineEvents(runRoot);
+  if (latestAdapterResultFailures(machineEvents).length) return false;
+  const latest = await readLatestCandidateInventoryArtifact(runRoot, machineEvents);
+  const queueItems = await readQueueItems(runRoot);
+  const candidateCount = Number(latest?.inventory?.candidateCount) || 0;
+  const emptyPassCount = Number(latest?.inventory?.emptyPassCount) || 0;
+  if (candidateCount > 0 || queueItems.length > 0 || emptyPassCount <= 0) return false;
+  if (inventoryLooksToolBlocked(latest?.inventory)) return false;
+  return true;
+}
+
+async function normalizeNonRunnableBlockedQueueItems(runRoot, options = {}) {
+  const rejected = [];
+  const blockedItems = (await readQueueItems(runRoot))
+    .filter(entry => entry.state === 'blocked' && isNonRunnableExternalGenerationWork(entry.item));
+  for (const entry of blockedItems) {
+    const reason = nonRunnableExternalGenerationReason(entry.item);
+    rejected.push(await transitionQueueItem(runRoot, {
+      runId: options.runId,
+      itemId: entry.item.id,
+      expectedFromState: 'blocked',
+      toState: 'rejected',
+      reason: 'blocked.non-runnable-external-generation',
+      transitionId: `reject-non-runnable:${entry.item.id}`,
+      now: options.now,
+      itemPatch: {
+        machineRejected: true,
+        rejectionReason: reason,
+        previousBlockedReason: entry.item.blockedReason || '',
+        nextAction: 'non-runnable-external-generation-recorded',
+      },
+      payload: {
+        classifier: 'non-runnable-external-generation',
+        previousBlockedReason: entry.item.blockedReason || '',
+      },
+    }));
+  }
+  return rejected;
+}
+
+function gateFailureOnlyStaleQueueActive(latest = {}, currentInventory = null) {
+  if (!currentInventory || Number(currentInventory.activeCount) !== 0) return false;
+  const failed = Array.isArray(latest?.payload?.failed) ? latest.payload.failed : [];
+  if (!failed.length) return false;
+  return failed.every(item => (
+    String(item?.reason || '') === 'queue-active'
+    && (Number(item?.activeCount) || 0) > 0
+  ));
+}
+
+function auditRequiredCompletionGates(events = [], orderedNodes = [], options = {}) {
   const latestByPath = latestLifecycleStatusByNode(events);
   const requiredGates = orderedNodes.filter(isRequiredCompletionGate);
   const failedRequiredGates = [];
   const missingRequiredGates = [];
+  const notApplicableGates = [];
+  const staleQueueActiveGates = [];
   for (const node of requiredGates) {
+    if (options.noActionableWorkDiscovered === true && isWorkerDependentCompletionGate(node)) {
+      notApplicableGates.push({
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        reason: 'no-actionable-work-discovered',
+      });
+      continue;
+    }
     const latest = latestByPath.get(node.nodePath);
     if (!latest) {
       missingRequiredGates.push({
@@ -3010,6 +3188,15 @@ function auditRequiredCompletionGates(events = [], orderedNodes = []) {
       continue;
     }
     if (latest.payload?.valid === false) {
+      if (gateFailureOnlyStaleQueueActive(latest, options.currentInventory)) {
+        staleQueueActiveGates.push({
+          nodePath: node.nodePath,
+          nodeType: node.nodeType,
+          reason: 'stale-queue-active-superseded',
+          eventSequence: latest.sequence ?? null,
+        });
+        continue;
+      }
       failedRequiredGates.push({
         nodePath: node.nodePath,
         nodeType: node.nodeType,
@@ -3027,6 +3214,8 @@ function auditRequiredCompletionGates(events = [], orderedNodes = []) {
     requiredGateCount: requiredGates.length,
     failedRequiredGates,
     missingRequiredGates,
+    notApplicableGates,
+    staleQueueActiveGates,
     nextAction: valid ? '' : 'fix-required-gate-evidence-and-rerun',
   };
 }
@@ -3074,14 +3263,38 @@ async function auditDiscoveryQueueProvenance(runRoot, events = null) {
 }
 
 async function completionAuditBlock(runRoot, options = {}) {
+  const normalizedBlockedQueue = await normalizeNonRunnableBlockedQueueItems(runRoot, {
+    runId: options.runId,
+    now: options.now,
+  });
   const events = await readMachineEvents(runRoot);
-  const requiredGates = auditRequiredCompletionGates(events, options.orderedNodes || []);
+  const currentInventory = await summarizeQueueInventory(runRoot);
+  const adapterFailures = latestAdapterResultFailures(events);
+  if (adapterFailures.length) {
+    return {
+      summaryStatus: 'blocked',
+      reason: 'completion.adapter-result-blocked',
+      audit: {
+        kind: 'adapter-results',
+        valid: false,
+        failedAdapterCount: adapterFailures.length,
+        failedAdapters: adapterFailures,
+        normalizedBlockedQueueCount: normalizedBlockedQueue.length,
+        nextAction: 'fix-provider-tool-access-and-rerun',
+      },
+    };
+  }
+  const requiredGates = auditRequiredCompletionGates(events, options.orderedNodes || [], {
+    noActionableWorkDiscovered: await noActionableWorkDiscovered(runRoot, events),
+    currentInventory,
+  });
   if (!requiredGates.valid) {
     return {
       summaryStatus: 'blocked',
       reason: 'completion.required-gate-failed',
       audit: {
         kind: 'required-gates',
+        normalizedBlockedQueueCount: normalizedBlockedQueue.length,
         ...requiredGates,
       },
     };
@@ -3093,6 +3306,7 @@ async function completionAuditBlock(runRoot, options = {}) {
       reason: 'completion.discovery-queue-provenance-missing',
       audit: {
         kind: 'discovery-queue-provenance',
+        normalizedBlockedQueueCount: normalizedBlockedQueue.length,
         ...provenance,
       },
     };
@@ -3497,6 +3711,9 @@ async function validateArtifactContract(runRoot, config = {}) {
     declared: required,
     path: contractExpectedPath(config.queueRoot, required, 'queue'),
   })).filter(entry => entry.path);
+  if (requiredQueue.some(entry => entry.path === 'queue/journal.jsonl')) {
+    await writeLegacyJournalProjection(runRoot);
+  }
 
   const missingArtifacts = requiredArtifacts.filter(entry => !manifestPaths.has(entry.path));
   const missingQueue = [];
@@ -4779,8 +4996,12 @@ async function executeMachineRunStep(options = {}) {
             workspaceRoot,
             command: adapter.command,
             commandPrefixArgs: adapter.commandPrefixArgs,
-            sandbox: adapter.proposalSandbox || adapter.sandbox || 'read-only',
+            sandbox: effectiveAllowDangerousSandboxBypass
+              ? 'danger-full-access'
+              : (adapter.proposalSandbox || adapter.sandbox || 'read-only'),
             approvalPolicy: adapter.approvalPolicy || 'never',
+            dangerouslyBypassApprovalsAndSandbox: effectiveAllowDangerousSandboxBypass === true,
+            dangerouslySkipPermissions: effectiveAllowDangerousSandboxBypass === true,
             timeoutMs: adapter.proposalTimeoutMs || timeoutMs,
             maxOutputBytes: 64 * 1024,
             ephemeral: adapter.ephemeral,
@@ -5852,7 +6073,7 @@ async function executeMachineRunStep(options = {}) {
       },
     };
   } else {
-    const completionBlock = await completionAuditBlock(runRoot, { orderedNodes });
+    const completionBlock = await completionAuditBlock(runRoot, { orderedNodes, runId });
     finalization = completionBlock
       ? await appendCompletionAuditBlock(runRoot, { runId, block: completionBlock })
       : await finalizeRunFromInventory(runRoot, {
@@ -5950,6 +6171,8 @@ module.exports = {
   __test_machineConfigWithQueueProtocolClaimPolicy: machineConfigWithQueueProtocolClaimPolicy,
   __test_workerCommandGrantTtlMs: workerCommandGrantTtlMs,
   __test_requiredValidationCommandsForWorkerNode: requiredValidationCommandsForWorkerNode,
+  __test_gateFailureOnlyStaleQueueActive: gateFailureOnlyStaleQueueActive,
+  __test_normalizeNonRunnableBlockedQueueItems: normalizeNonRunnableBlockedQueueItems,
   __test_artifactContractOnMissing: artifactContractOnMissing,
   __test_canonicalGateOnFailPolicy: canonicalGateOnFailPolicy,
   __test_sanitizeInnerFailurePolicy: sanitizeInnerFailurePolicy,

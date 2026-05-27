@@ -4,6 +4,10 @@ const { assertRunRelativePath } = require('../artifacts');
 const { SCHEMA_VERSIONS, createContractValidator } = require('../contracts');
 const { appendMachineEvent, readMachineEvents } = require('../events');
 const { assertMachineStorageId } = require('../ids');
+const {
+  isNonRunnableExternalGenerationWork,
+  nonRunnableExternalGenerationReason,
+} = require('../non-runnable-work');
 const { repairRunStateFromEvents } = require('../run-store');
 const { ingestCandidateProposal, transitionQueueItem } = require('../queue-store');
 
@@ -66,6 +70,53 @@ function candidateProposals(result) {
 
 function triageTransitions(result) {
   return Array.isArray(result?.triageTransitions) ? result.triageTransitions : [];
+}
+
+function collectResultText(value, options = {}) {
+  const {
+    depth = 0,
+    seen = new Set(),
+    output = [],
+  } = options;
+  if (output.length >= 120 || depth > 6 || value == null) return output;
+  if (typeof value === 'string') {
+    output.push(value);
+    return output;
+  }
+  if (typeof value !== 'object') return output;
+  if (seen.has(value)) return output;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) collectResultText(item, { depth: depth + 1, seen, output });
+    return output;
+  }
+  for (const item of Object.values(value)) collectResultText(item, { depth: depth + 1, seen, output });
+  return output;
+}
+
+const LOCAL_TOOL_UNAVAILABLE_RE = /\b(windows sandbox:\s*spawn setup refresh|sandbox spawn setup|spawn setup refresh|shell invocation failed|failed before command execution|failed before execution|terminal runner|filesystem reads failed before|could not read any source files|could not inspect local workspace|workspace inspection (?:was )?blocked)\b/i;
+
+function proposalResultLooksLocalToolBlocked(result) {
+  if (!result || result.status !== 'done') return false;
+  if (candidateProposals(result).length || triageTransitions(result).length) return false;
+  const text = collectResultText([
+    result.summary,
+    result.emptyPass,
+    result.deferredReason,
+    result.verification,
+  ]).join('\n');
+  return LOCAL_TOOL_UNAVAILABLE_RE.test(text);
+}
+
+function normalizeProposalRuntimeResult(result) {
+  if (!proposalResultLooksLocalToolBlocked(result)) return result;
+  return {
+    ...result,
+    status: 'blocked',
+    summary: result.summary || 'Adapter could not inspect the local workspace.',
+    deferredReason: result.deferredReason || 'adapter-local-tool-unavailable',
+    infrastructureBlocked: true,
+  };
 }
 
 // Soft-fix the request-envelope identifier fields when the upstream
@@ -216,8 +267,8 @@ async function recordAdapterRequest(runRoot, request) {
 }
 
 async function applyProposalAdapterResult(runRoot, request, result, options = {}) {
-  validateAdapterResultForRequest(request, result);
-  assertProposalOnlyResultPolicy(result);
+  const normalizedResult = normalizeProposalRuntimeResult(validateAdapterResultForRequest(request, result));
+  assertProposalOnlyResultPolicy(normalizedResult);
 
   const duplicate = await findAdapterResultEvent(runRoot, request.idempotencyKey);
   if (duplicate) {
@@ -225,16 +276,37 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
   }
 
   const proposals = [];
-  for (const proposal of candidateProposals(result)) {
-    proposals.push(await ingestCandidateProposal(runRoot, proposal, {
+  const rejectedProposals = [];
+  for (const proposal of candidateProposals(normalizedResult)) {
+    const ingested = await ingestCandidateProposal(runRoot, proposal, {
       runId: request.runId,
       transitionId: `proposal:${request.adapterCallId}:${proposal.proposalId}`,
       now: options.now,
-    }));
+    });
+    proposals.push(ingested);
+    if (!ingested.duplicate && !ingested.deduped && isNonRunnableExternalGenerationWork(proposal)) {
+      rejectedProposals.push(await transitionQueueItem(runRoot, {
+        runId: request.runId,
+        itemId: ingested.item.id,
+        expectedFromState: 'candidate',
+        toState: 'rejected',
+        reason: 'candidate.non-runnable-external-generation',
+        transitionId: `reject-non-runnable:${request.adapterCallId}:${ingested.item.id}`,
+        now: options.now,
+        itemPatch: {
+          machineRejected: true,
+          rejectionReason: nonRunnableExternalGenerationReason(proposal),
+        },
+        payload: {
+          classifier: 'non-runnable-external-generation',
+          proposalId: proposal.proposalId,
+        },
+      }));
+    }
   }
 
   const triage = [];
-  for (const transition of triageTransitions(result)) {
+  for (const transition of triageTransitions(normalizedResult)) {
     triage.push(await transitionQueueItem(runRoot, {
       runId: request.runId,
       itemId: transition.itemId,
@@ -245,24 +317,28 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
     }));
   }
 
-  const summaryStatus = summaryStatusForProposalResult(result);
+  const summaryStatus = summaryStatusForProposalResult(normalizedResult);
   const event = await appendMachineEvent(runRoot, {
     runId: request.runId,
     actor: 'machine',
     eventType: 'adapter.result',
     nodePath: request.nodePath,
-    reason: proposalOnlyResultReason(result.status),
-    artifactRefs: result.artifacts || [],
+    reason: proposalOnlyResultReason(normalizedResult.status),
+    artifactRefs: normalizedResult.artifacts || [],
     payload: {
       adapter: request.adapter,
       adapterCallId: request.adapterCallId,
       attemptId: request.attemptId,
       idempotencyKey: request.idempotencyKey,
       taskKind: request.taskKind,
-      status: result.status,
+      status: normalizedResult.status,
       summaryStatus,
       proposalCount: proposals.length,
+      rejectedProposalCount: rejectedProposals.length,
       triageTransitionCount: triage.length,
+      ...(normalizedResult.deferredReason ? { deferredReason: normalizedResult.deferredReason } : {}),
+      ...(normalizedResult.emptyPass ? { emptyPass: normalizedResult.emptyPass } : {}),
+      ...(normalizedResult.infrastructureBlocked ? { infrastructureBlocked: true } : {}),
     },
   });
   await appendMachineEvent(runRoot, {
@@ -273,11 +349,14 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
     reason: 'proposal-only-adapter-result',
     payload: {
       summaryStatus,
-      adapterStatus: result.status,
+      adapterStatus: normalizedResult.status,
       adapterCallId: request.adapterCallId,
       proposalCount: proposals.length,
+      rejectedProposalCount: rejectedProposals.length,
       triageTransitionCount: triage.length,
-      message: result.summary,
+      message: normalizedResult.summary,
+      ...(normalizedResult.deferredReason ? { deferredReason: normalizedResult.deferredReason } : {}),
+      ...(normalizedResult.infrastructureBlocked ? { infrastructureBlocked: true } : {}),
     },
   });
 
@@ -285,6 +364,7 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
     event,
     summaryStatus,
     proposals,
+    rejectedProposals,
     triage,
     runState: await repairRunStateFromEvents(runRoot),
   };

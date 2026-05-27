@@ -1,8 +1,7 @@
 // OrPAD adapter picker (renderer-side).
 //
-// PR M9 / 시각화 개선판: provider/model을 카드 그리드로 보여주고, 현재 선택된
-// 값을 상단에 명시한다. IPC가 실패해도 shared catalog로 폴백해서 최소 카드는
-// 보여주며, 에러는 모달 상단에 빨간 배너로 표시한다.
+// Provider/model picker used by Machine run confirmation and node overrides.
+// It falls back to shared catalog metadata when Machine IPC is unavailable.
 
 import { listProviderEntries, getProviderEntry } from '../../shared/ai/provider-catalog.js';
 
@@ -100,9 +99,9 @@ function describeProvider(provider) {
   const needsKey = provider?.needsKey === true ? 'API key required' : 'Keyless';
   const status = provider?.implementationStatus || 'unknown';
   const segments = [family, needsKey];
-  if (status === 'ready') segments.push('✓ ready');
+  if (status === 'ready') segments.push('ready');
   else if (status === 'stub') segments.push('stub (not yet implemented)');
-  return segments.filter(s => typeof s === 'string' && s.trim()).join(' · ');
+  return segments.filter(s => typeof s === 'string' && s.trim()).join(' - ');
 }
 
 function statusBadgeColor(status) {
@@ -219,7 +218,7 @@ function createAdapterPicker({
     style: 'display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:6px;background:rgba(255,255,255,0.03);',
   });
   const currentLabel = el('div', { style: 'font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.04em;' }, ['Current selection']);
-  const currentText = el('div', { style: 'font-size:13px;font-weight:600;' }, ['Loading…']);
+  const currentText = el('div', { style: 'font-size:13px;font-weight:600;' }, ['Loading...']);
   const currentNote = el('div', { style: 'font-size:11px;opacity:0.7;' }, []);
   currentRow.appendChild(currentLabel);
   currentRow.appendChild(currentText);
@@ -335,8 +334,8 @@ function createAdapterPicker({
     const entry = state.providers.find(p => p.id === providerId);
     const display = entry ? `${entry.displayName || entry.id}` : providerId;
     const familyTag = (entry?.family || '').toUpperCase();
-    currentText.textContent = `${display}${model ? ` · ${model}` : ''}`;
-    currentNote.textContent = `${familyTag}${entry?.registered === false ? ' · catalog only' : ''}${scope === 'node' ? ` · node ${target || ''}` : ' · pipeline default'}`;
+    currentText.textContent = `${display}${model ? ` - ${model}` : ''}`;
+    currentNote.textContent = `${familyTag}${entry?.registered === false ? ' - catalog only' : ''}${scope === 'node' ? ` - node ${target || ''}` : ' - pipeline default'}`;
   }
 
   function highlightSelectedProvider() {
@@ -371,7 +370,7 @@ function createAdapterPicker({
           highlightSelectedProvider();
           updateModelOptions(provider).catch(err => {
             state.lastError = err;
-            setBanner(`모델 목록을 불러올 수 없습니다: ${err.message}`, 'error');
+            setBanner(`Could not load model list: ${err.message}`, 'error');
           });
         },
       });
@@ -386,7 +385,7 @@ function createAdapterPicker({
         card.appendChild(el('div', { style: 'font-size:10.5px;opacity:0.7;line-height:1.4;' }, [provider.statusNote]));
       }
       if (provider.registered === false) {
-        card.appendChild(el('div', { style: 'font-size:10px;color:#ffd58a;' }, ['Plugin registry IPC 미응답 — catalog metadata 사용']));
+        card.appendChild(el('div', { style: 'font-size:10px;color:#ffd58a;' }, ['Plugin registry IPC unavailable; using catalog metadata.']));
       }
       providerGrid.appendChild(card);
     }
@@ -406,7 +405,7 @@ function createAdapterPicker({
       // Fall back to catalog model ids
       modelIds = (provider.models || []).map(m => typeof m === 'string' ? m : m.id);
       defaultModel = provider.defaultModel || (modelIds[0] || '');
-      setBanner(`모델 목록 IPC 실패 → catalog metadata로 fallback (${err.message})`, 'warn');
+      setBanner(`Model list IPC failed; using catalog metadata (${err.message})`, 'warn');
     }
     if (!modelIds.length && provider.defaultModel) modelIds = [provider.defaultModel];
     for (const modelId of modelIds) {
@@ -443,18 +442,18 @@ function createAdapterPicker({
 
   async function tryEnableSession() {
     const safeBridge = ensureBridge(bridge);
-    setIpcGateMessage('Enabling Machine IPC for this session…');
+    setIpcGateMessage('Enabling Machine IPC for this session...');
     try {
       const response = await safeBridge.invoke('machine-enable-session', {});
       if (!response || response.ok === false || response.success === false) {
         const reason = response?.error || 'machine-enable-session rejected.';
-        setIpcGateMessage(`Enable 실패: ${reason}. OrPAD를 ORPAD_MACHINE_IPC=1 환경변수와 함께 다시 시작하세요.`);
+        setIpcGateMessage(`Enable failed: ${reason}. Restart OrPAD with ORPAD_MACHINE_IPC=1.`);
         return false;
       }
-      setIpcGateMessage('Machine IPC가 켜졌습니다. provider 목록을 새로 불러옵니다…');
+      setIpcGateMessage('Machine IPC is enabled. Reloading providers...');
       return true;
     } catch (err) {
-      setIpcGateMessage(`Enable 실패: ${err.message}. ORPAD_MACHINE_IPC=1로 다시 시작하세요.`);
+      setIpcGateMessage(`Enable failed: ${err.message}. Restart with ORPAD_MACHINE_IPC=1.`);
       return false;
     }
   }
@@ -472,7 +471,7 @@ function createAdapterPicker({
 
   async function refresh() {
     state.busy = true;
-    setBanner('Loading providers…', 'info');
+    setBanner('Loading providers...', 'info');
     let inventory = state.inventory;
     let registryFailed = false;
     let gateBlocked = false;
@@ -486,10 +485,10 @@ function createAdapterPicker({
       const fallback = fallbackInventoryFromCatalog();
       inventory = fallback;
       if (gateBlocked) {
-        setBanner('Machine IPC가 꺼져 있어 catalog metadata만 표시합니다. 아래 버튼으로 이 세션에서 IPC를 켜거나, OrPAD를 ORPAD_MACHINE_IPC=1 환경변수와 함께 다시 시작하세요.', 'warn');
-        setIpcGateMessage('Machine IPC가 꺼져 있습니다. 이 세션에서만 IPC를 켜려면 아래 버튼을 누르세요.');
+        setBanner('Machine IPC is disabled, so only catalog metadata is shown. Enable IPC for this session below, or restart OrPAD with ORPAD_MACHINE_IPC=1.', 'warn');
+        setIpcGateMessage('Machine IPC is disabled. Use the button below to enable IPC for this session.');
       } else {
-        setBanner(`Plugin registry IPC 실패 (${err.message}). catalog metadata로 fallback합니다.`, 'error');
+        setBanner(`Plugin registry IPC failed (${err.message}). Using catalog metadata.`, 'error');
         setIpcGateMessage('');
       }
     }
@@ -517,15 +516,15 @@ function createAdapterPicker({
 
   async function commit() {
     if (!state.selection.providerId) {
-      setBanner('Provider를 먼저 선택하세요.', 'error');
+      setBanner('Select a provider first.', 'error');
       return null;
     }
     if (!state.selection.model) {
-      setBanner('Model을 먼저 선택하세요.', 'error');
+      setBanner('Select a model first.', 'error');
       return null;
     }
     state.busy = true;
-    setBanner('Saving…', 'info');
+    setBanner('Saving...', 'info');
     try {
       const response = await commitSelection(bridge, {
         scope: state.scope,
@@ -533,15 +532,15 @@ function createAdapterPicker({
         pipelinePath: state.pipelinePath,
         selection: state.selection,
       });
-      const where = response?.persistedTo ? `→ ${response.persistedTo}` : '';
+      const where = response?.persistedTo ? `to ${response.persistedTo}` : '';
       setBanner(`Saved ${where}`.trim(), 'info');
       if (typeof onCommit === 'function') await onCommit(response);
       return response;
     } catch (err) {
       state.lastError = err;
       const reason = err?.code === 'MACHINE_IPC_FEATURE_DISABLED'
-        ? 'Machine IPC가 꺼져 있어 저장되지 않습니다. ORPAD_MACHINE_IPC=1로 다시 시작하세요.'
-        : `Save 실패: ${err.message}`;
+        ? 'Machine IPC is disabled, so the selection was not saved. Restart with ORPAD_MACHINE_IPC=1.'
+        : `Save failed: ${err.message}`;
       setBanner(reason, 'error');
       if (typeof onError === 'function') onError(err);
       return null;

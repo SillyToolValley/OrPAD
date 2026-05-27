@@ -11,9 +11,9 @@
 // independent execution layers; only this catalog is shared.
 
 // Implementation status flags drive the picker UX:
-//   ready   — invoke path is fully implemented in this PR cycle
-//   stub    — plugin is registered but invokeApi/invokeCli throws NOT_IMPLEMENTED
-//   host    — plugin is keyless / endpoint-supplied; ready when host is reachable
+//   ready   - invoke path is fully implemented in this PR cycle
+//   stub    - plugin is registered but invokeApi/invokeCli throws NOT_IMPLEMENTED
+//   host    - plugin is keyless / endpoint-supplied; ready when host is reachable
 const PROVIDER_CATALOG = Object.freeze({
   openai: Object.freeze({
     id: 'openai',
@@ -24,7 +24,7 @@ const PROVIDER_CATALOG = Object.freeze({
     defaultEndpoint: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
     implementationStatus: 'stub',
-    statusNote: 'Chat Completions invokeApi 미구현 — 다음 PR.',
+    statusNote: 'Chat Completions invokeApi is not implemented yet.',
     models: Object.freeze([
       Object.freeze({ id: 'gpt-4o-mini', qualityTier: 'standard', costPerMTokensIn: 0.15, costPerMTokensOut: 0.60 }),
       Object.freeze({ id: 'gpt-4o', qualityTier: 'standard', costPerMTokensIn: 2.50, costPerMTokensOut: 10.00 }),
@@ -42,7 +42,7 @@ const PROVIDER_CATALOG = Object.freeze({
     defaultEndpoint: 'https://api.anthropic.com/v1/messages',
     defaultModel: 'claude-3-5-haiku-latest',
     implementationStatus: 'ready',
-    statusNote: 'Messages API invokeApi 구현됨 (PR M3). API key를 ai-keys safeStorage에 저장해야 호출 성공.',
+    statusNote: 'Messages API invokeApi is implemented. Save an API key in AI key storage before use.',
     models: Object.freeze([
       Object.freeze({ id: 'claude-3-5-haiku-latest', qualityTier: 'fast', costPerMTokensIn: 0.80, costPerMTokensOut: 4.00 }),
       Object.freeze({ id: 'claude-3-5-sonnet-latest', qualityTier: 'standard', costPerMTokensIn: 3.00, costPerMTokensOut: 15.00 }),
@@ -59,7 +59,7 @@ const PROVIDER_CATALOG = Object.freeze({
     defaultEndpoint: 'https://openrouter.ai/api/v1',
     defaultModel: 'openrouter/auto',
     implementationStatus: 'stub',
-    statusNote: 'plugin 미등록 — 사이드바 streaming만 지원.',
+    statusNote: 'Machine plugin is not registered yet; only sidebar streaming is supported.',
     models: Object.freeze([
       Object.freeze({ id: 'openrouter/auto', qualityTier: 'standard', costPerMTokensIn: 0, costPerMTokensOut: 0 }),
     ]),
@@ -74,7 +74,7 @@ const PROVIDER_CATALOG = Object.freeze({
     defaultEndpoint: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o-mini',
     implementationStatus: 'stub',
-    statusNote: 'plugin 미등록 — 사이드바 streaming만 지원.',
+    statusNote: 'Machine plugin is not registered yet; only sidebar streaming is supported.',
     models: Object.freeze([]),
     costs: Object.freeze({ input: 0, output: 0 }),
   }),
@@ -87,7 +87,7 @@ const PROVIDER_CATALOG = Object.freeze({
     defaultEndpoint: 'http://localhost:11434',
     defaultModel: 'llama3',
     implementationStatus: 'stub',
-    statusNote: 'plugin 등록됨, invokeApi 미구현. ollama 서비스 호출 path는 추후 PR.',
+    statusNote: 'Machine plugin is registered, but invokeApi is not implemented yet.',
     models: Object.freeze([
       Object.freeze({ id: 'llama3', qualityTier: 'standard', costPerMTokensIn: 0, costPerMTokensOut: 0 }),
       Object.freeze({ id: 'llama3.1', qualityTier: 'standard', costPerMTokensIn: 0, costPerMTokensOut: 0 }),
@@ -103,7 +103,7 @@ const PROVIDER_CATALOG = Object.freeze({
     defaultEndpoint: '',
     defaultModel: 'codex',
     implementationStatus: 'ready',
-    statusNote: 'codex CLI를 실제로 spawn (PR M1). Windows shim 자동 탐지.',
+    statusNote: 'Spawns the real Codex CLI and auto-detects Windows shims.',
     models: Object.freeze([
       Object.freeze({ id: 'codex', qualityTier: 'standard', costPerMTokensIn: 0, costPerMTokensOut: 0 }),
     ]),
@@ -118,7 +118,7 @@ const PROVIDER_CATALOG = Object.freeze({
     defaultEndpoint: '',
     defaultModel: 'claude-code',
     implementationStatus: 'ready',
-    statusNote: 'claude CLI를 실제로 spawn (PR M8). PATH에 claude 바이너리 필요.',
+    statusNote: 'Spawns the real Claude CLI. The claude executable must be on PATH.',
     models: Object.freeze([
       Object.freeze({ id: 'claude-code', qualityTier: 'standard', costPerMTokensIn: 0, costPerMTokensOut: 0 }),
     ]),

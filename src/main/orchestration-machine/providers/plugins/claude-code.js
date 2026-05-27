@@ -43,6 +43,39 @@ function findOnPath(name) {
   return '';
 }
 
+function resolveNodeExecutableCandidate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (path.isAbsolute(raw) || /[\\/]/.test(raw)) return fileExists(raw) ? raw : '';
+  return findOnPath(raw)
+    || (process.platform === 'win32' && !/\.(exe|cmd|bat)$/i.test(raw) ? findOnPath(`${raw}.exe`) : '');
+}
+
+function nodeExecutableForClaudeCode() {
+  const candidates = [
+    process.env.ORPAD_MACHINE_NODE_EXEC_PATH,
+    process.env.npm_node_execpath,
+    process.env.NODE,
+    process.platform === 'win32' ? 'node.exe' : 'node',
+    'node',
+    process.versions?.electron ? '' : process.execPath,
+  ];
+  for (const candidate of candidates) {
+    const resolved = resolveNodeExecutableCandidate(candidate);
+    if (resolved) return resolved;
+  }
+  return '';
+}
+
+function nodeInvocationForScript(scriptPath) {
+  const nodeExecutable = nodeExecutableForClaudeCode();
+  if (nodeExecutable) return { command: nodeExecutable, prefixArgs: [scriptPath] };
+  const err = new Error('Claude Code JavaScript entrypoint requires a Node.js executable, but none was found.');
+  err.code = 'MACHINE_CLAUDE_CODE_NODE_NOT_FOUND';
+  err.scriptPath = scriptPath;
+  throw err;
+}
+
 function claudeCodeCommand() {
   return process.env.ORPAD_CLAUDE_CODE_CLI_PATH || 'claude';
 }
@@ -54,8 +87,7 @@ function claudeCodeInvocation(command = claudeCodeCommand(), prefixArgs = []) {
     return { command: configured, prefixArgs: configuredPrefixArgs };
   }
   if (/\.js$/i.test(configured) && fileExists(configured)) {
-    const node = process.execPath;
-    return { command: node, prefixArgs: [configured] };
+    return nodeInvocationForScript(configured);
   }
   // Windows shim variants for `claude` (`.cmd` / `.exe`) work without help.
   return { command: configured, prefixArgs: [] };
@@ -342,6 +374,7 @@ module.exports = {
   claudeCodeCommand,
   claudeCodeExecArgs,
   claudeCodeInvocation,
+  nodeExecutableForClaudeCode,
   normalizeClaudeOutputFormat,
   parseClaudeAdapterResultFromStdout,
   claudeProcessLooksApprovalRequired,

@@ -259,6 +259,14 @@ function parseJsonDocuments(text) {
       parsed.push(JSON.parse(candidate));
     } catch {}
   }
+  const fencePattern = /```(?:json|JSON)?\s*([\s\S]*?)```/g;
+  for (const match of raw.matchAll(fencePattern)) {
+    const candidate = String(match[1] || '').trim();
+    if (!candidate || candidate[0] !== '{') continue;
+    try {
+      parsed.push(JSON.parse(candidate));
+    } catch {}
+  }
   return parsed;
 }
 
@@ -316,7 +324,15 @@ function normalizeWorkerResultStatus(value) {
 }
 
 function workerResultDocumentFromValue(value, depth = 0, seen = new Set()) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 4) return null;
+  if (!value || depth > 4) return null;
+  if (typeof value === 'string') {
+    for (const doc of parseJsonDocuments(value)) {
+      const found = workerResultDocumentFromValue(doc, depth + 1, seen);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
   if (seen.has(value)) return null;
   seen.add(value);
   const status = normalizeWorkerResultStatus(value.status);

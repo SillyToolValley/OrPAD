@@ -526,21 +526,40 @@ function authoringAgentPrompt({
   workspaceRoot,
   appRoot,
   cliPath,
+  cliRunnable = true,
   promptFile,
   authoringSpecPath,
   prompt,
   snapshot,
   nodePackOptions = {},
 }) {
+  const canRunOrpadCli = cliRunnable !== false;
   const input = {
     workspaceRoot,
     appRoot,
     orpadCliPath: cliPath,
+    orpadCliRunnable: canRunOrpadCli,
     promptFile,
     authoringSpecPath,
   };
   const files = Array.isArray(snapshot.files) ? snapshot.files.slice(0, 120) : [];
-  return [
+  const materializationInstruction = canRunOrpadCli
+    ? 'You MUST use the OrPAD CLI to materialize the pipeline. Do not hand-write `.or-pipeline` or `.or-graph` files directly. You may write exactly one authoring spec JSON file, then run OrPAD CLI with that spec.'
+    : 'The OrPAD CLI is not runnable from this packaged app context. Write exactly one final authoring spec JSON file; OrPAD will materialize the pipeline in-process from that JSON.';
+  const invokeLines = canRunOrpadCli
+    ? [
+      '6. CLI INVOCATION - try to run the OrPAD CLI exactly in this form:',
+      '     command = node "<orpadCliPath>" generate --workspace "<workspaceRoot>" --prompt-file "<promptFile>" --authoring-spec-file "<authoringSpecPath>" --json',
+      '   Capture the CLI JSON response from stdout.',
+      '7. FINAL RESPONSE - choose the matching path:',
+      '   - On CLI success: output ONLY the JSON stdout it produced. No Markdown. No commentary.',
+      '   - If CLI invocation fails or is unavailable: output ONLY the FINAL authoring spec JSON itself - the exact same content you wrote to authoringSpecPath. OrPAD will materialize the pipeline in-process from that JSON. Do not add Markdown fences, prefatory prose, or summaries.',
+    ]
+    : [
+      '6. PACKAGED APP ACTION - do not attempt a CLI invocation from this packaged app context.',
+      '7. FINAL OUTPUT - output ONLY the FINAL authoring spec JSON itself - the exact same content you wrote to authoringSpecPath. OrPAD will materialize the pipeline in-process from that JSON. Do not add Markdown fences, prefatory prose, or summaries.',
+    ];
+  const lines = [
     'You are the OrPAD Generate authoring agent.',
     '',
     'Your job is to design a deterministic OrPAD orchestration graph that conducts non-deterministic LLM work for the user request.',
@@ -569,7 +588,7 @@ function authoringAgentPrompt({
     '- Anthropic effective-agent workflows: prompt chaining, routing, parallelization, orchestrator-workers, and evaluator-optimizer loops. Prefer the simplest pattern that covers the control points.',
     '- Workflow-engine practice: borrow durable state, retry, timeout, idempotency, observability, and audit discipline from Temporal/Airflow/Dagster/Prefect-style systems.',
     '',
-    'You MUST use the OrPAD CLI to materialize the pipeline. Do not hand-write `.or-pipeline` or `.or-graph` files directly. You may write exactly one authoring spec JSON file, then run OrPAD CLI with that spec.',
+    materializationInstruction,
     '',
     '<orpad-authoring-input>',
     JSON.stringify(input, null, 2),
@@ -607,6 +626,7 @@ function authoringAgentPrompt({
     '   - If the OrPAD CLI ran successfully: output ONLY the JSON stdout it produced. No Markdown. No commentary.',
     '   - If you could NOT run the OrPAD CLI (no shell tool available, permission denied, command not found, sandbox blocked, etc.): output ONLY the FINAL authoring spec JSON itself — the exact same content you wrote to authoringSpecPath. OrPAD will materialize the pipeline in-process from that JSON. Do not add Markdown fences, prefatory prose, or summaries.',
     '',
+    ...invokeLines,
     'Authoring spec expectations:',
     '- Top-level keys: title, description, graph, skill, rule, metadata.',
     '- graph contains: id, label, start, nodes[], transitions[].',
@@ -621,7 +641,17 @@ function authoringAgentPrompt({
     '- Runtime condition labels are canonical: gates use pass/revise/queue-empty/queue-not-empty, patchReview uses accepted/rejected, barrier uses pass/partial, and non-decision nodes should use unconditional transitions.',
     '',
     'Common failure mode to avoid: emitting Pattern A (Linear) for every request. If your draft looks like entry → context → probe → queue → triage → dispatch → worker → patchReview → gate → artifact → exit with no branches, loops, sub-graphs, or barriers, you almost certainly missed the actual task requirements. Redesign.',
-  ].join('\n');
+  ];
+  const filteredLines = lines.filter(line => (
+      !String(line).startsWith('You MUST use the OrPAD CLI')
+      && !String(line).startsWith('     node "<orpadCliPath>"')
+      && !String(line).startsWith('   The CLI prints')
+      && !String(line).startsWith('6. INVOKE')
+      && !String(line).startsWith('7. RETURN')
+      && !String(line).startsWith('   - If the OrPAD CLI ran successfully')
+      && !String(line).startsWith('   - If you could NOT run the OrPAD CLI')
+    ));
+  return filteredLines.join('\n');
 }
 
 async function prepareAuthoringWorkspace({ workspaceRoot, prompt, emit }) {
@@ -659,6 +689,7 @@ async function authorPipelineWithCodexCli({ app, workspaceRoot, prompt, request,
     workspaceRoot,
     appRoot,
     cliPath,
+    cliRunnable: !app?.isPackaged,
     promptFile,
     authoringSpecPath,
     prompt,
@@ -1129,6 +1160,24 @@ function executableCandidatesForTool(text) {
   return [];
 }
 
+function harnessToolRequirementInfo(text) {
+  const raw = String(text || '').trim();
+  const { label, advisory, parseSource } = harnessCommandLabelInfo(raw);
+  const normalized = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+  const inferredAdvisory = advisory
+    || /\bwhen applicable\b/.test(normalized)
+    || /\bif (?:available|present|installed|needed|required|changed)\b/.test(normalized)
+    || /\bonly when\b/.test(normalized)
+    || /\bcandidate\b/.test(normalized)
+    || /\boptional\b/.test(normalized);
+  return {
+    raw,
+    label,
+    advisory: inferredAdvisory,
+    parseSource: parseSource || raw,
+  };
+}
+
 function harnessCommandLabelInfo(commandLine) {
   const raw = String(commandLine || '').trim();
   const colonIndex = raw.indexOf(':');
@@ -1202,24 +1251,28 @@ function collectHarnessToolInputs(projectProfile = {}, toolPlan = {}, harnessSpe
 }
 
 async function checkHarnessToolHealth(toolInput, workspaceRoot) {
-  const kind = toolKindFromText(toolInput);
+  const toolInfo = harnessToolRequirementInfo(toolInput);
+  const toolText = toolInfo.parseSource;
+  const kind = toolKindFromText(toolText);
   if (kind.startsWith('orpad-managed')) {
     return {
       input: toolInput,
       kind,
       status: 'ready',
+      advisory: toolInfo.advisory,
       selectedCommand: '',
       resolvedPath: '',
       candidates: [],
       versionCheck: { status: 'not-required', reason: 'Capability is provided by OrPAD, not an external executable.' },
     };
   }
-  const candidates = executableCandidatesForTool(toolInput);
+  const candidates = executableCandidatesForTool(toolText);
   if (!candidates.length) {
     return {
       input: toolInput,
       kind,
       status: 'unknown',
+      advisory: toolInfo.advisory,
       selectedCommand: '',
       resolvedPath: '',
       candidates,
@@ -1264,6 +1317,7 @@ async function checkHarnessToolHealth(toolInput, workspaceRoot) {
       input: toolInput,
       kind,
       status: versionCheck.status === 'passed' ? 'ready' : 'degraded',
+      advisory: toolInfo.advisory,
       selectedCommand: candidate,
       resolvedPath,
       candidates,
@@ -1273,11 +1327,17 @@ async function checkHarnessToolHealth(toolInput, workspaceRoot) {
   return {
     input: toolInput,
     kind,
-    status: 'missing',
+    status: toolInfo.advisory ? 'candidate' : 'missing',
+    advisory: toolInfo.advisory,
     selectedCommand: '',
     resolvedPath: '',
     candidates,
-    versionCheck: { status: 'not-run', reason: 'No candidate executable was found on PATH.' },
+    versionCheck: {
+      status: 'not-run',
+      reason: toolInfo.advisory
+        ? 'Tool requirement is conditional/advisory; missing candidates are recorded without blocking harness provisioning.'
+        : 'No candidate executable was found on PATH.',
+    },
   };
 }
 
@@ -1310,6 +1370,7 @@ function parseHarnessCommandLine(commandLine) {
   }
   if (quote) return { ok: false, raw, tokens: [], label, advisory, error: 'unclosed quote' };
   if (current) tokens.push(current);
+  const inferredAdvisory = advisory || tokens.some(token => /[<>]/.test(token));
   const shellOperator = tokens.find(token => SHELL_OPERATOR_TOKENS.has(token));
   if (shellOperator) {
     return {
@@ -1317,7 +1378,7 @@ function parseHarnessCommandLine(commandLine) {
       raw,
       tokens,
       label,
-      advisory,
+      advisory: inferredAdvisory,
       error: `shell operator ${shellOperator} is not supported in harness preflight`,
     };
   }
@@ -1326,7 +1387,7 @@ function parseHarnessCommandLine(commandLine) {
     raw,
     tokens,
     label,
-    advisory,
+    advisory: inferredAdvisory,
     error: '',
   };
 }
@@ -2089,6 +2150,7 @@ async function authorPipelineWithClaudeCodeCli({ app, workspaceRoot, prompt, req
     workspaceRoot,
     appRoot,
     cliPath,
+    cliRunnable: !app?.isPackaged,
     promptFile,
     authoringSpecPath,
     prompt,

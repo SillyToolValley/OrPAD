@@ -71,6 +71,15 @@ test('summarizeForIpc reduces to JSON-safe primitives', () => {
   }
 });
 
+test('provider catalog status notes are locale-neutral picker copy', () => {
+  const localizedText = /[\u3131-\uD79D]/;
+  const replacementGlyph = /\uFFFD/;
+  for (const entry of catalog.listProviderEntries()) {
+    assert.equal(localizedText.test(entry.statusNote || ''), false, `${entry.id} statusNote must not contain Korean UI copy`);
+    assert.equal(replacementGlyph.test(entry.statusNote || ''), false, `${entry.id} statusNote must not contain replacement glyphs`);
+  }
+});
+
 test('codex-cli plugin sources displayName/models from the catalog', () => {
   const plugin = orchestration.getProviderPlugin('codex-cli');
   const entry = catalog.getProviderEntry('codex-cli');

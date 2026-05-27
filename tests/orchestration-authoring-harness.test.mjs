@@ -378,6 +378,38 @@ test('harness provisioning treats descriptive candidate and setup labels as advi
   assert.equal(report.enforcement.runBlockers.length, 0);
 });
 
+test('harness provisioning treats conditional native build tools and placeholder build dirs as non-blocking', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-harness-native-candidate-'));
+  const preflight = await preflightValidationCommand('cmake --build <build-dir>', workspaceRoot);
+  assert.equal(preflight.status, 'candidate');
+  assert.equal(preflight.parsed.advisory, true);
+  assert.equal(preflight.dryRun.status, 'not-run');
+
+  const report = await buildHarnessProvisioningReport({
+    app: { getPath: () => workspaceRoot },
+    workspaceRoot,
+    projectProfile: {
+      validationCommands: ['cmake --build <build-dir>'],
+      stacks: [{
+        id: 'cpp',
+        cliTools: [
+          'msbuild or make when applicable',
+          'candidate: msbuild or make when applicable',
+        ],
+        validationCommands: ['cmake --build <build-dir>'],
+      }],
+    },
+    toolPlan: {},
+    harnessSpec: { schemaVersion: 'orpad.harnessAuthoringSpec.v1' },
+    generatedAt: '2026-05-20T03:07:00.000Z',
+  });
+
+  assert.equal(report.status, 'ready');
+  assert.equal(report.toolHealth.tools.every(tool => tool.status === 'candidate'), true);
+  assert.equal(report.validationPreflight.commands[0]?.status, 'candidate');
+  assert.equal(report.enforcement.runBlockers.length, 0);
+});
+
 test('harness provisioning checks Windows Codex npm shims through the provider invocation', { skip: process.platform !== 'win32' }, async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-harness-codex-health-'));
   const shimRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-codex-shim-'));

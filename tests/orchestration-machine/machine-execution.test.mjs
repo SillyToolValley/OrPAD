@@ -23,6 +23,7 @@ const {
   registerCandidateInventoryArtifact,
   registerPatchArtifact,
   normalizeJudgeResult,
+  queueJournalPath,
   runContentEditorialJudge,
   summarizeEdgeEvaluation,
   transitionQueueItem,
@@ -41,6 +42,8 @@ const {
   __test_canonicalGateOnFailPolicy,
   __test_configuredWorkerConcurrency,
   __test_machineConfigWithQueueProtocolClaimPolicy,
+  __test_gateFailureOnlyStaleQueueActive,
+  __test_normalizeNonRunnableBlockedQueueItems,
   __test_requiredValidationCommandsForWorkerNode,
   __test_sanitizeInnerFailurePolicy,
   __test_workerCommandGrantTtlMs,
@@ -1683,6 +1686,7 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
     runRoot: run.runRoot,
     runId: run.runId,
     taskText,
+    llmApprovalMode: 'bypass',
   });
 
   assert.equal(executed.worker.result.event.payload.status, 'done');
@@ -1702,6 +1706,8 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
   const proposalTranscript = await readRunArtifactJson(run.runRoot, proposalTranscriptPath);
   assert.equal(proposalTranscript.command.args.at(-1), '-');
   assert.equal(proposalTranscript.command.args.some(arg => String(arg).includes(taskText)), false);
+  assert.equal(proposalTranscript.command.args.includes('--dangerously-bypass-approvals-and-sandbox'), true);
+  assert.equal(proposalTranscript.command.args.includes('danger-full-access'), true);
   const workerResult = executed.events.find(event => event.eventType === 'worker.result');
   const workerTranscriptPath = workerResult.artifactRefs.find(item => item.endsWith('.transcript.json'));
   const workerTranscript = await readRunArtifactJson(run.runRoot, workerTranscriptPath);
@@ -2026,6 +2032,78 @@ test('ArtifactContract rejects symlinked queue requirements before treating them
   );
 });
 
+test('ArtifactContract materializes an empty queue journal projection when queue was unused', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260527_artifact_contract_empty_journal');
+
+  const result = await validateArtifactContract(run.runRoot, {
+    queueRoot: 'queue',
+    requiredQueue: ['journal.jsonl'],
+    onMissing: 'fail-run',
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.missingQueueCount, 0);
+  assert.equal(await fs.readFile(queueJournalPath(run.runRoot), 'utf8'), '');
+});
+
+test('ArtifactContract rebuilds queue journal projection from canonical events', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260527_artifact_contract_rebuild_journal');
+  await ingestCandidateProposal(run.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-journal-projection-item',
+    suggestedWorkItemId: 'journal-projection-item',
+    sourceNode: 'main/probe',
+    title: 'Exercise queue journal projection',
+    fingerprint: 'journal-projection:item',
+    evidence: [{ id: 'journal-projection-before', file: 'src/target.md' }],
+    acceptanceCriteria: ['Queue journal projection records canonical transitions.'],
+    sourceOfTruthTargets: ['src/target.md'],
+  }, {
+    runId: run.runId,
+    transitionId: 'ingest:journal-projection-item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'journal-projection-item',
+    toState: 'queued',
+    transitionId: 'triage:journal-projection-item',
+  });
+  await fs.rm(queueJournalPath(run.runRoot));
+
+  const result = await validateArtifactContract(run.runRoot, {
+    queueRoot: 'queue',
+    requiredQueue: ['journal.jsonl'],
+    onMissing: 'fail-run',
+  });
+  const records = (await fs.readFile(queueJournalPath(run.runRoot), 'utf8'))
+    .trim()
+    .split(/\r?\n/)
+    .map(line => JSON.parse(line));
+
+  assert.equal(result.valid, true);
+  assert.equal(result.missingQueueCount, 0);
+  assert.deepEqual(records.map(record => record.action), ['ingest', 'triage']);
+});
+
+test('ArtifactContract rejects symlinked queue journal before projection', async t => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260527_artifact_contract_journal_symlink');
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-contract-journal-outside-'));
+  const outsideFile = path.join(outsideRoot, 'journal.jsonl');
+  await fs.writeFile(outsideFile, '{"outside":true}\n', 'utf8');
+  await fs.mkdir(path.dirname(queueJournalPath(run.runRoot)), { recursive: true });
+  if (!await createTestSymlink(t, outsideFile, queueJournalPath(run.runRoot), 'file')) return;
+
+  await assert.rejects(
+    validateArtifactContract(run.runRoot, {
+      queueRoot: 'queue',
+      requiredQueue: ['journal.jsonl'],
+      onMissing: 'warn',
+    }),
+    error => error?.code === 'MACHINE_QUEUE_JOURNAL_SYMLINK_UNSAFE',
+  );
+  assert.equal(await fs.readFile(outsideFile, 'utf8'), '{"outside":true}\n');
+});
+
 test('ArtifactContract canonicalizes non-enum onMissing aliases to partial evidence', async () => {
   const { run } = await makeGraphHarnessWorkspace('run_20260430_artifact_contract_onmissing_alias');
 
@@ -2219,6 +2297,36 @@ test('required completion gate audit treats warn failures as blocking final comp
   assert.equal(audit.valid, false);
   assert.deepEqual(audit.failedRequiredGates.map(gate => gate.nodePath), nodes.map(node => node.nodePath));
   assert.equal(audit.nextAction, 'fix-required-gate-evidence-and-rerun');
+});
+
+test('required completion gate audit treats worker-dependent gates as not applicable when no work was discovered', async () => {
+  const nodes = [
+    { id: 'content-editorial-quality-gate', nodePath: 'main/content-editorial-quality-gate', nodeType: 'orpad.gate', config: { evaluationMode: 'content-editorial-quality', onFail: 'warn' } },
+    { id: 'gate-work-item-evidence-quality', nodePath: 'main/gate-work-item-evidence-quality', nodeType: 'orpad.gate', config: { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' } },
+  ];
+  const events = [{
+    sequence: 1,
+    eventType: 'node.completed',
+    nodePath: 'main/content-editorial-quality-gate',
+    payload: {
+      nodeType: 'orpad.gate',
+      valid: false,
+      onFail: 'warn',
+      failed: [{ criterion: 'accepted worker proof exists', reason: 'worker-proof-missing' }],
+    },
+  }];
+
+  const audit = __test_auditRequiredCompletionGates(events, nodes, {
+    noActionableWorkDiscovered: true,
+  });
+
+  assert.equal(audit.valid, true);
+  assert.equal(audit.failedRequiredGates.length, 0);
+  assert.equal(audit.missingRequiredGates.length, 0);
+  assert.deepEqual(
+    audit.notApplicableGates.map(gate => gate.nodePath),
+    ['main/content-editorial-quality-gate', 'main/gate-work-item-evidence-quality'],
+  );
 });
 
 test('worker-evidence gate valid=false with onFail warn blocks final run completion', async () => {
@@ -2566,6 +2674,151 @@ test('Content editorial gate ignores summary-only quality claims when diff is po
   assert.equal(result.strictFailure, true);
   assert.equal(result.failed.some(item => item.reason === 'bullet-list-density'), true);
   assert.equal(result.failed.some(item => item.failedChecks?.some(check => check.id === 'ai-scaffolding-phrase')), true);
+});
+
+test('Content editorial rule analyzer ignores fenced code and technical label repetition', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260527_content_editorial_technical_prose');
+  const patchArtifact = await registerContentPatch(run, [{
+    path: 'docs/tui-rendering-plan.md',
+    beforeContent: [
+      '# TUI rendering plan',
+      '',
+      'The old plan names the diagnostics window without the current state rules.',
+    ].join('\n'),
+    afterContent: [
+      '# TUI rendering plan',
+      '',
+      'Use the TUI Rendering subsection only after the tab enters full-screen TUI mode.',
+      'The TUI Rendering subsection only reports rows that apply to the current state.',
+      'Check the TUI Rendering subsection only when `UTerminalWindow` has an active `TerminalTab`.',
+      '',
+      '```powershell',
+      '$e = [char]27',
+      '[Console]::Write("${e}[?1049h${e}[2J${e}[H" + ("ALT FALLBACK FRAME " * 20) + "`r`n")',
+      '```',
+      '',
+      '| Location | Suite | Count | Purpose |',
+      '| --- | --- | ---: | --- |',
+      '| `Assets/UTerminal/Tests/Editor/TuiRenderingRegressionTests.cs` | `UTerminal.Tests` | 11 | Project-level `UTerminal.Tests` coverage. |',
+      '',
+      'section 2.1 ConPTY diff drift : PASS | FAIL | BLOCKED - notes:',
+      'section 2.2 Sync-output suppression : PASS | FAIL | BLOCKED - notes:',
+      'section 2.3 Alt-buffer residue : PASS | FAIL | BLOCKED - notes:',
+      'section 2.4 Pending-wrap cursor drift : PASS | FAIL | BLOCKED - notes:',
+      'section 2.5 CMD-banner stale cells : PASS | FAIL | BLOCKED - notes:',
+      'section 2.6 IME composition cursor : PASS | FAIL | BLOCKED - notes:',
+      '',
+      'Keep the result focused on whether the visible diagnostics match the current terminal state.',
+    ].join('\n'),
+  }]);
+  await appendContentWorkerResult(run, {
+    itemId: 'technical-doc-worker',
+    patchArtifact,
+    changedFiles: ['docs/tui-rendering-plan.md'],
+  });
+
+  const result = await validateGateNode(run.runRoot, {
+    evaluationMode: 'content-editorial-quality',
+    judgePolicy: 'rule-only',
+    criteria: ['final editorial quality passes'],
+    onFail: 'warn',
+  });
+
+  assert.equal(result.valid, true);
+  const workerEval = result.evaluations.find(item => item.itemId === 'technical-doc-worker');
+  const artifact = await readRunArtifactJson(run.runRoot, workerEval.artifactPath);
+  assert.equal(artifact.ruleResult.checks.find(check => check.id === 'long-sentence-or-bullet').passed, true);
+  assert.equal(artifact.ruleResult.checks.find(check => check.id === 'duplicate-heading-or-repeated-phrase').passed, true);
+});
+
+test('blocked Unity-generated meta work is reclassified as rejected before completion audit', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260527_non_runnable_generated_meta');
+  await ingestCandidateProposal(run.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-package-tests-generated-meta',
+    suggestedWorkItemId: 'package-tests-generated-meta',
+    sourceNode: 'main/probe',
+    title: 'Make package tests Unity-importable with generated meta files',
+    fingerprint: 'graph-harness:unity-generated-meta',
+    evidence: [{ id: 'agent-rule', file: 'AGENTS.md' }],
+    acceptanceCriteria: [
+      'Unity has imported Packages/com.example/Tests so .meta files exist for the Tests folder.',
+      'No .meta files are hand-authored; they are generated by Unity import as required by project guidance.',
+    ],
+    sourceOfTruthTargets: ['AGENTS.md'],
+    targetFiles: [
+      'Packages/com.example/Tests',
+      'Packages/com.example/Tests.meta',
+      'Packages/com.example/Tests/Editor.meta',
+    ],
+    verificationPlan: 'Open Unity to let it generate meta files, then verify that generated .meta files are committed.',
+  }, {
+    runId: run.runId,
+    transitionId: 'ingest:generated-meta',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'package-tests-generated-meta',
+    toState: 'queued',
+    transitionId: 'triage:generated-meta',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'package-tests-generated-meta',
+    toState: 'claimed',
+    transitionId: 'claim:generated-meta',
+    itemPatch: { claimId: 'claim-generated-meta', claimedBy: 'test-worker' },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'package-tests-generated-meta',
+    toState: 'blocked',
+    transitionId: 'close:generated-meta-blocked',
+    itemPatch: {
+      workerResultStatus: 'blocked',
+      blockedReason: 'Unity-generated folder meta files are missing and cannot be safely hand-authored.',
+    },
+  });
+
+  const rejected = await __test_normalizeNonRunnableBlockedQueueItems(run.runRoot, {
+    runId: run.runId,
+    now: '2026-05-27T00:00:00.000Z',
+  });
+
+  assert.equal(rejected.length, 1);
+  const item = await findQueueItem(run.runRoot, 'package-tests-generated-meta');
+  assert.equal(item.state, 'rejected');
+  assert.equal(item.item.machineRejected, true);
+  assert.match(item.item.rejectionReason, /Unity-generated \.meta files/);
+});
+
+test('required completion gate audit ignores stale queue-active failure after inventory drains', () => {
+  const nodes = [{
+    id: 'gate-work-item-evidence-quality',
+    nodePath: 'main/gate-work-item-evidence-quality',
+    nodeType: 'orpad.gate',
+    config: { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' },
+  }];
+  const events = [{
+    sequence: 10,
+    eventType: 'node.completed',
+    nodePath: 'main/gate-work-item-evidence-quality',
+    payload: {
+      nodeType: 'orpad.gate',
+      valid: false,
+      onFail: 'warn',
+      failed: [{ criterion: 'queue empty', reason: 'queue-active', activeCount: 8 }],
+    },
+  }];
+
+  const audit = __test_auditRequiredCompletionGates(events, nodes, {
+    currentInventory: { activeCount: 0 },
+  });
+
+  assert.equal(__test_gateFailureOnlyStaleQueueActive(events[0], { activeCount: 0 }), true);
+  assert.equal(audit.valid, true);
+  assert.equal(audit.failedRequiredGates.length, 0);
+  assert.equal(audit.staleQueueActiveGates.length, 1);
 });
 
 test('Content editorial rule analyzer fails checklist-only growth without rewrite', async () => {

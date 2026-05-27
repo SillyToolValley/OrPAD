@@ -1476,6 +1476,143 @@ function ensureTransition(transitions, seenIds, from, to, condition = '') {
   return transition;
 }
 
+function workstreamTailIndex(nodes) {
+  return firstIndexMatching(nodes, node => [
+    'orpad.workQueue',
+    'orpad.triage',
+    'orpad.dispatcher',
+    'orpad.workerLoop',
+    'orpad.patchReview',
+    'orpad.gate',
+    'orpad.artifactContract',
+    'orpad.exit',
+  ].includes(node.type));
+}
+
+function previousContextOrEntry(nodes, beforeIndex = nodes.length) {
+  const contextIndex = lastIndexMatching(nodes, node => node.type === 'orpad.context', beforeIndex);
+  if (contextIndex >= 0) return nodes[contextIndex];
+  return nodeByType(nodes, 'orpad.entry') || nodes[0] || null;
+}
+
+function authoringSpecIntentText(spec, graphSpec, taskText) {
+  const metadata = isPlainObject(spec?.metadata) ? spec.metadata : {};
+  return [
+    taskText,
+    spec?.title,
+    spec?.description,
+    spec?.authoringNotes,
+    graphSpec?.label,
+    metadata.prompt,
+    metadata.taskText,
+    metadata.authoringNotes,
+  ].map(item => String(item || '')).join('\n');
+}
+
+function forkJoinDiscoveryRequested(intentText) {
+  return taskRequestsForkJoinDiscovery(normalizeTask(intentText).toLowerCase());
+}
+
+function discoveryForkJoinComplete(nodes) {
+  const probeIds = new Set((nodes || [])
+    .filter(node => node?.type === 'orpad.probe')
+    .map(node => node.id));
+  if (probeIds.size < 2) return false;
+  return (nodes || []).some(node => (
+    node?.type === 'orpad.barrier'
+    && stringArray(node.config?.waitFor).filter(id => probeIds.has(id)).length >= 2
+  ));
+}
+
+function supplementalForkJoinProbeSpecs(selectedNodePacks = []) {
+  const specs = [];
+  for (const pack of selectedNodePacks || []) {
+    const hint = pack?.authoringHints?.probe;
+    if (!hint) continue;
+    specs.push({
+      id: hint.id || `probe-${nodeId(pack.id, 'package')}`,
+      type: 'orpad.probe',
+      label: hint.label || `Probe ${pack.name || pack.id} candidates`,
+      config: {
+        lens: hint.lens || nodeId(pack.id, 'package'),
+        maxCandidates: Number(hint.maxCandidates) || 5,
+        candidateLimitPolicy: 'collect-all-visible',
+        ...packSourceConfig(pack, selectedNodePacks),
+      },
+    });
+  }
+  return [
+    ...specs,
+    {
+      id: 'probe-rendering-surface',
+      type: 'orpad.probe',
+      label: 'Probe rendering surface',
+      config: { lens: 'ui-rendering-regression', maxCandidates: 5, candidateLimitPolicy: 'collect-all-visible' },
+    },
+    {
+      id: 'probe-validation-coverage',
+      type: 'orpad.probe',
+      label: 'Probe validation coverage',
+      config: { lens: 'verification-coverage', maxCandidates: 5, candidateLimitPolicy: 'collect-all-visible' },
+    },
+  ];
+}
+
+function ensureRequestedForkJoinDiscovery(nodes, seen, intentText, selectedNodePacks = []) {
+  if (!forkJoinDiscoveryRequested(intentText) || discoveryForkJoinComplete(nodes)) return [];
+
+  const generatedTransitions = [];
+  const insertionIndex = workstreamTailIndex(nodes);
+  const source = previousContextOrEntry(nodes, insertionIndex);
+  const existingProbes = nodes.filter(node => node.type === 'orpad.probe');
+  const probeIds = new Set(existingProbes.map(node => node.id));
+  const probes = [...existingProbes];
+
+  for (const rawProbe of supplementalForkJoinProbeSpecs(selectedNodePacks)) {
+    if (probes.length >= 2) break;
+    const probe = sanitizeNode(rawProbe, seen);
+    if (!probe || probeIds.has(probe.id)) continue;
+    nodes.splice(Math.max(0, Math.min(nodes.length, insertionIndex)), 0, probe);
+    probes.push(probe);
+    probeIds.add(probe.id);
+  }
+
+  if (probes.length < 2) return [];
+
+  let barrier = nodes.find(node => node.type === 'orpad.barrier');
+  if (!barrier) {
+    barrier = sanitizeNode({
+      id: 'join-discovery',
+      type: 'orpad.barrier',
+      label: 'Join independent discovery probes',
+      config: {
+        mergePolicy: 'concat-evidence',
+        onPartialFailure: 'continue-with-warning',
+      },
+    }, seen);
+    if (barrier) {
+      const afterLastProbe = Math.max(...probes.map(node => nodes.indexOf(node)).filter(index => index >= 0)) + 1;
+      nodes.splice(Math.max(0, Math.min(nodes.length, afterLastProbe)), 0, barrier);
+    }
+  }
+  if (!barrier) return [];
+
+  barrier.config = {
+    ...(barrier.config || {}),
+    waitFor: probes.map(node => node.id),
+    mergePolicy: barrier.config?.mergePolicy || 'concat-evidence',
+    onPartialFailure: canonicalBarrierPartialFailurePolicy(barrier.config?.onPartialFailure, barrier.config) || 'continue-with-warning',
+  };
+
+  if (source) {
+    for (const probe of probes) generatedTransitions.push({ from: source.id, to: probe.id });
+  }
+  for (const probe of probes) generatedTransitions.push({ from: probe.id, to: barrier.id });
+  const queue = nodeByType(nodes, 'orpad.workQueue') || nodeByType(nodes, 'orpad.triage') || nodeByType(nodes, 'orpad.dispatcher');
+  if (queue) generatedTransitions.push({ from: barrier.id, to: queue.id, condition: 'pass' });
+  return generatedTransitions;
+}
+
 function nodeByType(nodes, type) {
   return nodes.find(node => node.type === type) || null;
 }
@@ -2722,6 +2859,7 @@ function normalizeSubtreeList(rawList, requiredRefs) {
 function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks = []) {
   const spec = isPlainObject(rawSpec) ? rawSpec : deterministicAuthoringSpec(taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks);
   const graphSpec = isPlainObject(spec.graph) ? spec.graph : spec;
+  const intentText = authoringSpecIntentText(spec, graphSpec, taskText);
   const seen = new Set();
   let nodes = Array.isArray(graphSpec.nodes)
     ? graphSpec.nodes.map(raw => sanitizeNode(raw, seen)).filter(Boolean)
@@ -2730,7 +2868,8 @@ function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, exter
     return normalizeAuthoringSpec(deterministicAuthoringSpec(taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks), taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks);
   }
   nodes = ensureCoreWorkstreamNodes(nodes, seen);
-  ensureContentEditorialGateNode(nodes, seen, taskText, selectedNodePacks);
+  const requestedForkJoinTransitions = ensureRequestedForkJoinDiscovery(nodes, seen, intentText, selectedNodePacks);
+  ensureContentEditorialGateNode(nodes, seen, intentText, selectedNodePacks);
   nodes = nodes.filter(Boolean).map(node => nodeWithConfig(node, taskText, externalResearchLimitation));
   ensureSelectedNodePackProvenance(nodes, selectedNodePacks);
   const firstQueue = nodes.find(node => node.type === 'orpad.workQueue')?.id || 'queue';
@@ -2745,9 +2884,13 @@ function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, exter
     }
   }
   const collapsedWorkers = collapseWorkerLoopsForMachine(nodes, graphSpec.transitions || spec.transitions || []);
+  const authoredTransitions = [
+    ...collapsedWorkers.transitions,
+    ...requestedForkJoinTransitions,
+  ];
   nodes = collapsedWorkers.nodes;
   const transitions = enforceTransitionContracts(
-    normalizeTransitions(collapsedWorkers.transitions, nodes),
+    normalizeTransitions(authoredTransitions, nodes),
     nodes,
   );
   finalizeNodeConfigsFromTransitions(nodes, transitions);

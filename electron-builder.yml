@@ -22,9 +22,13 @@ directories:
 files:
   - src/main/**/*
   - src/renderer/**/*
+  - src/shared/**/*
   - src/locales/**/*
   - nodes/**/*
   - dist/**/*
+  - assets/**/*
+  - scripts/audit-orpad-run.mjs
+  - scripts/audit-orpad-node-schemas.mjs
   - package.json
   - "!node_modules/**/test/**"
   - "!node_modules/**/tests/**"

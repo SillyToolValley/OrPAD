@@ -558,6 +558,79 @@ test('CLI overlay adapter extracts stdout evidence into canonical worker result 
   assert.deepEqual(workerEvent.payload.verificationCommands, stdoutResult.verificationCommands);
 });
 
+test('CLI overlay adapter extracts worker result JSON nested inside provider result text', async () => {
+  const run = await makeRun('run_20260524_cli_nested_stdout_evidence');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const claim = await queueAndClaim(run, 'claim-cli-nested-stdout-evidence');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: claim.writeSet.paths,
+    adapterCallId: 'cli-nested-stdout-evidence-call',
+    attemptId: 'cli-nested-stdout-evidence-attempt-1',
+    idempotencyKey: 'cli-nested-stdout-evidence-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.expectedChangedFiles = ['src/allowed.txt'];
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const nestedResult = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'done',
+    summary: 'Worker fixed the allowed target from a provider wrapper result.',
+    failingSymptom: 'The provider wrapper hid the worker result in a result string.',
+    rootCause: 'The parser did not inspect fenced JSON inside provider result text.',
+    verificationCommands: ['node --test tests/orchestration-machine/cli-adapter-safety.test.mjs'],
+    residualRisk: 'Only nested provider result parsing is covered here.',
+    artifacts: [],
+  };
+  const providerEnvelope = {
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    result: [
+      'Provider summary text.',
+      '',
+      '```json',
+      JSON.stringify(nestedResult, null, 2),
+      '```',
+    ].join('\n'),
+  };
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("src",{recursive:true});',
+    'fs.writeFileSync("src/allowed.txt","after nested evidence\\n");',
+    `process.stdout.write(${JSON.stringify(JSON.stringify(providerEnvelope))});`,
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-nested-stdout-evidence',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.equal(result.failingSymptom, nestedResult.failingSymptom);
+  assert.equal(result.rootCause, nestedResult.rootCause);
+  assert.equal(result.residualRisk, nestedResult.residualRisk);
+  assert.deepEqual(result.filesChanged, ['src/allowed.txt']);
+  assert.deepEqual(result.verificationCommands, nestedResult.verificationCommands);
+});
+
 test('CLI overlay adapter copies source-of-truth files as read-only context', async () => {
   const run = await makeRun('run_20260430_cli_readonly_context');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });

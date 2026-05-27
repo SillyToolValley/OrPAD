@@ -796,6 +796,23 @@ test('LLM authoring agent prompt receives the matched situation pack catalog', (
   assert.match(prompt, /Preferred probe lens: electron-maintenance/);
 });
 
+test('packaged Generate prompt does not ask the agent to execute an app.asar CLI path', () => {
+  const prompt = authoringAgentPrompt({
+    workspaceRoot: 'C:/fixture',
+    appRoot: 'C:/Program Files/OrPAD/resources/app.asar',
+    cliPath: 'C:/Program Files/OrPAD/resources/app.asar/bin/orpad-cli.mjs',
+    cliRunnable: false,
+    promptFile: 'C:/fixture/.orpad/authoring/request.txt',
+    authoringSpecPath: 'C:/fixture/.orpad/authoring/spec.json',
+    prompt: 'Define a UI rendering audit pipeline.',
+    snapshot: { files: ['src/renderer/terminal-window.js'] },
+  });
+
+  assert.match(prompt, /PACKAGED APP ACTION/);
+  assert.doesNotMatch(prompt, /node "<orpadCliPath>"/);
+  assert.match(prompt, /materialize the pipeline in-process/);
+});
+
 test('generated documentation pipeline selects the content QA pack', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-content-pack-generate-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));

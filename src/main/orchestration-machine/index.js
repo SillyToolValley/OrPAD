@@ -25,6 +25,7 @@ const nodePackInstaller = require('./node-pack-installer');
 const nodePackAuthoring = require('./node-pack-authoring');
 const nodePackRegistry = require('./node-pack-registry');
 const nodePackWorkspaceLock = require('./node-pack-workspace-lock');
+const nonRunnableWork = require('./non-runnable-work');
 const patches = require('./patches');
 const patchReviewClassifier = require('./patch-review-classifier');
 const pathResolver = require('./path-resolver');
@@ -78,6 +79,7 @@ module.exports = {
   ...nodePacks,
   ...nodePackRegistry,
   ...nodePackWorkspaceLock,
+  ...nonRunnableWork,
   ...patches,
   ...patchReviewClassifier,
   ...pathResolver,
@@ -104,6 +106,7 @@ module.exports = {
   claudeCodeCommand: claudeCodePlugin.claudeCodeCommand,
   claudeCodeExecArgs: claudeCodePlugin.claudeCodeExecArgs,
   claudeCodeInvocation: claudeCodePlugin.claudeCodeInvocation,
+  nodeExecutableForClaudeCode: claudeCodePlugin.nodeExecutableForClaudeCode,
   parseClaudeAdapterResultFromStdout: claudeCodePlugin.parseClaudeAdapterResultFromStdout,
   claudeProcessLooksApprovalRequired: claudeCodePlugin.claudeProcessLooksApprovalRequired,
   ...genericCliPlugin,

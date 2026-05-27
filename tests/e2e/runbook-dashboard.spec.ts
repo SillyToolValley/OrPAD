@@ -334,8 +334,11 @@ test('toolbar opens Orchestration in a dedicated workspace window', async () => 
 
   await expect(orchestrationWin.locator('#btn-orchestration')).toHaveClass(/active/);
   await expect(orchestrationWin.locator('#sidebar-header')).toBeHidden();
+  await expect(orchestrationWin.locator('#sidebar-resize')).toBeVisible();
   await expect(orchestrationWin.locator('#editor-pane')).toBeHidden();
   await expect(orchestrationWin.locator('#preview-pane')).toBeVisible();
+  const sidebarBox = await orchestrationWin.locator('#sidebar').boundingBox();
+  expect(sidebarBox?.width || 0).toBeGreaterThanOrEqual(390);
   await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Describe the work');
   await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Generate Pipeline');
   await expect(orchestrationWin.locator('#runbooks-content [data-runbook-section="pipelines"]')).toHaveCount(0);

@@ -107,7 +107,6 @@ body.orchestration-window #format-bar,
 body.orchestration-window #tab-bar,
 body.orchestration-window #statusbar,
 body.orchestration-window #sidebar-header,
-body.orchestration-window #sidebar-resize,
 body.orchestration-window #editor-pane,
 body.orchestration-window #divider,
 body.orchestration-window #welcome {
@@ -166,14 +165,23 @@ body.orchestration-window #workspace {
   overflow: hidden;
 }
 body.orchestration-window #sidebar {
-  flex: 0 0 calc(380px * var(--us));
-  width: calc(380px * var(--us)) !important;
-  min-width: calc(320px * var(--us)) !important;
-  max-width: calc(460px * var(--us));
+  flex: 0 0 calc(480px * var(--us));
+  width: calc(480px * var(--us));
+  min-width: calc(400px * var(--us)) !important;
+  max-width: min(calc(760px * var(--us)), 52vw);
   height: 100%;
   border-right: 1px solid var(--border-color);
   background: var(--bg-secondary);
   opacity: 1;
+}
+body.orchestration-window #sidebar-resize {
+  display: block;
+  width: calc(6px * var(--us));
+  background: color-mix(in srgb, var(--border-color) 18%, transparent);
+}
+body.orchestration-window #sidebar-resize:hover,
+body.orchestration-window #sidebar-resize.dragging {
+  background: var(--accent-color);
 }
 body.orchestration-window.orchestration-rail-collapsed #sidebar {
   flex-basis: 0;
@@ -182,6 +190,9 @@ body.orchestration-window.orchestration-rail-collapsed #sidebar {
   max-width: 0;
   border-right: 0;
   overflow: hidden;
+}
+body.orchestration-window.orchestration-rail-collapsed #sidebar-resize {
+  display: none !important;
 }
 body.orchestration-window.orchestration-rail-collapsed #sidebar-runbooks {
   visibility: hidden;
@@ -197,8 +208,11 @@ body.orchestration-window #sidebar-runbooks {
 }
 body.orchestration-window #runbooks-content {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin: 0;
   padding: calc(10px * var(--us));
+  overflow-x: hidden;
 }
 body.orchestration-window #preview-pane {
   display: flex !important;
@@ -1728,8 +1742,12 @@ body.json-diff-mode #preview-pane {
   padding: calc(10px * var(--us));
   font-size: calc(12px * var(--us));
   color: var(--text-secondary);
+  min-width: 0;
+  max-width: 100%;
 }
 .runbook-panel-section {
+  min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: calc(8px * var(--us));
   border: 1px solid var(--border-color);
@@ -1755,8 +1773,10 @@ body.json-diff-mode #preview-pane {
 }
 .runbook-panel-section p { margin: 0; line-height: 1.45; }
 .runbook-muted {
+  min-width: 0;
   color: var(--text-tertiary);
   font-size: calc(11px * var(--us));
+  overflow-wrap: anywhere;
 }
 .runbook-workspace-meta {
   min-width: 0;
@@ -1821,6 +1841,7 @@ body.json-diff-mode #preview-pane {
 }
 .runbook-chip-row,
 .runbook-action-row {
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: calc(6px * var(--us));
@@ -1837,6 +1858,8 @@ body.json-diff-mode #preview-pane {
   color: var(--text-secondary);
   font-size: calc(10px * var(--us));
   line-height: 1.1;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .runbook-chip.good {
   border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 44%, var(--border-color));
@@ -1850,8 +1873,9 @@ body.json-diff-mode #preview-pane {
   border-color: color-mix(in srgb, var(--danger-color, #ff7676) 52%, var(--border-color));
   color: var(--danger-color, #ff7676);
 }
-.runbook-list { display: grid; gap: calc(7px * var(--us)); }
+.runbook-list { min-width: 0; display: grid; gap: calc(7px * var(--us)); }
 .runbook-item {
+  min-width: 0;
   display: grid;
   gap: calc(3px * var(--us));
   padding: calc(6px * var(--us)) calc(7px * var(--us));
@@ -1897,6 +1921,7 @@ body.json-diff-mode #preview-pane {
 }
 .runbook-action-row button,
 .runbook-panel-section button {
+  min-width: 0;
   padding: calc(5px * var(--us)) calc(8px * var(--us));
   border: 1px solid var(--border-color);
   border-radius: calc(7px * var(--us));
@@ -1905,6 +1930,7 @@ body.json-diff-mode #preview-pane {
   font: inherit;
   font-size: calc(11px * var(--us));
   cursor: pointer;
+  overflow-wrap: anywhere;
 }
 .runbook-action-row button:hover,
 .runbook-panel-section button:hover {
@@ -2208,8 +2234,10 @@ body.json-diff-mode #preview-pane {
   align-items: baseline;
 }
 .runbook-latest-run-main strong {
+  min-width: 0;
   color: var(--text-primary);
   font-size: calc(12.5px * var(--us));
+  overflow-wrap: anywhere;
 }
 .runbook-latest-run-main span {
   min-width: 0;
@@ -3176,6 +3204,57 @@ body.json-diff-mode #preview-pane {
   flex: 1 1 auto;
   min-height: calc(260px * var(--us));
   height: auto;
+}
+body.orchestration-window #content.view-orch-tree,
+body.orchestration-window #content.view-orch-graph {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+body.orchestration-window #content.view-orch-tree .orch-preview,
+body.orchestration-window #content.view-orch-graph .orch-preview {
+  flex: 0 0 auto;
+  min-height: calc(100vh - calc(36px * var(--us)));
+  height: auto;
+  overflow: visible;
+}
+body.orchestration-window #content.view-orch-tree .orch-run-status-stack,
+body.orchestration-window #content.view-orch-graph .orch-run-status-stack {
+  order: 40;
+  display: grid;
+  gap: calc(10px * var(--us));
+  flex: 0 0 auto;
+  max-height: min(calc(320px * var(--us)), 36vh);
+  margin-top: calc(12px * var(--us));
+  padding-right: calc(4px * var(--us));
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+body.orchestration-window #content.view-orch-tree .orch-run-status-stack:empty,
+body.orchestration-window #content.view-orch-graph .orch-run-status-stack:empty {
+  display: none;
+}
+body.orchestration-window #content.view-orch-tree .orch-run-status-stack > *,
+body.orchestration-window #content.view-orch-graph .orch-run-status-stack > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+body.orchestration-window #content.view-orch-tree .orch-graph-layout,
+body.orchestration-window #content.view-orch-graph .orch-graph-layout {
+  order: 20;
+  flex: 0 0 auto;
+  height: max(calc(360px * var(--us)), calc(100vh - calc(172px * var(--us))));
+  min-height: max(calc(360px * var(--us)), calc(100vh - calc(172px * var(--us))));
+}
+body.orchestration-window #content.view-orch-tree .orch-graph-main,
+body.orchestration-window #content.view-orch-graph .orch-graph-main,
+body.orchestration-window #content.view-orch-tree .orch-tree,
+body.orchestration-window #content.view-orch-graph .orch-tree {
+  height: 100%;
+}
+body.orchestration-window #content.view-orch-tree .orch-graph-frame,
+body.orchestration-window #content.view-orch-graph .orch-graph-frame {
+  min-height: 0;
+  height: 100%;
 }
 .orch-graph-frame.hand {
   cursor: grab;
@@ -8193,6 +8272,9 @@ body.terminal-window-body {
 .ai-sidebar-resize:hover,
 .ai-sidebar-resize.dragging { background: var(--accent-color); }
 .ai-sidebar-resize.hidden { display: none; }
+body.orchestration-window #btn-ai,
+body.orchestration-window .ai-sidebar,
+body.orchestration-window .ai-sidebar-resize { display: none !important; }
 
 .ai-sidebar {
   position: relative;

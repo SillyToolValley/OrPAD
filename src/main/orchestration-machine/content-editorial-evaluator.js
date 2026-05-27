@@ -9,6 +9,7 @@ const fsp = fs.promises;
 
 const CONTENT_EDITORIAL_EVALUATION_SCHEMA_VERSION = 'orpad.contentEditorialEvaluation.v1';
 const CONTENT_EDITORIAL_EVALUATOR_ID = 'orpad.content-editorial-evaluator';
+const CONTENT_EDITORIAL_EVALUATOR_VERSION = '3';
 const CONTENT_EDITORIAL_EVALUATION_ROOT = 'artifacts/evaluations/content-editorial/workers';
 const CONTENT_EDITORIAL_JUDGE_POLICIES = new Set(['rule-only', 'rule-then-llm', 'llm-required']);
 
@@ -16,6 +17,9 @@ const CONTENT_TARGET_PATH_PATTERN = /(^|\/)(readme\.md|docs?|documentation|slide
 const PRESENTATION_PATH_PATTERN = /(^|\/)(slides?|presentations?|lecture|lesson|course)(\/|$)|(^|\/)[^/]*(slide|slides|deck|presentation|lecture)[^/]*\.(md|markdown|mdx|html|xml|ya?ml|json)$/i;
 const BULLET_PATTERN = /^\s*(?:[-*+]\s+|\d+[.)]\s+|\[[ xX]\]\s+)/;
 const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/;
+const MARKDOWN_FENCE_PATTERN = /^\s*```/;
+const MARKDOWN_TABLE_PATTERN = /^\s*\|.*\|\s*$/;
+const RESULT_STATUS_TEMPLATE_PATTERN = /\bpass\s*(?:\||\/)\s*fail\s*(?:\||\/)\s*blocked\b/i;
 const README_EXECUTION_PATTERN = /\b(?:npm|pnpm|yarn)\s+(?:install|run|test|build|start)\b|\bdotnet\s+(?:run|test|build|restore)\b|\bpython\s+-m\b|\bpip\s+install\b|\bgo\s+(?:run|test|build)\b|\bcargo\s+(?:run|test|build)\b|\b(?:clone|checkout)\s+the\s+repo\b|\bcd\s+[\w./-]+|\bcopy\s+and\s+run\b|\brun\s+(?:this|the)\s+command\b|```(?:bash|sh|powershell|ps1|cmd)\b/i;
 const AI_SCAFFOLDING_PATTERN = /\b(?:in\s+summary|in\s+conclusion|it\s+is\s+important\s+to\s+note|let'?s\s+dive\s+in|delve\s+into|robust\s+and\s+seamless|comprehensive\s+(?:guide|overview|solution)|this\s+section\s+will\s+cover|as\s+an\s+ai|generated\s+by\s+ai|model\s+language|ai-sounding|scaffolding\s+phrase)\b/i;
 const CHECKLIST_GROWTH_PATTERN = /\b(?:checklist|acceptance\s+criteria|todo|must|should|ensure|verify|validate|done\s+when)\b/i;
@@ -125,12 +129,80 @@ function wordCount(value) {
   return words ? words.length : 0;
 }
 
+function isTechnicalToken(value) {
+  const raw = String(value || '');
+  return /^[A-Z0-9]{2,}$/.test(raw)
+    || /[a-z][A-Z]/.test(raw)
+    || raw.includes('_')
+    || /^\d+$/.test(raw);
+}
+
+function isCodeDenseLine(value) {
+  const line = String(value || '').trim();
+  if (!line) return true;
+  if (MARKDOWN_TABLE_PATTERN.test(line)) return true;
+  if (RESULT_STATUS_TEMPLATE_PATTERN.test(line)) return true;
+  if (/^(?:\$|>|PS>|C:\\|[A-Za-z]:\\|\w+@[\w.-]+[:$])\s*/.test(line)) return true;
+  if (/[\\/][\w.-]+[\\/]/.test(line)) return true;
+  if (/`[^`]+`/.test(line) && wordCount(line) <= 16) return true;
+  const punctuation = (line.match(/[{}[\]();$=<>|]/g) || []).length;
+  const words = wordCount(line);
+  return words > 0 && punctuation >= Math.max(6, words);
+}
+
+function proseAnalysisLines(lines, options = {}) {
+  const includeBullets = options.includeBullets !== false;
+  const output = [];
+  let inFence = false;
+  for (const line of lines) {
+    const text = String(line || '');
+    if (MARKDOWN_FENCE_PATTERN.test(text)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const trimmed = text.trim();
+    if (!trimmed) continue;
+    if (HEADING_PATTERN.test(trimmed)) continue;
+    if (!includeBullets && BULLET_PATTERN.test(trimmed)) continue;
+    if (isCodeDenseLine(trimmed)) continue;
+    output.push(trimmed);
+  }
+  return output;
+}
+
 function sentenceCandidates(lines) {
-  return lines
-    .join(' ')
-    .split(/(?<=[.!?])\s+/)
-    .map(item => item.trim())
-    .filter(Boolean);
+  const candidates = [];
+  let paragraph = [];
+  const flush = () => {
+    if (!paragraph.length) return;
+    candidates.push(...paragraph.join(' ').split(/(?<=[.!?])\s+/).map(item => item.trim()).filter(Boolean));
+    paragraph = [];
+  };
+  let inFence = false;
+  for (const line of lines) {
+    const text = String(line || '');
+    if (MARKDOWN_FENCE_PATTERN.test(text)) {
+      flush();
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const trimmed = text.trim();
+    if (
+      !trimmed
+      || HEADING_PATTERN.test(trimmed)
+      || BULLET_PATTERN.test(trimmed)
+      || isCodeDenseLine(trimmed)
+    ) {
+      flush();
+      continue;
+    }
+    paragraph.push(trimmed);
+    if (/[.!?]\s*$/.test(trimmed)) flush();
+  }
+  flush();
+  return candidates;
 }
 
 function excerpt(value, max = 180) {
@@ -423,12 +495,25 @@ function countDuplicateHeadings(lines) {
 function repeatedPhrases(lines) {
   const counts = new Map();
   const stop = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'your', 'you', 'are', 'will']);
-  for (const line of lines) {
-    const words = (line.toLowerCase().match(/[a-z0-9][a-z0-9'-]*/g) || [])
-      .filter(word => word.length > 2 && !stop.has(word));
+  for (const line of proseAnalysisLines(lines)) {
+    const tokens = (line.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g) || [])
+      .map((raw, index) => ({
+        raw,
+        lower: raw.toLowerCase(),
+        index,
+      }));
+    const words = tokens.filter(token => token.lower.length > 2 && !stop.has(token.lower));
+    const seenInLine = new Set();
     for (let size = 3; size <= 5; size += 1) {
       for (let index = 0; index <= words.length - size; index += 1) {
-        const phrase = words.slice(index, index + size).join(' ');
+        const span = words.slice(index, index + size);
+        const start = span[0].index;
+        const end = span[span.length - 1].index;
+        const nearby = tokens.slice(Math.max(0, start - 1), Math.min(tokens.length, end + 2));
+        if (nearby.some(token => isTechnicalToken(token.raw))) continue;
+        const phrase = span.map(token => token.lower).join(' ');
+        if (seenInLine.has(phrase)) continue;
+        seenInLine.add(phrase);
         counts.set(phrase, (counts.get(phrase) || 0) + 1);
       }
     }
@@ -973,6 +1058,7 @@ async function readExistingEvaluationArtifact(input = {}, worker) {
     const artifact = await readRunJsonArtifact(input.runRoot, filePath);
     if (
       artifact?.schemaVersion === CONTENT_EDITORIAL_EVALUATION_SCHEMA_VERSION
+      && String(artifact?.evaluator?.version || '') === CONTENT_EDITORIAL_EVALUATOR_VERSION
       && Number(artifact?.worker?.eventSequence) === Number(worker.eventSequence)
       && artifact?.worker?.nodePath === worker.nodePath
       && normalizeJudgePolicy(artifact?.policy?.judgePolicy) === expectedJudgePolicy
@@ -1044,7 +1130,7 @@ async function createWorkerEvaluationArtifact(input = {}, workerEvent) {
     createdAt: input.now || new Date().toISOString(),
     evaluator: {
       id: CONTENT_EDITORIAL_EVALUATOR_ID,
-      version: '1',
+      version: CONTENT_EDITORIAL_EVALUATOR_VERSION,
       ownership: 'orpad-machine',
     },
     worker,

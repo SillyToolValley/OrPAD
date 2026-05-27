@@ -360,6 +360,7 @@ async function submitMachineCapabilityToken(win: any): Promise<void> {
 async function confirmRunProviderSelection(win: any): Promise<void> {
   const picker = win.locator('.orpad-adapter-picker');
   await expect(picker).toBeVisible();
+  await expect(picker).not.toContainText(/[\u3131-\uD79D]/);
   await expect(win.locator('[data-provider-id="codex-cli"]')).toBeVisible();
   await win.locator('[data-adapter-picker-confirm="true"]').click();
   await expect(win.locator('.orpad-adapter-picker-overlay')).toHaveCount(0);
@@ -856,6 +857,9 @@ test('Orchestration window run refresh preserves scroll, details, and text selec
   await orchestrationWin.waitForSelector('body.orchestration-window');
   await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
 
+  await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Latest Run');
+  await expect(orchestrationWin.locator('#toolbar [data-pipeline-select-trigger] span')).toContainText('Machine Workstream');
+
   await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
   await orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
     .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Machine Workstream$/ }) })
@@ -1329,6 +1333,119 @@ test('Machine UI does not offer stop as the terminal blocked-queue follow-up', a
   await expect(win.locator('.cm-content')).toContainText('Current Decision');
   await expect(win.locator('.cm-content')).toContainText('no runnable work remains');
   await expect(win.locator('.cm-content')).toContainText('Blocked Work');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Machine blocked modal prioritizes evidence-incomplete gate reason', async () => {
+  const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
+  const graphPath = path.join(pipelineDir, 'graphs', 'main.or-graph');
+  const graph = JSON.parse(fs.readFileSync(graphPath, 'utf-8'));
+  graph.graph.nodes.push({
+    id: 'exit',
+    type: 'orpad.exit',
+    label: 'Exit',
+    config: { requireEvidence: true },
+  });
+  graph.graph.transitions.push({ from: 'worker', to: 'exit' });
+  fs.writeFileSync(graphPath, JSON.stringify(graph, null, 2));
+
+  const run = await createMachineRun({
+    workspaceRoot: workspace,
+    pipelinePath,
+    runId: 'run_machine_ui_evidence_incomplete_gate',
+    now: new Date('2026-05-01T00:00:00.000Z'),
+  });
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  const blockedItem = await ingestCandidateProposal(run.runRoot, {
+    ...pipeline.run.machineHarness.candidateProposal,
+    proposalId: 'proposal-machine-ui-evidence-incomplete',
+    suggestedWorkItemId: 'machine-ui-evidence-incomplete',
+    title: 'Blocked work item behind evidence-incomplete exit',
+    fingerprint: 'machine-ui-evidence-incomplete:src/smoke-target.md',
+  }, {
+    runId: run.runId,
+    transitionId: 'proposal:machine-ui-evidence-incomplete',
+    now: '2026-05-01T00:00:01.000Z',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: blockedItem.item.id,
+    toState: 'blocked',
+    reason: 'machine-ui.fixture.blocked',
+    transitionId: 'block:machine-ui-evidence-incomplete',
+    now: '2026-05-01T00:00:02.000Z',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.blocked',
+    nodePath: 'main/exit',
+    reason: 'exit.evidence-incomplete',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/exit:attempt-1`,
+      nodeType: 'orpad.exit',
+      status: 'blocked',
+      attempt: 1,
+      reason: 'exit.evidence-incomplete',
+      artifactContracts: [{
+        nodePath: 'main/exit',
+        missingArtifacts: [],
+        missingQueue: [],
+        missingItemEvidence: [{
+          itemId: 'machine-ui-evidence-incomplete',
+          missingFields: ['failingSymptom', 'rootCause', 'residualRisk'],
+          evidenceSources: ['worker.result:12'],
+        }],
+      }],
+    },
+  });
+  await appendRunLifecycleStatus(run.runRoot, {
+    runId: run.runId,
+    toState: 'waiting',
+    reason: 'exit.evidence-incomplete',
+  });
+  await appendRunSummaryStatus(run.runRoot, {
+    runId: run.runId,
+    summaryStatus: 'partial',
+    reason: 'exit.evidence-incomplete',
+  });
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('#runbooks-content')).toContainText('Evidence incomplete');
+  await expect(win.locator('#runbooks-content')).toContainText('Queue has blocked work');
+
+  const modal = win.locator('#fmt-modal');
+  if (!(await modal.isVisible().catch(() => false))) {
+    await win.getByRole('button', { name: 'Review Blocker', exact: true }).click();
+  }
+  await expect(modal).toBeVisible();
+  await expect(win.locator('#fmt-modal-title')).toContainText('Run Blocked');
+  const primarySection = win.locator('#fmt-modal-body .runbook-modal-section');
+  await expect(primarySection.locator('h4')).toContainText('Evidence incomplete');
+  await expect(primarySection.locator('p')).toContainText('1 completed work item is missing required evidence fields');
+  await expect(primarySection).not.toContainText('Blocked work recorded');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Blocked gate');
+  await expect(win.locator('#fmt-modal-body')).toContainText('main/exit (exit.evidence-incomplete)');
+  await expect(win.locator('#fmt-modal-body')).toContainText('Missing item evidence: machine-ui-evidence-incomplete: failingSymptom, rootCause, residualRisk.');
+  await expect(win.locator('#fmt-modal-body')).toContainText('No runnable work');
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -1937,11 +2054,9 @@ test('Machine UI implements node harness contracts for the selected pipeline', a
   await expect(win.locator('#content.view-orch-graph [data-harness-implementation-banner]')).toContainText('Harness ready');
   await expect(win.locator('#content.view-orch-graph')).not.toContainText('Run cancelled');
   await expect(win.locator('#content.view-orch-graph')).not.toContainText('Failed adapter calls');
-  await expect(win.locator('#runbooks-content [data-harness-implementation-banner]')).toContainText('Harness ready');
-  await expect(win.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(0);
-  await expect(win.locator('#runbooks-content')).not.toContainText('Run cancelled');
-  await expect(win.locator('#runbooks-content')).not.toContainText('Failed adapter calls');
-  await expect(win.locator('#runbooks-content')).not.toContainText('Stale run failure should not remain visible while implementing harness.');
+  await expect(win.locator('#runbooks-content [data-harness-implementation-banner]')).toHaveCount(0);
+  await expect(win.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
+  await expect(win.locator('#runbooks-content')).toContainText('Cancelled');
   const probeNode = win.locator('.orch-graph-node[data-machine-node-path="main/probe"]');
   await expect(probeNode).toContainText('Harness ready');
   await expect(probeNode).toHaveClass(/runtime-completed/);
@@ -1965,6 +2080,19 @@ test('Machine UI implements node harness contracts for the selected pipeline', a
   const probeState = state.nodes.find((node: any) => node.nodePath === 'main/probe');
   expect(probeState).toBeTruthy();
   expect(fs.existsSync(path.join(pipelineDir, 'harness', 'generated', probeState.artifact))).toBe(true);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready');
+  await win.locator('[data-pipeline-run-menu]').click();
+  await expect(win.locator('button[data-pipeline-run-action="implement-harness"]')).toContainText('Refresh Harness');
+  await expect(win.locator('button[data-pipeline-run-action="managed"]')).toBeEnabled();
+
   const profilePath = path.join(pipelineDir, 'harness', 'generated', 'project-profile.json');
   const toolPlanPath = path.join(pipelineDir, 'harness', 'generated', 'tool-plan.json');
   const harnessSpecPath = path.join(pipelineDir, 'harness', 'generated', 'harness-authoring-spec.json');

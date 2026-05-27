@@ -438,6 +438,8 @@ const runbookValidationCache = new Map();
 const runbookRecordCache = new Map();
 const machineRunRecordCache = new Map();
 const machineRunListCache = new Map();
+const machineLatestRunHydrationPending = new Set();
+const ORCHESTRATION_SELECTED_PIPELINE_STORAGE_PREFIX = 'orpad-orchestration-selected-pipeline:';
 // Live event log state -Phase 1.2:
 //   stickRunIds: runIds whose event log auto-scrolls to bottom on render.
 //     Default ON; user toggles off when they want to inspect older events.
@@ -3530,6 +3532,38 @@ function machineBlockedQueueItemSummaries(record) {
     .sort((a, b) => a.itemId.localeCompare(b.itemId));
 }
 
+function machineCompletionBlockFollowUpSummaries(block = null) {
+  if (!block) return [];
+  const lines = [];
+  if (String(block.kind || '').toLowerCase() === 'required-gates') {
+    for (const gate of block.failedRequiredGates || []) {
+      const gatePath = gate.nodePath || 'required gate';
+      const failures = Array.isArray(gate.failed) && gate.failed.length
+        ? gate.failed
+        : [{ reason: gate.reason || 'gate failed' }];
+      for (const failure of failures) {
+        const checks = machineUniqueNonEmptyStrings((failure.failedChecks || []).map(check => check?.id || check?.reason));
+        const fixes = machineUniqueNonEmptyStrings(failure.requiredFixes || []);
+        const subject = failure.itemId || failure.criterion || 'gate evidence';
+        const reason = checks.length ? checks.join(', ') : (failure.reason || 'failed');
+        const artifact = failure.artifactPath ? ` Evidence: ${failure.artifactPath}.` : '';
+        const fix = fixes.length ? ` Fix: ${fixes.slice(0, 2).join(' ')}` : '';
+        lines.push(`- ${gatePath}: ${subject} failed (${reason}).${artifact}${fix}`);
+      }
+    }
+    for (const gate of block.missingRequiredGates || []) {
+      lines.push(`- ${gate.nodePath || 'required gate'} did not run (${gate.reason || 'required-gate-not-run'}).`);
+    }
+    return machineUniqueNonEmptyStrings(lines).slice(0, 12);
+  }
+  if (String(block.kind || '').toLowerCase() === 'adapter-results') {
+    for (const adapter of block.failedAdapters || []) {
+      lines.push(`- ${adapter.nodePath || 'adapter'} failed before producing runnable work (${adapter.reason || block.nextAction || 'adapter-result-blocked'}).`);
+    }
+  }
+  return machineUniqueNonEmptyStrings(lines).slice(0, 12);
+}
+
 function machineBlockedRunFollowUpPrompt(record) {
   const runState = record?.runState || {};
   const runId = runState.runId || record?.runId || '';
@@ -3537,6 +3571,7 @@ function machineBlockedRunFollowUpPrompt(record) {
   const queueInventory = machineLatestQueueInventory(record);
   const queueText = machineQueueInventorySummary(queueInventory);
   const blockedItems = machineBlockedQueueItemSummaries(record);
+  const completionIssues = machineCompletionBlockFollowUpSummaries(machineLatestCompletionBlock(record));
   const conflictEvents = (record?.events || [])
     .filter(event => event?.eventType === 'patch.apply_conflict' || event?.eventType === 'patch.apply_failed')
     .slice(-8);
@@ -3547,8 +3582,13 @@ function machineBlockedRunFollowUpPrompt(record) {
     queueText ? `Previous queue state: ${queueText}` : '',
     taskText ? `Original objective: ${taskText}` : '',
     '',
-    blockedItems.length ? 'Blocked work items to re-evaluate:' : 'Blocked work items remain; inspect previous run evidence and re-evaluate unresolved work.',
+    blockedItems.length
+      ? 'Blocked work items to re-evaluate:'
+      : (completionIssues.length ? 'No blocked queue items remain; resolve the completion gate issues below.' : 'Blocked work items remain; inspect previous run evidence and re-evaluate unresolved work.'),
     ...blockedItems.map(item => `- ${item.itemId}${item.reason ? `: ${item.reason}` : ''}`),
+    completionIssues.length ? '' : '',
+    completionIssues.length ? 'Completion gate issues to resolve:' : '',
+    ...completionIssues,
     conflictEvents.length ? '' : '',
     conflictEvents.length ? 'Patch/apply issues to account for:' : '',
     ...conflictEvents.map(event => {
@@ -3984,7 +4024,10 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
   // user either reruns upstream nodes or skips the exit gate).
   const totalMissingArtifacts = gateBlocked.reduce((sum, g) => {
     const missing = (g.artifactContracts || []).reduce((c, contract) =>
-      c + ((contract.missingArtifacts || []).length) + ((contract.missingQueue || []).length), 0);
+      c
+        + ((contract.missingArtifacts || []).length)
+        + ((contract.missingQueue || []).length)
+        + ((contract.missingItemEvidence || []).length), 0);
     return sum + missing;
   }, 0);
   const allExitEvidenceIncomplete = gateBlocked.length > 0
@@ -4024,6 +4067,14 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
           .flatMap(contract => contract.missingQueue || [])
           .map(item => item.path || item.declared || '')
           .filter(Boolean);
+        const missingItemEvidence = (g.artifactContracts || [])
+          .flatMap(contract => Array.isArray(contract.missingItemEvidence) ? contract.missingItemEvidence : [])
+          .filter(Boolean);
+        const missingItemEvidenceText = missingItemEvidence.slice(0, 3).map(item => {
+          const itemId = String(item?.itemId || 'work item').trim();
+          const fields = Array.isArray(item?.missingFields) ? item.missingFields.map(field => String(field || '').trim()).filter(Boolean) : [];
+          return `${itemId}: ${fields.join(', ') || 'required evidence fields'}`;
+        }).join('; ');
         const missingItems = [...missingArtifacts, ...missingQueue];
         const missingText = missingItems.slice(0, 6).join(', ');
         const more = missingItems.length > 6 ? `, +${missingItems.length - 6} more` : '';
@@ -4031,9 +4082,13 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
         // queued work first" which users read as "click the Continue
         // button." There is no Continue button for evidence-incomplete - the only ways out are (a) rerun upstream nodes to produce the
         // missing artifacts, or (b) Skip exit gate to end the run.
-        remedy = missingText
-          ? `${missingItems.length} required artifact${missingItems.length === 1 ? '' : 's'} not produced (${missingText}${more}). Rerun the upstream nodes that should have produced them, or Skip exit gate to end the run as-is.`
-          : `${missingItems.length} required artifact${missingItems.length === 1 ? '' : 's'} not produced. Rerun the upstream nodes that should have produced them, or Skip exit gate to end the run as-is.`;
+        if (missingItemEvidence.length) {
+          remedy = `${machineCountLabel(missingItemEvidence.length, 'completed work item')} missing required evidence fields${missingItemEvidenceText ? ` (${missingItemEvidenceText}${missingItemEvidence.length > 3 ? `; +${missingItemEvidence.length - 3} more` : ''})` : ''}. Start a follow-up run to collect the missing item evidence, or Skip exit gate to end the run as-is.`;
+        } else {
+          remedy = missingText
+            ? `${missingItems.length} required artifact${missingItems.length === 1 ? '' : 's'} not produced (${missingText}${more}). Rerun the upstream nodes that should have produced them, or Skip exit gate to end the run as-is.`
+            : `${missingItems.length} required artifact${missingItems.length === 1 ? '' : 's'} not produced. Rerun the upstream nodes that should have produced them, or Skip exit gate to end the run as-is.`;
+        }
       } else if (patchReviewGate) {
         if (pendingPatchReviewCount > 0) {
           remedy = 'Patch review is pending. Open Review patches, then approve or skip each proposed workspace patch.';
@@ -4067,7 +4122,7 @@ function renderMachineLifecycleBannerHtml(record, runbookPathArg = '', options =
       ? `<div class="pipe-lifecycle-banner-remedy">${escapeHtml(`${failedForGate.length} failed probe${failedForGate.length === 1 ? '' : 's'} below - Retry probe on each card to re-run, or skip the gate to accept the missing evidence.`)}</div>`
       : '';
     const gateTitle = allExitEvidenceIncomplete && totalMissingArtifacts > 0
-      ? `Run paused at exit gate - ${totalMissingArtifacts} artifact${totalMissingArtifacts === 1 ? '' : 's'} missing`
+      ? `Run paused at exit gate - ${totalMissingArtifacts} evidence issue${totalMissingArtifacts === 1 ? '' : 's'} missing`
       : 'Gate is blocked - needs decision';
     gateBanner = `
       <div class="pipe-lifecycle-banner pipe-lifecycle-banner--warn">
@@ -4376,6 +4431,14 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const harnessBlocked = harnessStatus === 'blocked';
   const externalResearchLimitation = pipelineDoc?.metadata?.externalResearch?.limitation || pipelineDoc?.run?.externalResearchLimitation || '';
   const harnessImplementedAt = pipelineDocHarnessImplementedAt(pipelineDoc, runbookKey);
+  const harnessActionLabel = harnessRunning
+    ? 'Implementing Harness...'
+    : (harnessImplementedAt ? 'Refresh Harness' : 'Implement Harness');
+  const harnessActionTitle = harnessRunning
+    ? 'Harness implementation is already running.'
+    : (harnessImplementedAt
+      ? 'Refresh the saved Machine harness scaffold for this pipeline.'
+      : 'Create the Machine harness scaffold for this pipeline.');
   const harnessAuthoringBadge = pipelineDocHarnessAuthoringBadge(pipelineDoc, harnessImplementedAt, runbookKey);
   const harnessProgress = harnessImplementationProgressForPath(runbookPath);
   const harnessSupersedesRunDetails = harnessImplementationSupersedesRunDetails(previewRunRecord, harnessState, harnessPending);
@@ -4454,7 +4517,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
           <div class="pipeline-run-menu" role="menu">
             <button data-pipeline-run-action="open-flow" data-path="${escapeHtml(runbookPath)}" title="Return to the graph editor for this pipeline.">Open Flow</button>
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled || harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : (localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.'))}">Run locally</button>
-            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress && !harnessRunning ? '' : 'disabled'} title="${escapeHtml(harnessRunning ? 'Harness implementation is already running.' : 'Create or refresh the Machine harness scaffold for this pipeline.')}">${harnessRunning ? 'Implementing Harness...' : 'Implement Harness'}</button>
+            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress && !harnessRunning ? '' : 'disabled'} title="${escapeHtml(harnessActionTitle)}">${escapeHtml(harnessActionLabel)}</button>
             <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineActionTitle)}">Start Run</button>
             <button data-pipeline-run-action="managed-ask" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Debug mode: ask before LLM CLI permission bypass instead of auto-driving to patch review.')}">Start Run (Ask Permissions)</button>
             <button data-pipeline-run-action="managed-auto-apply" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Fully autonomous: auto-approve and apply every patch the worker produces. No human gate at patchReview. Use only for trusted pipelines.')}">Start Run (Auto-Apply Patches)</button>
@@ -4478,7 +4541,9 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   `;
   if (IS_ORCHESTRATION_WINDOW) {
     setOrchestrationRunbarHtml(runbarHtml);
-    return runDetailsHtml;
+    return runDetailsHtml.trim()
+      ? `<div class="orch-run-status-stack" data-orch-run-status-stack>${runDetailsHtml}</div>`
+      : '';
   }
   return `${runbarHtml}${runDetailsHtml}`;
 }
@@ -13929,6 +13994,57 @@ function createBacklinkSection(title, items) {
 }
 
 // ==================== Sidebar ====================
+function sidebarWidthStorageKey() {
+  return IS_ORCHESTRATION_WINDOW ? 'orpad-orchestration-sidebar-width' : 'orpad-sidebar-width';
+}
+
+function sidebarUnitScale() {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue('--us');
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+function sidebarWidthLimits() {
+  const scale = sidebarUnitScale();
+  const workspaceWidth = Math.max(0, workspaceEl?.getBoundingClientRect?.().width || window.innerWidth || 0);
+  if (IS_ORCHESTRATION_WINDOW) {
+    const min = 400 * scale;
+    const reservedPreview = Math.max(320 * scale, workspaceWidth * 0.34);
+    const maxByWorkspace = workspaceWidth > 0 ? Math.max(min, workspaceWidth - reservedPreview) : 760 * scale;
+    return {
+      min,
+      max: Math.max(min, Math.min(760 * scale, maxByWorkspace)),
+    };
+  }
+  return { min: 160 * scale, max: 500 * scale };
+}
+
+function clampSidebarWidth(width) {
+  const { min, max } = sidebarWidthLimits();
+  return Math.round(Math.max(min, Math.min(max, Number(width) || min)));
+}
+
+function applySidebarWidth(width, options = {}) {
+  if (!sidebarEl) return;
+  const nextWidth = clampSidebarWidth(width);
+  sidebarEl.style.width = `${nextWidth}px`;
+  sidebarEl.style.minWidth = `${nextWidth}px`;
+  sidebarEl.style.flexBasis = IS_ORCHESTRATION_WINDOW ? `${nextWidth}px` : '';
+  if (options.persist) localStorage.setItem(sidebarWidthStorageKey(), String(nextWidth));
+}
+
+function applyStoredSidebarWidth() {
+  const savedWidth = Number.parseInt(localStorage.getItem(sidebarWidthStorageKey()) || '', 10);
+  if (savedWidth > 0) applySidebarWidth(savedWidth);
+}
+
+function resetSidebarWidth() {
+  sidebarEl.style.width = '';
+  sidebarEl.style.minWidth = '';
+  sidebarEl.style.flexBasis = '';
+  localStorage.removeItem(sidebarWidthStorageKey());
+}
+
 function showSidebar(panel) {
   if (sidebarVisible && sidebarActivePanel === panel) {
     sidebarVisible = false;
@@ -13942,8 +14058,7 @@ function showSidebar(panel) {
   sidebarVisible = true;
   sidebarActivePanel = panel || sidebarActivePanel || 'files';
   sidebarEl.classList.remove('hidden');
-  const savedWidth = parseInt(localStorage.getItem('orpad-sidebar-width'));
-  if (savedWidth > 0) { sidebarEl.style.width = savedWidth + 'px'; sidebarEl.style.minWidth = savedWidth + 'px'; }
+  applyStoredSidebarWidth();
 
   document.querySelectorAll('.sidebar-tab').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.panel === sidebarActivePanel);
@@ -13995,6 +14110,7 @@ let sidebarDragging = false;
 
 sidebarResizeEl.addEventListener('mousedown', (e) => {
   if (!sidebarVisible) return;
+  if (IS_ORCHESTRATION_WINDOW && document.body.classList.contains('orchestration-rail-collapsed')) return;
   sidebarDragging = true;
   sidebarResizeEl.classList.add('dragging');
   sidebarEl.style.transition = 'none';
@@ -14006,9 +14122,7 @@ sidebarResizeEl.addEventListener('mousedown', (e) => {
 document.addEventListener('mousemove', (e) => {
   if (!sidebarDragging) return;
   const rect = workspaceEl.getBoundingClientRect();
-  const newWidth = Math.max(160, Math.min(500, e.clientX - rect.left));
-  sidebarEl.style.width = newWidth + 'px';
-  sidebarEl.style.minWidth = newWidth + 'px';
+  applySidebarWidth(e.clientX - rect.left);
 });
 
 document.addEventListener('mouseup', () => {
@@ -14018,14 +14132,12 @@ document.addEventListener('mouseup', () => {
     sidebarEl.style.transition = '';
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
-    localStorage.setItem('orpad-sidebar-width', sidebarEl.offsetWidth);
+    applySidebarWidth(sidebarEl.offsetWidth, { persist: true });
   }
 });
 
 sidebarResizeEl.addEventListener('dblclick', () => {
-  sidebarEl.style.width = '';
-  sidebarEl.style.minWidth = '';
-  localStorage.removeItem('orpad-sidebar-width');
+  resetSidebarWidth();
 });
 
 // ==================== Git UI ====================
@@ -14824,6 +14936,33 @@ function getRunbookCache(cache, filePath) {
   return null;
 }
 
+function orchestrationSelectedPipelineStorageKey() {
+  if (!workspacePath) return '';
+  return `${ORCHESTRATION_SELECTED_PIPELINE_STORAGE_PREFIX}${normalizeComparablePath(workspacePath)}`;
+}
+
+function rememberOrchestrationSelectedPipeline(runbookPath) {
+  if (!IS_ORCHESTRATION_WINDOW || !runbookPath) return;
+  const key = orchestrationSelectedPipelineStorageKey();
+  if (key) localStorage.setItem(key, runbookNormalizePath(runbookPath));
+}
+
+function rememberedOrchestrationSelectedPipeline() {
+  if (!IS_ORCHESTRATION_WINDOW) return '';
+  const key = orchestrationSelectedPipelineStorageKey();
+  return key ? runbookNormalizePath(localStorage.getItem(key) || '') : '';
+}
+
+function hasMachineRunRecordId(record) {
+  return !!(record?.runState?.runId || record?.runId);
+}
+
+function machineLatestHydrationKey(runbookPath) {
+  const normalizedWorkspace = normalizeComparablePath(workspacePath || '');
+  const normalizedRunbook = runbookNormalizePath(runbookPath || '').toLowerCase();
+  return normalizedWorkspace && normalizedRunbook ? `${normalizedWorkspace}::${normalizedRunbook}` : '';
+}
+
 function runbookFlattenTree(items, out = []) {
   for (const item of items || []) {
     if (item.isDirectory) {
@@ -14953,6 +15092,19 @@ function chooseSelectedRunbook(summary) {
     lastRunRecord = null;
     return;
   }
+  if (!selectedRunbookPath && IS_ORCHESTRATION_WINDOW) {
+    const remembered = rememberedOrchestrationSelectedPipeline();
+    const rememberedKey = runbookNormalizePath(remembered).toLowerCase();
+    const rememberedItem = rememberedKey
+      ? runbooks.find(item => runbookNormalizePath(item.path).toLowerCase() === rememberedKey)
+      : null;
+    const firstPipeline = (summary.pipelines || [])[0]
+      || runbooks.find(item => item.format === 'or-pipeline')
+      || runbooks[0]
+      || null;
+    selectedRunbookPath = rememberedItem?.path || firstPipeline?.path || null;
+    if (selectedRunbookPath) rememberOrchestrationSelectedPipeline(selectedRunbookPath);
+  }
   if (!selectedRunbookPath) return;
 
   const selected = runbookNormalizePath(selectedRunbookPath);
@@ -14971,6 +15123,16 @@ function chooseSelectedRunbook(summary) {
     selectedRunbookValidation = null;
     lastRunRecord = null;
     lastMachineRunRecord = null;
+    if (IS_ORCHESTRATION_WINDOW) {
+      const firstPipeline = (summary.pipelines || [])[0]
+        || runbooks.find(item => item.format === 'or-pipeline')
+        || runbooks[0]
+        || null;
+      selectedRunbookPath = firstPipeline?.path || null;
+      if (selectedRunbookPath) rememberOrchestrationSelectedPipeline(selectedRunbookPath);
+    }
+  } else if (selectedRunbookPath) {
+    rememberOrchestrationSelectedPipeline(selectedRunbookPath);
   }
 }
 
@@ -16423,6 +16585,63 @@ function machineStatusChipClass(status, kind = 'lifecycle') {
   return kind === 'summary' ? 'warn' : '';
 }
 
+function machineLatestCompletionBlock(record) {
+  const events = Array.isArray(record?.events) ? record.events : [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!['run.summary', 'run.status'].includes(event?.eventType)) continue;
+    if (event.payload?.completionBlocked) return event.payload.completionBlocked;
+  }
+  return record?.runState?.completionBlocked || null;
+}
+
+function machineCompletionBlockSummary(block = null) {
+  if (!block) return null;
+  const kind = String(block.kind || '').toLowerCase();
+  if (kind === 'adapter-results') {
+    const count = Number(block.failedAdapterCount) || (Array.isArray(block.failedAdapters) ? block.failedAdapters.length : 0);
+    const first = Array.isArray(block.failedAdapters) ? block.failedAdapters[0] : null;
+    return {
+      lifecycleLabel: 'Adapter blocked',
+      summaryLabel: 'Tool access failed',
+      headline: 'Provider tool access failed',
+      details: [
+        `${machineCountLabel(count || 1, 'adapter call')} could not produce runnable work.`,
+        first?.infrastructureBlocked ? 'The provider reported local shell or sandbox access failure.' : '',
+        first?.nodePath ? `Node: ${first.nodePath}.` : '',
+      ].filter(Boolean).join(' '),
+      meta: first?.reason || block.nextAction || '',
+    };
+  }
+  if (kind === 'required-gates') {
+    const failed = Array.isArray(block.failedRequiredGates) ? block.failedRequiredGates.length : 0;
+    const missing = Array.isArray(block.missingRequiredGates) ? block.missingRequiredGates.length : 0;
+    const first = (block.failedRequiredGates || [])[0] || (block.missingRequiredGates || [])[0] || null;
+    const firstFailure = (first?.failed || []).find(item => item?.itemId || item?.failedChecks?.length || item?.reason) || null;
+    const firstFailureReason = firstFailure?.failedChecks?.[0]?.id || firstFailure?.reason || first?.reason || '';
+    return {
+      lifecycleLabel: 'Gate audit failed',
+      summaryLabel: 'Recover needed',
+      headline: 'Required evidence gates failed',
+      details: [
+        failed ? `${machineCountLabel(failed, 'required gate')} failed.` : '',
+        missing ? `${machineCountLabel(missing, 'required gate')} did not run.` : '',
+        first?.nodePath ? `First issue: ${first.nodePath}.` : '',
+        firstFailure?.itemId ? `First failing item: ${firstFailure.itemId}.` : '',
+        'No worker is running.',
+      ].filter(Boolean).join(' '),
+      meta: firstFailureReason || block.nextAction || '',
+    };
+  }
+  return {
+    lifecycleLabel: 'Completion blocked',
+    summaryLabel: 'Recover needed',
+    headline: 'Completion audit blocked the run',
+    details: 'The run reached the end but the completion audit did not accept the evidence. No worker is running.',
+    meta: block.nextAction || kind || '',
+  };
+}
+
 function machineDisplayStatus(record, runInProgress) {
   const runState = record?.runState || {};
   const workerReview = machineWorkerReviewInfo(record);
@@ -16430,11 +16649,12 @@ function machineDisplayStatus(record, runInProgress) {
   const incompleteEvidence = !!machineLatestPartialArtifactContract(record);
   const lifecycleValue = String(runState.lifecycleStatus || '').toLowerCase();
   const summaryValue = String(runState.summaryStatus || '').toLowerCase();
+  const completionBlock = machineLatestCompletionBlock(record);
+  const completionSummary = machineCompletionBlockSummary(completionBlock);
   const inventory = machineLatestQueueInventory(record);
   const queue = machineQueueInventoryCounts(inventory);
   const needsReview = (!!workerReview?.patchArtifact && !workerReview.patchReviewResolved)
     || workerStatus === 'blocked'
-    || summaryValue === 'blocked'
     || (workerReview?.missingExpectedChanges || []).length > 0;
   if (!runInProgress && ['cancelled', 'canceled'].includes(String(runState.lifecycleStatus || '').toLowerCase())) {
     return {
@@ -16448,6 +16668,16 @@ function machineDisplayStatus(record, runInProgress) {
   }
   if (!runInProgress && lifecycleValue === 'waiting') {
     const lifecycleStatus = runState.lifecycleStatus || 'waiting';
+    if (completionSummary) {
+      return {
+        lifecycleLabel: completionSummary.lifecycleLabel,
+        lifecycleClass: 'warn',
+        lifecycleTitle: `Lifecycle: ${completionSummary.headline}`,
+        summaryLabel: completionSummary.summaryLabel,
+        summaryClass: 'warn',
+        summaryTitle: `Summary: ${completionSummary.details}`,
+      };
+    }
     if (queue.totalCount > 0 && queue.activeCount > 0) {
       const candidateOnly = queue.candidateCount > 0 && queue.queuedCount === 0 && queue.claimedCount === 0;
       return {
@@ -16728,6 +16958,66 @@ function machineRunWaitingDecisionState(record, {
       ),
     };
   }
+  const completionSummary = machineCompletionBlockSummary(machineLatestCompletionBlock(record));
+  if (completionSummary) {
+    return {
+      headline: completionSummary.headline,
+      state: 'warn',
+      details: completionSummary.details,
+      meta: completionSummary.meta || queueText || 'Start a fresh follow-up run after fixing provider/tool access, or review the evidence snapshot.',
+      actionsHtml: actions(
+        button('machine-start-follow-up', 'Start follow-up', 'Start a fresh run after fixing the provider/tool blocker.', true),
+        button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
+      ),
+    };
+  }
+  const blockedGates = sharedGateBlockedNodes(record) || [];
+  if (blockedGates.length) {
+    const gate = blockedGates[0];
+    const gateReason = String(gate?.reason || '');
+    const gateIsEvidenceIncomplete = gateReason === 'exit.evidence-incomplete';
+    const missingItems = gateIsEvidenceIncomplete
+      ? (gate?.artifactContracts || [])
+        .flatMap(contract => [
+          ...(contract?.missingArtifacts || []),
+          ...(contract?.missingQueue || []),
+        ])
+        .map(item => String(item?.path || item?.declared || '').trim())
+        .filter(Boolean)
+      : [];
+    const missingText = missingItems.length
+      ? `${missingItems.slice(0, 3).join(', ')}${missingItems.length > 3 ? `, +${missingItems.length - 3} more` : ''}`
+      : '';
+    const missingItemEvidence = gateIsEvidenceIncomplete
+      ? (gate?.artifactContracts || [])
+        .flatMap(contract => Array.isArray(contract?.missingItemEvidence) ? contract.missingItemEvidence : [])
+        .filter(Boolean)
+      : [];
+    const missingItemEvidenceText = missingItemEvidence.length
+      ? `${machineCountLabel(missingItemEvidence.length, 'completed work item')} missing item evidence`
+      : '';
+    return {
+      headline: gateIsEvidenceIncomplete ? 'Evidence incomplete' : 'Blocked gate - waiting for decision',
+      state: 'warn',
+      details: gateIsEvidenceIncomplete
+        ? [
+          gate?.nodePath ? `${gate.nodePath} blocked completion.` : 'The exit gate blocked completion.',
+          missingItemEvidence.length
+            ? `${machineCountLabel(missingItemEvidence.length, 'completed work item')} missing required evidence fields.`
+            : (missingItems.length ? `${machineCountLabel(missingItems.length, 'required evidence item')} missing.` : 'Required evidence is missing.'),
+          'No worker is running.',
+        ].join(' ')
+        : [
+          gate?.nodePath ? `${gate.nodePath} is blocked.` : 'A gate is blocked.',
+          'No worker is running.',
+        ].join(' '),
+      meta: missingItemEvidenceText || missingText || queueText || gateReason || '',
+      actionsHtml: actions(
+        button('machine-open-blocked-decision', gateIsEvidenceIncomplete ? 'Review blocker' : 'Review gate', 'Open gate details and available decisions.', true),
+        button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
+      ),
+    };
+  }
   const exhausted = machineBlockedQueueExhaustedDetails(record);
   if (exhausted) {
     return {
@@ -16742,23 +17032,6 @@ function machineRunWaitingDecisionState(record, {
       actionsHtml: actions(
         button('machine-open-blocked-decision', 'Review blocker', 'Open blocker details and review evidence.', true),
         button('machine-start-follow-up', 'Start follow-up', 'Start a fresh run with a prompt based on the blocked work.'),
-        button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
-      ),
-    };
-  }
-  const blockedGates = sharedGateBlockedNodes(record) || [];
-  if (blockedGates.length) {
-    const gate = blockedGates[0];
-    return {
-      headline: 'Blocked gate - waiting for decision',
-      state: 'warn',
-      details: [
-        gate?.nodePath ? `${gate.nodePath} is blocked.` : 'A gate is blocked.',
-        'No worker is running.',
-      ].join(' '),
-      meta: queueText || gate?.reason || '',
-      actionsHtml: actions(
-        button('machine-open-blocked-decision', 'Review gate', 'Open gate details and available decisions.', true),
         button('machine-view-artifacts', 'Review evidence', 'Open the evidence files for this run.'),
       ),
     };
@@ -17276,6 +17549,32 @@ function pipelineDocHarnessImplementedAt(pipelineDoc, runbookKey = '') {
     || '';
 }
 
+function pipelineHarnessStatePath(runbookPath, pipelineDoc = {}) {
+  const pipelineDir = runbookDirPath(runbookPath);
+  const stateRef = String(
+    pipelineDoc?.metadata?.harnessImplementation?.statePath
+      || pipelineDoc?.harness?.implementationState
+      || '',
+  ).trim();
+  const harnessRoot = String(pipelineDoc?.harness?.path || 'harness/generated').trim() || 'harness/generated';
+  const ref = stateRef || `${harnessRoot.replace(/\/+$/, '')}/implementation-state.json`;
+  const normalizedRef = runbookNormalizePath(ref);
+  const absolute = /^[A-Za-z]:\//.test(normalizedRef) || normalizedRef.startsWith('/');
+  return normalizeRunbookFilePath(absolute ? normalizedRef : `${pipelineDir}/${normalizedRef}`);
+}
+
+async function readPersistedHarnessImplementationState(runbookPath, pipelineDoc = {}) {
+  const statePath = pipelineHarnessStatePath(runbookPath, pipelineDoc);
+  if (!statePath) return null;
+  try {
+    const state = await readRendererJson(statePath);
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
+    return state;
+  } catch {
+    return null;
+  }
+}
+
 function pipelineDocHarnessAuthoringBadge(pipelineDoc, harnessImplementedAt = '', runbookKey = '') {
   if (!harnessImplementedAt) return null;
   const cached = runbookKey ? pipelineHarnessAuthoringBadgeCache.get(runbookKey) : null;
@@ -17332,10 +17631,17 @@ async function refreshPipelineHarnessMetadataCache(runbookPath) {
   if (!key) return;
   try {
     const doc = await readRendererJson(runbookPath);
-    const implementedAt = pipelineDocHarnessImplementedAt(doc, key);
-    if (!implementedAt) return;
-    pipelineHarnessImplementedAtCache.set(key, implementedAt);
-    pipelineDocHarnessAuthoringBadge(doc, implementedAt, key);
+    const state = await readPersistedHarnessImplementationState(runbookPath, doc);
+    if (state) {
+      pipelineHarnessImplementationStatusCache.set(key, state);
+      const stateImplementedAt = String(state.implementedAt || '').trim();
+      if (stateImplementedAt) pipelineHarnessImplementedAtCache.set(key, stateImplementedAt);
+    }
+    const implementedAt = pipelineDocHarnessImplementedAt(doc, key) || String(state?.implementedAt || '').trim();
+    if (implementedAt) {
+      pipelineHarnessImplementedAtCache.set(key, implementedAt);
+      pipelineDocHarnessAuthoringBadge(doc, implementedAt, key);
+    }
   } catch {
     // Cache refresh is best-effort; validation/rendering owns user-visible errors.
   }
@@ -17426,6 +17732,12 @@ function harnessImplementationSupersedesRunDetails(record, state, pending = fals
   const runTime = machineRunRecordLatestTimeMs(record);
   if (!harnessTime) return ['running', 'blocked', 'failed'].includes(status);
   return !runTime || harnessTime >= runTime;
+}
+
+function harnessImplementationReplacesRunDetails(record, state, pending = false) {
+  const status = String(state?.status || '').toLowerCase();
+  if (status === 'succeeded' && record) return false;
+  return harnessImplementationSupersedesRunDetails(record, state, pending);
 }
 
 function pipelinePreviewHarnessRunStatus(state, pending = false, progress = null) {
@@ -18397,18 +18709,67 @@ async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options
   );
   const hasPatchReview = pendingPatchReviews.length > 0 || blockedPatchNeedsReview;
   const hasApprovedPatch = approvedPatchReviews.length > 0;
+  const gateReason = String(gate?.reason || '');
+  const gateIsEvidenceIncomplete = gateReason === 'exit.evidence-incomplete';
+  const gateMissingItems = gateIsEvidenceIncomplete
+    ? (gate?.artifactContracts || [])
+      .flatMap(contract => [
+        ...(contract?.missingArtifacts || []),
+        ...(contract?.missingQueue || []),
+      ])
+      .map(item => String(item?.path || item?.declared || '').trim())
+      .filter(Boolean)
+    : [];
+  const gateMissingText = gateMissingItems.length
+    ? `${gateMissingItems.slice(0, 5).join(', ')}${gateMissingItems.length > 5 ? `, +${gateMissingItems.length - 5} more` : ''}`
+    : '';
+  const gateMissingItemEvidence = gateIsEvidenceIncomplete
+    ? (gate?.artifactContracts || [])
+      .flatMap(contract => Array.isArray(contract?.missingItemEvidence) ? contract.missingItemEvidence : [])
+      .filter(Boolean)
+    : [];
+  const gateMissingItemEvidenceText = gateMissingItemEvidence.length
+    ? gateMissingItemEvidence.slice(0, 4).map(item => {
+      const itemId = String(item?.itemId || 'work item').trim();
+      const fields = Array.isArray(item?.missingFields) ? item.missingFields.map(field => String(field || '').trim()).filter(Boolean) : [];
+      return `${itemId}: ${fields.join(', ') || 'required evidence fields'}`;
+    }).join('; ')
+    : '';
+  const gateHeading = gateIsEvidenceIncomplete
+    ? 'Evidence incomplete'
+    : (gate ? 'Blocked gate needs decision' : '');
+  const gateIntro = gateIsEvidenceIncomplete
+    ? (gateMissingItemEvidence.length
+      ? `The exit gate blocked completion because ${machineCountLabel(gateMissingItemEvidence.length, 'completed work item')} ${gateMissingItemEvidence.length === 1 ? 'is' : 'are'} missing required evidence fields.`
+      : (gateMissingItems.length
+      ? `The exit gate blocked completion because ${machineCountLabel(gateMissingItems.length, 'required evidence item')} ${gateMissingItems.length === 1 ? 'was' : 'were'} not produced.`
+      : 'The exit gate blocked completion because required evidence was not produced.'))
+    : (gate
+      ? 'A graph gate blocked the run and needs evidence, approval, or an explicit skip decision.'
+      : '');
+  const evidenceGateRecoveryText = canContinueQueue
+    ? 'Continue Queue to let remaining queued work produce evidence'
+    : (queueExhausted
+      ? 'start a follow-up run to collect the missing evidence'
+      : 'rerun the upstream nodes that should have produced the evidence');
+  const gateDiagnosticHtml = gate
+    ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(gateHeading)}</strong> ${escapeHtml(gateIsEvidenceIncomplete
+      ? `${gateMissingText ? `Missing files: ${gateMissingText}. ` : ''}${gateMissingItemEvidenceText ? `Missing item evidence: ${gateMissingItemEvidenceText}${gateMissingItemEvidence.length > 4 ? `; +${gateMissingItemEvidence.length - 4} more` : ''}. ` : ''}Review Evidence to inspect what was produced, ${evidenceGateRecoveryText}, or Skip Gate only when the missing evidence is intentionally not required.`
+      : 'Review Evidence to inspect the gate state, continue runnable work when available, or Skip Gate only when the gate is intentionally not required.'
+    )}</div>`
+    : '';
   const heading = hasPatchReview
     ? 'Patch review required'
     : (hasApprovedPatch
       ? 'Approved patch waiting to apply'
-      : (canContinueQueue ? 'Run blocked - decision required' : 'Blocked work recorded'));
+      : (gateHeading || (canContinueQueue ? 'Run blocked - decision required' : 'Blocked work recorded')));
   const intro = hasPatchReview
     ? 'The worker produced a patch artifact. Review the changed files and choose whether to apply or skip the patch before treating the run as reflected in the workspace.'
     : (hasApprovedPatch
       ? 'One or more patch selections were approved but have not been written to the workspace yet.'
-      : (canContinueQueue
+      : (gateIntro || (canContinueQueue
         ? 'The Machine run reached a blocker and can still dispatch queued work.'
-        : 'The queue has no runnable items left. This run is partial evidence until you review it or start a follow-up run.'));
+        : 'The queue has no runnable items left. This run is partial evidence until you review it or start a follow-up run.')));
   const changedFileText = changedFiles.length
     ? `${changedFiles.slice(0, 6).join(', ')}${changedFiles.length > 6 ? `, +${changedFiles.length - 6} more` : ''}`
     : '';
@@ -18428,6 +18789,7 @@ async function maybeOpenMachineBlockedDecisionModal(runbookPath, record, options
     </div>
     ${hasPatchReview ? '<div class="runbook-diagnostic warning"><strong>Review Patch</strong> opens the patch modal with the changed files, base checks, and apply/skip decisions.</div>' : ''}
     ${hasApprovedPatch ? '<div class="runbook-diagnostic warning"><strong>Apply Approved Patches</strong> writes the approved file selections after fresh base SHA checks.</div>' : ''}
+    ${!hasPatchReview && !hasApprovedPatch ? gateDiagnosticHtml : ''}
     ${canContinueQueue ? '<div class="runbook-diagnostic warning"><strong>Continue Queue</strong> keeps the run alive and dispatches the next queued item. Existing blocked items remain recorded for follow-up.</div>' : ''}
     ${queueExhausted && !canContinueQueue ? '<div class="runbook-diagnostic warning"><strong>No runnable work</strong> No worker is running and no queued work remains. Use Start Follow-up to create a fresh run for the blocked items, or Review Evidence to inspect what happened.</div>' : ''}
     ${gate && !gateSkipBlockReason ? '<div class="runbook-diagnostic warning"><strong>Skip gate</strong> records an explicit skip decision for the blocked node and then resumes the run. Use it only when the missing evidence is intentionally not required.</div>' : ''}
@@ -18874,7 +19236,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     ? pipelineHarnessImplementationPendingPaths.has(harnessImplementationKey(runbookPath))
     : false;
   const harnessState = runbookPath ? getHarnessImplementationState(runbookPath) : null;
-  if (runbookPath && harnessImplementationSupersedesRunDetails(record, harnessState, harnessPending)) {
+  if (runbookPath && harnessImplementationReplacesRunDetails(record, harnessState, harnessPending)) {
     const runState = record?.runState || {};
     const runId = runState.runId || record?.runId || '';
     return `
@@ -19183,6 +19545,15 @@ function renderRunbooksPanel(options = {}) {
   const selected = selectedRunbookPath || '';
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
   const selectedMachineRunRecord = selected ? getActiveMachineRunRecord(selected) : null;
+  const selectedMachineRunList = selected ? getRunbookCache(machineRunListCache, selected) : null;
+  if (selected) {
+    rememberOrchestrationSelectedPipeline(selected);
+    const shouldHydrateLatestRun = !selectedMachineRunRecord
+      && (!selectedMachineRunList
+        || !Array.isArray(selectedMachineRunList.runs)
+        || selectedMachineRunList.runs.length > 0);
+    if (shouldHydrateLatestRun) void hydrateLatestMachineRunForSelection(selected);
+  }
   const inspectedHistoryRecord = selected ? getHistoryInspectionRecord(selected) : null;
   const selectedKey = runbookNormalizePath(selected).toLowerCase();
   const generationRunning = isPipelineGenerationRunning();
@@ -19260,6 +19631,7 @@ async function validateSelectedRunbook(runbookPath) {
   if (!runbookPath) return;
   const pipelineApi = window.orpad?.pipelines || window.orpad?.runbooks;
   selectedRunbookPath = runbookPath;
+  rememberOrchestrationSelectedPipeline(runbookPath);
   selectedRunbookValidation = await pipelineApi.validateFile(runbookPath, { trustLevel: 'local-authored' });
   await refreshPipelineHarnessMetadataCache(runbookPath);
   setRunbookCache(runbookValidationCache, runbookPath, selectedRunbookValidation);
@@ -19723,8 +20095,8 @@ function inferHarnessProjectProfile({ pipelineDoc, graphDoc, files, generatedAt 
       label: 'C / C++',
       confidence: cppProjects.length ? 'high' : 'medium',
       signals: [...cppProjects, ...cppSources].slice(0, 12),
-      cliTools: ['cmake', 'ctest', 'msbuild or make when applicable'],
-      validationCommands: ['cmake --build <build-dir>', 'ctest --test-dir <build-dir> --output-on-failure'],
+      cliTools: ['cmake', 'ctest', 'optional when applicable: msbuild or make'],
+      validationCommands: ['candidate: cmake --build <build-dir>', 'candidate: ctest --test-dir <build-dir> --output-on-failure'],
       setupNotes: ['Resolve the actual generator/build directory before running destructive clean or rebuild commands.'],
       mcpRecommendations: ['filesystem workspace access', 'terminal command runner', 'git diff/status'],
     });
@@ -20726,6 +21098,7 @@ async function toggleRunbookSlot(runbookPath) {
     return;
   }
   selectedRunbookPath = runbookPath;
+  rememberOrchestrationSelectedPipeline(runbookPath);
   selectedRunbookValidation = getRunbookCache(runbookValidationCache, runbookPath);
   lastRunRecord = getRunbookCache(runbookRecordCache, runbookPath);
   lastMachineRunRecord = getRunbookCache(machineRunRecordCache, runbookPath);
@@ -20737,16 +21110,26 @@ async function toggleRunbookSlot(runbookPath) {
 
 async function hydrateLatestMachineRunForSelection(runbookPath) {
   if (!workspacePath || !runbookPath) return;
-  if (selectedRunbookPath !== runbookPath) return;
-  if (lastMachineRunRecord?.runState?.runId || lastMachineRunRecord?.runId) return;
+  if (!sameNormalizedRunbookPath(selectedRunbookPath, runbookPath)) return;
+  const cached = getRunbookCache(machineRunRecordCache, runbookPath);
+  if (hasMachineRunRecordId(cached)) {
+    lastMachineRunRecord = cached;
+    return;
+  }
+  const hydrationKey = machineLatestHydrationKey(runbookPath);
+  if (!hydrationKey || machineLatestRunHydrationPending.has(hydrationKey)) return;
+  machineLatestRunHydrationPending.add(hydrationKey);
   try {
     const record = await loadLatestMachineRunRecord(runbookPath);
-    if (!record || selectedRunbookPath !== runbookPath) return;
+    if (!record || !sameNormalizedRunbookPath(selectedRunbookPath, runbookPath)) return;
     lastMachineRunRecord = record;
     setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
     renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
   } catch {
     // Latest run hydration is best-effort; failures stay silent so panel rendering proceeds.
+  } finally {
+    machineLatestRunHydrationPending.delete(hydrationKey);
   }
 }
 
@@ -23966,7 +24349,19 @@ orchestrationRunbarSlotEl?.addEventListener('click', async (event) => {
     if (!targetPath) return;
     const selectedKey = runbookNormalizePath(selectedRunbookPath).toLowerCase();
     const targetKey = runbookNormalizePath(targetPath).toLowerCase();
-    if (selectedKey && selectedKey === targetKey) return;
+    if (selectedKey && selectedKey === targetKey) {
+      const activeContext = pipelineContextForPath();
+      if (!sameNormalizedRunbookPath(activeContext?.pipelinePath || '', targetPath)) {
+        try {
+          await openPipelineEntryOrFile(targetPath);
+          await validateSelectedRunbook(targetPath);
+          void hydrateLatestMachineRunForSelection(targetPath);
+        } catch (err) {
+          notifyFormatError('Pipeline', err);
+        }
+      }
+      return;
+    }
     try {
       await toggleRunbookSlot(targetPath);
     } catch (err) {
@@ -26975,6 +27370,7 @@ function setOrchestrationRailCollapsed(collapsed) {
   if (!IS_ORCHESTRATION_WINDOW) return;
   document.body.classList.toggle('orchestration-rail-collapsed', !!collapsed);
   localStorage.setItem('orpad-orchestration-rail-collapsed', collapsed ? 'true' : 'false');
+  if (!collapsed) applyStoredSidebarWidth();
   if (btnOrchestrationEl) {
     btnOrchestrationEl.classList.toggle('rail-collapsed', !!collapsed);
     btnOrchestrationEl.title = collapsed ? 'Show Orchestration Panel' : 'Hide Orchestration Panel';
@@ -27029,6 +27425,9 @@ window.addEventListener('resize', () => {
       editorPaneEl.style.flex = '1';
       editorPaneEl.style.width = '';
       previewPaneEl.style.flex = '1';
+    }
+    if (IS_ORCHESTRATION_WINDOW && sidebarVisible && !document.body.classList.contains('orchestration-rail-collapsed')) {
+      applySidebarWidth(sidebarEl.offsetWidth);
     }
     scheduleOrchGraphResponsiveFit();
   });
@@ -27104,6 +27503,8 @@ window.addEventListener('resize', () => {
     sidebarVisible = true;
     sidebarActivePanel = 'runbooks';
     sidebarEl?.classList.remove('hidden');
+    applyStoredSidebarWidth();
+    btnAiEl?.setAttribute('hidden', '');
     document.getElementById('sidebar-runbooks')?.classList.add('active');
     window.orpad?.setTitle?.('OrPAD Orchestration');
     setOrchestrationRailCollapsed(localStorage.getItem('orpad-orchestration-rail-collapsed') === 'true');
@@ -27136,88 +27537,90 @@ window.addEventListener('resize', () => {
   });
   document.getElementById('btn-terminal')?.addEventListener('click', () => terminalController?.toggle());
 
-  aiController = initAISidebar({
-    workspaceEl,
-    track,
-    hooks: {
-      getActiveTab() {
-        const tab = getActiveTab();
-        if (!tab) return null;
-        return {
-          id: tab.id,
-          filePath: tab.filePath,
-          name: tab.filePath ? tab.filePath.split(/[/\\]/).pop() : (tab.title || t('untitled')),
-          dirPath: tab.dirPath,
-          viewType: tab.viewType,
-          content: editor.state.doc.toString(),
-          selection: getEditorSelectionText(),
-          isModified: tab.isModified,
-        };
+  if (!IS_ORCHESTRATION_WINDOW) {
+    aiController = initAISidebar({
+      workspaceEl,
+      track,
+      hooks: {
+        getActiveTab() {
+          const tab = getActiveTab();
+          if (!tab) return null;
+          return {
+            id: tab.id,
+            filePath: tab.filePath,
+            name: tab.filePath ? tab.filePath.split(/[/\\]/).pop() : (tab.title || t('untitled')),
+            dirPath: tab.dirPath,
+            viewType: tab.viewType,
+            content: editor.state.doc.toString(),
+            selection: getEditorSelectionText(),
+            isModified: tab.isModified,
+          };
+        },
+        getOpenTabs() {
+          return tabs.map(tab => ({
+            id: tab.id,
+            filePath: tab.filePath,
+            name: tab.filePath ? tab.filePath.split(/[/\\]/).pop() : (tab.title || t('untitled')),
+            viewType: tab.viewType,
+            isModified: tab.isModified,
+          }));
+        },
+        getWorkspacePath() { return workspacePath; },
+        activateTab(tabId) {
+          if (!tabs.some(tab => tab.id === tabId)) return false;
+          switchToTab(tabId);
+          return true;
+        },
+        getRunnerAttachment() { return terminalController?.getLastOutput?.() || null; },
+        getTemplateSection(section) {
+          const active = getActiveTab();
+          if (!active || active.viewType !== 'markdown') return null;
+          const range = findSectionRange(editor.state.doc.toString(), section);
+          return range ? { section, text: range.text } : null;
+        },
+        replaceTemplateSection(section, text) {
+          const active = getActiveTab();
+          if (!active || active.viewType !== 'markdown') return;
+          const next = replaceSectionContent(editor.state.doc.toString(), section, text);
+          replaceEditorDoc(next);
+          renderTemplateStatusChip();
+        },
+        async getWorkspaceFiles() {
+          if (!workspacePath) return [];
+          try {
+            const names = await window.orpad.getFileNames(workspacePath);
+            return (names || []).slice(0, 100).map(item => item.filePath || item.baseName || '');
+          } catch {
+            return [];
+          }
+        },
+        replaceSelectionOrDocument: replaceSelectionOrDoc,
+        replaceDocument: replaceEditorDoc,
+        createTextTab(name, content, viewType) {
+          const tab = createTab(null, null, content || '');
+          tab.title = name || t('untitled');
+          if (viewType) {
+            tab.viewType = viewType;
+            tab.editorState = createEditorState(content || '', viewType);
+            editor.setState(tab.editorState);
+            renderPreview(content || '');
+            updateFormatBar(viewType);
+          }
+          renderTabBar();
+          return tab;
+        },
+        showCsvFilterChip(label) {
+          currentGrid?.showFilterChip?.(label);
+        },
+        openModal: openFmtModal,
+        closeModal: closeFmtModal,
+        notify: notifyFormatError,
+        onVisibilityChange: syncAiToolbarButton,
       },
-      getOpenTabs() {
-        return tabs.map(tab => ({
-          id: tab.id,
-          filePath: tab.filePath,
-          name: tab.filePath ? tab.filePath.split(/[/\\]/).pop() : (tab.title || t('untitled')),
-          viewType: tab.viewType,
-          isModified: tab.isModified,
-        }));
-      },
-      getWorkspacePath() { return workspacePath; },
-      activateTab(tabId) {
-        if (!tabs.some(tab => tab.id === tabId)) return false;
-        switchToTab(tabId);
-        return true;
-      },
-      getRunnerAttachment() { return terminalController?.getLastOutput?.() || null; },
-      getTemplateSection(section) {
-        const active = getActiveTab();
-        if (!active || active.viewType !== 'markdown') return null;
-        const range = findSectionRange(editor.state.doc.toString(), section);
-        return range ? { section, text: range.text } : null;
-      },
-      replaceTemplateSection(section, text) {
-        const active = getActiveTab();
-        if (!active || active.viewType !== 'markdown') return;
-        const next = replaceSectionContent(editor.state.doc.toString(), section, text);
-        replaceEditorDoc(next);
-        renderTemplateStatusChip();
-      },
-      async getWorkspaceFiles() {
-        if (!workspacePath) return [];
-        try {
-          const names = await window.orpad.getFileNames(workspacePath);
-          return (names || []).slice(0, 100).map(item => item.filePath || item.baseName || '');
-        } catch {
-          return [];
-        }
-      },
-      replaceSelectionOrDocument: replaceSelectionOrDoc,
-      replaceDocument: replaceEditorDoc,
-      createTextTab(name, content, viewType) {
-        const tab = createTab(null, null, content || '');
-        tab.title = name || t('untitled');
-        if (viewType) {
-          tab.viewType = viewType;
-          tab.editorState = createEditorState(content || '', viewType);
-          editor.setState(tab.editorState);
-          renderPreview(content || '');
-          updateFormatBar(viewType);
-        }
-        renderTabBar();
-        return tab;
-      },
-      showCsvFilterChip(label) {
-        currentGrid?.showFilterChip?.(label);
-      },
-      openModal: openFmtModal,
-      closeModal: closeFmtModal,
-      notify: notifyFormatError,
-      onVisibilityChange: syncAiToolbarButton,
-    },
-  });
-  btnAiEl?.addEventListener('click', () => aiController?.toggle?.());
-  syncAiToolbarButton();
+    });
+    btnAiEl?.addEventListener('click', () => aiController?.toggle?.());
+    syncAiToolbarButton();
+  }
 
   const commandRoot = document.getElementById('command-palette-root') || document.body;
   commandPalette = createCommandPalette({

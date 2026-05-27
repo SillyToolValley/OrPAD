@@ -3,7 +3,7 @@ const path = require('path');
 
 const { appendMachineEvent, readMachineEvents } = require('./events');
 const { assertMachineStorageId } = require('./ids');
-const { ensureDir, writeJsonAtomic } = require('./metadata-store');
+const { atomicWriteFile, ensureDir, writeJsonAtomic } = require('./metadata-store');
 const { normalizeCandidateProposal } = require('./work-item-normalizer');
 
 const fsp = fs.promises;
@@ -19,6 +19,7 @@ const TRANSITION_ACTIONS = Object.freeze({
   'claimed->blocked': 'close',
   'claimed->queued': 'close',
   'blocked->queued': 'retry',
+  'blocked->rejected': 'triage',
   'done->queued': 'retry',
 });
 const LEGACY_ACTORS = Object.freeze({
@@ -172,6 +173,13 @@ function legacyJournalFromEvent(event) {
   };
 }
 
+function legacyJournalRecordsFromEvents(events = []) {
+  return events
+    .filter(event => event?.eventType === 'queue.transition')
+    .map(legacyJournalFromEvent)
+    .filter(record => record.action);
+}
+
 async function appendLegacyJournal(runRoot, event) {
   const action = event.payload?.action || transitionAction(event.fromState, event.toState);
   if (!action) return null;
@@ -179,6 +187,22 @@ async function appendLegacyJournal(runRoot, event) {
   await assertQueueJournalPathSafe(runRoot);
   await fsp.appendFile(queueJournalPath(runRoot), `${JSON.stringify(record)}\n`, 'utf8');
   return record;
+}
+
+async function writeLegacyJournalProjection(runRoot, options = {}) {
+  const events = Array.isArray(options.events) ? options.events : await readMachineEvents(runRoot);
+  const records = legacyJournalRecordsFromEvents(events);
+  await ensureQueueLayout(runRoot);
+  await assertQueueJournalPathSafe(runRoot);
+  await atomicWriteFile(
+    queueJournalPath(runRoot),
+    records.map(record => JSON.stringify(record)).join('\n') + (records.length ? '\n' : ''),
+  );
+  return {
+    path: queueJournalPath(runRoot),
+    records,
+    recordCount: records.length,
+  };
 }
 
 async function findEventByTransitionId(runRoot, transitionId) {
@@ -337,6 +361,7 @@ module.exports = {
   findQueueItem,
   ingestCandidateProposal,
   legacyJournalFromEvent,
+  legacyJournalRecordsFromEvents,
   projectQueueStateFromEvents,
   assertQueueState,
   queueItemPath,
@@ -346,5 +371,6 @@ module.exports = {
   readQueueItems,
   transitionAction,
   transitionQueueItem,
+  writeLegacyJournalProjection,
   writeQueueItem,
 };

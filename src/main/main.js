@@ -550,7 +550,7 @@ const { createMachineProviderKeyLoader } = require('./ai-keys');
 registerMachineHandlers({
   ipcMain,
   authority,
-  allowSessionEnable: !app.isPackaged,
+  allowSessionEnable: true,
   loadProviderKey: createMachineProviderKeyLoader({ app, safeStorage }),
 });
 registerOrchestrationAuthoringHandlers({ ipcMain, app, authority });
