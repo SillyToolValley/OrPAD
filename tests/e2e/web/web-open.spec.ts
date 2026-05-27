@@ -961,6 +961,8 @@ test('web file launch consumer and non-FSA save fallback work', async ({ page })
 
   const launchFiles = [
     { name: 'launch.md', type: 'text/markdown', content: '# Launched\n\nfrom file handler', expected: 'from file handler' },
+    { name: 'notes.txt', type: 'text/plain', content: 'Plain text launch', expected: 'Plain text launch' },
+    { name: 'script.py', type: 'text/x-python', content: 'def launch():\n    return "web"', expected: 'def launch' },
     { name: 'notes.mkd', type: 'text/markdown', content: '# MKD\n\nmarkdown variant launch', expected: 'markdown variant launch' },
     { name: 'brief.mdx', type: 'text/markdown', content: '# MDX\n\nexport const mode = "launch";', expected: 'export const mode' },
     { name: 'diagram.mmd', type: 'text/vnd.mermaid', content: 'graph TD\n  A[Launch] --> B[Preview]', expected: 'graph TD' },

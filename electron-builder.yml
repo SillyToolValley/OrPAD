@@ -157,6 +157,153 @@ fileAssociations:
   - ext: htm
     name: HTML File
     description: HTML Document
+  - ext: js
+    name: JavaScript File
+    description: JavaScript Source File
+  - ext: mjs
+    name: JavaScript Module
+    description: JavaScript Module Source File
+  - ext: cjs
+    name: CommonJS File
+    description: CommonJS Source File
+  - ext: jsx
+    name: JSX File
+    description: JSX Source File
+  - ext: ts
+    name: TypeScript File
+    description: TypeScript Source File
+  - ext: mts
+    name: TypeScript Module
+    description: TypeScript Module Source File
+  - ext: cts
+    name: CommonJS TypeScript File
+    description: CommonJS TypeScript Source File
+  - ext: tsx
+    name: TSX File
+    description: TSX Source File
+  - ext: css
+    name: CSS File
+    description: CSS Stylesheet
+  - ext: scss
+    name: SCSS File
+    description: SCSS Stylesheet
+  - ext: sass
+    name: Sass File
+    description: Sass Stylesheet
+  - ext: less
+    name: Less File
+    description: Less Stylesheet
+  - ext: py
+    name: Python File
+    description: Python Source File
+  - ext: pyw
+    name: Python File
+    description: Python Source File
+  - ext: java
+    name: Java File
+    description: Java Source File
+  - ext: c
+    name: C File
+    description: C Source File
+  - ext: h
+    name: C Header File
+    description: C Header Source File
+  - ext: cpp
+    name: C++ File
+    description: C++ Source File
+  - ext: cc
+    name: C++ File
+    description: C++ Source File
+  - ext: cxx
+    name: C++ File
+    description: C++ Source File
+  - ext: hpp
+    name: C++ Header File
+    description: C++ Header Source File
+  - ext: hh
+    name: C++ Header File
+    description: C++ Header Source File
+  - ext: hxx
+    name: C++ Header File
+    description: C++ Header Source File
+  - ext: cs
+    name: C# File
+    description: C# Source File
+  - ext: go
+    name: Go File
+    description: Go Source File
+  - ext: rs
+    name: Rust File
+    description: Rust Source File
+  - ext: php
+    name: PHP File
+    description: PHP Source File
+  - ext: phtml
+    name: PHP Template
+    description: PHP Template Source File
+  - ext: rb
+    name: Ruby File
+    description: Ruby Source File
+  - ext: swift
+    name: Swift File
+    description: Swift Source File
+  - ext: kt
+    name: Kotlin File
+    description: Kotlin Source File
+  - ext: kts
+    name: Kotlin Script
+    description: Kotlin Script Source File
+  - ext: dart
+    name: Dart File
+    description: Dart Source File
+  - ext: sh
+    name: Shell Script
+    description: Shell Script
+  - ext: bash
+    name: Bash Script
+    description: Bash Script
+  - ext: zsh
+    name: Zsh Script
+    description: Zsh Script
+  - ext: ps1
+    name: PowerShell Script
+    description: PowerShell Script
+  - ext: psm1
+    name: PowerShell Module
+    description: PowerShell Module
+  - ext: sql
+    name: SQL File
+    description: SQL Source File
+  - ext: lua
+    name: Lua File
+    description: Lua Source File
+  - ext: r
+    name: R File
+    description: R Source File
+  - ext: pl
+    name: Perl File
+    description: Perl Source File
+  - ext: pm
+    name: Perl Module
+    description: Perl Module Source File
+  - ext: vue
+    name: Vue File
+    description: Vue Component Source File
+  - ext: svelte
+    name: Svelte File
+    description: Svelte Component Source File
+  - ext: proto
+    name: Protocol Buffer File
+    description: Protocol Buffer Source File
+  - ext: diff
+    name: Diff File
+    description: Diff Patch File
+  - ext: patch
+    name: Patch File
+    description: Patch File
+  - ext: svg
+    name: SVG File
+    description: SVG Text Document
   - ext: env
     name: Env File
     description: Environment File

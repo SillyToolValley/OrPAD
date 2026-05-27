@@ -17,6 +17,11 @@ const SUPPORTED_EXTS = [
   'html','htm','xml',
   'csv','tsv','toml','ini','conf','properties','env',
   'log','txt',
+  'js','mjs','cjs','jsx','ts','mts','cts','tsx',
+  'css','scss','sass','less',
+  'py','pyw','java','c','h','cpp','cc','cxx','hpp','hh','hxx','cs','go','rs',
+  'php','phtml','rb','swift','kt','kts','dart','sh','bash','zsh','ps1','psm1',
+  'sql','lua','r','pl','pm','vue','svelte','proto','diff','patch','svg',
   'or-pipeline','or-graph','or-tree','or-rule','or-run',
 ];
 const TRUSTED_URL_HOSTS = new Set([

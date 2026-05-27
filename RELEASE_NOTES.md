@@ -1,22 +1,17 @@
-# OrPAD v1.0.0-beta.4
+# OrPAD v1.0.0-beta.5
 
-OrPAD v1.0.0-beta.4 focuses on package sharing readiness, Package Manager
-navigation, and release audit cleanup.
+OrPAD v1.0.0-beta.5 expands source and text file handling across the desktop
+app, PWA file handler, and editor language detection.
 
 ## Changes
 
-- Reworked Package Manager browse rows into compact full-width package slots
-  with name, author, Detail, and Import actions.
-- Moved registry package inspection into a focused Detail modal so large
-  package catalogs are easier to scan.
-- Added Registry governance metadata for official PR-reviewed OrPAD packages,
-  custom Registry sources, third-party review claims, and discovery-only
-  metadata.
-- Added an initial official Registry JSON under `registry/packages.json` and
-  wired the default Package Manager source to the repository-hosted copy.
-- Added Package Manager trust labels and warnings so custom Registry URLs
-  cannot self-declare OrPAD official approval.
-- Added Registry authoring, source management, workspace lock, install/update,
-  and review-state tests for package sharing flows.
-- Updated release dependencies so `npm audit --omit=dev --audit-level=high`
-  passes for production dependencies.
+- Added desktop file associations for common source, stylesheet, script,
+  config, diff, and SVG formats.
+- Expanded the web app manifest file handlers so launched source/text files
+  open through the PWA flow.
+- Added CodeMirror language detection and async language loading for supported
+  source file extensions.
+- Updated quick-open format aliases for source, shell, diff, SVG, and related
+  text formats.
+- Added regression coverage for opening and saving editable source/text files
+  on desktop and through the web launch flow.

@@ -57,6 +57,107 @@
           ".html",
           ".htm"
         ],
+        "text/javascript": [
+          ".js",
+          ".mjs",
+          ".cjs",
+          ".jsx"
+        ],
+        "text/typescript": [
+          ".ts",
+          ".mts",
+          ".cts",
+          ".tsx"
+        ],
+        "text/css": [
+          ".css",
+          ".scss",
+          ".sass",
+          ".less"
+        ],
+        "text/x-python": [
+          ".py",
+          ".pyw"
+        ],
+        "text/x-java-source": [
+          ".java"
+        ],
+        "text/x-csrc": [
+          ".c",
+          ".h"
+        ],
+        "text/x-c++src": [
+          ".cpp",
+          ".cc",
+          ".cxx",
+          ".hpp",
+          ".hh",
+          ".hxx"
+        ],
+        "text/x-csharp": [
+          ".cs"
+        ],
+        "text/x-go": [
+          ".go"
+        ],
+        "text/x-rustsrc": [
+          ".rs"
+        ],
+        "text/x-php": [
+          ".php",
+          ".phtml"
+        ],
+        "text/x-ruby": [
+          ".rb"
+        ],
+        "text/x-swift": [
+          ".swift"
+        ],
+        "text/x-kotlin": [
+          ".kt",
+          ".kts"
+        ],
+        "text/x-dart": [
+          ".dart"
+        ],
+        "text/x-shellscript": [
+          ".sh",
+          ".bash",
+          ".zsh"
+        ],
+        "application/x-powershell": [
+          ".ps1",
+          ".psm1"
+        ],
+        "text/x-sql": [
+          ".sql"
+        ],
+        "text/x-lua": [
+          ".lua"
+        ],
+        "text/x-r": [
+          ".r"
+        ],
+        "text/x-perl": [
+          ".pl",
+          ".pm"
+        ],
+        "text/x-vue": [
+          ".vue"
+        ],
+        "text/x-svelte": [
+          ".svelte"
+        ],
+        "text/x-protobuf": [
+          ".proto"
+        ],
+        "text/x-diff": [
+          ".diff",
+          ".patch"
+        ],
+        "image/svg+xml": [
+          ".svg"
+        ],
         "application/xml": [
           ".xml"
         ],

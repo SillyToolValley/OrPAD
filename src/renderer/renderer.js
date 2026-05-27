@@ -23,7 +23,7 @@ import {
   undo as cmUndo,
 } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { foldCode, foldedRanges, foldEffect, syntaxHighlighting, unfoldCode } from '@codemirror/language';
+import { foldCode, foldedRanges, foldEffect, LanguageDescription, syntaxHighlighting, unfoldCode } from '@codemirror/language';
 import { openSearchPanel, selectMatches, selectNextOccurrence } from '@codemirror/search';
 import { languages } from '@codemirror/language-data';
 import { json } from '@codemirror/lang-json';
@@ -1303,10 +1303,12 @@ function getViewType(filePath) {
   if (/\.(ini|conf)$/.test(name)) return 'ini';
   if (/\.properties$/.test(name)) return 'properties';
   if (/(^|[\\/])\.env$/.test(name) || /\.env$/.test(name)) return 'env';
+  const codeLanguage = getCodeLanguageDescription(filePath);
+  if (codeLanguage) return codeViewTypeForLanguage(codeLanguage.name);
   return 'plain';
 }
 
-function getLangExtension(viewType) {
+function getLangExtension(viewType, filePath = '') {
   switch (viewType) {
     case 'markdown':
     case 'mermaid':
@@ -1314,15 +1316,23 @@ function getLangExtension(viewType) {
     case 'orch-pipeline':
     case 'orch-graph':
     case 'orch-tree':
-    case 'json': return json();
+    case 'json':
+    case 'jsonl':
+      return json();
     case 'yaml': return yaml();
     case 'xml':  return xml();
     case 'html': return htmlLang();
-    default: return null;
+    default: {
+      const codeLanguage = getCodeLanguageDescription(filePath, viewType);
+      return codeLanguage?.support || null;
+    }
   }
 }
 
 function viewTypeDisplayLabel(viewType) {
+  if (String(viewType || '').startsWith('code-')) {
+    return codeLanguageNameForViewType(viewType) || 'Code';
+  }
   const labels = {
     'orch-pipeline': 'Pipeline',
     'orch-graph': 'Flow',
@@ -1349,6 +1359,65 @@ const BINARY_EXTS = new Set([
   'db','sqlite',
 ]);
 
+const PLAIN_TEXT_EXTS = new Set(['txt', 'text', 'log']);
+const CODE_LANGUAGE_EXT_ALIASES = new Map([
+  ['bash', 'shell'],
+  ['ksh', 'shell'],
+  ['sh', 'shell'],
+  ['zsh', 'shell'],
+]);
+const codeViewTypeLanguages = new Map();
+
+function fileBaseName(filePath) {
+  return String(filePath || '').split(/[\\/]/).pop() || String(filePath || '');
+}
+
+function fileExtension(filePath) {
+  const name = fileBaseName(filePath).toLowerCase();
+  const dot = name.lastIndexOf('.');
+  return dot < 0 ? '' : name.slice(dot + 1);
+}
+
+function codeViewTypeForLanguage(languageName) {
+  const slug = String(languageName || 'code')
+    .toLowerCase()
+    .replace(/\+/g, 'p')
+    .replace(/#/g, 'sharp')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'code';
+  const viewType = `code-${slug}`;
+  codeViewTypeLanguages.set(viewType, languageName);
+  return viewType;
+}
+
+function codeLanguageNameForViewType(viewType) {
+  const raw = String(viewType || '');
+  if (!raw.startsWith('code-')) return '';
+  return codeViewTypeLanguages.get(raw) || raw.slice(5).replace(/-/g, ' ');
+}
+
+function getCodeLanguageDescription(filePath, viewType = '') {
+  const viewLanguage = codeLanguageNameForViewType(viewType);
+  if (viewLanguage) {
+    const byViewType = LanguageDescription.matchLanguageName(languages, viewLanguage, false);
+    if (byViewType) return byViewType;
+  }
+
+  const base = fileBaseName(filePath);
+  if (!base) return null;
+  const ext = fileExtension(base);
+  if (PLAIN_TEXT_EXTS.has(ext)) return null;
+
+  const alias = CODE_LANGUAGE_EXT_ALIASES.get(ext);
+  if (alias) {
+    const byAlias = LanguageDescription.matchLanguageName(languages, alias, false);
+    if (byAlias) return byAlias;
+  }
+
+  return LanguageDescription.matchFilename(languages, base)
+    || LanguageDescription.matchFilename(languages, base.toLowerCase());
+}
+
 function isSupportedFormat(filename) {
   const name = (filename || '').toLowerCase();
   const m = name.match(/\.([^./\\]+)$/);
@@ -1358,6 +1427,7 @@ function isSupportedFormat(filename) {
 }
 
 // ==================== CodeMirror Editor ====================
+const languageCompartment = new Compartment();
 const vimCompartment = new Compartment();
 const minimapCompartment = new Compartment();
 
@@ -1547,14 +1617,14 @@ function getRestoredScrollTop(filePath) {
   return closedEditorSessionState.get(getSessionStateKey(filePath))?.scrollTop || { editor: 0, preview: 0 };
 }
 
-function createEditorState(content, viewType = 'markdown') {
-  const langExt = getLangExtension(viewType);
+function createEditorState(content, viewType = 'markdown', filePath = '') {
+  const langExt = getLangExtension(viewType, filePath);
   return EditorState.create({
     doc: content,
     extensions: [
       basicSetup,
       syntaxHighlighting(classHighlighter),
-      ...(langExt ? [langExt] : []),
+      languageCompartment.of(langExt || []),
       autocompletion({ override: [wikiLinkCompletions, snippetCompletionSource], activateOnTyping: true }),
       EditorView.lineWrapping,
       gitHunkGutter,
@@ -1602,7 +1672,7 @@ function createEditorState(content, viewType = 'markdown') {
 }
 
 const editor = new EditorView({
-  state: createEditorState(''),
+  state: createEditorState('', 'plain'),
   parent: document.getElementById('editor'),
 });
 document.getElementById('editor').addEventListener('contextmenu', () => {
@@ -1610,6 +1680,45 @@ document.getElementById('editor').addEventListener('contextmenu', () => {
     window.dispatchEvent(new CustomEvent('orpad-ai-open-actions', { detail: { format: 'markdown', scope: getEditorSelectionText() ? 'selection' : 'document' } }));
   }
 });
+
+function tabLanguageLoadKey(tab) {
+  return `${tab?.viewType || ''}:${tab?.filePath || tab?.title || ''}`;
+}
+
+function tabNeedsAsyncLanguage(tab) {
+  const viewType = String(tab?.viewType || '');
+  return viewType.startsWith('code-') || viewType === 'toml' || viewType === 'ini' || viewType === 'properties';
+}
+
+function applyTabLanguageSupport(tab, support) {
+  if (!tab || !support) return;
+  if (tab.id === activeTabId) {
+    editor.dispatch({ effects: languageCompartment.reconfigure(support) });
+    tab.editorState = editor.state;
+    return;
+  }
+  if (tab.editorState) {
+    tab.editorState = tab.editorState.update({
+      effects: languageCompartment.reconfigure(support),
+    }).state;
+  }
+}
+
+function ensureTabLanguageLoaded(tab) {
+  if (!tabNeedsAsyncLanguage(tab)) return;
+  const codeLanguage = getCodeLanguageDescription(tab?.filePath || tab?.title || '', tab?.viewType || '');
+  if (!codeLanguage || codeLanguage.support) return;
+  const loadKey = tabLanguageLoadKey(tab);
+  tab.pendingLanguageLoadKey = loadKey;
+  codeLanguage.load()
+    .then((support) => {
+      if (tab.pendingLanguageLoadKey !== loadKey) return;
+      applyTabLanguageSupport(tab, support);
+    })
+    .catch((err) => {
+      console.warn('Failed to load editor language mode:', codeLanguage.name, err);
+    });
+}
 
 function applyEditorUxCompartments() {
   if (!editor?.state) return;
@@ -1899,7 +2008,7 @@ function createTab(filePath, dirPath, content, savedContent, options = {}) {
   const viewType = options.viewType || getViewType(tabName);
   const normContent = normalizeLineEndings(content);
   const normSaved = savedContent !== undefined ? normalizeLineEndings(savedContent) : normContent;
-  const editorState = restoreEditorSessionState(createEditorState(normContent, viewType), filePath);
+  const editorState = restoreEditorSessionState(createEditorState(normContent, viewType, tabName), filePath);
   const scrollTop = getRestoredScrollTop(filePath);
   const tab = {
     id: 'tab-' + (++tabIdCounter),
@@ -1966,6 +2075,7 @@ function switchToTab(tabId) {
 
   renderPreview(editor.state.doc.toString());
   updateFormatBar(newTab.viewType);
+  ensureTabLanguageLoaded(newTab);
   applyDiffWorkspaceMode();
   renderTabBar();
   updateTitle();
@@ -2019,7 +2129,7 @@ async function closeTab(tabId) {
   if (tabs.length === 0) {
     activeTabId = null;
     switchingTabs = true;
-    editor.setState(createEditorState(''));
+    editor.setState(createEditorState('', 'plain'));
     switchingTabs = false;
     updateVimStatusBar();
     updateZenLayoutClass();
@@ -2313,9 +2423,10 @@ function createTabFromTemplate(file) {
   const tab = createTab(null, null, file.content || '', '', { forceUnsaved: true });
   tab.title = file.filename || 'template.md';
   tab.viewType = file.format || 'markdown';
-  tab.editorState = createEditorState(file.content || '', tab.viewType);
+  tab.editorState = createEditorState(file.content || '', tab.viewType, tab.title);
   tab.isModified = true;
   editor.setState(tab.editorState);
+  ensureTabLanguageLoaded(tab);
   renderPreview(file.content || '');
   updateFormatBar(tab.viewType);
   updateTitle();
@@ -14398,7 +14509,7 @@ async function revertGitCurrentFile() {
     const content = normalizeLineEndings(result.content);
     tab.lastSavedContent = content;
     tab.isModified = false;
-    tab.editorState = createEditorState(content, tab.viewType);
+    tab.editorState = createEditorState(content, tab.viewType, tab.filePath || tab.title);
     editor.setState(tab.editorState);
     renderPreview(content);
     renderTabBar();
@@ -14487,12 +14598,12 @@ async function reloadOpenWorkspaceTabsAfterCheckout(previousBranch) {
       tab.dirPath = null;
       tab.lastSavedContent = '';
       tab.isModified = true;
-      tab.editorState = createEditorState(oldContent, tab.viewType);
+      tab.editorState = createEditorState(oldContent, tab.viewType, tab.filePath || tab.title);
     } else {
       const content = normalizeLineEndings(result.content);
       tab.lastSavedContent = content;
       tab.isModified = false;
-      tab.editorState = createEditorState(content, tab.viewType);
+      tab.editorState = createEditorState(content, tab.viewType, tab.filePath || tab.title);
     }
 
     if (tab.id === activeTabId) {
@@ -25569,6 +25680,17 @@ async function saveFileAs() {
     tab.title = null;
     tab.source = null;
     tab.sourceUrl = null;
+    const nextViewType = getViewType(tab.filePath);
+    if (nextViewType !== tab.viewType) {
+      tab.viewType = nextViewType;
+      tab.editorState = createEditorState(content, tab.viewType, tab.filePath);
+      switchingTabs = true;
+      editor.setState(tab.editorState);
+      switchingTabs = false;
+      renderPreview(content);
+      updateFormatBar(tab.viewType);
+    }
+    ensureTabLanguageLoaded(tab);
     tab.lastSavedContent = content;
     tab.lastAutoSavedContent = null;
     tab.isModified = false;
@@ -25895,7 +26017,7 @@ function insertRunnerTroubleshootingBlock(markdown) {
     const newTab = createTab(null, null, `## Troubleshooting\n\n${block}\n`);
     newTab.title = 'Troubleshooting.md';
     newTab.viewType = 'markdown';
-    newTab.editorState = createEditorState(editor.state.doc.toString(), 'markdown');
+    newTab.editorState = createEditorState(editor.state.doc.toString(), 'markdown', newTab.title);
     renderTabBar();
     return;
   }
@@ -27601,8 +27723,9 @@ window.addEventListener('resize', () => {
           tab.title = name || t('untitled');
           if (viewType) {
             tab.viewType = viewType;
-            tab.editorState = createEditorState(content || '', viewType);
+            tab.editorState = createEditorState(content || '', viewType, tab.filePath || tab.title);
             editor.setState(tab.editorState);
+            ensureTabLanguageLoaded(tab);
             renderPreview(content || '');
             updateFormatBar(viewType);
           }
