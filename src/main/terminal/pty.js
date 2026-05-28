@@ -147,6 +147,39 @@ function gitBashPath() {
   ]);
 }
 
+function decodeWindowsCommandOutput(buffer) {
+  const raw = Buffer.isBuffer(buffer) ? buffer : Buffer.from(String(buffer || ''));
+  const utf8 = raw.toString('utf8').replace(/\0/g, '');
+  if (utf8.trim()) return utf8;
+  return raw.toString('utf16le').replace(/\0/g, '');
+}
+
+function usableWslPath() {
+  if (process.platform !== 'win32') return null;
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const command = existing([
+    path.join(systemRoot, 'System32', 'wsl.exe'),
+    findOnPath('wsl.exe'),
+  ]);
+  if (!command) return null;
+  try {
+    const output = childProcess.execFileSync(command, ['-l', '-q'], {
+      encoding: 'buffer',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1500,
+    });
+    const distros = decodeWindowsCommandOutput(output)
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean)
+      .filter(item => !/^docker-desktop(?:-data)?$/i.test(item));
+    return distros.length ? command : null;
+  } catch {
+    return null;
+  }
+}
+
 function windowsPackageLocalCacheCandidates(packagePrefix, relativeParts) {
   if (process.platform !== 'win32') return [];
   const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
@@ -354,10 +387,7 @@ function detectShells() {
         id: 'wsl',
         label: 'WSL',
         family: 'wsl',
-        command: existing([
-          path.join(systemRoot, 'System32', 'wsl.exe'),
-          findOnPath('wsl.exe'),
-        ]),
+        command: usableWslPath(),
       },
     ].filter(item => item.command);
   }
@@ -390,7 +420,12 @@ function detectTerminalProfiles() {
 }
 
 function shellIntegrationDir() {
-  return path.resolve(__dirname, '..', '..', 'renderer', 'terminal', 'shell-integration');
+  const bundledDir = path.resolve(__dirname, '..', '..', 'renderer', 'terminal', 'shell-integration');
+  if (bundledDir.includes(`${path.sep}app.asar${path.sep}`)) {
+    const unpackedDir = bundledDir.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+    if (fs.existsSync(unpackedDir)) return unpackedDir;
+  }
+  return bundledDir;
 }
 
 function normalizeCwd(input, workspaceRoot, allowOutsideWorkspace) {

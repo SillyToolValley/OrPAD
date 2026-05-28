@@ -4,6 +4,7 @@ asar: true
 asarUnpack:
   - "node_modules/**/*.node"
   - "node_modules/@homebridge/node-pty-prebuilt-multiarch/**"
+  - "src/renderer/terminal/shell-integration/**"
 compression: maximum
 electronLanguages:
   - en-US

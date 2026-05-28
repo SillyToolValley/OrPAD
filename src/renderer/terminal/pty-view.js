@@ -159,6 +159,38 @@ function dispatchTerminalOutput(block) {
   }));
 }
 
+async function writeClipboardText(text) {
+  const value = String(text || '');
+  if (!value) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {}
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-10000px';
+  textarea.style.top = '-10000px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+}
+
+function copyTerminalSelection(term) {
+  const selected = term?.getSelection?.() || '';
+  if (!selected) return Promise.resolve(false);
+  return writeClipboardText(selected);
+}
+
 function startCommandBlock(session, commandLine, provisional = false) {
   if (session.currentBlock) return session.currentBlock;
   const block = {
@@ -255,7 +287,6 @@ function handleOsc633(session, code, param) {
     const cwd = String(param || '').replace(/^Cwd=/, '');
     if (cwd) {
       session.cwd = cwd;
-      session.title = fileName(cwd) || session.shell?.label || t('terminal.title');
       session.renderTabs();
     }
     return;
@@ -293,6 +324,10 @@ function consumeOsc633(session, chunk) {
   }
   cleaned += input.slice(last);
   return cleaned;
+}
+
+function terminalTabTitle(info) {
+  return info?.shell?.label || info?.shell?.id || fileName(info?.cwd) || t('terminal.title');
 }
 
 export function createPtyTerminalGroup({ mount, hooks, track }) {
@@ -772,6 +807,26 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     const container = el('div', 'terminal-pty-container');
     stage.appendChild(container);
     term.open(container);
+    const copyCurrentSelection = () => {
+      setTimeout(() => {
+        if (!term.hasSelection?.()) return;
+        copyTerminalSelection(term).catch(() => {});
+      }, 0);
+    };
+    term.attachCustomKeyEventHandler((event) => {
+      const key = String(event.key || '').toLowerCase();
+      const copyShortcut = (event.ctrlKey || event.metaKey) && key === 'c';
+      const explicitCopyShortcut = event.ctrlKey && event.shiftKey && key === 'c';
+      if ((copyShortcut || explicitCopyShortcut) && term.hasSelection?.()) {
+        if (event.type === 'keydown') copyTerminalSelection(term).catch(() => {});
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+      }
+      return true;
+    });
+    container.addEventListener('mouseup', copyCurrentSelection);
+    container.addEventListener('touchend', copyCurrentSelection);
 
     const session = {
       id: info.sessionId,
@@ -782,7 +837,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       container,
       shell: info.shell,
       cwd: info.cwd,
-      title: fileName(info.cwd) || info.shell?.label || t('terminal.title'),
+      title: terminalTabTitle(info),
       blocks: [],
       blockList,
       hooks,
