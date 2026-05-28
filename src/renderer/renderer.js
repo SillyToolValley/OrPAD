@@ -4553,6 +4553,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const harnessAuthoringBadge = pipelineDocHarnessAuthoringBadge(pipelineDoc, harnessImplementedAt, runbookKey);
   const harnessProgress = harnessImplementationProgressForPath(runbookPath);
   const harnessSupersedesRunDetails = harnessImplementationSupersedesRunDetails(previewRunRecord, harnessState, harnessPending);
+  const harnessSucceeded = harnessStatus === 'succeeded';
   const requiresHarnessBeforeRun = pipelineRequiresHarnessBeforeRun(runbookPath, pipelineDoc, harnessImplementedAt);
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = requiresHarnessBeforeRun
@@ -4640,7 +4641,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
       </div>
     </div>
   `;
-  const harnessDetailsHtml = harnessSupersedesRunDetails
+  const harnessDetailsHtml = harnessSupersedesRunDetails && !harnessSucceeded
     ? renderHarnessImplementationBannerHtml(runbookPath, harnessState, pipelineDoc, harnessPending)
     : '';
   const runDetailsHtml = harnessSupersedesRunDetails
@@ -17847,8 +17848,18 @@ function harnessImplementationSupersedesRunDetails(record, state, pending = fals
 
 function harnessImplementationReplacesRunDetails(record, state, pending = false) {
   const status = String(state?.status || '').toLowerCase();
-  if (status === 'succeeded' && record) return false;
+  if (status === 'succeeded') return false;
   return harnessImplementationSupersedesRunDetails(record, state, pending);
+}
+
+function renderHarnessImplementationSidebarSection(record, runbookPath, state, pending = false) {
+  if (!runbookPath || !harnessImplementationReplacesRunDetails(record, state, pending)) return '';
+  return `
+      <section class="runbook-panel-section" data-runbook-section="harness-implementation">
+        <h3>Harness Implementation</h3>
+        ${renderHarnessImplementationBannerHtml(runbookPath, state, null, pending)}
+      </section>
+    `;
 }
 
 function pipelinePreviewHarnessRunStatus(state, pending = false, progress = null) {
@@ -19347,17 +19358,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
     ? pipelineHarnessImplementationPendingPaths.has(harnessImplementationKey(runbookPath))
     : false;
   const harnessState = runbookPath ? getHarnessImplementationState(runbookPath) : null;
-  if (runbookPath && harnessImplementationReplacesRunDetails(record, harnessState, harnessPending)) {
-    const runState = record?.runState || {};
-    const runId = runState.runId || record?.runId || '';
-    return `
-      <section class="runbook-panel-section" data-runbook-section="harness-implementation">
-        <h3>Harness Implementation</h3>
-        ${renderHarnessImplementationBannerHtml(runbookPath, harnessState, null, harnessPending)}
-        ${renderMachineRunHistory(runbookPath, runId)}
-      </section>
-    `;
-  }
+  const harnessSidebarSection = renderHarnessImplementationSidebarSection(record, runbookPath, harnessState, harnessPending);
   if (!record) {
     // Latest-run hydration may fail or race (IPC error, stale cache,
     // pipeline validation error, machine IPC feature still disabled,
@@ -19384,9 +19385,10 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
           </div>
           ${runs.length ? renderMachineRunHistory(runbookPath, '') : ''}
         </section>
+        ${harnessSidebarSection}
       `;
     }
-    return '';
+    return harnessSidebarSection;
   }
   const runState = record.runState || {};
   const liveRecord = getLiveMachineRunRecord(runbookPath);
@@ -19575,6 +19577,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         </div>
       </details>
     </section>
+    ${harnessSidebarSection}
   `;
 }
 

@@ -216,6 +216,99 @@ function removeMachineHarness(pipelinePath: string): void {
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
+function seedSucceededHarnessImplementation(pipelinePath: string): void {
+  const pipelineDir = path.dirname(pipelinePath);
+  const generatedDir = path.join(pipelineDir, 'harness', 'generated');
+  fs.mkdirSync(path.join(generatedDir, 'nodes'), { recursive: true });
+  const implementedAt = '2026-05-01T00:10:00.000Z';
+  const nodes = ['main/context', 'main/probe', 'main/queue', 'main/triage', 'main/dispatch', 'main/worker']
+    .map((nodePath) => ({
+      nodePath,
+      status: 'succeeded',
+      artifact: `nodes/${nodePath.replace(/[^\w.-]+/g, '-')}.json`,
+      completedAt: implementedAt,
+    }));
+  const state = {
+    schemaVersion: 'orpad.harnessImplementation.v1',
+    status: 'succeeded',
+    startedAt: '2026-05-01T00:09:00.000Z',
+    updatedAt: implementedAt,
+    implementedAt,
+    message: 'Harness implementation completed.',
+    nodes,
+  };
+  fs.writeFileSync(path.join(generatedDir, 'implementation-state.json'), JSON.stringify(state, null, 2));
+
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.harness = {
+    ...(pipeline.harness || {}),
+    path: 'harness/generated',
+    implementationState: 'harness/generated/implementation-state.json',
+    implementedAt,
+  };
+  pipeline.metadata = {
+    ...(pipeline.metadata || {}),
+    harnessImplementation: {
+      ...(pipeline.metadata?.harnessImplementation || {}),
+      status: 'succeeded',
+      implementedAt,
+      statePath: 'harness/generated/implementation-state.json',
+      nodeCount: nodes.length,
+    },
+  };
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+}
+
+function seedRunningHarnessImplementation(pipelinePath: string): void {
+  const pipelineDir = path.dirname(pipelinePath);
+  const generatedDir = path.join(pipelineDir, 'harness', 'generated');
+  fs.mkdirSync(path.join(generatedDir, 'nodes'), { recursive: true });
+  const state = {
+    schemaVersion: 'orpad.harnessImplementation.v1',
+    status: 'running',
+    stage: 'node-contracts',
+    stageLabel: 'Node contracts',
+    startedAt: '2026-05-01T00:09:00.000Z',
+    updatedAt: '2026-05-01T00:10:00.000Z',
+    message: 'Writing harness contracts and operational artifacts.',
+    nodes: [
+      {
+        nodePath: 'main/context',
+        status: 'succeeded',
+        artifact: 'nodes/main-context.json',
+        completedAt: '2026-05-01T00:09:30.000Z',
+      },
+      {
+        nodePath: 'main/probe',
+        status: 'running',
+        startedAt: '2026-05-01T00:09:40.000Z',
+      },
+      {
+        nodePath: 'main/queue',
+        status: 'pending',
+      },
+    ],
+  };
+  fs.writeFileSync(path.join(generatedDir, 'implementation-state.json'), JSON.stringify(state, null, 2));
+
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.harness = {
+    ...(pipeline.harness || {}),
+    path: 'harness/generated',
+    implementationState: 'harness/generated/implementation-state.json',
+  };
+  pipeline.metadata = {
+    ...(pipeline.metadata || {}),
+    harnessImplementation: {
+      ...(pipeline.metadata?.harnessImplementation || {}),
+      status: 'running',
+      statePath: 'harness/generated/implementation-state.json',
+      nodeCount: state.nodes.length,
+    },
+  };
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+}
+
 async function seedActiveClaimRun(
   workspace: string,
   pipelinePath: string,
@@ -2051,7 +2144,7 @@ test('Machine UI implements node harness contracts for the selected pipeline', a
   await win.locator('[data-pipeline-run-menu]').click();
   await win.locator('button[data-pipeline-run-action="implement-harness"]').click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready');
-  await expect(win.locator('#content.view-orch-graph [data-harness-implementation-banner]')).toContainText('Harness ready');
+  await expect(win.locator('#content.view-orch-graph [data-harness-implementation-banner]')).toHaveCount(0);
   await expect(win.locator('#content.view-orch-graph')).not.toContainText('Run cancelled');
   await expect(win.locator('#content.view-orch-graph')).not.toContainText('Failed adapter calls');
   await expect(win.locator('#runbooks-content [data-harness-implementation-banner]')).toHaveCount(0);
@@ -2222,6 +2315,100 @@ test('Pipes Refresh reloads selected managed run evidence from disk', async () =
   await expect(win.locator('#runbooks-content')).toContainText('Ready to stop: machine-ui-smoke is in progress');
   await expect(win.locator('#runbooks-content')).toContainText('No evidence files yet');
   await expect(win.locator('#runbooks-content')).not.toContainText('No artifact manifest files yet');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Orchestration window keeps Latest Run visible when selected pipeline has ready harness', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  seedSucceededHarnessImplementation(pipelinePath);
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  const orchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const orchestrationWin = await orchestrationWindowPromise;
+  await orchestrationWin.waitForLoadState('domcontentloaded');
+  await orchestrationWin.waitForSelector('body.orchestration-window');
+  await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await expect(orchestrationWin.locator('#toolbar [data-pipeline-select-trigger] span')).toContainText('Machine Workstream');
+  await orchestrationWin.locator('#toolbar [data-pipeline-run-menu]').click();
+  await orchestrationWin.locator('#toolbar button[data-pipeline-run-action="check"]').click();
+  await expect(orchestrationWin.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready');
+  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
+  await expect(orchestrationWin.locator('#runbooks-content [data-harness-implementation-banner]')).toHaveCount(0);
+  const latestRunSection = orchestrationWin.locator('#runbooks-content .runbook-panel-section', {
+    has: orchestrationWin.locator('h3').filter({ hasText: /^Latest Run$/ }),
+  });
+  await expect(latestRunSection).not.toContainText('Harness ready');
+  await expect(orchestrationWin.locator('#content.view-orch-graph [data-harness-implementation-banner]')).toHaveCount(0);
+
+  await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
+  await orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Machine Workstream$/ }) })
+    .click();
+  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
+  await expect(orchestrationWin.locator('#runbooks-content [data-harness-implementation-banner]')).toHaveCount(0);
+  await expect(latestRunSection).not.toContainText('Harness ready');
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Orchestration window keeps Latest Run above active harness status', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  seedRunningHarnessImplementation(pipelinePath);
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  const orchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const orchestrationWin = await orchestrationWindowPromise;
+  await orchestrationWin.waitForLoadState('domcontentloaded');
+  await orchestrationWin.waitForSelector('body.orchestration-window');
+  await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await orchestrationWin.locator('#toolbar [data-pipeline-run-menu]').click();
+  await orchestrationWin.locator('#toolbar button[data-pipeline-run-action="check"]').click();
+  await expect(orchestrationWin.locator('[data-pipeline-preview-runbar]')).toContainText('Implementing harness');
+  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
+  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Harness Implementation' })).toHaveCount(1);
+  const latestRunSection = orchestrationWin.locator('#runbooks-content .runbook-panel-section', {
+    has: orchestrationWin.locator('h3').filter({ hasText: /^Latest Run$/ }),
+  });
+  await expect(latestRunSection).not.toContainText('Implementing harness');
+  await expect(latestRunSection).not.toContainText('Harness ready');
+
+  const sectionOrder = await orchestrationWin.locator('#runbooks-content h3').evaluateAll((headers) =>
+    headers.map((header) => header.textContent?.trim() || ''),
+  );
+  expect(sectionOrder.indexOf('Latest Run')).toBeGreaterThanOrEqual(0);
+  expect(sectionOrder.indexOf('Harness Implementation')).toBeGreaterThanOrEqual(0);
+  expect(sectionOrder.indexOf('Latest Run')).toBeLessThan(sectionOrder.indexOf('Harness Implementation'));
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
