@@ -5622,19 +5622,24 @@ body.terminal-docked-right #workspace {
 /* CodeMirror syntax tokens (classHighlighter) */
 .tok-keyword { color: var(--syntax-keyword); }
 .tok-string, .tok-string2 { color: var(--syntax-string); }
-.tok-number { color: var(--syntax-number); }
+.tok-number, .tok-literal { color: var(--syntax-number); }
 .tok-comment { color: var(--syntax-comment); font-style: italic; }
-.tok-variableName { color: var(--syntax-variable); }
+.tok-variableName, .tok-variableName2, .tok-labelName { color: var(--syntax-variable); }
 .tok-typeName, .tok-className, .tok-namespace { color: var(--syntax-function); }
-.tok-definition { color: var(--syntax-function); }
 .tok-tagName { color: var(--syntax-tag); }
 .tok-attributeName { color: var(--syntax-attribute); }
 .tok-propertyName { color: var(--syntax-attribute); }
+.tok-definition { color: var(--syntax-function); }
+.tok-macroName { color: var(--syntax-meta); }
 .tok-operator { color: var(--syntax-operator); }
+.tok-punctuation { color: var(--text-secondary); }
 .tok-meta { color: var(--syntax-meta); }
 .tok-bool { color: var(--syntax-number); }
 .tok-atom { color: var(--syntax-number); }
 .tok-url, .tok-link { color: var(--accent-color); }
+.tok-inserted { color: var(--syntax-added); background: var(--syntax-added-bg); }
+.tok-deleted { color: var(--syntax-deleted); background: var(--syntax-deleted-bg); }
+.tok-invalid { color: var(--syntax-deleted); text-decoration: underline wavy var(--syntax-deleted); }
 .tok-heading { color: var(--text-primary); font-weight: 700; }
 .tok-emphasis { font-style: italic; }
 .tok-strong { font-weight: 700; }
@@ -5952,8 +5957,16 @@ body.terminal-docked-right #workspace {
 /* View mode visibility */
 body.view-editor #preview-pane,
 body.view-editor #divider { display: none; }
+body.view-editor #editor-pane {
+  flex: 1 1 auto !important;
+  width: auto !important;
+}
 body.view-preview #editor-pane,
 body.view-preview #divider { display: none; }
+body.view-preview #preview-pane {
+  flex: 1 1 auto !important;
+  width: auto !important;
+}
 
 /* ===================== Theme Panel ===================== */
 /* --top-bars-bottom is refreshed from JS (see updateTopBarsBottom) so the

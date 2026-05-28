@@ -100,3 +100,35 @@ for (const fixture of textFormatCases) {
     }
   });
 }
+
+test('programming source editor colors keywords, names, and strings distinctly', async () => {
+  const tmpFile = path.join(os.tmpdir(), `orpad-syntax-${Date.now()}.py`);
+  fs.writeFileSync(tmpFile, 'def greet(name):\n    value = "hello"\n    return value\n');
+
+  try {
+    await withElectronApp(async app => {
+      const win = await app.firstWindow();
+      await win.waitForLoadState('domcontentloaded');
+
+      await expect(win.locator('.tab-item')).toContainText(path.basename(tmpFile), { timeout: 8000 });
+
+      const keyword = win.locator('.cm-content .tok-keyword').filter({ hasText: 'def' }).first();
+      const name = win.locator('.cm-content .tok-definition').filter({ hasText: 'greet' }).first();
+      const stringLiteral = win.locator('.cm-content .tok-string').filter({ hasText: '"hello"' }).first();
+
+      await expect(keyword).toBeVisible({ timeout: 8000 });
+      await expect(name).toBeVisible({ timeout: 8000 });
+      await expect(stringLiteral).toBeVisible({ timeout: 8000 });
+
+      const colors = await Promise.all([
+        keyword.evaluate(el => getComputedStyle(el).color),
+        name.evaluate(el => getComputedStyle(el).color),
+        stringLiteral.evaluate(el => getComputedStyle(el).color),
+      ]);
+
+      expect(new Set(colors).size).toBe(3);
+    }, [tmpFile]);
+  } finally {
+    fs.rmSync(tmpFile, { force: true });
+  }
+});
