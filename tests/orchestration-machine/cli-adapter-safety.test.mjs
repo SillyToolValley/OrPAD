@@ -375,6 +375,7 @@ test('CLI overlay adapter ignores generated validation artifacts outside the wri
     'fs.writeFileSync("OrPad/src/allowed.txt","after\\n");',
     'fs.mkdirSync("OrPad/test-results",{recursive:true});',
     'fs.writeFileSync("OrPad/test-results/.last-run.json","{}\\n");',
+    'fs.writeFileSync("OrPad/test-results/hero.png",Buffer.from([0x89,0x50,0x4e,0x47]));',
     'process.stdout.write(JSON.stringify({',
     'schemaVersion:"orpad.workerResult.v1",',
     `adapterCallId:${JSON.stringify(request.adapterCallId)},`,
@@ -405,13 +406,86 @@ test('CLI overlay adapter ignores generated validation artifacts outside the wri
   assert.equal(result.status, 'done');
   assert.deepEqual(result.changedFiles, ['OrPad/src/allowed.txt']);
   assert.equal(result.verification[0].writeSetViolationCount, 0);
+  assert.equal(result.verification[0].ignoredGeneratedFileCount, 2);
+  const generatedJsonArtifact = result.artifacts.find(item => item.endsWith('/validation/OrPad/test-results/.last-run.json'));
+  const generatedPngArtifact = result.artifacts.find(item => item.endsWith('/validation/OrPad/test-results/hero.png'));
+  assert.equal(typeof generatedJsonArtifact, 'string');
+  assert.equal(typeof generatedPngArtifact, 'string');
+  assert.equal(await fs.readFile(path.join(run.runRoot, generatedJsonArtifact), 'utf8'), '{}\n');
+  assert.deepEqual(await fs.readFile(path.join(run.runRoot, generatedPngArtifact)), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  const patch = JSON.parse(await fs.readFile(path.join(run.runRoot, result.patchArtifact), 'utf8'));
+  assert.deepEqual(patch.violations, []);
+  assert.deepEqual(patch.ignoredGeneratedFiles.map(item => item.path).sort(), [
+    'OrPad/test-results/.last-run.json',
+    'OrPad/test-results/hero.png',
+  ]);
+  assert.deepEqual([...new Set(patch.ignoredGeneratedFiles.map(item => item.reason))], ['overlay-generated-validation-artifact']);
+});
+
+test('CLI overlay adapter ignores new generated build output outside the write set', async () => {
+  const run = await makeRun('run_20260430_cli_generated_build_output');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/allowed.txt'],
+    adapterCallId: 'cli-generated-build-output-call',
+    attemptId: 'cli-generated-build-output-attempt-1',
+    idempotencyKey: 'cli-generated-build-output-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("src",{recursive:true});',
+    'fs.writeFileSync("src/allowed.txt","after\\n");',
+    'fs.mkdirSync("dist",{recursive:true});',
+    'fs.writeFileSync("dist/index.html","<div>build output</div>\\n");',
+    'process.stdout.write(JSON.stringify({',
+    'schemaVersion:"orpad.workerResult.v1",',
+    `adapterCallId:${JSON.stringify(request.adapterCallId)},`,
+    `attemptId:${JSON.stringify(request.attemptId)},`,
+    `idempotencyKey:${JSON.stringify(request.idempotencyKey)},`,
+    'status:"done",summary:"Changed the allowed file and ran build validation.",artifacts:[]',
+    '}));',
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-generated-build-output',
+      expiresAt: '2026-04-30T01:00:00.000Z',
+    })],
+    now: '2026-04-30T00:00:30.000Z',
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.deepEqual(result.changedFiles, ['src/allowed.txt']);
+  assert.equal(result.verification[0].writeSetViolationCount, 0);
   assert.equal(result.verification[0].ignoredGeneratedFileCount, 1);
+  assert.equal(result.artifacts.some(item => item.includes('/validation/dist/index.html')), false);
 
   const patch = JSON.parse(await fs.readFile(path.join(run.runRoot, result.patchArtifact), 'utf8'));
   assert.deepEqual(patch.violations, []);
   assert.deepEqual(patch.ignoredGeneratedFiles, [{
-    path: 'OrPad/test-results/.last-run.json',
-    reason: 'overlay-generated-validation-artifact',
+    path: 'dist/index.html',
+    reason: 'overlay-generated-build-output',
   }]);
 });
 
@@ -676,6 +750,82 @@ test('CLI overlay adapter extracts stdout evidence into canonical worker result 
     source: 'worker-result',
   });
   assert.equal(workerEvent.payload.verification.at(-1).phase, 'cli-process');
+});
+
+test('CLI overlay adapter parses worker result from overlay output-last-message file', async () => {
+  const run = await makeRun('run_20260524_cli_output_last_message_evidence');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const claim = await queueAndClaim(run, 'claim-cli-output-last-message-evidence');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: claim.writeSet.paths,
+    adapterCallId: 'cli-output-last-message-evidence-call',
+    attemptId: 'cli-output-last-message-evidence-attempt-1',
+    idempotencyKey: 'cli-output-last-message-evidence-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  request.expectedChangedFiles = ['src/allowed.txt'];
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const outputLastMessagePath = 'orpad-worker-result-test.json';
+  const workerResult = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'done',
+    summary: 'Worker fixed the allowed target via last-message output.',
+    failingSymptom: 'The adapter previously depended on stdout-only worker JSON.',
+    rootCause: 'Codex worker command did not expose a Machine-owned output-last-message file.',
+    verificationCommands: ['node --test tests/orchestration-machine/cli-adapter-safety.test.mjs'],
+    verification: [{
+      command: 'node --test tests/orchestration-machine/cli-adapter-safety.test.mjs',
+      status: 'passed',
+      summary: 'Worker last-message evidence reached the adapter result.',
+    }],
+    residualRisk: 'Focused adapter path only.',
+    artifacts: [],
+  };
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("src",{recursive:true});',
+    'fs.writeFileSync("src/allowed.txt","after last message\\n");',
+    `fs.writeFileSync(${JSON.stringify(outputLastMessagePath)}, ${JSON.stringify(JSON.stringify(workerResult))});`,
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script, '--', '--output-last-message', outputLastMessagePath],
+    cwd: overlayRoot,
+  };
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-output-last-message-evidence',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.equal(result.summary, workerResult.summary);
+  assert.equal(result.rootCause, workerResult.rootCause);
+  assert.deepEqual(result.filesChanged, ['src/allowed.txt']);
+  assert.equal(result.verification[0].source, 'worker-result');
+  assert.equal(result.verification.at(-1).phase, 'cli-process');
+  const lastMessageArtifact = result.artifacts.find(item => item.endsWith('/cli-output-last-message-evidence-call.last-message.json'));
+  assert.equal(typeof lastMessageArtifact, 'string');
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(run.runRoot, lastMessageArtifact), 'utf8')).summary,
+    workerResult.summary,
+  );
+  const transcriptArtifact = result.artifacts.find(item => item.endsWith('/cli-output-last-message-evidence-call.transcript.json'));
+  const transcript = JSON.parse(await fs.readFile(path.join(run.runRoot, transcriptArtifact), 'utf8'));
+  assert.equal(transcript.outputLastMessage.parsedWorkerResultDetected, true);
 });
 
 test('worker read-only context includes package metadata for project validation plans', () => {
@@ -1041,7 +1191,24 @@ test('CLI overlay adapter ignores approval policy text echoed in stderr after a 
   }), 'done');
 });
 
-test('CLI overlay adapter reports timeout patches as audit-only failed work', async () => {
+test('CLI overlay adapter classifies timed-out overlay diffs as blocked for patch review', () => {
+  const processResult = {
+    code: null,
+    timedOut: true,
+    stdout: '',
+    stderr: '',
+  };
+  assert.equal(resultStatusForProcess(processResult, {
+    changes: [{ path: 'src/allowed.txt' }],
+    violations: [],
+  }), 'blocked');
+  assert.equal(resultStatusForProcess(processResult, {
+    changes: [],
+    violations: [],
+  }), 'failed');
+});
+
+test('CLI overlay adapter reports timeout patches as reviewable blocked work', async () => {
   const run = await makeRun('run_20260430_cli_timeout_patch_audit_only');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
   await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
@@ -1084,11 +1251,13 @@ test('CLI overlay adapter reports timeout patches as audit-only failed work', as
     timeoutMs: 1000,
   }).invoke(request);
 
-  assert.equal(result.status, 'failed');
+  assert.equal(result.status, 'blocked');
   assert.match(result.summary, /timed out before emitting the required worker result JSON/);
   assert.match(result.summary, /audit-only/);
-  assert.equal(result.nextAction, 'split-or-retry-worker-item-after-timeout');
+  assert.equal(result.nextAction, 'review-timeout-patch-or-retry-smaller-scope');
+  assert.equal(result.blockedReason, result.summary);
   assert.equal(result.verification[0].timedOut, true);
+  assert.equal(result.verification[0].parsedWorkerResultStatus, 'blocked');
   assert.equal(result.changedFiles.includes('src/allowed.txt'), true);
   assert.match(result.patchArtifact, /cli-timeout-patch-call\.patch\.json$/);
 });

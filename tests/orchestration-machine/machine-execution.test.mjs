@@ -260,7 +260,7 @@ const args = process.argv.slice(2);
 const outputIndex = args.indexOf('--output-last-message');
 const prompt = args[args.length - 1] === '-' ? fs.readFileSync(0, 'utf8') : (args[args.length - 1] || '');
 
-if (outputIndex >= 0) {
+if (outputIndex >= 0 && /managed-run proposal adapter/.test(prompt)) {
   const outputPath = args[outputIndex + 1];
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const result = {
@@ -294,12 +294,28 @@ const allowedMatch = prompt.match(/allowedFiles:\\s*(\\[[^\\n]+\\])/);
 const allowedFiles = allowedMatch ? JSON.parse(allowedMatch[1]) : ['README.md'];
 const target = allowedFiles[0] || 'README.md';
 fs.appendFileSync(path.join(process.cwd(), target), '\\nOrPAD lifecycle run proof.\\n');
-jsonLine({
+const workerResult = {
   schemaVersion: 'orpad.workerResult.v1',
   status: 'done',
   summary: 'Fake lifecycle worker changed ' + target,
+  failingSymptom: 'README lacked a lifecycle proof line.',
+  rootCause: 'Generated lifecycle worker had not yet applied its bounded README slice.',
+  filesChanged: [target],
+  verificationCommands: ['read README lifecycle proof line'],
+  verification: [{
+    command: 'read README lifecycle proof line',
+    status: 'passed',
+    summary: 'README contains the lifecycle proof line in the overlay.'
+  }],
+  residualRisk: 'Synthetic lifecycle fixture only.',
   artifacts: []
-});
+};
+if (outputIndex >= 0) {
+  const outputPath = args[outputIndex + 1];
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, JSON.stringify(workerResult));
+}
+jsonLine(workerResult);
 `, 'utf8');
   return scriptPath;
 }
@@ -783,8 +799,11 @@ test('live proposal prompt honors generated candidate limit for collect-all-visi
   assert.equal(prompt.includes('Return at most 5 candidateProposals.'), false);
   assert.equal(prompt.includes('The first candidate must be the closest direct match to the user task'), true);
   assert.equal(prompt.includes('Do not rank incidental reference subcomponents'), true);
+  assert.equal(prompt.includes('targetFiles must be implementation files by default'), true);
+  assert.equal(prompt.includes('Do not propose synthetic placeholder PNG generation as visual evidence'), true);
   assert.equal(prompt.includes('Do not propose whole-surface overhauls'), true);
   assert.equal(prompt.includes('at most two implementation files plus one focused test file'), true);
+  assert.equal(prompt.includes('do not put tests/e2e, Playwright specs, test-results, or screenshot artifact files in targetFiles'), true);
 });
 
 test('live worker prompt requires concrete visual-reference evidence or blockers', () => {
@@ -812,6 +831,8 @@ test('live worker prompt requires concrete visual-reference evidence or blockers
   assert.equal(prompt.includes('Reference/UI alignment rules:'), true);
   assert.equal(prompt.includes('before/after screenshot artifact paths'), true);
   assert.equal(prompt.includes('If screenshots cannot be produced in the overlay, record the exact blocked reason'), true);
+  assert.equal(prompt.includes('Do not fabricate screenshot evidence'), true);
+  assert.equal(prompt.includes('test-results/orpad/<workItemId>/'), true);
 });
 
 test('failed worker patch artifacts are not eligible for patch review auto-apply', () => {

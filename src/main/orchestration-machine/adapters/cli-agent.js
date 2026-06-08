@@ -2,7 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { registerArtifact } = require('../artifacts');
+const { assertNoSymlinkInRunPath, registerArtifact } = require('../artifacts');
 const { assertCommandGranted } = require('../command-grants');
 const { appendMachineEvent } = require('../events');
 const { assertCliProcessContainment } = require('./process-containment');
@@ -328,7 +328,10 @@ function processHasSuccessfulDoneWorkerResult(processResult = {}, parsedResult =
 function resultStatusForProcess(processResult, patch, request = {}, parsedWorkerResult = null) {
   if (processLooksApprovalRequired(processResult, parsedWorkerResult)) return 'approval-required';
   if (fatalPatchWriteSetViolations(patch).length) return 'blocked';
-  if (processResult.code !== 0 || processResult.timedOut) return 'failed';
+  if (processResult.timedOut) {
+    return (patch.changes || []).length ? 'blocked' : 'failed';
+  }
+  if (processResult.code !== 0) return 'failed';
   if (missingExpectedChangedFiles(patch, normalizeExpectedChangedFiles(request)).length) return 'blocked';
   return 'done';
 }
@@ -419,6 +422,85 @@ function summaryForCliAgentResult({ status, approvalRequired, parsedSummary, pro
     return `CLI adapter exited with code ${processResult.code}; inspect the transcript and retry or narrow the work item.`;
   }
   return 'CLI adapter did not produce a valid worker result contract; inspect the transcript and retry or narrow the work item.';
+}
+
+function safeOverlayArtifactRelativePath(value) {
+  const portable = String(value || '').replace(/\\/g, '/').trim();
+  if (!portable || portable.startsWith('/') || /^[a-zA-Z]:\//.test(portable)) return '';
+  const segments = portable.split('/').filter(Boolean);
+  if (!segments.length || segments.some(segment => segment === '.' || segment === '..' || /^[a-zA-Z]:$/.test(segment))) return '';
+  return segments.join('/');
+}
+
+async function registerIgnoredGeneratedArtifacts(runRoot, options = {}) {
+  const {
+    runId,
+    adapterCallId,
+    overlayRoot,
+    ignoredGeneratedFiles = [],
+  } = options;
+  if (!runRoot || !runId || !overlayRoot || !ignoredGeneratedFiles.length) return [];
+  const registered = [];
+  const artifactStem = idSegment(adapterCallId);
+  for (const ignored of ignoredGeneratedFiles) {
+    if (ignored?.reason !== 'overlay-generated-validation-artifact') continue;
+    const sourceRel = safeOverlayArtifactRelativePath(ignored?.path);
+    if (!sourceRel) continue;
+    const sourcePath = path.resolve(overlayRoot, ...sourceRel.split('/'));
+    if (!isInsideResolvedPath(overlayRoot, sourcePath)) continue;
+    const stat = await fsp.stat(sourcePath).catch(err => (err?.code === 'ENOENT' ? null : Promise.reject(err)));
+    if (!stat?.isFile()) continue;
+    const artifactPath = `artifacts/work-items/${artifactStem}/validation/${sourceRel}`;
+    await assertNoSymlinkInRunPath(runRoot, artifactPath);
+    const targetPath = path.join(path.resolve(runRoot), ...artifactPath.split('/'));
+    await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+    await fsp.copyFile(sourcePath, targetPath);
+    const artifact = await registerArtifact(runRoot, {
+      runId,
+      artifactPath,
+      producedBy: 'cli-agent-overlay-validation',
+      registeredBy: 'machine',
+    });
+    if (artifact?.file?.path) registered.push(artifact.file.path);
+  }
+  return registered;
+}
+
+function cliOutputLastMessagePath(commandSpec = {}, overlayRoot = '') {
+  const args = Array.isArray(commandSpec.args) ? commandSpec.args.map(arg => String(arg)) : [];
+  const index = args.findIndex(arg => arg === '--output-last-message');
+  const rawPath = index >= 0 ? String(args[index + 1] || '').trim() : '';
+  if (!rawPath || !overlayRoot) return null;
+  const base = commandSpec.cwd || overlayRoot;
+  const sourcePath = path.isAbsolute(rawPath)
+    ? path.resolve(rawPath)
+    : path.resolve(base, rawPath);
+  if (!isInsideResolvedPath(overlayRoot, sourcePath)) return null;
+  const sourceRel = path.relative(path.resolve(overlayRoot), sourcePath).replace(/\\/g, '/');
+  const safeRel = safeOverlayArtifactRelativePath(sourceRel);
+  if (!safeRel) return null;
+  return { sourcePath, sourceRel: safeRel };
+}
+
+async function readCliOutputLastMessage(commandSpec = {}, overlayRoot = '') {
+  const outputPath = cliOutputLastMessagePath(commandSpec, overlayRoot);
+  if (!outputPath) return null;
+  let raw = '';
+  try {
+    raw = await fsp.readFile(outputPath.sourcePath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') {
+      return { ...outputPath, raw: '', parsedWorkerResult: null, parseError: 'output-last-message-file-missing' };
+    }
+    throw err;
+  }
+  const parsedWorkerResult = workerResultDocumentFromValue(raw);
+  return {
+    ...outputPath,
+    raw,
+    parsedWorkerResult,
+    parseError: parsedWorkerResult ? '' : 'output-last-message-did-not-contain-worker-result-json',
+  };
 }
 
 function parsedWorkerVerificationEntries(parsedWorkerResult = {}) {
@@ -570,6 +652,7 @@ function createCliAgentAdapter(options = {}) {
         } catch (err) {
           processResult = failedProcessResult(commandSpec, err);
         }
+        const outputLastMessage = await readCliOutputLastMessage(commandSpec, overlay.overlayRoot);
         const patch = await collectOverlayPatch({
           workspaceRoot: overlay.workspaceRoot,
           overlayRoot: overlay.overlayRoot,
@@ -597,9 +680,27 @@ function createCliAgentAdapter(options = {}) {
             },
             containment,
             process: processResult,
+            outputLastMessage: outputLastMessage ? {
+              sourceRel: outputLastMessage.sourceRel,
+              byteLength: Buffer.byteLength(outputLastMessage.raw || '', 'utf8'),
+              parsedWorkerResultDetected: Boolean(outputLastMessage.parsedWorkerResult),
+              parseError: outputLastMessage.parseError || '',
+            } : null,
           },
         });
         if (transcriptArtifact?.file?.path) artifacts.push(transcriptArtifact.file.path);
+
+        if (outputLastMessage?.raw) {
+          const lastMessageArtifact = await registerArtifact(runRoot, {
+            runId,
+            artifactPath: `artifacts/adapters/${request.adapterCallId}.last-message.json`,
+            content: outputLastMessage.raw.endsWith('\n') ? outputLastMessage.raw : `${outputLastMessage.raw}\n`,
+            producedBy: 'cli-agent-overlay',
+            registeredBy: 'machine',
+            schemaVersion: outputLastMessage.parsedWorkerResult?.schemaVersion || '',
+          });
+          if (lastMessageArtifact?.file?.path) artifacts.push(lastMessageArtifact.file.path);
+        }
 
         let patchArtifactPath = '';
         if ((patch.changes || []).length || (patch.violations || []).length) {
@@ -612,14 +713,24 @@ function createCliAgentAdapter(options = {}) {
           patchArtifactPath = patchArtifact?.file?.path || '';
           if (patchArtifactPath) artifacts.push(patchArtifactPath);
         }
+        const generatedValidationArtifacts = await registerIgnoredGeneratedArtifacts(runRoot, {
+          runId,
+          adapterCallId: request.adapterCallId,
+          overlayRoot: overlay.overlayRoot,
+          ignoredGeneratedFiles: patch.ignoredGeneratedFiles || [],
+        });
+        artifacts.push(...generatedValidationArtifacts);
 
         const expectedChangedFiles = normalizeExpectedChangedFiles(request);
         const missingExpectedChanges = missingExpectedChangedFiles(patch, expectedChangedFiles);
-        const parsedWorkerResult = workerResultDocumentFromProcessStdout(processResult);
+        const parsedWorkerResult = workerResultDocumentFromProcessStdout(processResult)
+          || outputLastMessage?.parsedWorkerResult
+          || null;
         const processStatus = resultStatusForProcess(processResult, patch, request, parsedWorkerResult);
         const status = mergeWorkerStatus(processStatus, parsedWorkerResult?.status);
         const approvalRequired = status === 'approval-required';
         const changedFiles = (patch.changes || []).map(change => change.path);
+        const timedOutWithPatch = processResult.timedOut === true && changedFiles.length > 0;
         const parsedSummary = nonEmptyString(parsedWorkerResult?.summary);
         const summary = summaryForCliAgentResult({
           status,
@@ -661,6 +772,11 @@ function createCliAgentAdapter(options = {}) {
           artifacts,
           patchArtifact: patchArtifactPath,
           changedFiles,
+          ...(timedOutWithPatch ? {
+            blockedReason: summary,
+            deferredReason: summary,
+            nextAction: 'review-timeout-patch-or-retry-smaller-scope',
+          } : {}),
           ...(status === 'failed' ? {
             deferredReason: summary,
             nextAction: processResult.timedOut

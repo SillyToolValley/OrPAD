@@ -217,6 +217,8 @@ test('codex plugin buildWorkerCommandSpec produces stable codex CLI args from a 
   assert.equal(spec.args.includes('exec'), true);
   assert.equal(spec.args.includes('--sandbox'), true);
   assert.equal(spec.args.includes('workspace-write'), true);
+  assert.equal(spec.args.includes('--output-last-message'), true);
+  assert.match(spec.args[spec.args.indexOf('--output-last-message') + 1], /^orpad-worker-result-worker\.json$/);
   assert.equal(spec.args.includes('--ephemeral'), true);
   assert.equal(spec.args.at(-1), '-');
   assert.equal(spec.stdin, 'Hello worker.');

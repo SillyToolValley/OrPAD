@@ -47,8 +47,21 @@ function isPathAllowedByWriteSet(filePath, allowedFiles = []) {
 }
 
 function isIgnoredOverlayGeneratedArtifactPath(filePath) {
+  return Boolean(ignoredOverlayGeneratedArtifactReason(filePath));
+}
+
+function ignoredOverlayGeneratedArtifactReason(filePath) {
   const normalized = normalizeWriteSetPath(filePath).toLowerCase();
-  return /(^|\/)(test-results|playwright-report|blob-report|coverage|\.nyc_output)\//.test(normalized);
+  if (/^orpad-worker-result-[a-z0-9_.-]+\.json$/.test(normalized)) {
+    return 'overlay-generated-adapter-result';
+  }
+  if (/(^|\/)(test-results|playwright-report|blob-report|coverage|\.nyc_output)\//.test(normalized)) {
+    return 'overlay-generated-validation-artifact';
+  }
+  if (/(^|\/)(dist|build|out|release|\.next|\.nuxt|\.svelte-kit|storybook-static)\//.test(normalized)) {
+    return 'overlay-generated-build-output';
+  }
+  return '';
 }
 
 function fatalPatchWriteSetViolations(patch = {}) {
@@ -263,7 +276,7 @@ async function collectOverlayPatch(options = {}) {
         if (before === null && after !== null && isIgnoredOverlayGeneratedArtifactPath(relPath)) {
           ignoredGeneratedFiles.push({
             path: relPath,
-            reason: 'overlay-generated-validation-artifact',
+            reason: ignoredOverlayGeneratedArtifactReason(relPath),
           });
           continue;
         }
@@ -460,6 +473,7 @@ module.exports = {
   collectOverlayPatch,
   copyAllowedFilesToOverlay,
   fatalPatchWriteSetViolations,
+  ignoredOverlayGeneratedArtifactReason,
   inspectPatchBase,
   isIgnoredOverlayGeneratedArtifactPath,
   isPathAllowedByWriteSet,

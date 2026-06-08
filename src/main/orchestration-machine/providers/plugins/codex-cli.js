@@ -375,8 +375,10 @@ function createProposalAdapter(options = {}) {
 }
 
 function buildWorkerCommandSpec(input = {}) {
-  const { adapter = {}, prompt = '', overlayRoot = '' } = input;
+  const { adapter = {}, request = {}, prompt = '', overlayRoot = '' } = input;
   const invocation = codexCliInvocation(adapter.command || codexCliCommand(), adapter.commandPrefixArgs);
+  const outputLastMessagePath = adapter.workerOutputLastMessagePath
+    || `orpad-worker-result-${idSegment(request.adapterCallId || 'worker')}.json`;
   return {
     command: invocation.command,
     args: codexCliExecArgs({
@@ -384,6 +386,7 @@ function buildWorkerCommandSpec(input = {}) {
       sandbox: adapter.workerSandbox || adapter.sandbox || 'workspace-write',
       approvalPolicy: adapter.approvalPolicy || 'never',
       dangerouslyBypassApprovalsAndSandbox: adapter.bypassLlmApprovals === true,
+      outputLastMessagePath,
       promptViaStdin: true,
       ephemeral: adapter.ephemeral,
     }),

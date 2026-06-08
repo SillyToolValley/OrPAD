@@ -167,6 +167,52 @@ test('candidate proposal keeps evidence files as source context without expandin
   assert.deepEqual(result.item.targetFiles, ['src/renderer/themes.js']);
 });
 
+test('visual-reference candidates demote validation files from targetFiles to source context', async () => {
+  const run = await makeRun();
+  const result = await ingestCandidateProposal(run.runRoot, proposal({
+    proposalId: 'proposal-orpad-hero-reference-targets',
+    suggestedWorkItemId: 'orpad-hero-reference-targets',
+    title: 'Align Built-in OrPAD hero with the visual reference palette',
+    fingerprint: 'ux:orpad-hero-reference-targets',
+    issueType: 'reference visual mismatch',
+    evidence: [
+      { id: 'reference', file: 'assets/reference/orpad-hero.png' },
+      { id: 'visual-smoke', file: 'tests/e2e/visual.spec.js' },
+      { id: 'theme', file: 'src/renderer/themes.js' },
+    ],
+    acceptanceCriteria: [
+      'Built-in OrPAD theme reflects the reference image palette and glass surface hierarchy.',
+      'Before/after screenshot evidence is recorded or a concrete screenshot blocker is reported.',
+    ],
+    sourceOfTruthTargets: [
+      'assets/reference/orpad-hero.png',
+      'src/renderer/themes.js',
+      'src/renderer/styles/base.css',
+      'tests/e2e/visual.spec.js',
+    ],
+    targetFiles: [
+      'src/renderer/themes.js',
+      'src/renderer/styles/base.css',
+      'tests/e2e/visual.spec.js',
+    ],
+  }), {
+    runId: run.runId,
+    now: '2026-04-30T00:00:01.000Z',
+    transitionId: 'ingest:orpad-hero-reference-targets',
+  });
+
+  assert.deepEqual(result.item.sourceOfTruthTargets, [
+    'assets/reference/orpad-hero.png',
+    'src/renderer/styles/base.css',
+    'src/renderer/themes.js',
+    'tests/e2e/visual.spec.js',
+  ]);
+  assert.deepEqual(result.item.targetFiles, [
+    'src/renderer/styles/base.css',
+    'src/renderer/themes.js',
+  ]);
+});
+
 test('candidate proposal expectedChangedFiles are explicit and separate from targetFiles', async () => {
   const run = await makeRun();
   const result = await ingestCandidateProposal(run.runRoot, proposal({

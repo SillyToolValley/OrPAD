@@ -1088,6 +1088,8 @@ function visualReferenceTaskPromptLines(taskText = '') {
     '- Rank candidates by direct overlap with the user-requested nouns and files. The top candidate must target the requested hero/theme/palette/surface system when those words appear in the user task.',
     '- Do not rank incidental reference subcomponents such as terminal/editor/card details above the requested hero/theme/palette/surface work unless the user explicitly named that subcomponent.',
     '- For visual-reference work, candidate evidence and acceptanceCriteria must mention the reference path plus palette, surface hierarchy, typography/material cues, and before/after visual evidence or a concrete blocker.',
+    '- For visual-reference UI/theme work, targetFiles must be implementation files by default. Keep reference images, Playwright/e2e specs, generated screenshots, and visual smoke harness files as read-only evidence unless the user explicitly requested test-harness authoring.',
+    '- Do not propose synthetic placeholder PNG generation as visual evidence. Screenshot evidence must come from the changed UI surface, or the candidate must record the concrete screenshot blocker.',
   ];
 }
 
@@ -1169,6 +1171,7 @@ function liveProbePrompt(input = {}) {
     'Keep acceptanceCriteria focused: no more than three concrete criteria unless the item is only a read-only/test item.',
     'If no actionable current finding is visible for this node, return status "done", candidateProposals: [], and an evidence-backed emptyPass.',
     'Do not create broad refactor candidates. Do not make generated latest-run evidence files the only sourceOfTruthTargets.',
+    'For visual-reference UI/theme work, do not put tests/e2e, Playwright specs, test-results, or screenshot artifact files in targetFiles when implementation files are available; use those files as sourceOfTruthTargets/read-only evidence unless the user explicitly asked to repair the verification harness.',
   ].join('\n');
 }
 
@@ -1238,6 +1241,8 @@ function buildLiveWorkerPrompt(input = {}) {
     'Use status "blocked" if the allowed files are insufficient or the change is unsafe.',
     'Always include verification evidence. If a recommended validation command is impractical in the overlay, record status "blocked" or "failed" for that check with the concrete reason.',
     'For visual-reference or theme work, verification summaries must record the reference path, extracted palette/surface/typography cues, changed representative screen or theme files, and before/after screenshot artifact paths. If screenshots cannot be produced in the overlay, record the exact blocked reason instead of claiming the screenshot criterion passed.',
+    'Do not fabricate screenshot evidence by generating standalone PNGs from test code or scripts. Visual artifacts must be captured from the changed UI surface; otherwise report screenshot validation as blocked with the exact missing harness/tool reason.',
+    'If browser, screenshot, or visual validation creates files in the overlay, write them under test-results/orpad/<workItemId>/... or playwright-report/...; Machine will collect those generated validation files as run artifacts without adding them to the source patch.',
     'Work to a hard timebox: make the smallest acceptance-criteria slice that fits the allowedFiles, then stop and emit the JSON result. The JSON result is mandatory and has priority over additional polish.',
     'Do not attempt broad visual overhauls or full-surface rewrites inside one worker claim. If the claim is too broad to complete safely in one pass, implement the smallest coherent slice or return status "blocked" with the precise smaller follow-up split.',
     'For docs, slides, tutorials, or other content work, OrPAD will independently evaluate the diff after patch review; leave concrete removals, merges, rewrites, and focused validation evidence instead of only claiming editorial quality in the summary.',

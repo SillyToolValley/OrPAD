@@ -35,6 +35,51 @@ function normalizeTargetFiles(files) {
     .sort();
 }
 
+const VISUAL_REFERENCE_CANDIDATE_RE = /\b(reference[-\s]?(image|visual|style)|visual[-\s]?reference|hero|palette|theme|surface|glass|material|typography|built[-\s]?in|screenshot|before[-\s]?after)\b/i;
+const VALIDATION_OR_EVIDENCE_PATH_RE = /(^|\/)(tests?|e2e|__tests__|playwright-report|test-results|coverage)(\/|$)|(^|\/)[^/]+\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)playwright\.config\.[cm]?[jt]s$/i;
+
+function proposalSearchText(proposal = {}) {
+  return [
+    proposal.title,
+    proposal.contentArea,
+    proposal.issueType,
+    proposal.userImpact,
+    proposal.expectedBehavior,
+    proposal.actualBehavior,
+    proposal.verificationPlan,
+    ...(Array.isArray(proposal.acceptanceCriteria) ? proposal.acceptanceCriteria : []),
+    ...(Array.isArray(proposal.reproSteps) ? proposal.reproSteps : []),
+    ...(Array.isArray(proposal.evidence) ? proposal.evidence.flatMap(item => [
+      item?.id,
+      item?.file,
+      item?.path,
+      item?.summary,
+    ]) : []),
+  ].filter(Boolean).map(String).join('\n');
+}
+
+function visualReferenceCandidate(proposal = {}) {
+  return VISUAL_REFERENCE_CANDIDATE_RE.test(proposalSearchText(proposal));
+}
+
+function validationOrEvidencePath(file) {
+  return VALIDATION_OR_EVIDENCE_PATH_RE.test(String(file || '').replace(/\\/g, '/'));
+}
+
+function splitVisualReferenceTargetFiles(proposal = {}, targetFiles = []) {
+  if (!targetFiles.length || !visualReferenceCandidate(proposal)) {
+    return { targetFiles, demotedTargetFiles: [] };
+  }
+  const implementationTargets = targetFiles.filter(file => !validationOrEvidencePath(file));
+  if (!implementationTargets.length || implementationTargets.length === targetFiles.length) {
+    return { targetFiles, demotedTargetFiles: [] };
+  }
+  return {
+    targetFiles: implementationTargets,
+    demotedTargetFiles: targetFiles.filter(file => validationOrEvidencePath(file)),
+  };
+}
+
 function normalizeCandidateProposal(proposal, options = {}) {
   if (proposal?.suggestedWorkItemId !== undefined) {
     assertMachineStorageId(proposal.suggestedWorkItemId, 'workItem.id');
@@ -52,16 +97,24 @@ function normalizeCandidateProposal(proposal, options = {}) {
     ? normalizeTargetFiles(proposal.sourceOfTruthTargets)
     : [];
   const evidenceSourceOfTruthTargets = normalizeTargetFiles(evidenceFiles(proposal.evidence));
-  const sourceOfTruthTargets = [...new Set([
+  let sourceOfTruthTargets = [...new Set([
     ...explicitSourceOfTruthTargets,
     ...evidenceSourceOfTruthTargets,
   ])].sort();
   const fallbackTargetFiles = explicitSourceOfTruthTargets.length
     ? explicitSourceOfTruthTargets
     : sourceOfTruthTargets;
-  const targetFiles = Object.prototype.hasOwnProperty.call(proposal, 'targetFiles')
+  const candidateTargetFiles = Object.prototype.hasOwnProperty.call(proposal, 'targetFiles')
     ? normalizeTargetFiles(proposal.targetFiles)
     : normalizeTargetFiles(fallbackTargetFiles);
+  const splitTargetFiles = splitVisualReferenceTargetFiles(proposal, candidateTargetFiles);
+  const targetFiles = splitTargetFiles.targetFiles;
+  if (splitTargetFiles.demotedTargetFiles.length) {
+    sourceOfTruthTargets = [...new Set([
+      ...sourceOfTruthTargets,
+      ...splitTargetFiles.demotedTargetFiles,
+    ])].sort();
+  }
   const expectedChangedFiles = normalizeTargetFiles(proposal.expectedChangedFiles || []);
 
   const workItem = {
@@ -98,4 +151,7 @@ function normalizeCandidateProposal(proposal, options = {}) {
 module.exports = {
   normalizeCandidateProposal,
   slugify,
+  splitVisualReferenceTargetFiles,
+  validationOrEvidencePath,
+  visualReferenceCandidate,
 };
