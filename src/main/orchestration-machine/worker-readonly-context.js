@@ -51,6 +51,9 @@ const DEFAULT_VISUAL_RENDER_CONTEXT_FILES = Object.freeze([
   'public',
   'src/renderer',
   'src/web',
+  'tests/e2e',
+  'test/e2e',
+  'e2e',
 ]);
 
 const VALIDATION_CONTEXT_RE = /\b(npm|pnpm|yarn|bun|node\s+--test|node\s+tests?\/|playwright|vitest|jest|cypress|storybook|vite|webpack|next|eslint|tsc|typecheck|build|test:|visual|screenshot|renderer|browser|e2e)\b/i;

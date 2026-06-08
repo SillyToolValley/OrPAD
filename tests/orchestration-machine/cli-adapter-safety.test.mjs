@@ -912,6 +912,7 @@ test('worker read-only context includes package metadata for project validation 
   assert.equal(readOnlyFiles.includes('playwright.config.js'), true);
   assert.equal(readOnlyFiles.includes('scripts'), true);
   assert.equal(readOnlyFiles.includes('src/renderer'), true);
+  assert.equal(readOnlyFiles.includes('tests/e2e'), true);
 });
 
 test('CLI overlay adapter extracts worker result JSON nested inside provider result text', async () => {
