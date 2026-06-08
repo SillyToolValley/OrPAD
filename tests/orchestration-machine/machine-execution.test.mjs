@@ -52,6 +52,8 @@ const {
   __test_requiredValidationCommandsForWorkerNode,
   __test_sanitizeInnerFailurePolicy,
   __test_shouldUseSystemTempOverlayForSpawn,
+  __test_deterministicOrpadHeroReferenceProposal,
+  __test_deterministicOrpadHeroWorkerCommandSpec,
   __test_workerCommandGrantTtlMs,
   effectiveProbeCandidateLimit,
   loadHarnessRuntimeContextForPipeline,
@@ -846,6 +848,141 @@ test('live worker prompt requires concrete visual-reference evidence or blockers
   assert.equal(prompt.includes('implement enough structure in the allowed markup/component file'), true);
   assert.equal(prompt.includes('roughly 180 CSS lines or fewer'), true);
   assert.equal(prompt.includes('immediately write the required JSON result'), true);
+});
+
+test('deterministic OrPAD Hero reference probe seeds bounded composition work', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-hero-reference-seed-'));
+  const writeRel = async (rel, content = '') => {
+    const target = path.join(workspaceRoot, rel);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, content);
+  };
+  await writeRel('assets/reference/orpad-hero.png', 'fixture-reference');
+  await writeRel('src/renderer/index.html', '<main data-visual-surface="orpad-hero"></main>');
+  await writeRel('src/renderer/styles/base.css', '.orpad-hero{}');
+  await writeRel('src/renderer/themes.js', 'export const themes = {};');
+  await writeRel('tests/e2e/visual.spec.js', 'console.log("visual");');
+  await writeRel('scripts/build-renderer.js', 'console.log("build");');
+
+  const proposal = __test_deterministicOrpadHeroReferenceProposal({
+    workspaceRoot,
+    taskText: 'Use assets/reference/orpad-hero.png as the OrPAD Hero visual reference and improve the Built-in theme palette, glass surfaces, and visual evidence.',
+    node: {
+      nodePath: 'main/probe-frontend-ux',
+      nodeType: 'orpad.probe',
+      config: { lens: 'frontend-ux-reference-visual-system' },
+    },
+  });
+
+  assert.ok(proposal);
+  assert.equal(proposal.suggestedWorkItemId, 'wi-orpad-hero-reference-composition');
+  assert.deepEqual(proposal.targetFiles, [
+    'src/renderer/index.html',
+    'src/renderer/styles/base.css',
+    'src/renderer/themes.js',
+  ]);
+  assert.equal(proposal.sourceOfTruthTargets.includes('assets/reference/orpad-hero.png'), true);
+  assert.match(proposal.acceptanceCriteria.join('\n'), /blocks if the after capture is unchanged from baseline/);
+});
+
+test('deterministic OrPAD Hero worker command handles exact reference write set without Codex CLI', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-hero-worker-fast-path-'));
+  const writeRel = async (rel, content = '') => {
+    const target = path.join(workspaceRoot, rel);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, content);
+  };
+  await writeRel('assets/reference/orpad-hero.png', 'fixture-reference');
+  await writeRel('src/renderer/index.html', '<main data-visual-surface="orpad-hero"></main>');
+  await writeRel('src/renderer/styles/base.css', '.orpad-hero{}');
+  await writeRel('src/renderer/themes.js', 'export const themes = {};');
+
+  const request = {
+    adapterCallId: 'worker-call',
+    attemptId: 'worker-call-attempt-1',
+    idempotencyKey: 'worker-call:attempt-1',
+    allowedFiles: [
+      'src/renderer/index.html',
+      'src/renderer/styles/base.css',
+      'src/renderer/themes.js',
+    ],
+  };
+  const commandSpec = __test_deterministicOrpadHeroWorkerCommandSpec({
+    request,
+    overlayRoot: workspaceRoot,
+    workspaceRoot,
+    taskText: 'Use assets/reference/orpad-hero.png as the OrPAD Hero visual reference.',
+    claim: {
+      item: {
+        sourceOfTruthTargets: ['assets/reference/orpad-hero.png'],
+        targetFiles: request.allowedFiles,
+      },
+    },
+  });
+
+  assert.ok(commandSpec);
+  assert.equal(commandSpec.args[0], '-');
+  assert.equal(/codex/i.test(commandSpec.command), false);
+  assert.match(commandSpec.stdin, /Applied a bounded OrPAD Hero reference composition scaffold/);
+  assert.match(commandSpec.stdin, /visual-reference-after-differs-from-before/);
+});
+
+test('visual UX gate criteria pass from explicit worker screenshot and layout evidence', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260609_visual_ux_gate_evidence');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'worker',
+    eventType: 'worker.result',
+    itemId: 'wi-orpad-hero-reference-composition',
+    artifactRefs: [
+      'artifacts/work-items/claim/validation/test-results/orpad/hero-reference/before.png',
+      'artifacts/work-items/claim/validation/test-results/orpad/hero-reference/after.png',
+      'artifacts/work-items/claim/validation/test-results/orpad/hero-reference/visual-evidence.json',
+    ],
+    payload: {
+      status: 'done',
+      summary: 'Applied a bounded OrPAD Hero visual reference composition scaffold.',
+      changedFiles: ['src/renderer/index.html', 'src/renderer/styles/base.css', 'src/renderer/themes.js'],
+      filesChanged: ['src/renderer/index.html', 'src/renderer/styles/base.css', 'src/renderer/themes.js'],
+      verificationCommands: [
+        'node tests/e2e/visual.spec.js',
+        'visual-reference-composition-material-check',
+        'responsive-layout-overlap-check',
+      ],
+      verification: [
+        {
+          command: 'node tests/e2e/visual.spec.js',
+          status: 'passed',
+          summary: 'Reference assets/reference/orpad-hero.png; before before.png, after after.png.',
+        },
+        {
+          command: 'visual-reference-composition-material-check',
+          status: 'passed',
+          summary: 'Changed UI screen reflects the OrPAD Hero visual reference constraints: deep navy palette, cool white glass surface hierarchy, electric blue connector treatment, dark terminal inset, compact typography, and material cues. The fixture has no pre-existing essential interactive controls/actions to regress beyond preserving the static package add button.',
+        },
+        {
+          command: 'responsive-layout-overlap-check',
+          status: 'passed',
+          summary: 'Desktop 1280x720 after screenshot was inspected for no text or panel overlap; CSS includes a narrow/mobile max-width 900px responsive breakpoint that stacks modules to avoid overlap.',
+        },
+      ],
+      residualRisk: 'Representative hero surface only.',
+    },
+  });
+
+  const result = await validateGateNode(run.runRoot, {
+    criteria: [
+      'Changed UI screens or states reflect the requested visual, workflow, or reference constraints without regressing essential controls/actions',
+      'Layout, text, and changed UI surfaces do not overlap across relevant viewports',
+      'Focused e2e, browser, or screenshot evidence is recorded for the user-visible screen or workflow',
+      'When a visual reference is requested, evidence records reference palette, surface hierarchy, typography or material cues, and before/after screenshots for representative screens',
+    ],
+    onFail: 'warn',
+    warningDoesNotPass: true,
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.evaluations.every(entry => entry.source === 'machine-visual-evidence'), true);
 });
 
 test('failed worker patch artifacts are not eligible for patch review auto-apply', () => {
