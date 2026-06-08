@@ -272,11 +272,19 @@ async function collectOverlayPatch(options = {}) {
     const before = await readWorkspaceFileSnapshotIfExists(workspaceRoot, relPath);
     const after = await readFileSnapshotIfExists(resolveWorkspacePath(overlayRoot, relPath));
     if (!allowedPath) {
+      const ignoredReason = after === null ? '' : ignoredOverlayGeneratedArtifactReason(relPath);
+      if (ignoredReason === 'overlay-generated-validation-artifact') {
+        ignoredGeneratedFiles.push({
+          path: relPath,
+          reason: ignoredReason,
+        });
+        continue;
+      }
       if ((before?.sha256 || '') !== (after?.sha256 || '')) {
-        if (after !== null && isIgnoredOverlayGeneratedArtifactPath(relPath)) {
+        if (after !== null && ignoredReason) {
           ignoredGeneratedFiles.push({
             path: relPath,
-            reason: ignoredOverlayGeneratedArtifactReason(relPath),
+            reason: ignoredReason,
           });
           continue;
         }

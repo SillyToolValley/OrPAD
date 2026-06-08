@@ -830,6 +830,10 @@ test('live worker prompt requires concrete visual-reference evidence or blockers
 
   assert.equal(prompt.includes('Reference/UI alignment rules:'), true);
   assert.equal(prompt.includes('before/after screenshot artifact paths'), true);
+  assert.equal(prompt.includes('layout/regression verification entry'), true);
+  assert.equal(prompt.includes('desktop and narrow/mobile viewport evidence'), true);
+  assert.equal(prompt.includes('essential controls/actions were unchanged or not present'), true);
+  assert.equal(prompt.includes('still name the before artifact path'), true);
   assert.equal(prompt.includes('If screenshots cannot be produced in the overlay, record the exact blocked reason'), true);
   assert.equal(prompt.includes('Do not fabricate screenshot evidence'), true);
   assert.equal(prompt.includes('test-results/orpad/<workItemId>/'), true);

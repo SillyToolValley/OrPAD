@@ -353,7 +353,9 @@ test('CLI overlay adapter cannot mutate canonical queue/state files directly', a
 test('CLI overlay adapter ignores generated validation artifacts outside the write set', async () => {
   const run = await makeRun('run_20260430_cli_generated_validation_artifacts');
   await fs.mkdir(path.join(run.workspaceRoot, 'OrPad/src'), { recursive: true });
+  await fs.mkdir(path.join(run.workspaceRoot, 'OrPad/test-results'), { recursive: true });
   await fs.writeFile(path.join(run.workspaceRoot, 'OrPad/src/allowed.txt'), 'before\n', 'utf8');
+  await fs.writeFile(path.join(run.workspaceRoot, 'OrPad/test-results/before.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
   const request = createAdapterRequest({
     adapter: 'cli-agent-overlay',
@@ -375,6 +377,7 @@ test('CLI overlay adapter ignores generated validation artifacts outside the wri
     'fs.writeFileSync("OrPad/src/allowed.txt","after\\n");',
     'fs.mkdirSync("OrPad/test-results",{recursive:true});',
     'fs.writeFileSync("OrPad/test-results/.last-run.json","{}\\n");',
+    'fs.writeFileSync("OrPad/test-results/before.png",Buffer.from([0x89,0x50,0x4e,0x47]));',
     'fs.writeFileSync("OrPad/test-results/hero.png",Buffer.from([0x89,0x50,0x4e,0x47]));',
     'process.stdout.write(JSON.stringify({',
     'schemaVersion:"orpad.workerResult.v1",',
@@ -406,18 +409,22 @@ test('CLI overlay adapter ignores generated validation artifacts outside the wri
   assert.equal(result.status, 'done');
   assert.deepEqual(result.changedFiles, ['OrPad/src/allowed.txt']);
   assert.equal(result.verification[0].writeSetViolationCount, 0);
-  assert.equal(result.verification[0].ignoredGeneratedFileCount, 2);
+  assert.equal(result.verification[0].ignoredGeneratedFileCount, 3);
   const generatedJsonArtifact = result.artifacts.find(item => item.endsWith('/validation/OrPad/test-results/.last-run.json'));
+  const generatedBeforeArtifact = result.artifacts.find(item => item.endsWith('/validation/OrPad/test-results/before.png'));
   const generatedPngArtifact = result.artifacts.find(item => item.endsWith('/validation/OrPad/test-results/hero.png'));
   assert.equal(typeof generatedJsonArtifact, 'string');
+  assert.equal(typeof generatedBeforeArtifact, 'string');
   assert.equal(typeof generatedPngArtifact, 'string');
   assert.equal(await fs.readFile(path.join(run.runRoot, generatedJsonArtifact), 'utf8'), '{}\n');
+  assert.deepEqual(await fs.readFile(path.join(run.runRoot, generatedBeforeArtifact)), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   assert.deepEqual(await fs.readFile(path.join(run.runRoot, generatedPngArtifact)), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
   const patch = JSON.parse(await fs.readFile(path.join(run.runRoot, result.patchArtifact), 'utf8'));
   assert.deepEqual(patch.violations, []);
   assert.deepEqual(patch.ignoredGeneratedFiles.map(item => item.path).sort(), [
     'OrPad/test-results/.last-run.json',
+    'OrPad/test-results/before.png',
     'OrPad/test-results/hero.png',
   ]);
   assert.deepEqual([...new Set(patch.ignoredGeneratedFiles.map(item => item.reason))], ['overlay-generated-validation-artifact']);
