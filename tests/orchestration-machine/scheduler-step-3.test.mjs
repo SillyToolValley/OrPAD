@@ -613,6 +613,86 @@ test('Step 3.C: queue-not-empty loop-back drains dispatcher without manual conti
   assert.ok(dispatchResets.length >= 2, 'queue-not-empty should redrive dispatcher after queued items remain');
 });
 
+test('Step 3.C: verification-blocked processUntil stops failed gate loop-back redrive', async (t) => {
+  const candidateProposals = [1, 2].map(index => ({
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: `verification-blocked-proposal-${index}`,
+    suggestedWorkItemId: `verification-blocked-item-${index}`,
+    sourceNode: 'main/probe',
+    title: `Verification blocked item ${index}`,
+    fingerprint: `verification-blocked:target.md:${index}`,
+    evidence: [{ id: `verification-blocked-before-${index}`, file: 'target.md' }],
+    acceptanceCriteria: ['Patch artifact records the change.'],
+    sourceOfTruthTargets: ['target.md'],
+  }));
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await writePipeline(t, 'verification-blocked-loop-back', {
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'verification-blocked-loop-back-main',
+      nodes: [
+        { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+        { id: 'probe', type: 'orpad.probe', label: 'Probe' },
+        { id: 'queue', type: 'orpad.workQueue', label: 'Queue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'triage', type: 'orpad.triage', label: 'Triage', config: { queueRef: 'queue' } },
+        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+        { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue' } },
+        {
+          id: 'verification-gate',
+          type: 'orpad.gate',
+          label: 'Verify evidence',
+          config: {
+            criteria: ['visual screenshot evidence exists'],
+            onFail: 'warn',
+            failureRouting: 'strict-revise',
+            warningDoesNotPass: true,
+          },
+        },
+        { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+      ],
+      transitions: [
+        { from: 'entry', to: 'probe' },
+        { from: 'probe', to: 'queue' },
+        { from: 'queue', to: 'triage' },
+        { from: 'triage', to: 'dispatch' },
+        { from: 'dispatch', to: 'worker' },
+        { from: 'worker', to: 'verification-gate' },
+        { from: 'verification-gate', to: 'worker', condition: 'revise' },
+        { from: 'verification-gate', to: 'dispatch', condition: 'queue-not-empty' },
+        { from: 'verification-gate', to: 'exit', condition: 'queue-empty' },
+        { from: 'verification-gate', to: 'exit', condition: 'pass' },
+      ],
+    },
+  }, {
+    candidateProposals,
+    machineHarness: {
+      claimPolicy: { maxClaims: 1, processUntil: ['verification-blocked'] },
+      processUntil: ['verification-blocked'],
+    },
+  });
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+  const events = await readMachineEvents(run.runRoot);
+  const workerCompleted = events.filter(event => (
+    event.eventType === 'node.completed' && event.nodePath === 'main/worker'
+  ));
+  assert.equal(workerCompleted.length, 1, 'verification-blocked should prevent redriving another worker item');
+  const blocked = events.find(event => (
+    event.eventType === 'scheduler.loopBackRedriveBlocked'
+    && event.reason === 'process-until.verification-blocked'
+  ));
+  assert.ok(blocked, 'failed verification gate should block loop-back redrive');
+  assert.equal(blocked.nodePath, 'main/verification-gate');
+  assert.equal(blocked.payload.targetNodePath === 'main/worker' || blocked.payload.targetNodePath === 'main/dispatch', true);
+});
+
 test('Step 3.C: patch-review rejected branch loops back to worker in the same run-step', async (t) => {
   const candidateProposals = [1, 2].map(index => ({
     schemaVersion: 'orpad.candidateProposal.v1',

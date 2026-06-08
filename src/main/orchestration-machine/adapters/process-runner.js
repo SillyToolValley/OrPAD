@@ -94,7 +94,7 @@ function processPidIsActive(pid) {
   }
 }
 
-function runMachineProcess(input = {}) {
+function runMachineProcess(input = {}, spawnImpl = spawn) {
   const command = String(input.command || '').trim();
   if (!command) throw new Error('Process command is required.');
   const args = Array.isArray(input.args) ? input.args.map(arg => String(arg)) : [];
@@ -121,8 +121,9 @@ function runMachineProcess(input = {}) {
     let cancelled = false;
     let settled = false;
     let startedHookDone = Promise.resolve();
+    const streamErrors = [];
 
-    const child = spawn(command, args, {
+    const child = spawnImpl(command, args, {
       cwd,
       env,
       shell: false,
@@ -139,10 +140,24 @@ function runMachineProcess(input = {}) {
         if (!existing.size) activeMachineProcesses.delete(key);
       }
     };
-    if (input.stdin == null) {
-      child.stdin?.end();
-    } else {
-      child.stdin?.end(String(input.stdin));
+    const recordStreamError = streamName => (err) => {
+      streamErrors.push({
+        stream: streamName,
+        code: err?.code || '',
+        message: err?.message || String(err || ''),
+      });
+    };
+    child.stdin?.on('error', recordStreamError('stdin'));
+    child.stdout?.on('error', recordStreamError('stdout'));
+    child.stderr?.on('error', recordStreamError('stderr'));
+    try {
+      if (input.stdin == null) {
+        child.stdin?.end();
+      } else {
+        child.stdin?.end(String(input.stdin));
+      }
+    } catch (err) {
+      recordStreamError('stdin')(err);
     }
 
     const timeout = setTimeout(() => {
@@ -207,6 +222,7 @@ function runMachineProcess(input = {}) {
           finishedAt: new Date().toISOString(),
           spawnErrorCode: err?.code || '',
           spawnErrorMessage: err?.message || '',
+          streamErrors,
           timedOut,
           cancelled,
         })).catch(() => {});
@@ -234,6 +250,7 @@ function runMachineProcess(input = {}) {
           finishedAt,
           code: typeof code === 'number' ? code : null,
           signal: signal || null,
+          streamErrors,
           timedOut,
           cancelled,
         })).catch(() => {});
@@ -250,6 +267,7 @@ function runMachineProcess(input = {}) {
         stderr,
         stdoutTruncated,
         stderrTruncated,
+        streamErrors,
         redactedArgCount: redactedArgs.redactedCount,
         maskedEnvCount: maskedCount,
         maskedEnvNames: masked,

@@ -916,9 +916,42 @@ function auditMachineAdapter(pipeline, orderedNodes, diagnostics) {
   if (adapter.workerNodePath && adapterConcurrency !== 1) {
     diagnostics.push(diagnostic('error', 'AUTHORING_WORKER_CONCURRENCY_UNSAFE', 'Generated live Machine adapters must default to serial worker claims until file-lock parallelism is explicitly authored and covered by lifecycle tests.', { configured: adapterConcurrency ?? null }));
   }
+  const adapterMaxClaims = adapter?.claimPolicy?.maxClaims
+    ?? adapter?.claimPolicy?.claimLimit
+    ?? adapter?.workerClaimLimit
+    ?? adapter?.maxWorkerClaims
+    ?? adapter?.claimLimit;
+  if (adapter.workerNodePath && Number(adapterMaxClaims) !== 1) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_WORKER_CLAIM_LIMIT_UNBOUNDED', 'Generated live Machine adapters must default to one worker claim per scheduler visit so broad UI/reference runs cannot expand into long-running queue drains.', { configured: adapterMaxClaims ?? null }));
+  }
+  const adapterLoopBackLimit = adapter?.loopBackRedriveLimit
+    ?? adapter?.maxLoopBackRedrives
+    ?? adapter?.schedulerLoopBackRedriveLimit;
+  if (adapter.workerNodePath && Number(adapterLoopBackLimit) !== 1) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_LOOPBACK_REDRIVE_UNBOUNDED', 'Generated live Machine adapters must cap loop-back redrives at one so failed verification or queue-drain loops end as partial/blocked instead of running indefinitely.', { configured: adapterLoopBackLimit ?? null }));
+  }
+  const adapterProcessUntil = Array.isArray(adapter?.processUntil)
+    ? adapter.processUntil
+    : (Array.isArray(adapter?.claimPolicy?.processUntil) ? adapter.claimPolicy.processUntil : []);
+  if (adapter.workerNodePath && !adapterProcessUntil.includes('verification-blocked')) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_PROCESS_UNTIL_VERIFICATION_BLOCKED_MISSING', 'Generated live Machine adapters must carry processUntil=verification-blocked into the adapter config, not only queueProtocol metadata.', { configured: adapterProcessUntil }));
+  }
+  const proposalTimeoutMs = Number(adapter?.proposalTimeoutMs);
+  if (adapter.workerNodePath && (!Number.isFinite(proposalTimeoutMs) || proposalTimeoutMs > 240000)) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_PROPOSAL_TIMEOUT_UNBOUNDED', 'Generated live Machine adapters must cap proposal discovery at four minutes so small managed runs do not spend excessive time before worker dispatch.', { configured: adapter?.proposalTimeoutMs ?? null }));
+  }
+  const workerTimeoutMs = Number(adapter?.workerTimeoutMs);
+  if (adapter.workerNodePath && (!Number.isFinite(workerTimeoutMs) || workerTimeoutMs > 300000)) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_WORKER_TIMEOUT_UNBOUNDED', 'Generated live Machine adapters must cap individual workers at five minutes; larger work should split or hand off instead of extending one worker.', { configured: adapter?.workerTimeoutMs ?? null }));
+  }
   const queueConcurrency = pipeline?.run?.queueProtocol?.claimPolicy?.concurrency;
   if (pipeline?.run?.queueProtocol && queueConcurrency !== 1) {
     diagnostics.push(diagnostic('error', 'AUTHORING_QUEUE_PROTOCOL_CONCURRENCY_UNSAFE', 'Generated queueProtocol.claimPolicy.concurrency must default to 1 so generated pipelines do not claim overlapping worker items in parallel.', { configured: queueConcurrency ?? null }));
+  }
+  const queueMaxClaims = pipeline?.run?.queueProtocol?.claimPolicy?.maxClaims
+    ?? pipeline?.run?.queueProtocol?.claimPolicy?.claimLimit;
+  if (pipeline?.run?.queueProtocol && Number(queueMaxClaims) !== 1) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_QUEUE_PROTOCOL_CLAIM_LIMIT_UNBOUNDED', 'Generated queueProtocol.claimPolicy must cap worker claims at one so the runtime can inherit bounded queue-drain behavior.', { configured: queueMaxClaims ?? null }));
   }
 }
 

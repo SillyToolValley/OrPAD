@@ -29,7 +29,7 @@
         "config": {
           "lens": "frontend-ux-reference-visual-system",
           "skillRef": "frontend-ux-audit",
-          "maxCandidates": 9,
+          "maxCandidates": 1,
           "candidateLimitPolicy": "collect-all-visible"
         }
       },
@@ -39,9 +39,9 @@
         "label": "Verify frontend UX",
         "config": {
           "criteria": [
-            "The affected UI workflow exposes the requested control states and actions",
-            "Layout, text, menus, and inspector controls do not overlap across relevant viewports",
-            "Focused e2e, browser, or screenshot evidence is recorded for user-visible behavior",
+            "Changed UI screens or states reflect the requested visual, workflow, or reference constraints without regressing essential controls/actions",
+            "Layout, text, and changed UI surfaces do not overlap across relevant viewports",
+            "Focused e2e, browser, or screenshot evidence is recorded for the user-visible screen or workflow",
             "When a visual reference is requested, evidence records reference palette, surface hierarchy, typography or material cues, and before/after screenshots for representative screens"
           ],
           "onFail": "warn",

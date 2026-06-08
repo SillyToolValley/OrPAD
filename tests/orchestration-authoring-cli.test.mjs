@@ -40,7 +40,12 @@ test('orpad generate writes an orchestration-focused pipeline package', async (t
   assert.equal(pipeline.metadata.orchestrationAuthoring.qualityAudit.summary.errorCount, 0);
   assert.match(pipeline.metadata.externalResearch.limitation, /external competitor claims require approved browsing/);
   assert.equal(pipeline.run.machineAdapter.type, 'codex-cli');
-  assert.deepEqual(pipeline.run.machineAdapter.claimPolicy, { concurrency: 1 });
+  assert.equal(pipeline.run.machineAdapter.claimPolicy.concurrency, 1);
+  assert.equal(pipeline.run.machineAdapter.claimPolicy.maxClaims, 1);
+  assert.equal(pipeline.run.machineAdapter.loopBackRedriveLimit, 1);
+  assert.equal(pipeline.run.machineAdapter.proposalTimeoutMs, 240000);
+  assert.equal(pipeline.run.machineAdapter.workerTimeoutMs, 300000);
+  assert.equal(pipeline.run.machineAdapter.processUntil.includes('verification-blocked'), true);
   assert.equal(pipeline.run.queueProtocol.schema, 'orpad.workItem.v1');
   assert.deepEqual(pipeline.run.queueProtocol.states, ['candidate', 'queued', 'claimed', 'done', 'blocked', 'rejected']);
 
@@ -176,7 +181,11 @@ test('orpad generate materializes an LLM-authored orchestration spec', async (t)
   assert.equal(result.qualityAudit.ok, true);
   assert.deepEqual(pipeline.run.machineAdapter.probeNodePaths, ['main/find-confusion']);
   assert.equal(pipeline.run.machineAdapter.workerNodePath, 'main/worker');
-  assert.deepEqual(pipeline.run.machineAdapter.claimPolicy, { concurrency: 1 });
+  assert.equal(pipeline.run.machineAdapter.claimPolicy.concurrency, 1);
+  assert.equal(pipeline.run.machineAdapter.claimPolicy.maxClaims, 1);
+  assert.equal(pipeline.run.machineAdapter.loopBackRedriveLimit, 1);
+  assert.equal(pipeline.run.machineAdapter.proposalTimeoutMs, 240000);
+  assert.equal(pipeline.run.machineAdapter.workerTimeoutMs, 300000);
   assert.deepEqual(graph.graph.nodes.map(node => node.label).slice(1, 4), [
     'Map lecture units',
     'Find confusing threading explanations',

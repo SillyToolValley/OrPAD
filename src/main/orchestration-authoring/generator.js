@@ -3571,6 +3571,11 @@ async function createOrchestrationPipeline(options = {}) {
     'risk-budget-exceeded',
     'handoff-required',
   ];
+  const generatedWorkerClaimLimit = 1;
+  const generatedLoopBackRedriveLimit = 1;
+  const generatedProposalTimeoutMs = 240000;
+  const generatedWorkerTimeoutMs = 300000;
+  const generatedClaimLeaseMs = 600000;
   const workspaceSnapshot = options.workspaceSnapshot || {};
   const nodePackSelectionDiagnostics = [];
   const authoringNodePackOptions = nodePackSelectionOptions(options, nodePackSelectionDiagnostics);
@@ -3711,11 +3716,16 @@ async function createOrchestrationPipeline(options = {}) {
         approvalPolicy: 'never',
         ephemeral: true,
         candidateLimit: generatedCandidateLimit,
-        proposalTimeoutMs: 600000,
-        workerTimeoutMs: 900000,
-        claimLeaseMs: 1800000,
+        proposalTimeoutMs: generatedProposalTimeoutMs,
+        workerTimeoutMs: generatedWorkerTimeoutMs,
+        claimLeaseMs: generatedClaimLeaseMs,
+        workerClaimLimit: generatedWorkerClaimLimit,
+        loopBackRedriveLimit: generatedLoopBackRedriveLimit,
+        processUntil: generatedProcessUntil,
         claimPolicy: {
           concurrency: 1,
+          maxClaims: generatedWorkerClaimLimit,
+          processUntil: generatedProcessUntil,
         },
         probeNodePaths: generatedProbeNodePaths(graphNodes, authoringSpec.subgraphs),
         // User report 2026-05-15: an 8-probe pipeline ran each probe back-to-
@@ -3738,6 +3748,7 @@ async function createOrchestrationPipeline(options = {}) {
         states: [...WORK_ITEM_STATES],
         claimPolicy: {
           concurrency: 1,
+          maxClaims: generatedWorkerClaimLimit,
           defaultAction: 'continue-claiming',
           processUntil: generatedProcessUntil,
           stopWhenQueueEmpty: true,

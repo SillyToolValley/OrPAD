@@ -71,6 +71,7 @@ const MACHINE_CANDIDATE_INVENTORY_SCHEMA = SCHEMA_VERSIONS.candidateInventory;
 const TERMINAL_RUN_LIFECYCLE_STATUSES = new Set(['completed', 'cancelled', 'failed']);
 const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(competing products?|competitors?|competition|market|benchmark|benchmarks|web research|browse|internet|online|search for competing|external research)\b/i;
 const MANAGED_PROPOSAL_CANDIDATE_SAFE_CAP = 5;
+const WINDOWS_PROCESS_CWD_SOFT_LIMIT = 240;
 const SUPPORT_NODE_TYPES = new Set([
   'orpad.entry',
   'orpad.context',
@@ -214,6 +215,12 @@ function machineAdapterFromPipeline(pipeline) {
   return pipeline?.run && typeof pipeline.run === 'object' && !Array.isArray(pipeline.run)
     ? pipeline.run.machineAdapter
     : null;
+}
+
+function shouldUseSystemTempOverlayForSpawn(overlayRoot) {
+  if (process.platform !== 'win32') return false;
+  const resolved = path.resolve(String(overlayRoot || ''));
+  return resolved.length >= WINDOWS_PROCESS_CWD_SOFT_LIMIT;
 }
 
 function adapterOverridesPathForPipeline(pipelinePath) {
@@ -520,8 +527,41 @@ function queueProtocolClaimPolicyFromPipeline(pipeline) {
 
 function machineConfigWithQueueProtocolClaimPolicy(config = {}, pipeline = null) {
   const queueClaimPolicy = queueProtocolClaimPolicyFromPipeline(pipeline);
-  if (!queueClaimPolicy || config?.claimPolicy !== undefined) return config;
-  return { ...(config || {}), claimPolicy: queueClaimPolicy };
+  const runSelectionProcessUntil = Array.isArray(pipeline?.run?.runSelection?.processUntil)
+    ? pipeline.run.runSelection.processUntil
+    : undefined;
+  if (!queueClaimPolicy && runSelectionProcessUntil === undefined) return config;
+  const next = { ...(config || {}) };
+  if (queueClaimPolicy) {
+    const adapterClaimPolicy = next.claimPolicy && typeof next.claimPolicy === 'object' && !Array.isArray(next.claimPolicy)
+      ? next.claimPolicy
+      : {};
+    next.claimPolicy = {
+      ...queueClaimPolicy,
+      ...adapterClaimPolicy,
+    };
+  }
+  if (next.processUntil === undefined) {
+    const claimProcessUntil = next.claimPolicy && typeof next.claimPolicy === 'object'
+      ? next.claimPolicy.processUntil
+      : undefined;
+    if (claimProcessUntil !== undefined) next.processUntil = claimProcessUntil;
+    else if (runSelectionProcessUntil !== undefined) next.processUntil = runSelectionProcessUntil;
+  }
+  return next;
+}
+
+function normalizeRuntimeStopToken(value) {
+  return String(value || '').trim().toLowerCase().replace(/[_\s]+/g, '-');
+}
+
+function configuredProcessUntilSet(config = {}) {
+  const claimPolicy = config.claimPolicy && typeof config.claimPolicy === 'object' ? config.claimPolicy : {};
+  const values = [
+    ...(Array.isArray(config.processUntil) ? config.processUntil : []),
+    ...(Array.isArray(claimPolicy.processUntil) ? claimPolicy.processUntil : []),
+  ];
+  return new Set(values.map(normalizeRuntimeStopToken).filter(Boolean));
 }
 
 function positiveMs(value) {
@@ -5386,10 +5426,20 @@ async function executeMachineRunStep(options = {}) {
     });
     adapterRequest.expectedChangedFiles = workerExpectedChangedFiles;
     adapterRequest.overlayRootMode = effectiveOverlayRootMode;
-    adapterRequest.overlayRoot = overlayRoot
-      || (adapterRequest.overlayRootMode === 'system-temp'
-        ? await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'))
-        : cliOverlayRoot(runRoot, adapterRequest));
+    adapterRequest.overlayRoot = overlayRoot || '';
+    if (!adapterRequest.overlayRoot) {
+      if (adapterRequest.overlayRootMode === 'system-temp') {
+        adapterRequest.overlayRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'));
+      } else {
+        const runRootOverlay = cliOverlayRoot(runRoot, adapterRequest);
+        if (shouldUseSystemTempOverlayForSpawn(runRootOverlay)) {
+          adapterRequest.overlayRootMode = 'system-temp';
+          adapterRequest.overlayRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'));
+        } else {
+          adapterRequest.overlayRoot = runRootOverlay;
+        }
+      }
+    }
     if (effectiveDangerousSandboxBypassApproval) {
       adapterRequest.dangerousSandboxBypassApproval = effectiveDangerousSandboxBypassApproval;
     }
@@ -5835,10 +5885,66 @@ async function executeMachineRunStep(options = {}) {
   const schedulerLoopBackForced = new Set();
   const schedulerLoopBackRedriveCounts = new Map();
   const schedulerLoopBackRedriveLimit = configuredLoopBackRedriveLimit(machineConfig, orderedNodes.length);
+  const schedulerProcessUntil = configuredProcessUntilSet(machineConfig);
   const maybeScheduleLoopBackRedrive = async (reset) => {
     const targetNodePath = reset?.targetNodePath || '';
     if (!targetNodePath || !schedulerOrderedIndex.has(targetNodePath)) return false;
     if (!executablePaths.has(targetNodePath)) return false;
+    const sourceNodePath = reset?.sourceNodePath || '';
+    const sourceNode = schedulerOrderedIndex.has(sourceNodePath)
+      ? orderedNodes[schedulerOrderedIndex.get(sourceNodePath)]
+      : null;
+    const sourceResult = schedulerSourceResults.get(sourceNodePath);
+    if (
+      schedulerProcessUntil.has('verification-blocked')
+      && sourceNode?.nodeType === 'orpad.gate'
+      && sourceResult
+      && sourceResult.valid === false
+    ) {
+      await appendMachineEvent(runRoot, {
+        runId,
+        actor: 'machine',
+        nodePath: sourceNodePath,
+        eventType: 'scheduler.loopBackRedriveBlocked',
+        reason: 'process-until.verification-blocked',
+        payload: {
+          phase: 'phase-3-step-3-loop-back',
+          sourceNodePath,
+          targetNodePath,
+          condition: reset.condition || '',
+          processUntil: [...schedulerProcessUntil],
+          gate: {
+            valid: false,
+            criteriaCount: sourceResult.criteriaCount ?? null,
+            failedCount: Array.isArray(sourceResult.failed) ? sourceResult.failed.length : null,
+            onFail: sourceResult.onFail || '',
+            warningDoesNotPass: sourceResult.warningDoesNotPass === true,
+            failureRouting: sourceResult.failureRouting,
+          },
+        },
+      }).catch(() => null);
+      blockedSupport = {
+        nodePath: sourceNodePath,
+        nodeType: sourceNode.nodeType,
+        result: {
+          blocked: true,
+          summaryStatus: 'partial',
+          reason: 'process-until.verification-blocked',
+          status: 'blocked',
+          sourceNodePath,
+          targetNodePath,
+          gate: {
+            valid: false,
+            criteriaCount: sourceResult.criteriaCount ?? null,
+            failedCount: Array.isArray(sourceResult.failed) ? sourceResult.failed.length : null,
+            onFail: sourceResult.onFail || '',
+            warningDoesNotPass: sourceResult.warningDoesNotPass === true,
+          },
+        },
+      };
+      stopScheduler = true;
+      return false;
+    }
     const targetNode = orderedNodes[schedulerOrderedIndex.get(targetNodePath)];
     const latestLifecycle = await latestLifecycleEventForNode(targetNodePath);
     if (latestLifecycle?.eventType === 'node.skipped') return false;
@@ -6741,6 +6847,8 @@ module.exports = {
   __test_configuredWorkerConcurrency: configuredWorkerConcurrency,
   __test_configuredWorkerClaimLimit: configuredWorkerClaimLimit,
   __test_machineConfigWithQueueProtocolClaimPolicy: machineConfigWithQueueProtocolClaimPolicy,
+  __test_configuredProcessUntilSet: configuredProcessUntilSet,
+  __test_shouldUseSystemTempOverlayForSpawn: shouldUseSystemTempOverlayForSpawn,
   __test_workerCommandGrantTtlMs: workerCommandGrantTtlMs,
   __test_requiredValidationCommandsForWorkerNode: requiredValidationCommandsForWorkerNode,
   __test_gateFailureOnlyStaleQueueActive: gateFailureOnlyStaleQueueActive,

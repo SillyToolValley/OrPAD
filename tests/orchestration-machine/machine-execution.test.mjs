@@ -42,6 +42,8 @@ const {
   __test_auditDiscoveryQueueProvenance,
   __test_auditRequiredCompletionGates,
   __test_canonicalGateOnFailPolicy,
+  __test_configuredProcessUntilSet,
+  __test_configuredWorkerClaimLimit,
   __test_configuredWorkerConcurrency,
   __test_machineConfigWithQueueProtocolClaimPolicy,
   __test_gateFailureOnlyStaleQueueActive,
@@ -49,6 +51,7 @@ const {
   __test_normalizeNonRunnableBlockedQueueItems,
   __test_requiredValidationCommandsForWorkerNode,
   __test_sanitizeInnerFailurePolicy,
+  __test_shouldUseSystemTempOverlayForSpawn,
   __test_workerCommandGrantTtlMs,
   effectiveProbeCandidateLimit,
   loadHarnessRuntimeContextForPipeline,
@@ -1058,15 +1061,24 @@ test('worker runtime honors queueProtocol claimPolicy when adapter omits it', ()
   const pipeline = {
     run: {
       queueProtocol: {
-        claimPolicy: { concurrency: 1 },
+        claimPolicy: {
+          concurrency: 1,
+          maxClaims: 1,
+          processUntil: ['queue-empty', 'verification-blocked'],
+        },
       },
     },
   };
   const inherited = __test_machineConfigWithQueueProtocolClaimPolicy({ workerTimeoutMs: 30_000 }, pipeline);
   assert.equal(__test_configuredWorkerConcurrency(inherited, 4, {}), 1);
+  assert.equal(__test_configuredWorkerClaimLimit(inherited, 4), 1);
+  assert.deepEqual(inherited.processUntil, ['queue-empty', 'verification-blocked']);
 
   const explicit = __test_machineConfigWithQueueProtocolClaimPolicy({ claimPolicy: { concurrency: 'all' } }, pipeline);
   assert.equal(__test_configuredWorkerConcurrency(explicit, 4, {}), 4);
+  assert.equal(__test_configuredWorkerClaimLimit(explicit, 4), 1);
+  assert.deepEqual(explicit.processUntil, ['queue-empty', 'verification-blocked']);
+  assert.deepEqual([...__test_configuredProcessUntilSet(explicit)].sort(), ['queue-empty', 'verification-blocked']);
 });
 
 test('worker command grants outlive expected lock wait plus worker execution budget', () => {
@@ -1075,6 +1087,34 @@ test('worker command grants outlive expected lock wait plus worker execution bud
     3_000_000,
   );
   assert.equal(__test_workerCommandGrantTtlMs({ workerTimeoutMs: 30_000 }, 60_000), 600_000);
+});
+
+test('worker overlays switch to system temp before Windows spawn cwd hits long-path failures', () => {
+  const shortOverlay = path.join(os.tmpdir(), 'orpad-machine-cli-overlay-short');
+  const longOverlay = path.join(
+    'C:\\',
+    'Users',
+    'USER',
+    'Documents',
+    'GitHub',
+    'OrPAD Worktree',
+    'OrPAD Pipeline E2E Test',
+    'ui-reference-20260608-232437',
+    '.orpad',
+    'pipelines',
+    'use-assets-reference-orpad-hero-png-as-the-orpad-20260608t140000z',
+    'runs',
+    'run_20260608_143258_5acfc1',
+    'adapters',
+    'overlays',
+    'claim-wi-built-in-theme-reference-palette-20260608_143545-e26c53-graph-cli',
+  );
+
+  assert.equal(__test_shouldUseSystemTempOverlayForSpawn(shortOverlay), false);
+  assert.equal(
+    __test_shouldUseSystemTempOverlayForSpawn(longOverlay),
+    process.platform === 'win32',
+  );
 });
 
 test('generated pipeline can execute a proposal-to-worker Machine lifecycle', async () => {

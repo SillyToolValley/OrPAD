@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
@@ -252,6 +254,39 @@ test('process runner forwards explicit adapter stdin', async () => {
 
   assert.equal(result.code, 0);
   assert.equal(result.stdout, 'adapter-input');
+});
+
+test('process runner records child stream errors without crashing the run driver', async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-process-stream-error-'));
+  const fakeSpawn = () => {
+    const child = new EventEmitter();
+    child.pid = 12345;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      const err = new Error('read ENOTCONN');
+      err.code = 'ENOTCONN';
+      child.stdout.emit('error', err);
+      child.emit('close', 1, null);
+    });
+    return child;
+  };
+
+  const result = await runMachineProcess({
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write("unused")'],
+    cwd,
+    timeoutMs: 5000,
+  }, fakeSpawn);
+
+  assert.equal(result.code, 1);
+  assert.deepEqual(result.streamErrors, [{
+    stream: 'stdout',
+    code: 'ENOTCONN',
+    message: 'read ENOTCONN',
+  }]);
 });
 
 test('CLI overlay adapter cannot mutate canonical queue/state files directly', async () => {

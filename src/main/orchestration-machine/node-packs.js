@@ -796,19 +796,19 @@ const STARTER_NODE_PACK_MANIFESTS = [
         id: 'probe-frontend-ux',
         label: 'Probe frontend UX candidates',
         lens: 'frontend-ux-reference-visual-system',
-        maxCandidates: 9,
+        maxCandidates: 1,
       },
       workerLabel: 'Implement frontend UX item',
       verifyCriteria: [
-        'The affected UI workflow exposes the requested control states and actions',
-        'Layout, text, menus, and inspector controls do not overlap across relevant viewports',
-        'Focused e2e, browser, or screenshot evidence is recorded for user-visible behavior',
+        'Changed UI screens or states reflect the requested visual, workflow, or reference constraints without regressing essential controls/actions',
+        'Layout, text, and changed UI surfaces do not overlap across relevant viewports',
+        'Focused e2e, browser, or screenshot evidence is recorded for the user-visible screen or workflow',
         'When a visual reference is requested, evidence records reference palette, surface hierarchy, typography or material cues, and before/after screenshots for representative screens',
       ],
       candidateTargetPolicy: [
         'UI behavior findings should target the renderer/web source, CSS, and focused e2e files needed to make the workflow testable.',
         'Context-menu or inspector findings should name the exact state transition and the UI surface where it appears.',
-        'Do not treat visual verification as optional when the change affects layout, menus, or canvas controls.',
+        'Do not treat visual verification as optional when the change affects layout, changed UI surfaces, menus, canvas controls, or reference styling.',
         'Reference-image findings should target the palette/theme source, CSS surface system, image assets, and focused visual smoke coverage needed to prove the reference style was applied.',
       ],
       rule: {
@@ -817,8 +817,8 @@ const STARTER_NODE_PACK_MANIFESTS = [
       },
       skill: {
         acceptanceCriteria: [
-          'User-visible states, empty states, disabled states, and interaction transitions are explicitly checked',
-          'Layout-sensitive changes include focused screenshot, e2e, or browser verification evidence where practical',
+          'Changed UI screens or states reflect the requested visual, workflow, or reference constraints without regressing essential controls/actions',
+          'Layout-sensitive changes include focused screenshot, e2e, or browser verification evidence where practical, with before/after screenshots for visual-refresh work',
           'Tests or verification cover the workflow that triggered the UX issue, not only the edited helper function',
           'Requested visual references are converted into palette, surface, typography or material constraints before implementation work is queued',
         ],

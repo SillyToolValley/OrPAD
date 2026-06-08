@@ -1176,9 +1176,50 @@ test('generated graph editor UX pipeline selects frontend UX and regression pack
 
   assert.equal(selectedIds[0], 'orpad.starter.frontend-ux');
   assert.equal(selectedIds.includes('orpad.starter.test-regression'), true);
-  assert.equal(graph.graph.nodes.find(node => node.type === 'orpad.probe').config.lens, 'frontend-ux');
+  const probe = graph.graph.nodes.find(node => node.type === 'orpad.probe');
+  assert.equal(probe.config.lens, 'frontend-ux-reference-visual-system');
+  assert.equal(probe.config.maxCandidates, 1);
   assert.equal(rule.include.includes('src/renderer/**'), true);
   assert.equal(rule.include.includes('tests/e2e/**'), true);
+});
+
+test('frontend UX reference pipelines use bounded visual-reference gate criteria', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-frontend-ux-reference-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await fs.mkdir(path.join(workspace, 'src/renderer/styles'), { recursive: true });
+  await fs.mkdir(path.join(workspace, 'tests/e2e'), { recursive: true });
+  await fs.writeFile(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { test: 'playwright test' } }, null, 2), 'utf-8');
+  await fs.writeFile(path.join(workspace, 'src/renderer/App.jsx'), 'export default function App() { return <main />; }\n', 'utf-8');
+  await fs.writeFile(path.join(workspace, 'src/renderer/styles/base.css'), '.hero {}\n', 'utf-8');
+  await fs.writeFile(path.join(workspace, 'tests/e2e/visual.spec.ts'), 'test("visual", async () => {});\n', 'utf-8');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Use assets/reference/orpad-hero.png as the OrPAD Hero visual reference and improve the Built-in theme palette, glass surfaces, and visual evidence.',
+    timestamp: '2026-06-08T15:10:00.000Z',
+    requiredNodePackIds: ['orpad.starter.frontend-ux'],
+    maxAuthoringNodePacks: 1,
+    workspaceSnapshot: {
+      files: [
+        'package.json',
+        'src/renderer/App.jsx',
+        'src/renderer/styles/base.css',
+        'tests/e2e/visual.spec.ts',
+        'assets/reference/orpad-hero.png',
+      ],
+    },
+  });
+
+  assert.equal(result.qualityAudit.ok, true);
+  const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));
+  const probe = graph.graph.nodes.find(node => node.type === 'orpad.probe');
+  const gate = graph.graph.nodes.find(node => node.id === 'verification-gate');
+  assert.equal(probe.config.lens, 'frontend-ux-reference-visual-system');
+  assert.equal(probe.config.maxCandidates, 1);
+  assert.equal(gate.config.criteria.some(item => /reference palette, surface hierarchy/.test(item)), true);
+  assert.equal(gate.config.criteria.some(item => /before\/after screenshots/.test(item)), true);
+  assert.equal(gate.config.criteria.some(item => /requested control states and actions/.test(item)), false);
+  assert.equal(gate.config.criteria.some(item => /menus, and inspector controls/.test(item)), false);
 });
 
 test('generated Package hardening pipeline selects Package hardening guidance', async (t) => {

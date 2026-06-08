@@ -220,11 +220,23 @@ function assertReplayContracts(snapshot, label) {
   assert.equal(snapshot.machineAdapter.triageNodePath, 'main/triage');
   assert.equal(snapshot.machineAdapter.dispatcherNodePath, 'main/dispatch');
   assert.equal(snapshot.machineAdapter.workerNodePath, 'main/worker');
-  assert.deepEqual(snapshot.machineAdapter.claimPolicy, { concurrency: 1 });
+  assert.deepEqual(snapshot.machineAdapter.claimPolicy, {
+    concurrency: 1,
+    maxClaims: 1,
+    processUntil: [
+      'queue-empty',
+      'approval-required-next',
+      'scope-split-required',
+      'verification-blocked',
+      'risk-budget-exceeded',
+      'handoff-required',
+    ],
+  });
   assert.equal(snapshot.machineAdapter.probeConcurrency, 'all');
   assert.equal(snapshot.queueProtocol.schema, 'orpad.workItem.v1');
   assert.deepEqual(snapshot.queueProtocol.claimPolicy, {
     concurrency: 1,
+    maxClaims: 1,
     defaultAction: 'continue-claiming',
     processUntil: [
       'queue-empty',
@@ -326,7 +338,15 @@ async function assertGeneratedPackageQuality(result) {
   assert.ok(pipeline.metadata.graphComplexity.patternsDetected.includes('queue-drain-loop'));
   assert.ok(pipeline.metadata.graphComplexity.patternsDetected.includes('patch-review-reject-loop'));
   assert.equal(pipeline.run.machineAdapter.claimPolicy.concurrency, 1);
+  assert.equal(pipeline.run.machineAdapter.claimPolicy.maxClaims, 1);
+  assert.equal(pipeline.run.machineAdapter.workerClaimLimit, 1);
+  assert.equal(pipeline.run.machineAdapter.loopBackRedriveLimit, 1);
+  assert.equal(pipeline.run.machineAdapter.proposalTimeoutMs, 240000);
+  assert.equal(pipeline.run.machineAdapter.workerTimeoutMs, 300000);
+  assert.equal(pipeline.run.machineAdapter.claimLeaseMs, 600000);
+  assert.equal(pipeline.run.machineAdapter.processUntil.includes('verification-blocked'), true);
   assert.equal(pipeline.run.queueProtocol.claimPolicy.concurrency, 1);
+  assert.equal(pipeline.run.queueProtocol.claimPolicy.maxClaims, 1);
 
   const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));
   const artifact = graph.graph.nodes.find(node => node.type === 'orpad.artifactContract');

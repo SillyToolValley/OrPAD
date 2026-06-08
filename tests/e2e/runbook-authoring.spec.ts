@@ -623,11 +623,17 @@ test('creates an OrPAD pipeline inside the current workspace', async () => {
   expect(pipeline.run.machineAdapter.type).toBe('codex-cli');
   expect(pipeline.run.machineAdapter.candidateLimit).toBe(5);
   expect(pipeline.run.machineAdapter.claimPolicy.concurrency).toBe(1);
+  expect(pipeline.run.machineAdapter.claimPolicy.maxClaims).toBe(1);
+  expect(pipeline.run.machineAdapter.loopBackRedriveLimit).toBe(1);
+  expect(pipeline.run.machineAdapter.proposalTimeoutMs).toBe(240000);
+  expect(pipeline.run.machineAdapter.workerTimeoutMs).toBe(300000);
+  expect(pipeline.run.machineAdapter.processUntil).toContain('verification-blocked');
   expect(pipeline.run.runSelection.collectAllVisibleCandidates).toBe(true);
   expect(pipeline.run.runSelection.queueAllActionableCandidates).toBe(true);
   expect(pipeline.run.queueProtocol.schema).toBe('orpad.workItem.v1');
   expect(pipeline.run.queueProtocol.states).toEqual(['candidate', 'queued', 'claimed', 'done', 'blocked', 'rejected']);
   expect(pipeline.run.queueProtocol.claimPolicy.concurrency).toBe(1);
+  expect(pipeline.run.queueProtocol.claimPolicy.maxClaims).toBe(1);
   expect(pipeline.run.machineAdapter.probeNodePaths).toEqual(['main/find-competitive-gaps']);
   const graph = JSON.parse(fs.readFileSync(path.join(runbookDir, 'graphs', graphFile), 'utf-8'));
   const probeNode = graph.graph.nodes.find((node: { id: string }) => node.id === 'find-competitive-gaps') as { config?: { candidateLimitPolicy?: string } } | undefined;
