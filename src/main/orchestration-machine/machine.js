@@ -1244,6 +1244,8 @@ function buildLiveWorkerPrompt(input = {}) {
     'Do not fabricate screenshot evidence by generating standalone PNGs from test code or scripts. Visual artifacts must be captured from the changed UI surface; otherwise report screenshot validation as blocked with the exact missing harness/tool reason.',
     'If browser, screenshot, or visual validation creates files in the overlay, write them under test-results/orpad/<workItemId>/... or playwright-report/...; Machine will collect those generated validation files as run artifacts without adding them to the source patch.',
     'Work to a hard timebox: make the smallest acceptance-criteria slice that fits the allowedFiles, then stop and emit the JSON result. The JSON result is mandatory and has priority over additional polish.',
+    'Run at most one build/visual validation attempt before emitting the JSON result. If it fails, record the exact blocker in verification instead of continuing to iterate.',
+    'For CSS/theme work, keep the diff compact: change the smallest token/rule set needed for the representative surface instead of adding a full visual system.',
     'Do not attempt broad visual overhauls or full-surface rewrites inside one worker claim. If the claim is too broad to complete safely in one pass, implement the smallest coherent slice or return status "blocked" with the precise smaller follow-up split.',
     'For docs, slides, tutorials, or other content work, OrPAD will independently evaluate the diff after patch review; leave concrete removals, merges, rewrites, and focused validation evidence instead of only claiming editorial quality in the summary.',
   ].join('\n');

@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "orpad.workerResult.output.v1",
+  "title": "OrPAD Worker Result Output",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "adapterCallId",
+    "attemptId",
+    "idempotencyKey",
+    "status",
+    "summary",
+    "failingSymptom",
+    "rootCause",
+    "changedFiles",
+    "filesChanged",
+    "patchArtifact",
+    "verificationCommands",
+    "verification",
+    "residualRisk",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "orpad.workerResult.v1"
+    },
+    "adapterCallId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attemptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "done",
+        "blocked",
+        "queued",
+        "requeued",
+        "failed",
+        "approval-required",
+        "rejected"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "failingSymptom": {
+      "type": "string"
+    },
+    "rootCause": {
+      "type": "string"
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "filesChanged": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "patchArtifact": {
+      "type": "string"
+    },
+    "verificationCommands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "command",
+          "status",
+          "summary"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "blocked"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "residualRisk": {
+      "type": "string"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

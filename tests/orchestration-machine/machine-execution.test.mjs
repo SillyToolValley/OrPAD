@@ -833,6 +833,8 @@ test('live worker prompt requires concrete visual-reference evidence or blockers
   assert.equal(prompt.includes('If screenshots cannot be produced in the overlay, record the exact blocked reason'), true);
   assert.equal(prompt.includes('Do not fabricate screenshot evidence'), true);
   assert.equal(prompt.includes('test-results/orpad/<workItemId>/'), true);
+  assert.equal(prompt.includes('Run at most one build/visual validation attempt before emitting the JSON result'), true);
+  assert.equal(prompt.includes('For CSS/theme work, keep the diff compact'), true);
 });
 
 test('failed worker patch artifacts are not eligible for patch review auto-apply', () => {

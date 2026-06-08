@@ -110,9 +110,12 @@ test('codexCliExecArgs can route long prompts through stdin', () => {
   const args = codexCliExecArgs({
     sandbox: 'read-only',
     approvalPolicy: 'never',
+    outputSchemaPath: '/tmp/worker-result-output.schema.json',
     promptViaStdin: true,
     ephemeral: true,
   });
+  assert.equal(args.includes('--output-schema'), true);
+  assert.equal(args[args.indexOf('--output-schema') + 1], '/tmp/worker-result-output.schema.json');
   assert.equal(args.at(-1), '-');
   assert.equal(args.includes('read-only'), true);
   assert.equal(args.includes('--ephemeral'), true);
@@ -219,9 +222,37 @@ test('codex plugin buildWorkerCommandSpec produces stable codex CLI args from a 
   assert.equal(spec.args.includes('workspace-write'), true);
   assert.equal(spec.args.includes('--output-last-message'), true);
   assert.match(spec.args[spec.args.indexOf('--output-last-message') + 1], /^orpad-worker-result-worker\.json$/);
+  assert.equal(spec.args.includes('--output-schema'), false);
   assert.equal(spec.args.includes('--ephemeral'), true);
   assert.equal(spec.args.at(-1), '-');
   assert.equal(spec.stdin, 'Hello worker.');
+});
+
+test('codex plugin adds worker output schema only when explicitly enabled', () => {
+  const plugin = getProviderPlugin('codex-cli');
+  const spec = plugin.buildWorkerCommandSpec({
+    adapter: {
+      command: process.execPath,
+      commandPrefixArgs: ['/tmp/fake-codex.js'],
+      workerOutputSchemaPath: true,
+    },
+    prompt: 'Hello worker.',
+    overlayRoot: '/tmp/overlay',
+  });
+  assert.equal(spec.args.includes('--output-schema'), true);
+  assert.match(spec.args[spec.args.indexOf('--output-schema') + 1], /worker-result-output\.schema\.json$/);
+
+  const customSpec = plugin.buildWorkerCommandSpec({
+    adapter: {
+      command: process.execPath,
+      commandPrefixArgs: ['/tmp/fake-codex.js'],
+      workerOutputSchemaPath: '/tmp/custom-worker.schema.json',
+    },
+    prompt: 'Hello worker.',
+    overlayRoot: '/tmp/overlay',
+  });
+  assert.equal(customSpec.args.includes('--output-schema'), true);
+  assert.equal(customSpec.args[customSpec.args.indexOf('--output-schema') + 1], '/tmp/custom-worker.schema.json');
 });
 
 test('codex plugin adds dangerous bypass arg only when run bypass is explicit', () => {

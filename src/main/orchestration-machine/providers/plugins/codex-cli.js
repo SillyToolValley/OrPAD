@@ -16,6 +16,7 @@ const CATALOG_ENTRY = getProviderEntry('codex-cli');
 const fsp = fs.promises;
 const DEFAULT_CODEX_CLI_TIMEOUT_MS = 10 * 60 * 1000;
 const DANGEROUS_CODEX_BYPASS_ARG = '--dangerously-bypass-approvals-and-sandbox';
+const WORKER_RESULT_OUTPUT_SCHEMA_PATH = path.join(__dirname, '../../contracts/worker-result-output.schema.json');
 
 function pathEntries() {
   return String(process.env.PATH || '')
@@ -138,11 +139,20 @@ function codexCliExecArgs(options = {}) {
   if (options.outputLastMessagePath) {
     args.push('--output-last-message', options.outputLastMessagePath);
   }
+  if (options.outputSchemaPath) {
+    args.push('--output-schema', options.outputSchemaPath);
+  }
   if (options.ephemeral !== false) args.push('--ephemeral');
   if (options.json === true) args.push('--json');
   if (options.cd) args.push('-C', options.cd);
   args.push(options.promptViaStdin === true ? '-' : String(options.prompt || ''));
   return args;
+}
+
+function resolveWorkerOutputSchemaPath(adapter = {}) {
+  if (adapter.workerOutputSchemaPath === true) return WORKER_RESULT_OUTPUT_SCHEMA_PATH;
+  if (adapter.workerOutputSchemaPath === false) return '';
+  return String(adapter.workerOutputSchemaPath || '');
 }
 
 function extractJsonText(text) {
@@ -379,6 +389,7 @@ function buildWorkerCommandSpec(input = {}) {
   const invocation = codexCliInvocation(adapter.command || codexCliCommand(), adapter.commandPrefixArgs);
   const outputLastMessagePath = adapter.workerOutputLastMessagePath
     || `orpad-worker-result-${idSegment(request.adapterCallId || 'worker')}.json`;
+  const outputSchemaPath = resolveWorkerOutputSchemaPath(adapter);
   return {
     command: invocation.command,
     args: codexCliExecArgs({
@@ -387,6 +398,7 @@ function buildWorkerCommandSpec(input = {}) {
       approvalPolicy: adapter.approvalPolicy || 'never',
       dangerouslyBypassApprovalsAndSandbox: adapter.bypassLlmApprovals === true,
       outputLastMessagePath,
+      outputSchemaPath,
       promptViaStdin: true,
       ephemeral: adapter.ephemeral,
     }),
@@ -431,4 +443,5 @@ module.exports = {
   readCodexAdapterResult,
   codexProcessLooksApprovalRequired,
   DANGEROUS_CODEX_BYPASS_ARG,
+  WORKER_RESULT_OUTPUT_SCHEMA_PATH,
 };
