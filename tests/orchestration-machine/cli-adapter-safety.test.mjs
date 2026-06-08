@@ -1042,6 +1042,77 @@ test('CLI overlay adapter exposes canonical node_modules for build-style validat
   assert.equal(result.summary, stdoutResult.summary);
 });
 
+test('CLI overlay adapter bridges Playwright browser cache inside the overlay environment', async t => {
+  const run = await makeRun('run_20260609_cli_overlay_playwright_browser_bridge');
+  await fs.mkdir(path.join(run.workspaceRoot, 'node_modules/playwright'), { recursive: true });
+  await fs.writeFile(
+    path.join(run.workspaceRoot, 'node_modules/playwright/package.json'),
+    '{"name":"playwright"}\n',
+    'utf8',
+  );
+  const browserCache = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-ms-playwright-cache-'));
+  await fs.writeFile(path.join(browserCache, 'marker.txt'), 'browser cache available\n', 'utf8');
+  t.after(() => fs.rm(browserCache, { recursive: true, force: true }));
+
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/generated.txt'],
+    adapterCallId: 'cli-overlay-playwright-bridge-call',
+    attemptId: 'cli-overlay-playwright-bridge-attempt-1',
+    idempotencyKey: 'cli-overlay-playwright-bridge-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const stdoutResult = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'done',
+    summary: 'Overlay validation saw a Playwright browser cache bridge.',
+    artifacts: [],
+  };
+  const script = [
+    'const fs=require("fs");',
+    'const path=require("path");',
+    'const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH||"";',
+    'if(!browsers) throw new Error("missing PLAYWRIGHT_BROWSERS_PATH");',
+    'const rel=path.relative(process.cwd(),browsers);',
+    'if(rel.startsWith("..")||path.isAbsolute(rel)) throw new Error(`browser cache bridge escaped overlay: ${browsers}`);',
+    'if(!fs.existsSync(path.join(browsers,"marker.txt"))) throw new Error("missing bridged browser cache marker");',
+    `process.stdout.write(${JSON.stringify(JSON.stringify(stdoutResult))});`,
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-overlay-playwright-bridge',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+    extraEnv: {
+      PLAYWRIGHT_BROWSERS_PATH: browserCache,
+    },
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.equal(result.summary, stdoutResult.summary);
+  const transcriptRel = result.artifacts.find(item => item.endsWith('/cli-overlay-playwright-bridge-call.transcript.json'));
+  assert.equal(typeof transcriptRel, 'string');
+  const transcript = JSON.parse(await fs.readFile(path.join(run.runRoot, transcriptRel), 'utf8'));
+  assert.equal(transcript.overlay.playwrightBrowsersPathBridged, true);
+});
+
 test('CLI overlay adapter copies source-of-truth files as read-only context', async () => {
   const run = await makeRun('run_20260430_cli_readonly_context');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });

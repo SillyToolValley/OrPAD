@@ -515,7 +515,59 @@ function nonEmptyString(value) {
   return text || '';
 }
 
-async function canonicalDependencyEnv(workspaceRoot, baseExtraEnv = {}) {
+async function directoryExists(dirPath) {
+  try {
+    return (await fsp.stat(dirPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function defaultPlaywrightBrowsersPath() {
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    return path.join(localAppData, 'ms-playwright');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+  }
+  return path.join(os.homedir(), '.cache', 'ms-playwright');
+}
+
+async function workspaceHasPlaywright(nodeModules) {
+  return directoryExists(path.join(nodeModules, 'playwright'))
+    || directoryExists(path.join(nodeModules, 'playwright-core'));
+}
+
+async function bridgePlaywrightBrowsersIntoOverlay(options = {}) {
+  const { workspaceRoot = '', overlayRoot = '', extraEnv = {} } = options;
+  if (!workspaceRoot || !overlayRoot) return extraEnv;
+  const nodeModules = path.join(path.resolve(workspaceRoot), 'node_modules');
+  if (!(await workspaceHasPlaywright(nodeModules))) return extraEnv;
+
+  const configuredBrowsersPath = String(
+    extraEnv.PLAYWRIGHT_BROWSERS_PATH || process.env.PLAYWRIGHT_BROWSERS_PATH || '',
+  ).trim();
+  if (configuredBrowsersPath === '0') return extraEnv;
+
+  const browserCache = path.resolve(configuredBrowsersPath || defaultPlaywrightBrowsersPath());
+  if (!(await directoryExists(browserCache))) return extraEnv;
+
+  const bridgePath = path.join(path.resolve(overlayRoot), 'node_modules', '.cache', 'ms-playwright');
+  try {
+    await fsp.rm(bridgePath, { recursive: true, force: true });
+    await fsp.mkdir(path.dirname(bridgePath), { recursive: true });
+    await fsp.symlink(browserCache, bridgePath, process.platform === 'win32' ? 'junction' : 'dir');
+    return {
+      ...extraEnv,
+      PLAYWRIGHT_BROWSERS_PATH: bridgePath,
+    };
+  } catch {
+    return extraEnv;
+  }
+}
+
+async function canonicalDependencyEnv(workspaceRoot, baseExtraEnv = {}, options = {}) {
   const extraEnv = { ...(baseExtraEnv || {}) };
   const nodeModules = path.join(path.resolve(workspaceRoot || ''), 'node_modules');
   try {
@@ -534,7 +586,11 @@ async function canonicalDependencyEnv(workspaceRoot, baseExtraEnv = {}) {
   ];
   extraEnv.NODE_PATH = [...new Set(nodePathParts)].join(path.delimiter);
   extraEnv.PATH = [...new Set(pathParts)].join(path.delimiter);
-  return extraEnv;
+  return bridgePlaywrightBrowsersIntoOverlay({
+    workspaceRoot,
+    overlayRoot: options.overlayRoot || '',
+    extraEnv,
+  });
 }
 
 function stringArray(value) {
@@ -615,8 +671,11 @@ function createCliAgentAdapter(options = {}) {
         });
 
         let processResult;
+        let processExtraEnv = {};
         try {
-          const extraEnv = await canonicalDependencyEnv(overlay.workspaceRoot, options.extraEnv);
+          processExtraEnv = await canonicalDependencyEnv(overlay.workspaceRoot, options.extraEnv, {
+            overlayRoot: overlay.overlayRoot,
+          });
           processResult = await runMachineProcess({
             command: commandSpec.command,
             args: commandSpec.args || [],
@@ -625,7 +684,7 @@ function createCliAgentAdapter(options = {}) {
             runId,
             adapterCallId: request.adapterCallId,
             env: options.env,
-            extraEnv,
+            extraEnv: processExtraEnv,
             timeoutMs: options.timeoutMs,
             maxOutputBytes: options.maxOutputBytes,
             onStarted: processInfo => recordCliAdapterProcessEvent(runRoot, request, 'adapter.process.started', {
@@ -676,7 +735,11 @@ function createCliAgentAdapter(options = {}) {
             overlay: {
               ...overlay,
               cleanupPlanned: cleanupSystemOverlay,
-              canonicalNodeModulesAvailable: Boolean((await canonicalDependencyEnv(overlay.workspaceRoot)).NODE_PATH),
+              canonicalNodeModulesAvailable: Boolean(processExtraEnv.NODE_PATH),
+              playwrightBrowsersPathBridged: Boolean(
+                processExtraEnv.PLAYWRIGHT_BROWSERS_PATH
+                && isInsideResolvedPath(overlay.overlayRoot, processExtraEnv.PLAYWRIGHT_BROWSERS_PATH),
+              ),
             },
             containment,
             process: processResult,
