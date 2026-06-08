@@ -1,6 +1,6 @@
 const path = require('path');
 const fsp = require('fs/promises');
-const { pathToFileURL } = require('url');
+const { spawnSync } = require('child_process');
 const { isInsidePath } = require('../authority');
 const { validateRunbookFile, validateRunbookSource } = require('./validator');
 const { createRunRecord, readRunRecord, runRoot } = require('./storage');
@@ -360,15 +360,34 @@ async function isRecordedPipelineRunDir(workspaceRoot, targetRunDir) {
 
 async function auditPipelineRunEvidence(app, pipelinePath) {
   const appRoot = app?.getAppPath ? app.getAppPath() : path.join(__dirname, '..', '..', '..');
-  const scriptPath = path.join(appRoot, 'scripts', 'audit-orpad-run.mjs');
+  // Spawn the SELF-CONTAINED bundled audit (dist/audit-orpad-run.mjs, produced by
+  // build-renderer.js — inlines audit-orpad-node-schemas, runbooks/work-items, and ajv),
+  // because the original in-process import() throws in the Electron main V8 context
+  // (ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING) and a child process cannot read source
+  // modules sealed inside app.asar. In a packaged build app.getAppPath() points inside
+  // app.asar, but the bundle is asar-UNPACKED, so rewrite the path to .unpacked. process.execPath
+  // is the Electron binary (not node), so ELECTRON_RUN_AS_NODE=1 makes that always-present
+  // binary run as plain node — more robust than a system `node` an end user may lack.
+  // The bundle prints the full auditRun() JSON to stdout (exit 0 ok / 1 diagnostics, 2 on failure).
+  const scriptPath = path.join(appRoot, 'dist', 'audit-orpad-run.mjs')
+    .replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+  const result = spawnSync(process.execPath, [scriptPath, pipelinePath], {
+    cwd: path.dirname(scriptPath),
+    encoding: 'utf-8',
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  if (result.error) {
+    throw new Error(`Run evidence audit failed to spawn ${scriptPath}: ${result.error.message}`);
+  }
+  if (result.status === 2 || !result.stdout) {
+    const detail = (result.stderr || '').trim() || `exit code ${result.status}`;
+    throw new Error(`Run evidence audit failed to run ${scriptPath}: ${detail}`);
+  }
   try {
-    const module = await import(pathToFileURL(scriptPath).href);
-    if (!module || typeof module.auditRun !== 'function') {
-      throw new Error('auditRun export missing.');
-    }
-    return await module.auditRun(pipelinePath);
+    return JSON.parse(result.stdout);
   } catch (err) {
-    throw new Error(`Run evidence audit failed to load ${scriptPath}: ${err.message}`);
+    throw new Error(`Run evidence audit returned invalid output from ${scriptPath}: ${err.message}`);
   }
 }
 

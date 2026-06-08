@@ -115,7 +115,7 @@ test('proposal-only adapter result records status-specific event reasons', async
     candidateProposals: [],
   }));
 
-  assert.equal(failed.summaryStatus, 'blocked');
+  assert.equal(failed.summaryStatus, 'partial');
 
   const doneRequest = createAdapterRequest({
     runId: run.runId,
@@ -201,6 +201,154 @@ test('proposal-only adapter rejects Unity-generated meta proposals as non-runnab
   const resultEvent = (await readMachineEvents(run.runRoot))
     .find(event => event.eventType === 'adapter.result' && event.payload?.adapterCallId === request.adapterCallId);
   assert.equal(resultEvent.payload.rejectedProposalCount, 1);
+});
+
+test('proposal-only adapter rejects oversized UX overhaul proposals before dispatch', async () => {
+  const run = await makeRun();
+  const request = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/ux-probe',
+    taskKind: 'probe',
+    workspaceRoot: run.workspaceRoot,
+  });
+
+  const applied = await applyProposalAdapterResult(run.runRoot, request, adapterResult(request, {
+    candidateProposals: [proposal({
+      proposalId: 'proposal-graph-canvas-hero-overhaul',
+      suggestedWorkItemId: 'frontend-ux-graph-canvas-hero-overhaul',
+      title: 'Rework the pipeline builder canvas into the deep-navy glowing orchestration surface',
+      fingerprint: 'frontend-ux:graph-canvas:hero-style-gap',
+      evidence: [{ id: 'graph-css-current', file: 'src/renderer/styles/base.css' }],
+      acceptanceCriteria: [
+        'Graph frame, nodes, active edges, selected state, running state, blocked state, and reduced-motion state all use deep navy glowing orchestration styling.',
+        'The active path treatment scans first without relying on color alone.',
+        'E2E coverage verifies desktop and narrow layout without overlap.',
+      ],
+      sourceOfTruthTargets: [
+        'src/renderer/renderer.js',
+        'src/renderer/styles/base.css',
+        'tests/e2e/runbook-machine-run.spec.ts',
+        'tests/e2e/runbook-pipeline-editor.spec.ts',
+      ],
+      targetFiles: [
+        'src/renderer/renderer.js',
+        'src/renderer/styles/base.css',
+        'tests/e2e/runbook-machine-run.spec.ts',
+        'tests/e2e/runbook-pipeline-editor.spec.ts',
+      ],
+    })],
+  }));
+
+  assert.equal(applied.proposals.length, 1);
+  assert.equal(applied.rejectedProposals.length, 1);
+  const item = await findQueueItem(run.runRoot, 'frontend-ux-graph-canvas-hero-overhaul');
+  assert.equal(item.state, 'rejected');
+  assert.equal(item.item.machineRejected, true);
+  assert.equal(item.item.splitRequired, true);
+  assert.equal(item.item.nextAction, 'split-work-item-before-dispatch');
+  assert.match(item.item.rejectionReason, /too broad for a single worker timeout/);
+
+  const rejectEvent = (await readMachineEvents(run.runRoot))
+    .find(event => event.eventType === 'queue.transition' && event.itemId === 'frontend-ux-graph-canvas-hero-overhaul' && event.toState === 'rejected');
+  assert.equal(rejectEvent.reason, 'candidate.oversized-worker-scope');
+  assert.equal(rejectEvent.payload.classifier, 'oversized-worker-scope');
+});
+
+test('proposal-only triage skips rejected candidates instead of failing the node', async () => {
+  const run = await makeRun();
+  const probeRequest = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'discovery/ux-probe',
+    taskKind: 'probe',
+    workspaceRoot: run.workspaceRoot,
+  });
+
+  await applyProposalAdapterResult(run.runRoot, probeRequest, adapterResult(probeRequest, {
+    candidateProposals: [
+      proposal(),
+      proposal({
+        proposalId: 'proposal-terminal-dock-profile-tiles',
+        suggestedWorkItemId: 'work-frontend-ux-terminal-dock-profile-tiles',
+        title: 'Rework the terminal cockpit dashboard into a deep-navy glowing surface',
+        fingerprint: 'frontend-ux:terminal-dock-profile-tiles',
+        evidence: [{ id: 'terminal-style-current', file: 'src/renderer/styles/base.css' }],
+        acceptanceCriteria: [
+          'Terminal dock profile tiles, active state, blocked state, and reduced-motion state all use deep navy glowing dashboard styling.',
+          'The profile tile controls remain keyboard reachable.',
+          'E2E coverage verifies desktop and narrow layout without overlap.',
+        ],
+        sourceOfTruthTargets: [
+          'src/renderer/renderer.js',
+          'src/renderer/styles/base.css',
+          'tests/e2e/terminal.spec.ts',
+          'tests/e2e/runbook-machine-run.spec.ts',
+        ],
+        targetFiles: [
+          'src/renderer/renderer.js',
+          'src/renderer/styles/base.css',
+          'tests/e2e/terminal.spec.ts',
+          'tests/e2e/runbook-machine-run.spec.ts',
+        ],
+      }),
+      proposal({
+        proposalId: 'proposal-pipeline-builder-cockpit-tabs',
+        suggestedWorkItemId: 'work-frontend-ux-pipeline-builder-cockpit-tabs',
+        title: 'Tighten pipeline builder cockpit tab labels',
+        fingerprint: 'frontend-ux:pipeline-builder-cockpit-tabs',
+        evidence: [{ id: 'pipeline-builder-tabs-current', file: 'src/renderer/renderer.js' }],
+        acceptanceCriteria: ['Pipeline builder tab labels stay legible in narrow layouts.'],
+        sourceOfTruthTargets: ['src/renderer/renderer.js'],
+        targetFiles: ['src/renderer/renderer.js'],
+      }),
+    ],
+  }));
+
+  const rejected = await findQueueItem(run.runRoot, 'work-frontend-ux-terminal-dock-profile-tiles');
+  assert.equal(rejected.state, 'rejected');
+
+  const triageRequest = createAdapterRequest({
+    runId: run.runId,
+    nodePath: 'queue/triage',
+    taskKind: 'triage',
+    workspaceRoot: run.workspaceRoot,
+  });
+
+  const applied = await applyProposalAdapterResult(run.runRoot, triageRequest, adapterResult(triageRequest, {
+    candidateProposals: [],
+    triageTransitions: [
+      {
+        itemId: 'graph-editor-graph-specific-node-types',
+        toState: 'queued',
+        reason: 'triage.accepted-by-policy',
+      },
+      {
+        itemId: 'work-frontend-ux-terminal-dock-profile-tiles',
+        toState: 'queued',
+        reason: 'triage.accepted-by-policy',
+      },
+      {
+        itemId: 'work-frontend-ux-pipeline-builder-cockpit-tabs',
+        toState: 'queued',
+        reason: 'triage.accepted-by-policy',
+      },
+    ],
+  }));
+
+  assert.equal(applied.triage.length, 2);
+  assert.equal(applied.skippedTriage.length, 1);
+  assert.equal((await findQueueItem(run.runRoot, 'graph-editor-graph-specific-node-types')).state, 'queued');
+  assert.equal((await findQueueItem(run.runRoot, 'work-frontend-ux-pipeline-builder-cockpit-tabs')).state, 'queued');
+  assert.equal((await findQueueItem(run.runRoot, 'work-frontend-ux-terminal-dock-profile-tiles')).state, 'rejected');
+
+  const events = await readMachineEvents(run.runRoot);
+  const skipped = events.find(event => event.eventType === 'queue.transition.skipped');
+  assert.equal(skipped.itemId, 'work-frontend-ux-terminal-dock-profile-tiles');
+  assert.equal(skipped.reason, 'triage.transition.terminal-rejected');
+
+  const resultEvent = events
+    .find(event => event.eventType === 'adapter.result' && event.payload?.adapterCallId === triageRequest.adapterCallId);
+  assert.equal(resultEvent.payload.triageTransitionCount, 2);
+  assert.equal(resultEvent.payload.skippedTriageTransitionCount, 1);
 });
 
 test('adapter requests reject unsafe ids and run-relative refs before Machine events', async () => {
@@ -467,7 +615,7 @@ test('proposal-only result with status=blocked accepts emptyPass.reason as justi
     },
   }));
 
-  assert.equal(applied.summaryStatus, 'blocked');
+  assert.equal(applied.summaryStatus, 'partial');
 });
 
 test('proposal-only empty-pass caused by local tool failure is recorded as blocked', async () => {
@@ -490,7 +638,7 @@ test('proposal-only empty-pass caused by local tool failure is recorded as block
 
   const events = await readMachineEvents(run.runRoot);
   const resultEvent = events.find(event => event.eventType === 'adapter.result');
-  assert.equal(applied.summaryStatus, 'blocked');
+  assert.equal(applied.summaryStatus, 'partial');
   assert.equal(resultEvent.payload.status, 'blocked');
   assert.equal(resultEvent.payload.infrastructureBlocked, true);
   assert.equal(resultEvent.payload.deferredReason, 'adapter-local-tool-unavailable');
@@ -511,7 +659,7 @@ test('deferred or negative proposal-only result leaves the run blocked without q
     deferredReason: 'evidence-unavailable',
   }));
 
-  assert.equal(applied.summaryStatus, 'blocked');
-  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal(applied.summaryStatus, 'partial');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
   assert.equal((await readQueueItems(run.runRoot)).length, 0);
 });

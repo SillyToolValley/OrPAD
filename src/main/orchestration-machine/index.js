@@ -43,8 +43,12 @@ const adapterRouter = require('./router/adapter-router');
 const budgetLedger = require('./router/budget-ledger');
 const responseCache = require('./router/response-cache');
 const errorClassifier = require('./router/error-classifier');
+const modelTierResolver = require('./router/model-tier-resolver');
+const tokenEstimator = require('./router/token-estimator');
+const workerBudget = require('./router/worker-budget');
 const queueStore = require('./queue-store');
 const runStore = require('./run-store');
+const runControl = require('./run-control');
 const triageRunner = require('./triage-runner');
 const traversal = require('./traversal');
 const workerLoop = require('./worker-loop');
@@ -93,6 +97,9 @@ module.exports = {
   ...budgetLedger,
   ...responseCache,
   ...errorClassifier,
+  ...modelTierResolver,
+  ...tokenEstimator,
+  ...workerBudget,
   codexCliCommand: codexCliPlugin.codexCliCommand,
   codexCliExecArgs: codexCliPlugin.codexCliExecArgs,
   codexCliInvocation: codexCliPlugin.codexCliInvocation,
@@ -112,6 +119,7 @@ module.exports = {
   ...genericCliPlugin,
   ...queueStore,
   ...runStore,
+  ...runControl,
   ...triageRunner,
   ...traversal,
   ...workerLoop,

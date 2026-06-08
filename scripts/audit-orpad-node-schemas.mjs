@@ -1,10 +1,9 @@
 import fs from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-
-const require = createRequire(import.meta.url);
-const Ajv = require('ajv');
+// Static (not createRequire) import so esbuild can inline ajv when this module is
+// bundled for packaging; identical behaviour when run standalone under node.
+import Ajv from 'ajv';
 
 function usage() {
   return 'Usage: node scripts/audit-orpad-node-schemas.mjs <pipeline.or-pipeline> [workspace-root]';
@@ -264,7 +263,11 @@ async function auditNodeSchemas(pipelinePath, workspaceRoot = process.cwd()) {
 }
 
 const [, , pipelineArg, workspaceArg] = process.argv;
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// The endsWith check keeps this CLI from firing when the module is BUNDLED into
+// another script (e.g. audit-orpad-run.mjs for packaging): in a single esbuild
+// bundle every module shares one import.meta.url, so without this the sibling's
+// run-audit entry and this schema-audit entry would both match argv[1].
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && import.meta.url.endsWith('audit-orpad-node-schemas.mjs')) {
   if (!pipelineArg) {
     console.error(usage());
     process.exit(2);

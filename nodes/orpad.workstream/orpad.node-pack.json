@@ -119,6 +119,18 @@
       "path": "examples/product-build-workstream/pipeline.or-pipeline",
       "label": "Product Build Workstream",
       "description": "Executable product-build flow with a deterministic harness fixture and patch review handoff."
+    },
+    {
+      "id": "ralph-verify-fix-loop",
+      "path": "examples/ralph-verify-fix-loop/pipeline.or-pipeline",
+      "label": "Ralph Verify-Fix Loop",
+      "description": "Supervised autonomous fix loop: a worker applies a change and a verify gate routes failures back to the worker to fix and re-verify until it passes, then patch review."
+    },
+    {
+      "id": "ultraqa-gate-cycle",
+      "path": "examples/ultraqa-gate-cycle/pipeline.or-pipeline",
+      "label": "UltraQA Gate Cycle",
+      "description": "Supervised exhaustive-QA cycle: a worker's change passes correctness, security, and regression gates, each routing failures back to the worker, before patch review."
     }
   ]
 }

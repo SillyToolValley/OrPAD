@@ -48,6 +48,9 @@
           "type": "string",
           "minLength": 1
         },
+        "modelPolicy": {
+          "type": "string"
+        },
         "sessionStrategy": {
           "enum": [
             "none",
@@ -96,6 +99,9 @@
         "qualityTier": {
           "type": "string",
           "minLength": 1
+        },
+        "modelPolicy": {
+          "type": "string"
         },
         "sessionStrategy": {
           "enum": [
@@ -160,8 +166,25 @@
           "type": "number",
           "minimum": 0
         },
+        "perCallTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "perRunTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "expectedCompletionTokens": {
+          "type": "number",
+          "minimum": 0
+        },
         "hardStop": {
           "type": "boolean"
+        },
+        "downgradeAtUtilization": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       },
       "additionalProperties": true

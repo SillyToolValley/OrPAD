@@ -130,6 +130,13 @@ function liftMachineAdapterV1ToV2(adapter) {
       ephemeral,
       legacy,
     },
+    // budget/cache are reserved (top-level v2) keys, so they are excluded from
+    // the `legacy` passthrough above. Carry them onto the lifted v2 object so a
+    // v1-authored adapter that declares them keeps them — consumers read
+    // `lifted.budget`/`lifted.cache` (router dispatchAdapter, worker-path budget
+    // governance). Without this the reserved-keys list would silently drop them.
+    ...(isPlainObject(adapter.budget) ? { budget: adapter.budget } : {}),
+    ...(isPlainObject(adapter.cache) ? { cache: adapter.cache } : {}),
   };
 }
 

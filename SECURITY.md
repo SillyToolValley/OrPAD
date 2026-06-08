@@ -342,7 +342,7 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
   process, and generates an in-memory session capability token when no environment token exists.
   It returns only that generated session token; environment-provided tokens still require user or
   process-level provisioning and are not reflected back through this IPC.
-- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-cancel-run`, `machine-cancel-claim`, `machine-decide-approval`, `machine-export-latest-run`, `machine-apply-patch`, `machine-review-patch`) require
+- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-pause-run`, `machine-cancel-run`, `machine-cancel-claim`, `machine-reject-item`, `machine-reprioritize-item`, `machine-inject-item`, `machine-edit-item`, `machine-decide-approval`, `machine-export-latest-run`, `machine-apply-patch`, `machine-review-patch`) require
   either `ORPAD_MACHINE_IPC_TOKEN` or the generated session token and a matching
   `capabilityToken` in the request. Read-only validate, list, and get-run actions still require
   the feature gate and sender/path/schema checks.
@@ -373,10 +373,56 @@ commands, MCP tools, provider calls, or source workspace edits from the renderer
   `node.failed` events, rather than trusting a renderer-supplied status or stale pre-run snapshot.
 - `machine-resume-run` repairs derived queue snapshots from canonical Machine events and recovers
   stale claims through the dispatcher. It refuses terminal runs and pending approval requests, so
-  resume cannot bypass an explicit approval decision.
+  resume cannot bypass an explicit approval decision. When the run is in the supervised-autonomy
+  `paused` state it first clears the in-process pause intent, records a durable `run.resume-requested`
+  event, and transitions `paused -> waiting` before the standard recovery; the transition is still a
+  Machine-owned event-sourced state change, not a renderer-supplied status.
+- `machine-pause-run` records supervised-autonomy pause intent for a run: it sets an in-process
+  control token and appends a durable `run.pause-requested` event through the Machine event log. It
+  does NOT take the run-lifecycle lock (the autonomous driver may hold it) and never kills a process;
+  the driver observes the intent at its next step boundary and records the `paused` ack itself, so
+  in-flight work always finishes gracefully. Cancel intent (`run.cancel-requested`) is recorded the
+  same way at the front of `machine-cancel-run` before the existing cancelling/cancelled ack.
 - `machine-cancel-claim` accepts only opaque `runId`, `claimId`, and `itemId` identifiers. Main
   process verifies the active claim lease and queue state before releasing the claim/write-set and
   moving the item to `blocked` or `queued`.
+- `machine-reject-item` (STEER "leave this out") accepts only opaque `runId` and `itemId`. Main
+  process reads the item's canonical (event-projected) state and rejects ONLY a queued / candidate /
+  blocked item — a claimed/in-progress item must be stopped via `machine-cancel-claim` first. The
+  rejection is one Machine-authored `queue.transition` to `rejected` (the legal-transition whitelist
+  in queue-store gates it), so it is fully replayable from `events.jsonl`. Fail-fast under the
+  lifecycle lock (returns `MACHINE_RUN_BUSY` if a step is in flight) — the supervised flow is pause →
+  reject → resume. The renderer cannot supply an arbitrary target state.
+- `machine-reprioritize-item` (STEER "do this first") accepts only opaque `runId` and `itemId` and
+  acts ONLY on a queued item. It records a durable `queue.reprioritized` event whose sequence the
+  dispatcher reads (via a pure event projection) as the claim-order priority — it does NOT mutate the
+  item snapshot or add a persisted field, so claim order stays a deterministic replay of the log. The
+  renderer supplies no priority value (the Machine derives it from event order) and cannot reorder
+  claimed/in-progress work. Fail-fast under the lifecycle lock, same pause → steer → resume flow.
+- `machine-inject-item` (STEER "add this") accepts a `title` (required) plus optional `targetFiles` /
+  `acceptanceCriteria`. Main process BUILDS the candidate proposal — it derives a unique id and
+  fingerprint (the renderer cannot forge an id collision or set arbitrary item fields), normalizes +
+  schema-validates it via the same path as machine-generated candidates, then runs the standard
+  ingest (`inbox→candidate`) and triage (`candidate→queued`) transitions. So an injected item is an
+  ordinary, fully-replayable queue item. Fail-fast under the lifecycle lock.
+- `machine-edit-item` (STEER "fix this") accepts an `itemId` plus a whitelist of human-meaningful
+  fields (`title`, `targetFiles`, `acceptanceCriteria`) — never `id`, `state`, `claim`, or
+  `fingerprint`. Queued-only (in-flight/claimed work is not editable — stop the claim first). The
+  patched item is re-validated against the `workItem` schema before persisting (a steer edit can
+  never write a malformed item), and the edit is recorded as a durable `queue.edited` event carrying
+  the patch (audit + replay-of-intent). The edited content lives in the queue snapshot, which the
+  resume repair path (`repairDerivedQueueFilesFromEvents`) preserves, so the edit survives replay.
+  Fail-fast under the lifecycle lock.
+- `machine-run-progress` (PUSH STREAM) is the only main→renderer **push** in the Machine surface: a
+  one-way `webContents.send` fired after each completed step of an autonomous drive so the live
+  graph/panel refreshes immediately instead of waiting for the renderer's ~2s poll. It is bound to
+  the requesting `event.sender` (the renderer that initiated, and was authorized for, the run) and
+  guarded against a destroyed/closed window, so a dead frame can never abort the drive. The payload
+  is advisory only — `runId`, `stepIndex`, `sequence`, `lifecycleStatus` — and deliberately carries
+  NO events, run state, or secrets: on receipt the renderer re-fetches the snapshot through the gated
+  `machine-get-run` handler, so `events.jsonl` remains the single source of truth and the poll stays
+  as a reconciling fallback. There is no renderer→main attack surface and no capability token (it is
+  a notification, not an action).
 - `machine-cancel-run` aborts Machine-registered adapter processes for the requested run and then
   routes active claimed work through the same claim cancellation path. If no claim exists yet, it
   records a cancelled partial run state without touching workspace files.
@@ -651,13 +697,19 @@ features that intentionally launch configured/user-requested child processes.
 | `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
 | `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/` only |
 | `machine-execute-run-step` | handle | Run one managed step through deterministic harness or recognized Codex CLI adapter: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled overlay adapter, optional evidence snapshot export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, proposal read-only, worker overlay-only process cwd |
-| `machine-resume-run` | handle | Repair derived queue snapshots, recover stale claims, mark a non-terminal non-approval-pending run waiting, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
-| `machine-cancel-run` | handle | Abort Machine-registered adapter processes for a run and cancel active claimed work when present | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
+| `machine-resume-run` | handle | Repair derived queue snapshots, recover stale claims, mark a non-terminal non-approval-pending run waiting, and optionally export latest-run; a `paused` run additionally clears pause intent and records `run.resume-requested` before transitioning `paused -> waiting` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
+| `machine-pause-run` | handle | Record supervised-autonomy pause intent (in-process token + durable `run.pause-requested` event) so the autonomous driver suspends to `paused` at its next step boundary; lock-free and never kills a process | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
+| `machine-cancel-run` | handle | Record `run.cancel-requested` intent, then abort Machine-registered adapter processes for a run and cancel active claimed work when present | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
 | `machine-cancel-claim` | handle | Cancel an active Machine-owned claim, release its write-set, block or requeue the item, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque claim/item ids only |
+| `machine-reject-item` | handle | STEER "leave this out": reject a still-pending (queued/candidate/blocked) work item via a single replayable `queue.transition` to `rejected`; fail-fast if a step is in flight; never touches a claimed/in-progress item | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque item id only |
+| `machine-reprioritize-item` | handle | STEER "do this first": pull a queued item to the front of the dispatcher claim order via a durable `queue.reprioritized` event (its sequence is the priority); no item-field mutation, fully replayable; queued-only; fail-fast if a step is in flight | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque item id only |
+| `machine-inject-item` | handle | STEER "add this": inject a human work item — build a candidate from a title (+ optional target files / acceptance criteria), then run the standard ingest (inbox→candidate) + triage (candidate→queued) transitions; Machine derives a unique id/fingerprint; fail-fast if a step is in flight | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root; candidate normalized + schema-validated (renderer cannot forge id/state) |
+| `machine-edit-item` | handle | STEER "fix this": edit a queued item's title / target files / acceptance criteria in place via a durable `queue.edited` event carrying the patch; re-validates the patched item against the `workItem` schema before persisting; never edits id/state/claim/fingerprint; queued-only; fail-fast if a step is in flight | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque item id only; whitelisted fields + schema re-validation (renderer cannot persist a malformed item) |
 | `machine-decide-approval` | handle | Record a Machine-owned approval decision for a pending approval, optionally exporting latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, pending approval event only |
 | `machine-export-latest-run` | handle | Export durable Machine run evidence and queue metadata to `harness/generated/latest-run` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / pipeline evidence snapshot export only |
 | `machine-apply-patch` | handle | Apply selected files from a Machine patch artifact to the canonical workspace after write-set and base-SHA checks | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, run-relative patch artifact, selected workspace files only |
 | `machine-review-patch` | handle | Record a supervised review-only decision for one Machine patch artifact without applying it | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, run-relative patch artifact only |
+| `machine-run-progress` | send (main→renderer) | PUSH STREAM: one-way per-step progress nudge sent to the requesting renderer after each completed step of an autonomous drive; advisory payload (`runId`/`stepIndex`/`sequence`) carrying no run state or secrets | Outbound ONLY to the initiating `event.sender` webContents, guarded against destroyed senders; no renderer→main surface, no capability token (not an action) | **None** — the renderer re-fetches via the gated `machine-get-run`; `events.jsonl` stays the source of truth |
 | `save-binary` | handle | Save dialog then binary write | reads `event.sender` | Dialog enforces |
 | `svg-to-png` | handle | Offscreen BrowserWindow render | reads `event.sender` | Validates dimensions |
 | `save-text` | handle | Save dialog then text write | reads `event.sender` | Dialog enforces |

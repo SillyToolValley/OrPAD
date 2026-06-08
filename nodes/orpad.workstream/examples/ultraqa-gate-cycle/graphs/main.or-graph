@@ -1,0 +1,138 @@
+{
+  "kind": "orpad.graph",
+  "schemaVersion": "1.0",
+  "version": "1.0",
+  "id": "ultraqa-gate-cycle-main",
+  "label": "UltraQA Gate Cycle",
+  "role": "entry",
+  "graph": {
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Start QA cycle",
+        "config": {
+          "summary": "Enter a supervised multi-dimension quality cycle for one scoped change."
+        }
+      },
+      {
+        "id": "probe",
+        "type": "orpad.probe",
+        "label": "Discover QA item",
+        "config": {
+          "lens": "quality-cycle",
+          "candidateLimitPolicy": "strict"
+        }
+      },
+      {
+        "id": "queue",
+        "type": "orpad.workQueue",
+        "label": "QA queue",
+        "config": {
+          "queueRoot": "harness/generated/latest-run/queue",
+          "schema": "orpad.workItem.v1"
+        }
+      },
+      {
+        "id": "triage",
+        "type": "orpad.triage",
+        "label": "Triage QA item",
+        "config": {
+          "queueRef": "queue"
+        }
+      },
+      {
+        "id": "dispatcher",
+        "type": "orpad.dispatcher",
+        "label": "Claim QA item",
+        "config": {
+          "queueRef": "queue",
+          "workerLoopRef": "worker"
+        }
+      },
+      {
+        "id": "worker",
+        "type": "orpad.workerLoop",
+        "label": "Apply change",
+        "config": {
+          "queueRef": "queue",
+          "reviewRequired": true
+        }
+      },
+      {
+        "id": "correctness-gate",
+        "type": "orpad.gate",
+        "label": "Correctness",
+        "config": {
+          "summary": "Does the change do what the work item asked, with passing functional checks?",
+          "criteria": [
+            "The change implements the work item's acceptance criteria.",
+            "Unit/functional checks for the touched behavior pass."
+          ],
+          "onFail": "warn",
+          "failureRouting": "revise"
+        }
+      },
+      {
+        "id": "security-gate",
+        "type": "orpad.gate",
+        "label": "Security",
+        "config": {
+          "summary": "Does the change avoid introducing security or safety regressions?",
+          "criteria": [
+            "No new untrusted input reaches a sink without validation.",
+            "No secrets, credentials, or unsafe permissions are introduced."
+          ],
+          "onFail": "warn",
+          "failureRouting": "revise"
+        }
+      },
+      {
+        "id": "regression-gate",
+        "type": "orpad.gate",
+        "label": "Regression",
+        "config": {
+          "summary": "Does the wider suite still pass after the change?",
+          "criteria": [
+            "The declared regression/verification commands exit 0.",
+            "No previously passing behavior is broken by the change."
+          ],
+          "onFail": "warn",
+          "failureRouting": "revise"
+        }
+      },
+      {
+        "id": "patch-review",
+        "type": "orpad.patchReview",
+        "label": "Review QA-passed patch",
+        "config": {
+          "reviewMode": "user-selected-files"
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Finish QA cycle",
+        "config": {
+          "summary": "All quality dimensions passed and the patch is approved or skipped."
+        }
+      }
+    ],
+    "transitions": [
+      { "id": "edge-entry-probe", "from": "entry", "to": "probe" },
+      { "id": "edge-probe-queue", "from": "probe", "to": "queue" },
+      { "id": "edge-queue-triage", "from": "queue", "to": "triage" },
+      { "id": "edge-triage-dispatcher", "from": "triage", "to": "dispatcher" },
+      { "id": "edge-dispatcher-worker", "from": "dispatcher", "to": "worker" },
+      { "id": "edge-worker-correctness", "from": "worker", "to": "correctness-gate" },
+      { "id": "edge-correctness-pass", "from": "correctness-gate", "to": "security-gate", "condition": "pass" },
+      { "id": "edge-correctness-revise", "from": "correctness-gate", "to": "worker", "condition": "revise" },
+      { "id": "edge-security-pass", "from": "security-gate", "to": "regression-gate", "condition": "pass" },
+      { "id": "edge-security-revise", "from": "security-gate", "to": "worker", "condition": "revise" },
+      { "id": "edge-regression-pass", "from": "regression-gate", "to": "patch-review", "condition": "pass" },
+      { "id": "edge-regression-revise", "from": "regression-gate", "to": "worker", "condition": "revise" },
+      { "id": "edge-review-exit", "from": "patch-review", "to": "exit", "condition": "accepted" },
+      { "id": "edge-review-revise", "from": "patch-review", "to": "worker", "condition": "rejected" }
+    ]
+  }
+}

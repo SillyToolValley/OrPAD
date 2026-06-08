@@ -1,0 +1,93 @@
+{
+  "kind": "orpad.graph",
+  "schemaVersion": "1.0",
+  "version": "1.0",
+  "id": "consensus-decision-gate-main",
+  "label": "Consensus Decision Gate",
+  "role": "entry",
+  "graph": {
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "orpad.entry",
+        "label": "Start consensus",
+        "config": {
+          "summary": "Begin a supervised consensus decision pass."
+        }
+      },
+      {
+        "id": "frame",
+        "type": "orpad.context",
+        "label": "Frame the decision",
+        "config": {
+          "summary": "State the decision, the options under consideration, constraints, and what 'agreement' means for this call."
+        }
+      },
+      {
+        "id": "risk-perspective",
+        "type": "orpad.context",
+        "label": "Risk perspective",
+        "config": {
+          "summary": "Argue the decision from a risk and failure-mode lens: what could go wrong and how likely/severe."
+        }
+      },
+      {
+        "id": "user-perspective",
+        "type": "orpad.context",
+        "label": "User perspective",
+        "config": {
+          "summary": "Argue the decision from the user/impact lens: who is affected and how the options serve them."
+        }
+      },
+      {
+        "id": "cost-perspective",
+        "type": "orpad.context",
+        "label": "Cost perspective",
+        "config": {
+          "summary": "Argue the decision from the cost/effort/maintenance lens: what each option costs to build and keep."
+        }
+      },
+      {
+        "id": "consensus-gate",
+        "type": "orpad.gate",
+        "label": "Reach consensus",
+        "config": {
+          "summary": "Do the perspectives converge on one option, with the disagreements named and resolved? If not, gather the perspectives again.",
+          "criteria": [
+            "The perspectives converge on a single recommended option.",
+            "Each material disagreement is named and explicitly resolved or accepted.",
+            "The chosen option is justified against the framed constraints."
+          ],
+          "onFail": "warn",
+          "failureRouting": "revise"
+        }
+      },
+      {
+        "id": "decision-record",
+        "type": "orpad.context",
+        "label": "Record decision",
+        "config": {
+          "summary": "Record the chosen option, the consensus rationale, the dissent that was accepted, and the evidence behind it."
+        }
+      },
+      {
+        "id": "exit",
+        "type": "orpad.exit",
+        "label": "Finish consensus",
+        "config": {
+          "summary": "Consensus decision recorded."
+        }
+      }
+    ],
+    "transitions": [
+      { "id": "edge-entry-frame", "from": "entry", "to": "frame" },
+      { "id": "edge-frame-risk", "from": "frame", "to": "risk-perspective" },
+      { "id": "edge-risk-user", "from": "risk-perspective", "to": "user-perspective" },
+      { "id": "edge-user-cost", "from": "user-perspective", "to": "cost-perspective" },
+      { "id": "edge-cost-consensus", "from": "cost-perspective", "to": "consensus-gate" },
+      { "id": "edge-consensus-pass", "from": "consensus-gate", "to": "decision-record", "condition": "pass" },
+      { "id": "edge-consensus-revise", "from": "consensus-gate", "to": "risk-perspective", "condition": "revise" },
+      { "id": "edge-record-exit", "from": "decision-record", "to": "exit" }
+    ]
+  }
+}

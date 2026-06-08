@@ -29,6 +29,15 @@ const {
   summarizeQueueInventory,
 } = require('./lifecycle');
 const {
+  clearRunAbortSignal,
+  getRunAbortSignal,
+  pauseRunAtBoundary,
+  readRunControlToken,
+  requestRunCancel,
+  requestRunPause,
+  requestRunResume,
+} = require('./run-control');
+const {
   assertNoSymlinkInWorkspacePath,
   latestRunExportRoot,
   durableRunRoot,
@@ -38,6 +47,7 @@ const {
   normalizeRunLlmApprovalMode,
   normalizeRunPatchReviewMode,
   readRunState,
+  repairRunStateFromEvents,
 } = require('./run-store');
 const { exportLatestRun } = require('./exporters/latest-run-exporter');
 const { cancelClaimedItem, emitNodeCancelledForInflight } = require('./worker-loop');
@@ -51,7 +61,7 @@ const {
 const { getProviderEntry, listProviderEntries } = require('../../shared/ai/provider-catalog');
 const { readBudgetLedger, summarizeLedger } = require('./router/budget-ledger');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
-const { findQueueItem, transitionQueueItem } = require('./queue-store');
+const { editQueueItem, findQueueItem, ingestCandidateProposal, reprioritizeQueueItem, transitionQueueItem } = require('./queue-store');
 
 const fsp = fs.promises;
 
@@ -64,6 +74,7 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   listRuns: 'machine-list-runs',
   executeRunStep: 'machine-execute-run-step',
   resumeRun: 'machine-resume-run',
+  pauseRun: 'machine-pause-run',
   cancelRun: 'machine-cancel-run',
   cancelClaim: 'machine-cancel-claim',
   decideApproval: 'machine-decide-approval',
@@ -78,7 +89,37 @@ const MACHINE_IPC_CHANNELS = Object.freeze({
   readBudgetLedger: 'machine-read-budget-ledger',
   skipNode: 'machine-skip-node',
   retryNode: 'machine-retry-node',
+  rejectItem: 'machine-reject-item',
+  reprioritizeItem: 'machine-reprioritize-item',
+  injectItem: 'machine-inject-item',
+  editItem: 'machine-edit-item',
 });
+
+// PUSH STREAM: a ONE-WAY main->renderer progress channel (NOT an invoke/handle
+// channel — deliberately kept out of MACHINE_IPC_CHANNELS so the handler-inventory
+// stays request/response only). The main process nudges the requesting renderer
+// after each completed step of an autonomous drive so the live surface refreshes
+// immediately instead of waiting for its ~2s poll. The nudge carries NO run state
+// (just runId/stepIndex/sequence) — the renderer re-fetches via the gated
+// machine-get-run handler, so events.jsonl stays the source of truth.
+const MACHINE_RUN_PROGRESS_CHANNEL = 'machine-run-progress';
+
+// Build a fire-and-forget per-step pusher bound to the requesting renderer's
+// webContents (event.sender). Returns null when no live sender is attached
+// (tests / headless), so the driver simply runs without pushing. A dead or
+// forbidden sender must never break the run, so every send is guarded.
+function makeRunProgressPusher(event, runId) {
+  const sender = event && event.sender;
+  if (!sender || typeof sender.send !== 'function') return null;
+  return (progress) => {
+    try {
+      if (typeof sender.isDestroyed === 'function' && sender.isDestroyed()) return;
+      sender.send(MACHINE_RUN_PROGRESS_CHANNEL, { runId, ...progress });
+    } catch {
+      /* a closed window / revoked frame must not abort the autonomous drive */
+    }
+  };
+}
 
 const APPLY_BATCH_MUTEXES = new Map();
 const RUN_LIFECYCLE_QUEUE = new Map();
@@ -710,6 +751,10 @@ function snapshotResponseFields(snapshot) {
   };
 }
 
+async function repairRunStateAfterPatchEvent(runRoot) {
+  await repairRunStateFromEvents(runRoot);
+}
+
 async function applyOnePatchToWorkspace({
   workspaceRoot,
   runRoot,
@@ -740,6 +785,7 @@ async function applyOnePatchToWorkspace({
         applied: result.applied,
       },
     });
+    await repairRunStateAfterPatchEvent(runRoot);
     return { ok: true, appliedEvent, applied: result.applied };
   } catch (err) {
     const isMismatch = err?.code === 'PATCH_BASE_MISMATCH';
@@ -759,6 +805,7 @@ async function applyOnePatchToWorkspace({
         mismatches: Array.isArray(err?.mismatches) ? err.mismatches : [],
       },
     }).catch(() => null);
+    if (conflictEvent) await repairRunStateAfterPatchEvent(runRoot);
     return {
       ok: false,
       conflictEvent,
@@ -931,6 +978,7 @@ async function approvePatchHandler(event, authority, request) {
         approvalSnapshot,
       },
     });
+    await repairRunStateAfterPatchEvent(runRoot);
     const updated = await readRunSnapshot(runRoot) || snapshot;
     const exported = request.exportLatestRun === false
       ? null
@@ -997,6 +1045,7 @@ async function applyApprovedPatchesHandler(event, authority, request) {
         approvedPatchArtifacts: approvedReviews.map(item => item.patchArtifact),
       },
     });
+    await repairRunStateAfterPatchEvent(runRoot);
 
     const results = [];
     let appliedCount = 0;
@@ -1023,6 +1072,7 @@ async function applyApprovedPatchesHandler(event, authority, request) {
             message: err?.message || 'Patch artifact could not be loaded.',
           },
         }).catch(() => null);
+        if (failedEvent) await repairRunStateAfterPatchEvent(runRoot);
         results.push({
           patchArtifact,
           ok: false,
@@ -1077,6 +1127,7 @@ async function applyApprovedPatchesHandler(event, authority, request) {
         startedEventSequence: startedEvent?.sequence ?? null,
       },
     });
+    await repairRunStateAfterPatchEvent(runRoot);
 
     const updated = await readRunSnapshot(runRoot) || snapshot;
     const exported = request.exportLatestRun === false
@@ -1194,6 +1245,7 @@ async function reviewPatchHandler(event, authority, request) {
         requeuedFromState,
       },
     });
+    await repairRunStateAfterPatchEvent(runRoot);
     const updated = await readRunSnapshot(runRoot) || snapshot;
     const exported = request.exportLatestRun === false
       ? null
@@ -1279,7 +1331,20 @@ async function resumeRunHandler(event, authority, request) {
   }
 
   return withRunLifecycleExclusive(runRoot, async () => {
+    let pausedResume = false;
     try {
+      // Supervised-autonomy resume (RC-1): if the driver paused this run at a
+      // step boundary, clear the in-process pause token, record the durable
+      // run.resume-requested event, and transition paused -> waiting BEFORE the
+      // standard recovery below runs from that idle state. Clearing the token is
+      // essential — otherwise a re-entering driver would observe stale pause
+      // intent and immediately re-pause. Re-read inside the lock so the decision
+      // is not racy. A non-paused run (idle recovery / Recover) is unchanged.
+      const locked = await readRunSnapshot(runRoot) || snapshot;
+      pausedResume = String(locked.runState?.lifecycleStatus || '').toLowerCase() === 'paused';
+      if (pausedResume) {
+        await requestRunResume(runRoot, { runId, actor: 'user' });
+      }
       const resumed = await resumeMachineRun(runRoot, {
         runId,
         now: optionalString(request.now, 'now') || undefined,
@@ -1287,6 +1352,9 @@ async function resumeRunHandler(event, authority, request) {
         emitNodeCancelledForInflight,
       });
       const updated = await readRunSnapshot(runRoot);
+      const orphanedAdapterRecoveryCount = resumed.staleClaims
+        .filter(item => item?.orphanedAdapter)
+        .length;
       const exported = request.exportLatestRun === false
         ? null
         : await exportLatestRun({
@@ -1308,8 +1376,13 @@ async function resumeRunHandler(event, authority, request) {
         resume: {
           queueRepair: resumed.queueRepair,
           staleClaimCount: resumed.staleClaims.length,
+          orphanedAdapterRecoveryCount,
+          shouldContinueAfterRecovery: orphanedAdapterRecoveryCount > 0
+            && String(updated?.runState?.lifecycleStatus || '').toLowerCase() === 'waiting'
+            && Number(updated?.approvals?.pendingCount || 0) === 0,
           cancelledNodeCount: resumed.cancelledNodes.length,
           inventory: resumed.inventory,
+          pausedResume,
         },
         exported,
       };
@@ -1431,6 +1504,13 @@ async function cancelRunHandler(event, authority, request) {
   if (!snapshot) {
     throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
   }
+  // Intent-then-ack (RC-1): record run.cancel-requested + set the in-process
+  // cancel token BEFORE the cancelling/cancelled ack below. The autonomous
+  // driver loop observes the token at its next step boundary and breaks out
+  // immediately (stopReason 'cancel-requested'), so a long autonomous run halts
+  // promptly instead of only when the in-flight subprocess is signalled.
+  // Lock-free, so it is safe even while the driver still holds the lifecycle lock.
+  await requestRunCancel(runRoot, { runId, actor: 'user' });
   const firstClaim = (snapshot.activeClaims || [])[0] || null;
   if (firstClaim?.claimId && firstClaim?.itemId) {
     return cancelClaimHandler(event, authority, {
@@ -1491,6 +1571,46 @@ async function cancelRunHandler(event, authority, request) {
       exported,
     };
   });
+}
+
+// Supervised-autonomy pause (RC-1). Unlike cancel/resume this handler is
+// deliberately LOCK-FREE: requestRunPause only sets the in-process control
+// token and appends a durable `run.pause-requested` event (through the event
+// log's own append queue), so it must NOT be wrapped in
+// withRunLifecycleExclusive — the autonomous driver loop may currently HOLD
+// that lock, and waiting on it here would deadlock the pause request against
+// the very loop it is meant to suspend. The driver observes the token at its
+// next safe step boundary and records the run.status -> 'paused' ack itself.
+async function pauseRunHandler(event, authority, request) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  const { event: pauseEvent, intent } = await requestRunPause(runRoot, { runId, actor: 'user' });
+  // Re-read so the renderer gets the freshest projection. The lifecycle is
+  // typically still 'running' here — the durable 'paused' ack lands when the
+  // driver reaches its next boundary — so the renderer keeps polling.
+  const updated = await readRunSnapshot(runRoot) || snapshot;
+  return {
+    success: true,
+    ok: true,
+    runId,
+    runState: updated.runState,
+    events: updated.events,
+    candidateInventory: updated.candidateInventory,
+    worker: updated.worker,
+    approvals: updated.approvals,
+    activeClaims: updated.activeClaims,
+    activeWriteSets: updated.activeWriteSets,
+    pause: {
+      runId,
+      intent,
+      requestedEventSequence: pauseEvent?.sequence ?? null,
+    },
+  };
 }
 
 function runStateIsTerminal(runState = {}) {
@@ -1591,7 +1711,7 @@ async function appendAutonomousPatchApplyFailure(runRoot, options = {}) {
     path: failedPath = '',
   } = options;
   const eventType = code === 'PATCH_BASE_MISMATCH' ? 'patch.apply_conflict' : 'patch.apply_failed';
-  return appendMachineEvent(runRoot, {
+  const event = await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine-autonomous-driver',
     eventType,
@@ -1607,6 +1727,8 @@ async function appendAutonomousPatchApplyFailure(runRoot, options = {}) {
       conflicts: Array.isArray(conflicts) ? conflicts : [],
     },
   }).catch(() => null);
+  if (event) await repairRunStateAfterPatchEvent(runRoot);
+  return event;
 }
 
 // Auto-Apply Patches mode: emits the same `patch.approved` →
@@ -1729,6 +1851,7 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
         artifactRefs: [patchArtifact],
         payload: { patchArtifact, selectedFiles, approvalSnapshot },
       });
+      await repairRunStateAfterPatchEvent(runRoot);
       approved.push({ patchArtifact, ok: true, selectedFiles, eventSequence: approvedEvent?.sequence ?? null });
       const refreshed = await readRunSnapshot(runRoot);
       if (refreshed) workingReview = patchReviewStateFromEvents(refreshed.events);
@@ -1756,6 +1879,7 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
       artifactRefs: approvedReviews.map(entry => entry.patchArtifact),
       payload: { approvedPatchArtifacts: approvedReviews.map(entry => entry.patchArtifact) },
     });
+    await repairRunStateAfterPatchEvent(runRoot);
 
     const applied = [];
     const conflicts = [...preApplyConflicts];
@@ -1768,7 +1892,7 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
       try {
         patch = await loadRunPatchArtifact(runRoot, patchArtifact);
       } catch (err) {
-        await appendMachineEvent(runRoot, {
+        const failedEvent = await appendMachineEvent(runRoot, {
           runId,
           actor: 'machine-autonomous-driver',
           eventType: 'patch.apply_failed',
@@ -1781,6 +1905,7 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
             message: err?.message || 'Patch artifact could not be loaded.',
           },
         }).catch(() => null);
+        if (failedEvent) await repairRunStateAfterPatchEvent(runRoot);
         conflicts.push({ patchArtifact, ok: false, code: err?.code || 'MACHINE_PATCH_APPLY_FAILED', message: err?.message || '' });
         continue;
       }
@@ -1817,6 +1942,7 @@ async function autoApplyPendingPatches(runRoot, runId, context) {
         startedEventSequence: startedEvent?.sequence ?? null,
       },
     });
+    await repairRunStateAfterPatchEvent(runRoot);
 
     return { approved, applied, conflicts, skipped: '' };
   });
@@ -1866,6 +1992,7 @@ async function executeMachineRunToHumanDecision({
   llmApprovalMode,
   patchReviewMode,
   runtimeOptions,
+  onStepProgress,
 }) {
   const maxSteps = await autonomousDriverMaxSteps(runRoot, request.options || {});
   const steps = [];
@@ -1878,6 +2005,27 @@ async function executeMachineRunToHumanDecision({
     let snapshot = await readRunSnapshot(runRoot);
     const inventory = await summarizeQueueInventory(runRoot);
     stopReason = autoDecisionStopReason(snapshot, inventory);
+    // Supervised-autonomy control checkpoint (RC-1). This is the SAFE BOUNDARY
+    // between run-steps: the previous executeMachineRunStep has fully returned,
+    // so honoring a pause/cancel here never interrupts in-flight work. The live
+    // driver consults the in-process control token only (the human who clicks
+    // pause/cancel is in the same process and set it synchronously); the durable
+    // event-log fallback is reserved for cross-process resume, not this loop.
+    // Cancel takes precedence; pause records run.status -> 'paused' and halts.
+    const controlToken = readRunControlToken(runId);
+    if (
+      controlToken.present
+      && (controlToken.pauseRequested || controlToken.cancelRequested)
+      && !['terminal', 'missing-run'].includes(stopReason)
+    ) {
+      if (controlToken.cancelRequested) {
+        stopReason = 'cancel-requested';
+      } else {
+        await pauseRunAtBoundary(runRoot, { runId });
+        stopReason = 'paused';
+      }
+      break;
+    }
     if (stopReason === 'approval-required' && llmApprovalMode === 'bypass') {
       const decisions = await autoApprovePendingApprovals(runRoot, runId, snapshot.approvals.pending || []);
       autoApprovedApprovals.push(...decisions);
@@ -1913,6 +2061,10 @@ async function executeMachineRunToHumanDecision({
       llmApprovalMode,
       loadProviderKey: runtimeOptions?.loadProviderKey || null,
       fetchImpl: runtimeOptions?.fetchImpl || null,
+      // RC-2: arm the run's cooperative abort signal so a cancel requested mid-
+      // step bails the scheduler/worker at the next checkpoint (not just at the
+      // next step boundary). Non-aborted in normal operation.
+      signal: getRunAbortSignal(runId),
     });
     steps.push(lastStep);
 
@@ -1921,6 +2073,22 @@ async function executeMachineRunToHumanDecision({
     if (afterSequence <= beforeSequence) {
       stopReason = 'no-progress';
       break;
+    }
+    // PUSH STREAM: a step just completed and the event log advanced. Nudge the
+    // renderer so the live graph/panel refreshes now instead of waiting for its
+    // ~2s poll. Fire-and-forget and carrying no run state — never let a progress
+    // push (or a closed window) interrupt the drive.
+    if (typeof onStepProgress === 'function') {
+      try {
+        onStepProgress({
+          stepIndex: index,
+          sequence: afterSequence,
+          lifecycleStatus: snapshot?.runState?.lifecycleStatus || null,
+          phase: 'step',
+        });
+      } catch {
+        /* progress is advisory only */
+      }
     }
   }
 
@@ -1957,6 +2125,11 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
   const llmApprovalMode = resolveRunLlmApprovalMode(options, snapshot.runState);
   const patchReviewMode = resolveRunPatchReviewMode(options, snapshot.runState);
 
+  // PUSH STREAM: bind a per-step pusher to the requesting renderer. Only the
+  // human-decision drive (which can run many steps inside one IPC call, blocking
+  // the renderer's invoke) benefits — the single-step path returns immediately.
+  const onStepProgress = makeRunProgressPusher(event, runId);
+
   return withRunLifecycleExclusive(runRoot, async () => {
     try {
       const executed = runUntil === 'human-decision'
@@ -1970,6 +2143,7 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
           llmApprovalMode,
           patchReviewMode,
           runtimeOptions,
+          onStepProgress,
         })
         : await executeMachineRunStep({
           workspaceRoot: context.workspaceRoot,
@@ -1983,6 +2157,8 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
           llmApprovalMode,
           loadProviderKey: runtimeOptions?.loadProviderKey || null,
           fetchImpl: runtimeOptions?.fetchImpl || null,
+          // RC-2: arm the cooperative abort signal for the single-step path too.
+          signal: getRunAbortSignal(runId),
         });
       const updatedSnapshot = await readRunSnapshot(runRoot);
       return {
@@ -2029,6 +2205,8 @@ async function executeRunStepWithHarnessHandler(event, authority, request, runti
         };
       }
       throw err;
+    } finally {
+      clearRunAbortSignal(runId);
     }
   });
 }
@@ -2116,6 +2294,7 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.listRuns, listRunsHandler);
   handle(MACHINE_IPC_CHANNELS.executeRunStep, executeRunStepWithHarnessHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.resumeRun, resumeRunHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.pauseRun, pauseRunHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.cancelRun, cancelRunHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.cancelClaim, cancelClaimHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.decideApproval, decideApprovalHandler, { mutating: true });
@@ -2130,6 +2309,10 @@ function registerMachineHandlers({
   handle(MACHINE_IPC_CHANNELS.readBudgetLedger, readBudgetLedgerHandler);
   handle(MACHINE_IPC_CHANNELS.skipNode, skipNodeHandler, { mutating: true });
   handle(MACHINE_IPC_CHANNELS.retryNode, retryNodeHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.rejectItem, rejectItemHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.reprioritizeItem, reprioritizeItemHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.injectItem, injectItemHandler, { mutating: true });
+  handle(MACHINE_IPC_CHANNELS.editItem, editItemHandler, { mutating: true });
 
   return { channels: MACHINE_IPC_CHANNELS, featureGate: gate };
 }
@@ -2293,6 +2476,14 @@ async function retryNodeHandler(event, authority, request = {}) {
           now,
           force: true,
           reason: 'claim.retry-recovered',
+        });
+      } else {
+        recoveredClaims = await recoverStaleClaims(runRoot, {
+          runId,
+          now,
+          recoverOrphanedAdapters: true,
+          orphanedAdapterGraceMs: 0,
+          reason: 'claim.retry-orphaned-adapter-recovered',
         });
       }
       const retryItemId = String(request.itemId || '').trim() || latestBlockedWorkerItemId(events, nodePath);
@@ -2541,8 +2732,363 @@ async function readBudgetLedgerHandler(event, authority, request = {}) {
   };
 }
 
+// STEER "leave this out": reject a still-pending queue item mid-run. Fail-fast
+// lock (queued/candidate/blocked items are not in flight, so a reject must not
+// race a running step — the supervised-autonomy flow is pause -> steer -> resume).
+// Routed through transitionQueueItem so the rejection is a standard, replayable
+// queue.transition event (the Machine owns the transition; events.jsonl is truth).
+async function rejectItemHandler(event, authority, request = {}) {
+  const itemId = assertOpaqueId(request.itemId, 'itemId');
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  return withRunLifecycleExclusive(runRoot, async () => {
+    try {
+      const current = await findQueueItem(runRoot, itemId);
+      if (!current) {
+        throw machineError('MACHINE_QUEUE_ITEM_NOT_FOUND', `Queue item not found: ${itemId}`);
+      }
+      const fromState = current.state;
+      if (!['queued', 'candidate', 'blocked'].includes(fromState)) {
+        throw machineError(
+          'MACHINE_STEER_NOT_REJECTABLE',
+          `Only a queued, candidate, or blocked item can be rejected (item is '${fromState}'). For in-progress work, stop the claim first.`,
+        );
+      }
+      const transition = await transitionQueueItem(runRoot, {
+        runId,
+        itemId,
+        toState: 'rejected',
+        reason: 'machine-ui.steer.reject',
+        expectedFromState: fromState,
+      });
+      const updated = await readRunSnapshot(runRoot) || snapshot;
+      const exported = request.exportLatestRun === false
+        ? null
+        : await exportLatestRun({ runRoot, pipelineDir: context.pipelineDir, allowOverwrite: true });
+      return {
+        success: true,
+        ok: true,
+        runId,
+        runState: updated.runState,
+        events: updated.events,
+        candidateInventory: updated.candidateInventory,
+        worker: updated.worker,
+        approvals: updated.approvals,
+        activeClaims: updated.activeClaims,
+        activeWriteSets: updated.activeWriteSets,
+        steer: {
+          op: 'reject',
+          itemId,
+          fromState,
+          duplicate: transition?.duplicate === true,
+        },
+        exported,
+      };
+    } catch (err) {
+      const code = String(err?.code || '');
+      if (code) {
+        const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+        return {
+          success: false,
+          ok: false,
+          code,
+          error: err.message,
+          runId,
+          runState: failureSnapshot.runState,
+          events: failureSnapshot.events,
+          candidateInventory: failureSnapshot.candidateInventory,
+          worker: failureSnapshot.worker,
+          approvals: failureSnapshot.approvals,
+          activeClaims: failureSnapshot.activeClaims,
+          activeWriteSets: failureSnapshot.activeWriteSets,
+        };
+      }
+      throw err;
+    }
+  });
+}
+
+// STEER "do this first": pull a queued item to the front of the dispatcher's
+// claim order. Records a durable queue.reprioritized event (its sequence is the
+// priority); the dispatcher reads the projection so the change is fully
+// replayable with no item-field mutation. Queued-only (candidate/blocked aren't
+// claimable yet); fail-fast under the lifecycle lock (pause -> steer -> resume).
+async function reprioritizeItemHandler(event, authority, request = {}) {
+  const itemId = assertOpaqueId(request.itemId, 'itemId');
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  return withRunLifecycleExclusive(runRoot, async () => {
+    try {
+      const current = await findQueueItem(runRoot, itemId);
+      if (!current) {
+        throw machineError('MACHINE_QUEUE_ITEM_NOT_FOUND', `Queue item not found: ${itemId}`);
+      }
+      if (current.state !== 'queued') {
+        throw machineError(
+          'MACHINE_STEER_NOT_REPRIORITIZABLE',
+          `Only a queued item can be reprioritized (item is '${current.state}'). Reprioritize changes the dispatcher claim order, which only applies to queued work.`,
+        );
+      }
+      const result = await reprioritizeQueueItem(runRoot, {
+        runId,
+        itemId,
+        reason: 'machine-ui.steer.reprioritize',
+      });
+      const updated = await readRunSnapshot(runRoot) || snapshot;
+      const exported = request.exportLatestRun === false
+        ? null
+        : await exportLatestRun({ runRoot, pipelineDir: context.pipelineDir, allowOverwrite: true });
+      return {
+        success: true,
+        ok: true,
+        runId,
+        runState: updated.runState,
+        events: updated.events,
+        candidateInventory: updated.candidateInventory,
+        worker: updated.worker,
+        approvals: updated.approvals,
+        activeClaims: updated.activeClaims,
+        activeWriteSets: updated.activeWriteSets,
+        steer: {
+          op: 'reprioritize',
+          itemId,
+          prioritySequence: result?.event?.sequence ?? null,
+        },
+        exported,
+      };
+    } catch (err) {
+      const code = String(err?.code || '');
+      if (code) {
+        const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+        return {
+          success: false,
+          ok: false,
+          code,
+          error: err.message,
+          runId,
+          runState: failureSnapshot.runState,
+          events: failureSnapshot.events,
+          candidateInventory: failureSnapshot.candidateInventory,
+          worker: failureSnapshot.worker,
+          approvals: failureSnapshot.approvals,
+          activeClaims: failureSnapshot.activeClaims,
+          activeWriteSets: failureSnapshot.activeWriteSets,
+        };
+      }
+      throw err;
+    }
+  });
+}
+
+// STEER "add this": inject a new human-authored work item mid-run. Builds a full
+// candidate proposal from minimal input (title + optional targetFiles /
+// acceptanceCriteria), then runs the standard, replayable ingest (inbox ->
+// candidate) + triage (candidate -> queued) transitions so the worker can claim
+// it. The Machine derives the id/fingerprint (unique suffix) — the renderer
+// cannot forge an id collision. Fail-fast under the lifecycle lock.
+async function injectItemHandler(event, authority, request = {}) {
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const title = String(request.title || '').trim();
+  if (!title) {
+    throw machineError('MACHINE_STEER_TITLE_REQUIRED', 'A task title is required to inject a work item.');
+  }
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  return withRunLifecycleExclusive(runRoot, async () => {
+    try {
+      const targetFiles = Array.isArray(request.targetFiles)
+        ? request.targetFiles.map(file => String(file || '').trim()).filter(Boolean)
+        : [];
+      const acceptanceCriteria = Array.isArray(request.acceptanceCriteria) && request.acceptanceCriteria.length
+        ? request.acceptanceCriteria.map(criterion => String(criterion)).filter(Boolean)
+        : [`Complete the injected task: ${title}`];
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'task';
+      const itemId = `steer-${slug}-${crypto.randomBytes(3).toString('hex')}`;
+      const candidate = {
+        schemaVersion: 'orpad.candidateProposal.v1',
+        proposalId: `steer-inject-${itemId}`,
+        suggestedWorkItemId: itemId,
+        sourceNode: 'human/steer-inject',
+        title,
+        fingerprint: `steer-inject:${itemId}`,
+        evidence: targetFiles.length
+          ? targetFiles.map((file, index) => ({ id: `${itemId}-ev-${index}`, file }))
+          : [{ id: `${itemId}-ev`, file: 'unresolved-source-target' }],
+        acceptanceCriteria,
+        sourceOfTruthTargets: targetFiles,
+        ...(targetFiles.length ? { targetFiles } : {}),
+      };
+      const ingested = await ingestCandidateProposal(runRoot, candidate, {
+        runId,
+        transitionId: `steer-inject:${itemId}`,
+      });
+      const injectedItemId = ingested?.item?.id || itemId;
+      await transitionQueueItem(runRoot, {
+        runId,
+        itemId: injectedItemId,
+        toState: 'queued',
+        reason: 'machine-ui.steer.inject',
+        transitionId: `steer-inject-queue:${injectedItemId}`,
+      });
+      const updated = await readRunSnapshot(runRoot) || snapshot;
+      const exported = request.exportLatestRun === false
+        ? null
+        : await exportLatestRun({ runRoot, pipelineDir: context.pipelineDir, allowOverwrite: true });
+      return {
+        success: true,
+        ok: true,
+        runId,
+        runState: updated.runState,
+        events: updated.events,
+        candidateInventory: updated.candidateInventory,
+        worker: updated.worker,
+        approvals: updated.approvals,
+        activeClaims: updated.activeClaims,
+        activeWriteSets: updated.activeWriteSets,
+        steer: { op: 'inject', itemId: injectedItemId, title },
+        exported,
+      };
+    } catch (err) {
+      const code = String(err?.code || '');
+      if (code) {
+        const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+        return {
+          success: false,
+          ok: false,
+          code,
+          error: err.message,
+          runId,
+          runState: failureSnapshot.runState,
+          events: failureSnapshot.events,
+          candidateInventory: failureSnapshot.candidateInventory,
+          worker: failureSnapshot.worker,
+          approvals: failureSnapshot.approvals,
+          activeClaims: failureSnapshot.activeClaims,
+          activeWriteSets: failureSnapshot.activeWriteSets,
+        };
+      }
+      throw err;
+    }
+  });
+}
+
+// STEER "fix this": edit a still-pending queue item's content mid-run. Only a
+// queued item can be edited (in-flight/claimed work is not editable — stop the
+// claim first), and only a whitelist of human-meaningful fields (title /
+// targetFiles / acceptanceCriteria) can change — never id, state, claim, or
+// fingerprint. editQueueItem re-validates the patched item against the workItem
+// schema (so a steer edit can never persist a malformed item) and records a
+// durable queue.edited event carrying the patch. Fail-fast under the lifecycle
+// lock (pause -> steer -> resume); the edited content lives in the snapshot, which
+// the resume repair path preserves, so the edit survives replay.
+async function editItemHandler(event, authority, request = {}) {
+  const itemId = assertOpaqueId(request.itemId, 'itemId');
+  const context = await resolveMachinePipelineContext(event, authority, request);
+  const runId = assertRunId(request.runId);
+  const runRoot = await resolveMachineRunRoot(context, runId);
+  const snapshot = await readRunSnapshot(runRoot);
+  if (!snapshot) {
+    throw machineError('MACHINE_RUN_NOT_FOUND', 'Machine run was not found.');
+  }
+  return withRunLifecycleExclusive(runRoot, async () => {
+    try {
+      const current = await findQueueItem(runRoot, itemId);
+      if (!current) {
+        throw machineError('MACHINE_QUEUE_ITEM_NOT_FOUND', `Queue item not found: ${itemId}`);
+      }
+      if (current.state !== 'queued') {
+        throw machineError(
+          'MACHINE_STEER_NOT_EDITABLE',
+          `Only a queued item can be edited (item is '${current.state}'). For in-progress work, stop the claim first.`,
+        );
+      }
+      // Build a strict whitelist patch — id/state/claim/fingerprint are never editable.
+      const patch = {};
+      if (typeof request.title === 'string' && request.title.trim()) {
+        patch.title = request.title.trim();
+      }
+      if (Array.isArray(request.targetFiles)) {
+        patch.targetFiles = request.targetFiles.map(file => String(file || '').trim()).filter(Boolean);
+      }
+      if (Array.isArray(request.acceptanceCriteria)) {
+        const criteria = request.acceptanceCriteria.map(criterion => String(criterion || '').trim()).filter(Boolean);
+        if (criteria.length) {
+          patch.acceptanceCriteria = criteria;
+        }
+      }
+      if (!Object.keys(patch).length) {
+        throw machineError('MACHINE_STEER_EDIT_EMPTY', 'No editable fields were provided (title, targetFiles, or acceptanceCriteria).');
+      }
+      const result = await editQueueItem(runRoot, {
+        runId,
+        itemId,
+        patch,
+        reason: 'machine-ui.steer.edit',
+      });
+      const updated = await readRunSnapshot(runRoot) || snapshot;
+      const exported = request.exportLatestRun === false
+        ? null
+        : await exportLatestRun({ runRoot, pipelineDir: context.pipelineDir, allowOverwrite: true });
+      return {
+        success: true,
+        ok: true,
+        runId,
+        runState: updated.runState,
+        events: updated.events,
+        candidateInventory: updated.candidateInventory,
+        worker: updated.worker,
+        approvals: updated.approvals,
+        activeClaims: updated.activeClaims,
+        activeWriteSets: updated.activeWriteSets,
+        steer: {
+          op: 'edit',
+          itemId,
+          fields: Object.keys(patch),
+          title: result?.item?.title ?? null,
+        },
+        exported,
+      };
+    } catch (err) {
+      const code = String(err?.code || '');
+      if (code) {
+        const failureSnapshot = await readRunSnapshot(runRoot) || snapshot;
+        return {
+          success: false,
+          ok: false,
+          code,
+          error: err.message,
+          runId,
+          runState: failureSnapshot.runState,
+          events: failureSnapshot.events,
+          candidateInventory: failureSnapshot.candidateInventory,
+          worker: failureSnapshot.worker,
+          approvals: failureSnapshot.approvals,
+          activeClaims: failureSnapshot.activeClaims,
+          activeWriteSets: failureSnapshot.activeWriteSets,
+        };
+      }
+      throw err;
+    }
+  });
+}
+
 module.exports = {
   MACHINE_IPC_CHANNELS,
+  MACHINE_RUN_PROGRESS_CHANNEL,
   adapterOverridesPathFor,
   featureGateFromEnv,
   readAdapterOverridesIfPresent,

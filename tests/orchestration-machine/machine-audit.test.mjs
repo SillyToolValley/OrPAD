@@ -38,7 +38,7 @@ function proposal() {
   };
 }
 
-async function makeAuditableRun() {
+async function makeAuditableRun(options = {}) {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-audit-'));
   const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/sample-machine-pipeline');
   await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
@@ -54,6 +54,8 @@ async function makeAuditableRun() {
     pipelinePath,
     runId: 'run_20260430_audit',
     now: fixedNow,
+    llmApprovalMode: options.llmApprovalMode || 'ask',
+    patchReviewMode: options.patchReviewMode || 'manual',
   });
   await ingestCandidateProposal(run.runRoot, proposal(), {
     runId: run.runId,
@@ -107,6 +109,67 @@ async function makeAuditableRun() {
     exportedAt: '2026-04-30T00:00:10.000Z',
   });
   return { ...run, pipelineDir, latestRunExportRoot: exportResult.targetRoot };
+}
+
+async function appendStartedWorkerRequest(run, options = {}) {
+  const nodePath = options.nodePath || 'main/worker';
+  const attempt = options.attempt || 1;
+  const adapterCallId = options.adapterCallId || 'worker-audit-call';
+  const attemptId = options.attemptId || `${adapterCallId}-attempt-1`;
+  const idempotencyKey = options.idempotencyKey || `${adapterCallId}:${attemptId}`;
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath,
+    nodeType: 'orpad.workerLoop',
+    status: 'scheduled',
+    payload: { attempt },
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath,
+    nodeType: 'orpad.workerLoop',
+    status: 'started',
+    payload: { attempt },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath,
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'worker-fixture',
+      adapterCallId,
+      attemptId,
+      idempotencyKey,
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+      attempt,
+    },
+  });
+  return { nodePath, adapterCallId, attemptId, idempotencyKey, attempt };
+}
+
+async function registerPatchArtifactFixture(run, artifactPath, patch) {
+  await registerArtifact(run.runRoot, {
+    runId: run.runId,
+    artifactPath,
+    content: `${JSON.stringify(patch, null, 2)}\n`,
+    producedBy: 'worker-fixture',
+    registeredBy: 'machine',
+    schemaVersion: 'orpad.patchArtifact.v1',
+  });
+}
+
+function patchArtifactFixture(overrides = {}) {
+  return {
+    schemaVersion: 'orpad.patchArtifact.v1',
+    createdAt: fixedNow.toISOString(),
+    allowedFiles: ['OrPad/src/renderer/renderer.js'],
+    changes: [],
+    violations: [],
+    ignoredGeneratedFiles: [],
+    ...overrides,
+  };
 }
 
 function runAudit(runRoot, latestRunExportRoot = '') {
@@ -372,6 +435,26 @@ test('audit-orpad-machine-run fails when pending approval is resumed without a d
   assert.equal(codes.has('MACHINE_APPROVAL_PENDING_RUN_RESUMED'), true);
 });
 
+test('audit-orpad-machine-run flags pending approvals left in a bypass run', async () => {
+  const run = await makeAuditableRun({ llmApprovalMode: 'bypass' });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'approval.requested',
+    itemId: 'graph-editor-graph-specific-node-types',
+    payload: {
+      approvalId: 'approval-bypass-stuck',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_BYPASS_APPROVAL_REQUIRED_STUCK'), true);
+});
+
 test('audit-orpad-machine-run fails when candidate inventory counts are corrupted', async () => {
   const run = await makeAuditableRun();
   const inventoryPath = path.join(run.runRoot, 'artifacts/discovery/candidate-inventory.json');
@@ -580,6 +663,39 @@ test('audit-orpad-machine-run fails when adapter result has no matching request 
 
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_ADAPTER_RESULT_WITHOUT_REQUEST'), true);
+});
+
+test('audit-orpad-machine-run flags unresolved Machine-owned node failures in bypass runs', async () => {
+  const run = await makeAuditableRun({ llmApprovalMode: 'bypass' });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/triage',
+    nodeType: 'orpad.triage',
+    status: 'scheduled',
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/triage',
+    nodeType: 'orpad.triage',
+    status: 'started',
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/triage',
+    nodeType: 'orpad.triage',
+    status: 'failed',
+    payload: {
+      code: 'MACHINE_QUEUE_TRANSITION_INVALID',
+      message: 'Invalid queue transition: rejected -> queued',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_BYPASS_INTERNAL_NODE_FAILED'), true);
 });
 
 test('audit-orpad-machine-run fails when node-scoped adapter event occurs before node start', async () => {
@@ -896,6 +1012,208 @@ test('audit-orpad-machine-run fails when done worker result references unregiste
   assert.equal(result.exitCode, 1);
   assert.equal(codes.has('MACHINE_WORKER_RESULT_ARTIFACT_UNREGISTERED'), true);
   assert.equal(codes.has('MACHINE_WORKER_DONE_PROOF_MISSING'), false);
+});
+
+test('audit-orpad-machine-run flags adapter approval-required blocks in bypass runs', async () => {
+  const run = await makeAuditableRun({ llmApprovalMode: 'bypass' });
+  const worker = await appendStartedWorkerRequest(run, {
+    adapterCallId: 'bypass-adapter-approval-required-call',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: worker.nodePath,
+    eventType: 'adapter.result',
+    payload: {
+      adapterCallId: worker.adapterCallId,
+      attemptId: worker.attemptId,
+      idempotencyKey: worker.idempotencyKey,
+      taskKind: 'workerLoop',
+      status: 'approval-required',
+      deferredReason: 'provider requested tool permission',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_BYPASS_ADAPTER_APPROVAL_REQUIRED'), true);
+});
+
+test('audit-orpad-machine-run flags unresolved adapter requests in bypass runs', async () => {
+  const run = await makeAuditableRun({ llmApprovalMode: 'bypass' });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/worker',
+    nodeType: 'orpad.workerLoop',
+    status: 'scheduled',
+  });
+  await recordNodeLifecycleEvent(run.runRoot, {
+    runId: run.runId,
+    nodePath: 'main/worker',
+    nodeType: 'orpad.workerLoop',
+    status: 'started',
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-04-30T00:00:00.000Z',
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'cli-agent-overlay',
+      adapterCallId: 'unresolved-worker-call',
+      attemptId: 'unresolved-worker-attempt-1',
+      idempotencyKey: 'unresolved-worker-call:unresolved-worker-attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+      inputArtifacts: ['queue/claimed/unresolved-worker-item.json'],
+      outputContract: 'orpad.workerResult.v1',
+      adapterResultPath: 'adapters/unresolved-worker-call.result.json',
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_BYPASS_UNRESOLVED_ADAPTER_REQUEST'), true);
+});
+
+test('audit-orpad-machine-run flags generated validation artifact false write-set blocks', async () => {
+  const run = await makeAuditableRun();
+  const worker = await appendStartedWorkerRequest(run, {
+    adapterCallId: 'generated-artifact-false-block-call',
+  });
+  const patchArtifact = 'artifacts/patches/generated-artifact-false-block.patch.json';
+  await registerPatchArtifactFixture(run, patchArtifact, patchArtifactFixture({
+    violations: [{
+      path: 'OrPad/test-results/.last-run.json',
+      reason: 'outside-write-set',
+    }],
+  }));
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: worker.nodePath,
+    eventType: 'worker.result',
+    itemId: 'graph-editor-graph-specific-node-types',
+    artifactRefs: [patchArtifact],
+    payload: {
+      claimId: 'claim-generated-artifact-false-block',
+      adapterCallId: worker.adapterCallId,
+      attemptId: worker.attemptId,
+      idempotencyKey: worker.idempotencyKey,
+      attempt: worker.attempt,
+      status: 'blocked',
+      toState: 'blocked',
+      patchArtifact,
+      verification: [{
+        command: 'npx playwright test',
+        status: 'passed',
+        writeSetViolationCount: 1,
+      }],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_WORKER_GENERATED_ARTIFACT_FALSE_BLOCK'), true);
+  assert.equal(codes.has('MACHINE_WORKER_WRITE_SET_VERIFICATION_MISMATCH'), true);
+});
+
+test('audit-orpad-machine-run accepts ignored generated validation artifacts in worker patch verification', async () => {
+  const run = await makeAuditableRun();
+  const worker = await appendStartedWorkerRequest(run, {
+    adapterCallId: 'ignored-generated-artifact-call',
+  });
+  const patchArtifact = 'artifacts/patches/ignored-generated-artifact.patch.json';
+  await registerPatchArtifactFixture(run, patchArtifact, patchArtifactFixture({
+    ignoredGeneratedFiles: [{
+      path: 'OrPad/test-results/.last-run.json',
+      reason: 'overlay-generated-validation-artifact',
+    }],
+  }));
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: worker.nodePath,
+    eventType: 'worker.result',
+    itemId: 'graph-editor-graph-specific-node-types',
+    artifactRefs: [patchArtifact],
+    payload: {
+      claimId: 'claim-ignored-generated-artifact',
+      adapterCallId: worker.adapterCallId,
+      attemptId: worker.attemptId,
+      idempotencyKey: worker.idempotencyKey,
+      attempt: worker.attempt,
+      status: 'done',
+      toState: 'done',
+      patchArtifact,
+      verification: [{
+        command: 'npx playwright test',
+        status: 'passed',
+        writeSetViolationCount: 0,
+        ignoredGeneratedFileCount: 1,
+      }],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+  assert.equal(result.json.ok, true);
+});
+
+test('audit-orpad-machine-run fails when a fatal patch write-set violation is reported done', async () => {
+  const run = await makeAuditableRun();
+  const worker = await appendStartedWorkerRequest(run, {
+    adapterCallId: 'fatal-write-set-reported-done-call',
+  });
+  const patchArtifact = 'artifacts/patches/fatal-write-set-reported-done.patch.json';
+  await registerPatchArtifactFixture(run, patchArtifact, patchArtifactFixture({
+    violations: [{
+      path: 'OrPad/src/outside-write-set.js',
+      reason: 'outside-write-set',
+    }],
+  }));
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    nodePath: worker.nodePath,
+    eventType: 'worker.result',
+    itemId: 'graph-editor-graph-specific-node-types',
+    artifactRefs: [patchArtifact],
+    payload: {
+      claimId: 'claim-fatal-write-set-reported-done',
+      adapterCallId: worker.adapterCallId,
+      attemptId: worker.attemptId,
+      idempotencyKey: worker.idempotencyKey,
+      attempt: worker.attempt,
+      status: 'done',
+      toState: 'done',
+      patchArtifact,
+      verification: [{
+        command: 'npx playwright test',
+        status: 'passed',
+        writeSetViolationCount: 1,
+      }],
+    },
+  });
+  await repairRunStateFromEvents(run.runRoot);
+
+  const result = runAudit(run.runRoot);
+  const codes = new Set(result.json.diagnostics.map(item => item.code));
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(codes.has('MACHINE_WORKER_FATAL_WRITE_SET_NOT_BLOCKED'), true);
 });
 
 test('audit-orpad-machine-run fails when queue claim transition has no prior lease', async () => {

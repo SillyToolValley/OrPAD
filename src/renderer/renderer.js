@@ -464,6 +464,201 @@ function machineRunTransientScopeKey(runbookPath, runId) {
   const normalizedRunbook = runbookNormalizePath(runbookPath || selectedRunbookPath || '').toLowerCase();
   return `${normalizedWorkspace}::${normalizedRunbook}::${normalizedRunId}`;
 }
+
+const MACHINE_LATEST_RUN_EVENT_PROJECTION_CACHE_LIMIT = 24;
+const machineLatestRunEventProjectionCache = new Map();
+
+function machineInventoryProjectionSignature(inventory) {
+  if (!inventory?.counts) return '';
+  const counts = inventory.counts || {};
+  return ORPAD_WORK_ITEM_STATES.map(state => `${state}:${Number(counts[state]) || 0}`).join(',');
+}
+
+function machineLatestRunEventProjectionScope(record) {
+  const runId = String(record?.runState?.runId || record?.runId || '').trim();
+  if (!runId) return '';
+  const runRoot = String(record?.runRoot || record?.runState?.runRoot || '').trim();
+  return `${runRoot}::${runId}`;
+}
+
+function machineLatestRunEventProjectionKey(record) {
+  const scope = machineLatestRunEventProjectionScope(record);
+  if (!scope) return '';
+  const events = Array.isArray(record?.events) ? record.events : [];
+  const lastEvent = events[events.length - 1] || null;
+  const replay = record?.__replay
+    ? `${record.__replay.position ?? ''}/${record.__replay.total ?? events.length}`
+    : 'live';
+  const directInventory = record?.finalization?.inventory || record?.resume?.inventory || record?.inventory || null;
+  return [
+    scope,
+    replay,
+    events.length,
+    lastEvent?.sequence ?? '',
+    lastEvent?.eventType || lastEvent?.type || '',
+    machineInventoryProjectionSignature(directInventory),
+  ].join('|');
+}
+
+function machineQueueInventoryFromItemStates(itemStates) {
+  if (!itemStates?.size) return null;
+  const counts = Object.fromEntries(ORPAD_WORK_ITEM_STATES.map(state => [state, 0]));
+  for (const state of itemStates.values()) counts[state] = (counts[state] || 0) + 1;
+  const activeCount = ['candidate', 'queued', 'claimed'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
+  const terminalCount = ['done', 'blocked', 'rejected'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
+  return {
+    counts,
+    activeCount,
+    terminalCount,
+    blockedCount: Number(counts.blocked) || 0,
+    doneCount: Number(counts.done) || 0,
+  };
+}
+
+function machineWorkerProofDetailsFromProjection(projection) {
+  if (!projection?.workerResultCount) return 'No work result yet';
+  if (projection.workerResultCount > 1) {
+    return [
+      machineCountLabel(projection.workerResultCount, 'work result'),
+      machineCountLabel(projection.workerEvidenceCount, 'evidence file'),
+      machineCountLabel(projection.workerCheckCount, 'check'),
+      machineCountLabel(projection.workerChangedFileCount, 'changed file'),
+    ].filter(Boolean).join('; ');
+  }
+  return [
+    machineWorkerStatusLabel(projection.latestWorkerStatus),
+    machineCountLabel(projection.latestWorkerEvidenceCount, 'evidence file'),
+    machineCountLabel(projection.latestWorkerCheckCount, 'check'),
+    machineCountLabel(projection.latestWorkerChangedFileCount, 'changed file'),
+  ].filter(Boolean).join('; ');
+}
+
+function machineBuildLatestRunEventProjection(record) {
+  const events = Array.isArray(record?.events) ? record.events : [];
+  const queueItemStates = new Map();
+  let queueUpdateCount = 0;
+  let latestSummaryInventory = null;
+  let latestStatusInventory = null;
+  let latestWorkerEvent = null;
+  let latestBlockedWorkerEvent = null;
+  let latestBlockedQueueTransitionEvent = null;
+  let latestPartialArtifactContract = null;
+  let latestCompletionBlock = null;
+  let workerResultCount = 0;
+  let workerEvidenceCount = 0;
+  let workerCheckCount = 0;
+  let workerChangedFileCount = 0;
+  let latestWorkerStatus = '';
+  let latestWorkerEvidenceCount = 0;
+  let latestWorkerCheckCount = 0;
+  let latestWorkerChangedFileCount = 0;
+  let nodeCompletedCount = 0;
+  let modelDowngradeCount = 0;
+  for (const event of events) {
+    const type = String(event?.eventType || event?.type || '');
+    const payload = event?.payload || {};
+    if (event?.itemId || type.startsWith('queue.')) queueUpdateCount += 1;
+    if (type === 'queue.transition') {
+      const itemId = String(event.itemId || payload.itemId || '').trim();
+      const toState = String(event.toState || payload.toState || '').trim();
+      if (itemId && ORPAD_WORK_ITEM_STATES.includes(toState)) queueItemStates.set(itemId, toState);
+      if (String(toState).toLowerCase() === 'blocked') latestBlockedQueueTransitionEvent = event;
+    } else if (type === 'run.summary') {
+      if (payload.inventory?.counts) latestSummaryInventory = payload.inventory;
+      if (payload.completionBlocked) latestCompletionBlock = payload.completionBlocked;
+    } else if (type === 'run.status') {
+      if (payload.inventory?.counts) latestStatusInventory = payload.inventory;
+      if (payload.completionBlocked) latestCompletionBlock = payload.completionBlocked;
+    } else if (type === 'worker.result') {
+      const artifacts = Array.isArray(event.artifactRefs) ? event.artifactRefs : [];
+      const verification = Array.isArray(payload.verification) ? payload.verification : [];
+      const changedFiles = Array.isArray(payload.changedFiles) ? payload.changedFiles : [];
+      latestWorkerEvent = event;
+      latestWorkerStatus = String(payload.status || '');
+      latestWorkerEvidenceCount = artifacts.length;
+      latestWorkerCheckCount = verification.length;
+      latestWorkerChangedFileCount = changedFiles.length;
+      workerResultCount += 1;
+      workerEvidenceCount += artifacts.length;
+      workerCheckCount += verification.length;
+      workerChangedFileCount += changedFiles.length;
+      if (String(payload.status || '').toLowerCase() === 'blocked') latestBlockedWorkerEvent = event;
+    } else if (type === 'node.completed') {
+      nodeCompletedCount += 1;
+      if (
+        payload.nodeType === 'orpad.artifactContract'
+        && ((Number(payload.missingArtifactCount) || 0) > 0 || (Number(payload.missingQueueCount) || 0) > 0)
+      ) {
+        latestPartialArtifactContract = event;
+      }
+    } else if (type === 'adapter.model.downgraded') {
+      modelDowngradeCount += 1;
+    }
+  }
+  const directInventory = record?.finalization?.inventory || record?.resume?.inventory || record?.inventory || null;
+  const queueInventoryFromEvents = machineQueueInventoryFromItemStates(queueItemStates);
+  const queueInventory = latestSummaryInventory?.counts
+    ? latestSummaryInventory
+    : (latestStatusInventory?.counts
+      ? latestStatusInventory
+      : (directInventory?.counts ? directInventory : queueInventoryFromEvents));
+  const rejectableItems = [];
+  for (const [itemId, state] of queueItemStates) {
+    if (['queued', 'candidate', 'blocked'].includes(state)) rejectableItems.push({ itemId, state });
+  }
+  if (!latestCompletionBlock) latestCompletionBlock = record?.runState?.completionBlocked || null;
+  const projection = {
+    eventCount: events.length,
+    lastSequence: Number(events[events.length - 1]?.sequence) || 0,
+    queueItemStates,
+    queueUpdateCount,
+    queueInventory,
+    queueInventoryFromEvents,
+    rejectableItems,
+    recentEvents: events.slice(-100),
+    latestWorkerEvent,
+    latestBlockedWorkerEvent,
+    latestBlockedQueueTransitionEvent,
+    latestPartialArtifactContract,
+    latestCompletionBlock,
+    workerResultCount,
+    workerEvidenceCount,
+    workerCheckCount,
+    workerChangedFileCount,
+    latestWorkerStatus,
+    latestWorkerEvidenceCount,
+    latestWorkerCheckCount,
+    latestWorkerChangedFileCount,
+    nodeCompletedCount,
+    nodeCompletionDetails: nodeCompletedCount ? `${machineCountLabel(nodeCompletedCount, 'step')} completed` : 'No steps completed yet',
+    modelDowngradeCount,
+  };
+  projection.workerProofDetails = machineWorkerProofDetailsFromProjection(projection);
+  return projection;
+}
+
+function machineLatestRunEventProjection(record) {
+  if (!record) return machineBuildLatestRunEventProjection(record);
+  const scope = machineLatestRunEventProjectionScope(record);
+  const cacheKey = machineLatestRunEventProjectionKey(record);
+  if (scope && cacheKey) {
+    const cached = machineLatestRunEventProjectionCache.get(scope);
+    if (cached?.cacheKey === cacheKey) {
+      machineLatestRunEventProjectionCache.delete(scope);
+      machineLatestRunEventProjectionCache.set(scope, cached);
+      return cached.projection;
+    }
+  }
+  const projection = machineBuildLatestRunEventProjection(record);
+  if (scope && cacheKey) {
+    machineLatestRunEventProjectionCache.set(scope, { cacheKey, projection });
+    while (machineLatestRunEventProjectionCache.size > MACHINE_LATEST_RUN_EVENT_PROJECTION_CACHE_LIMIT) {
+      const oldest = machineLatestRunEventProjectionCache.keys().next().value;
+      machineLatestRunEventProjectionCache.delete(oldest);
+    }
+  }
+  return projection;
+}
 // Breakpoints -Phase 3.7:
 //   per-pipeline (NOT per-run) Set<nodePath>. Persists across runs in
 //   localStorage so the user does not have to re-mark them each time.
@@ -532,6 +727,16 @@ const machineHistoryRecoverPending = new Set();
 const machineRunStartPendingPaths = new Set();
 const machineRunPendingActions = new Map();
 const machineRunProgressTimers = new Map();
+// PUSH STREAM: state for the main->renderer per-step progress subscription. The
+// push is a nudge to refresh the live surface immediately during a long drive;
+// refreshes are coalesced so a burst of fast steps can't hammer getRun.
+let machineRunProgressSubscribed = false;
+const machineRunProgressRefreshState = new Map();
+// Per-run promise chain so a push-triggered refresh and a poll-tick refresh for
+// the same run never interleave (which could render an older snapshot after a
+// newer one). Both paths go through serializedMachineRunRefresh.
+const machineRunRefreshChains = new Map();
+const MACHINE_RUN_PROGRESS_REFRESH_MS = 400;
 const machineRunExternalResearchDecisions = new Map();
 const deferredPipelinePreviewRefreshPaths = new Set();
 const pipelineHarnessImplementedAtCache = new Map();
@@ -761,13 +966,48 @@ function restoreOrchestrationUiState(state) {
   ].join(',')).forEach(restoreScrollable);
 }
 
+// Focus survives the run-bar/graph rebuild. The innerHTML swap (and the 2s poll
+// that re-renders) otherwise dumps a keyboard user's focus back to <body> mid-
+// supervision — and the Pause control morphs into Resume, so we restore by
+// control ROLE + container rather than the exact element, mapping Pause->Resume.
+function captureOrchestrationFocusKey() {
+  const el = document.activeElement;
+  if (!el || el === document.body || typeof el.matches !== 'function') return null;
+  if (el.closest('.orch-graph-run-controls') && el.matches('[data-graph-run-action]')) {
+    return { kind: 'graph-control' };
+  }
+  if (el.closest('.pipeline-runbar-actions')) {
+    if (el.matches('.pipeline-run-control')) return { kind: 'runbar-toggle' };
+    if (el.matches('.pipeline-run-primary')) return { kind: 'runbar-primary' };
+  }
+  return null;
+}
+
+function restoreOrchestrationFocusKey(key) {
+  if (!key) return;
+  let target = null;
+  if (key.kind === 'graph-control') {
+    target = contentEl?.querySelector('.orch-graph-run-controls [data-graph-run-action]:not([disabled])')
+      || contentEl?.querySelector('.orch-graph-run-controls [data-graph-run-action]');
+  } else if (key.kind === 'runbar-toggle') {
+    target = document.querySelector('.pipeline-runbar-actions .pipeline-run-control');
+  } else if (key.kind === 'runbar-primary') {
+    target = document.querySelector('.pipeline-runbar-actions .pipeline-run-primary');
+  }
+  if (target && typeof target.focus === 'function') {
+    try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+  }
+}
+
 function withOrchestrationUiStatePreserved(renderFn) {
   mergeOrchestrationUiState(captureOrchestrationUiState());
   const state = cloneOrchestrationUiState(orchestrationPersistedUiState);
+  const focusKey = captureOrchestrationFocusKey();
   try {
     return renderFn();
   } finally {
     restoreOrchestrationUiState(state);
+    restoreOrchestrationFocusKey(focusKey);
     mergeOrchestrationUiState(captureOrchestrationUiState());
   }
 }
@@ -2484,12 +2724,15 @@ let orchGraphFitAfterRender = true;
 let orchGraphResizeObserver = null;
 let orchGraphResizeFitRaf = 0;
 let orchGraphRenderFitRaf = 0;
+let orchGraphViewportRestoreRaf = 0;
+let orchGraphViewportRestoreSecondRaf = 0;
 let orchGraphResponsiveFitSuppressedUntil = 0;
 const orchGraphObservedFrameSizes = new WeakMap();
 let orchGridSnapEnabled = false;
 let orchTempSnap = false;
 let orchHistoryBatchDepth = 0;
 let orchNodeClickTimer = 0;
+let orchContextMenuDismissHandler = null;
 let suppressOrchContextMenuUntil = 0;
 let suppressOrchContextMenuPoint = null;
 const orchGraphMetaCache = new Map();
@@ -2861,7 +3104,9 @@ function isOrchGraphRefType(type) {
 }
 
 function orchToolIcon(path) {
-  return `<svg class="ogi" viewBox="0 0 16 16"><path d="${path}"/></svg>`;
+  // Decorative: the host button always carries an aria-label, so hide the glyph
+  // from the accessibility tree and keep it out of the tab/focus order.
+  return `<svg class="ogi" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="${path}"/></svg>`;
 }
 
 const ORCH_TOOL_ICON_SELECT = orchToolIcon('M3 3h10v10H3z');
@@ -3458,50 +3703,25 @@ function graphNodeFieldDiagnostic(diagnostics, field, node) {
 }
 
 function machineQueueInventoryFromEvents(record) {
-  const itemStates = new Map();
-  for (const event of record?.events || []) {
-    if (event?.eventType !== 'queue.transition') continue;
-    const itemId = event.itemId || event.payload?.itemId || '';
-    const toState = event.toState || event.payload?.toState || '';
-    if (!itemId || !ORPAD_WORK_ITEM_STATES.includes(toState)) continue;
-    itemStates.set(itemId, toState);
-  }
-  if (!itemStates.size) return null;
-  const counts = Object.fromEntries(ORPAD_WORK_ITEM_STATES.map(state => [state, 0]));
-  for (const state of itemStates.values()) counts[state] = (counts[state] || 0) + 1;
-  const activeCount = ['candidate', 'queued', 'claimed'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
-  const terminalCount = ['done', 'blocked', 'rejected'].reduce((sum, state) => sum + (Number(counts[state]) || 0), 0);
-  return {
-    counts,
-    activeCount,
-    terminalCount,
-    blockedCount: Number(counts.blocked) || 0,
-    doneCount: Number(counts.done) || 0,
-  };
+  return machineLatestRunEventProjection(record).queueInventoryFromEvents;
 }
 
 function machineLatestQueueStateForItem(record, itemId) {
   const targetItemId = String(itemId || '').trim();
   if (!targetItemId) return '';
-  let latestState = '';
-  for (const event of record?.events || []) {
-    if (event?.eventType !== 'queue.transition') continue;
-    const eventItemId = String(event.itemId || event.payload?.itemId || '').trim();
-    if (eventItemId !== targetItemId) continue;
-    const toState = String(event.toState || event.payload?.toState || '').trim();
-    if (ORPAD_WORK_ITEM_STATES.includes(toState)) latestState = toState;
-  }
-  return latestState;
+  return machineLatestRunEventProjection(record).queueItemStates.get(targetItemId) || '';
+}
+
+// STEER: per-item list of still-pending work items (queued/candidate/blocked) a
+// human can reject mid-run. Derived from the same queue.transition replay as the
+// counts, so it stays a projection of events (the source of truth).
+function machineRejectableQueueItems(record) {
+  return machineLatestRunEventProjection(record).rejectableItems;
 }
 
 function machineLatestQueueInventory(record) {
   if (!record) return null;
-  const summary = latestMachineEvent(record.events, 'run.summary', event => event?.payload?.inventory?.counts);
-  if (summary?.payload?.inventory?.counts) return summary.payload.inventory;
-  const status = latestMachineEvent(record.events, 'run.status', event => event?.payload?.inventory?.counts);
-  if (status?.payload?.inventory?.counts) return status.payload.inventory;
-  const direct = record.finalization?.inventory || record.resume?.inventory || record.inventory || null;
-  return direct?.counts ? direct : machineQueueInventoryFromEvents(record);
+  return machineLatestRunEventProjection(record).queueInventory;
 }
 
 function machineQueueInventoryCounts(inventory) {
@@ -3540,12 +3760,9 @@ function machineQueueInventorySummary(inventory) {
 }
 
 function machineLatestBlockedWorkDetails(record) {
-  const workerEvent = latestMachineEvent(record?.events, 'worker.result', event => (
-    String(event?.payload?.status || '').toLowerCase() === 'blocked'
-  ));
-  const transitionEvent = latestMachineEvent(record?.events, 'queue.transition', event => (
-    String(event?.toState || event?.payload?.toState || '').toLowerCase() === 'blocked'
-  ));
+  const projection = machineLatestRunEventProjection(record);
+  const workerEvent = projection.latestBlockedWorkerEvent;
+  const transitionEvent = projection.latestBlockedQueueTransitionEvent;
   if (!workerEvent && !transitionEvent) return null;
   const event = workerEvent || transitionEvent;
   const payload = event?.payload || {};
@@ -3849,6 +4066,9 @@ function pipelinePreviewRunStatus(validation, runtimeBlockReason, runInProgress 
       if (gateBlocked) return { state: 'warn', text: 'Run paused at gate - provide evidence or skip.' };
       if (failed) return { state: 'warn', text: 'Run paused - failed adapter call needs review.' };
       return { state: 'warn', text: 'Run paused - click Continue to proceed.' };
+    }
+    if (lifecycle === 'paused') {
+      return { state: 'warn', text: 'Run paused - Resume to continue or Cancel to stop.' };
     }
     if (lifecycle === 'cancelling') {
       return { state: 'warn', text: 'Cancelling run...' };
@@ -4534,6 +4754,22 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const previewRunInProgress = isMachineRunInProgress(previewActionRecord, runbookPath);
   const previewVisualRunInProgress = isMachineRunVisualProjectionInProgress(previewRunRecord, runbookPath);
   const cancelPending = isMachineRunCancelPending(runbookPath, previewActionRunId);
+  // Supervised-autonomy control state (RC-IPC). The live lifecycle decides which
+  // controls the user sees. 'paused' is a CONTROLLABLE, recoverable state, so we
+  // treat it as "active": the primary stays a Stop/Cancel (never reverts to a
+  // fresh 'Start Run'), the Start menu stays disabled, and a Resume sits beside
+  // Cancel. This threads the user-facing 'paused' concept through the run-bar
+  // rather than letting the "is an IPC in flight" implementation predicate decide
+  // the surface.
+  const previewLifecycle = String(previewActionRecord?.runState?.lifecycleStatus || '').toLowerCase();
+  const previewRunPaused = previewLifecycle === 'paused';
+  const previewRunActive = previewRunInProgress || previewRunPaused;
+  reconcileMachineRunControlPending(runbookPath, previewActionRunId, { inProgress: previewRunInProgress, paused: previewRunPaused });
+  // Pause-pending shows 'Pausing…' from click until the run actually suspends
+  // (or the drive ends); resume-pending shows 'Resuming…' until the run leaves
+  // 'paused'. reconcile above has already dropped stale flags.
+  const pausePending = isMachineRunPausePending(runbookPath, previewActionRunId) && previewRunInProgress && !previewRunPaused;
+  const resumePending = isMachineRunResumePending(runbookPath, previewActionRunId) && previewRunPaused;
   const startPending = machineRunStartPendingPaths.has(runbookKey);
   const harnessPending = pipelineHarnessImplementationPendingPaths.has(runbookKey);
   const harnessState = getHarnessImplementationState(runbookPath);
@@ -4553,7 +4789,6 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const harnessAuthoringBadge = pipelineDocHarnessAuthoringBadge(pipelineDoc, harnessImplementedAt, runbookKey);
   const harnessProgress = harnessImplementationProgressForPath(runbookPath);
   const harnessSupersedesRunDetails = harnessImplementationSupersedesRunDetails(previewRunRecord, harnessState, harnessPending);
-  const harnessSucceeded = harnessStatus === 'succeeded';
   const requiresHarnessBeforeRun = pipelineRequiresHarnessBeforeRun(runbookPath, pipelineDoc, harnessImplementedAt);
   const runtimeBlockReason = machineRuntimeBlockReason();
   const machineReason = requiresHarnessBeforeRun
@@ -4563,27 +4798,33 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
     : 'Check this pipeline, then start and track its work state, progress, and evidence files.');
   const machineStartable = isMachineStartablePipeline(validation) || requiresHarnessBeforeRun;
   const machineCompatible = isMachineCompatiblePipeline(validation);
-  const machineDisabled = harnessRunning || startPending || previewRunInProgress || (checked && !machineStartable);
+  const machineDisabled = harnessRunning || startPending || previewRunActive || (checked && !machineStartable);
   const machineActionTitle = harnessRunning
     ? 'Harness implementation is in progress.'
-    : (previewRunInProgress ? 'Run already in progress.' : (machineReason || 'Start autonomous Machine run and stop at patch review.'));
-  const defaultAction = machineCompatible && previewRunInProgress ? 'machine-cancel-run' : 'default';
+    : (previewRunActive ? (previewRunPaused ? 'A paused run is active — Resume or Cancel it first.' : 'Run already in progress.') : (machineReason || 'Start autonomous Machine run and stop at patch review.'));
+  // 'paused' is treated as active so the primary stays Cancel/Stop, never a
+  // fresh Start (which would silently displace the paused run).
+  const defaultAction = machineCompatible && previewRunActive ? 'machine-cancel-run' : 'default';
   const defaultTitle = machineCompatible
     ? (harnessRunning
       ? 'Harness implementation is in progress.'
-      : (previewRunInProgress ? (cancelPending ? 'Cancel requested...' : 'Stop Run') : (startPending ? 'Starting run...' : (machineStartable ? 'Start Run' : (machineReason || 'Start Run')))))
+      : (previewRunActive ? (cancelPending ? 'Cancel requested...' : (previewRunPaused ? 'Stop paused run' : 'Stop Run')) : (startPending ? 'Starting run...' : (machineStartable ? 'Start Run' : (machineReason || 'Start Run')))))
     : (agentReady ? 'Prepare Handoff' : 'Run this pipeline');
   const defaultDisabled = machineCompatible
-    ? (harnessRunning || startPending || (!previewRunInProgress && checked && !machineStartable) || (previewRunInProgress && (cancelPending || !window.orpad?.machine?.cancelRun)))
+    ? (harnessRunning || startPending || (!previewRunActive && checked && !machineStartable) || (previewRunActive && (cancelPending || !window.orpad?.machine?.cancelRun)))
     : false;
-  const defaultDangerClass = machineCompatible && previewRunInProgress ? ' danger' : '';
-  const defaultIcon = machineCompatible && previewRunInProgress
+  const defaultDangerClass = machineCompatible && previewRunActive ? ' danger' : '';
+  const defaultIcon = machineCompatible && previewRunActive
     ? orchToolIcon('M5 5h8v8H5z')
     : orchToolIcon('M5 3l7 5-7 5V3z');
   const runStatus = harnessSupersedesRunDetails
     ? pipelinePreviewHarnessRunStatus(harnessState, harnessPending, harnessProgress)
     : cancelPending
     ? { state: 'warn', text: 'Cancel requested...' }
+    : pausePending
+    ? { state: 'warn', text: 'Pausing — finishing current step…' }
+    : resumePending
+    ? { state: 'warn', text: 'Resuming…' }
     : pipelinePreviewRunStatus(validation, runtimeBlockReason, previewVisualRunInProgress, previewRunRecord);
   const displayTitle = pipelinePreviewTitle(context, pipelineDoc);
   const activeLabel = pipelinePreviewLocationLabel(context);
@@ -4598,6 +4839,34 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
     ? { currentNode: '', progressLabel: '', progressTitle: '', elapsed: '', startedAt: '' }
     : pipelinePreviewRunHeaderMetrics(previewRunRecord);
   const replayNoticeHtml = machineReplayLiveActionNoticeHtml(previewRunRecord, previewLiveRunRecord, runbookPath, { compact: true });
+  // RC-IPC supervised-autonomy toggle. A SINGLE stable control occupies the slot
+  // whenever the run is active: Resume while paused, Pause while the autonomous
+  // drive is in flight (kept visible across the transient running<->waiting flips
+  // between driver steps, hidden during teardown/cancelling). It swaps
+  // icon/label/action rather than appearing and disappearing. Resume uses a
+  // distinct play-with-bar glyph so it is never confused with the Start
+  // play-triangle. Optimistic 'Pausing…'/'Resuming…' acks come from the
+  // *-pending flags; both guard on the preload bridge so an older preload simply
+  // disables the button instead of throwing.
+  const pauseBridgeAvailable = !!(window.orpad && window.orpad.machine && window.orpad.machine.pauseRun);
+  const resumeBridgeAvailable = !!(window.orpad && window.orpad.machine && window.orpad.machine.resumeRun);
+  const showPauseToggle = previewRunInProgress && !previewRunPaused && previewLifecycle !== 'cancelling';
+  let pauseResumeButtonHtml = '';
+  if (previewRunPaused) {
+    const resumeDisabled = !resumeBridgeAvailable || resumePending;
+    const resumeLabel = resumePending ? 'Resuming…' : 'Resume run';
+    const resumeTitle = !resumeBridgeAvailable
+      ? 'Resume is unavailable in this build.'
+      : (resumePending ? 'Resuming the run…' : 'Resume the paused run and continue autonomously.');
+    pauseResumeButtonHtml = `<button class="pipeline-run-control pipeline-run-control--resume${resumePending ? ' is-pending' : ''}" data-pipeline-run-action="machine-resume-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewActionRunId)}" aria-pressed="true" ${resumeDisabled ? 'disabled' : ''} title="${escapeHtml(resumeTitle)}" aria-label="${escapeHtml(resumeLabel)}">${orchToolIcon('M4 3v10M7 3l6 5-6 5z')}</button>`;
+  } else if (showPauseToggle) {
+    const pauseDisabled = !pauseBridgeAvailable || cancelPending || pausePending;
+    const pauseLabel = pausePending ? 'Pausing…' : 'Pause run';
+    const pauseTitle = !pauseBridgeAvailable
+      ? 'Pause is unavailable in this build.'
+      : (cancelPending ? 'Cancel already requested.' : (pausePending ? 'Pausing — the run suspends after the current step finishes.' : 'Pause at the next step boundary; in-flight work finishes first.'));
+    pauseResumeButtonHtml = `<button class="pipeline-run-control pipeline-run-control--pause${pausePending ? ' is-pending' : ''}" data-pipeline-run-action="machine-pause-run" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewActionRunId)}" aria-pressed="false" ${pauseDisabled ? 'disabled' : ''} title="${escapeHtml(pauseTitle)}" aria-label="${escapeHtml(pauseLabel)}">${orchToolIcon('M5 4h2v8H5z M9 4h2v8H9z')}</button>`;
+  }
   const titleControlHtml = IS_ORCHESTRATION_WINDOW
     ? renderOrchestrationPipelineSelectControl(runbookPath, displayTitle)
     : `<strong>${escapeHtml(displayTitle)}</strong>`;
@@ -4606,7 +4875,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
       <div class="pipeline-runbar-meta">
         ${titleControlHtml}
         <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
-        <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}">${escapeHtml(runStatus.text)}</span>
+        <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}" role="status" aria-live="polite">${escapeHtml(runStatus.text)}</span>
         ${runHeaderMetrics.currentNode ? `<span class="pipeline-runbar-current" title="${escapeHtml(`Currently running: ${runHeaderMetrics.currentNode}`)}">${escapeHtml(runHeaderMetrics.currentNode)}</span>` : ''}
         ${runHeaderMetrics.progressLabel ? `<span class="pipeline-runbar-progress" title="${escapeHtml(runHeaderMetrics.progressTitle || '')}">progress <code>${escapeHtml(runHeaderMetrics.progressLabel)}</code></span>` : ''}
         ${runHeaderMetrics.elapsed ? `<span class="pipeline-runbar-elapsed" title="${escapeHtml(`Started ${runHeaderMetrics.startedAt}`)}">${escapeHtml(runHeaderMetrics.elapsed)}</span>` : ''}
@@ -4622,6 +4891,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
         <button class="pipeline-run-primary${defaultDangerClass}" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewActionRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
           ${defaultIcon}
         </button>
+        ${pauseResumeButtonHtml}
         <details class="pipeline-run-menu-wrap">
           <summary class="pipeline-run-menu-trigger" data-pipeline-run-menu title="Run options" aria-label="Run options">
             ${orchToolIcon('M4 6l4 4 4-4')}
@@ -4629,7 +4899,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
           <div class="pipeline-run-menu" role="menu">
             <button data-pipeline-run-action="open-flow" data-path="${escapeHtml(runbookPath)}" title="Return to the graph editor for this pipeline.">Open Flow</button>
             <button data-pipeline-run-action="local" data-path="${escapeHtml(runbookPath)}" ${localDisabled || harnessRunning ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : (localDisabled ? 'This pipeline cannot use the local runner.' : 'Run with the local runner.'))}">Run locally</button>
-            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunInProgress && !harnessRunning ? '' : 'disabled'} title="${escapeHtml(harnessActionTitle)}">${escapeHtml(harnessActionLabel)}</button>
+            <button data-pipeline-run-action="implement-harness" data-path="${escapeHtml(runbookPath)}" ${checked && !previewRunActive && !harnessRunning ? '' : 'disabled'} title="${escapeHtml(harnessActionTitle)}">${escapeHtml(harnessActionLabel)}</button>
             <button data-pipeline-run-action="managed" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(machineActionTitle)}">Start Run</button>
             <button data-pipeline-run-action="managed-ask" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Debug mode: ask before LLM CLI permission bypass instead of auto-driving to patch review.')}">Start Run (Ask Permissions)</button>
             <button data-pipeline-run-action="managed-auto-apply" data-path="${escapeHtml(runbookPath)}" ${machineDisabled ? 'disabled' : ''} title="${escapeHtml(harnessRunning ? 'Harness implementation is in progress.' : 'Fully autonomous: auto-approve and apply every patch the worker produces. No human gate at patchReview. Use only for trusted pipelines.')}">Start Run (Auto-Apply Patches)</button>
@@ -4641,7 +4911,7 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
       </div>
     </div>
   `;
-  const harnessDetailsHtml = harnessSupersedesRunDetails && !harnessSucceeded
+  const harnessDetailsHtml = harnessSupersedesRunDetails
     ? renderHarnessImplementationBannerHtml(runbookPath, harnessState, pipelineDoc, harnessPending)
     : '';
   const runDetailsHtml = harnessSupersedesRunDetails
@@ -5068,6 +5338,25 @@ function pipelineNodePackEntryId(entry = {}) {
   return pipelineValueText(entry.id || entry.packId || entry.nodePackId || '').trim();
 }
 
+function pipelineNodePackFirstText(...values) {
+  for (const value of values) {
+    const text = pipelineValueText(value).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function pipelineNodePackStringList(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => pipelineValueText(item).trim()).filter(Boolean);
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value).map(item => pipelineValueText(item).trim()).filter(Boolean);
+  }
+  const text = pipelineValueText(value).trim();
+  return text ? text.split(',').map(item => item.trim()).filter(Boolean) : [];
+}
+
 function pipelineNormalizeNodePackEntry(item, fallbackId = '', index = 0) {
   if (typeof item === 'string') {
     return {
@@ -5123,6 +5412,44 @@ function pipelineNodePackRecordForEntry(validation, entry) {
   if (!entryId) return null;
   return pipelineNodePackValidationRecords(validation)
     .find(record => pipelineNodePackRecordId(record).toLowerCase() === entryId) || null;
+}
+
+function pipelineNodePackDeclaredTrust(entry = {}, record = null) {
+  const trust = entry?.trust && typeof entry.trust === 'object' ? entry.trust : null;
+  return pipelineNodePackFirstText(
+    entry.trustLevel,
+    typeof entry.trust === 'string' ? entry.trust : '',
+    trust?.declaredLevel,
+    entry.declared?.trustLevel,
+    record?.requestedTrustLevel,
+    record?.declaredTrustLevel,
+    record?.declared?.trustLevel,
+  );
+}
+
+function pipelineNodePackDeclaredCapabilityRisk(entry = {}, record = null) {
+  const capabilityRisk = entry?.capabilityRisk && typeof entry.capabilityRisk === 'object' ? entry.capabilityRisk : null;
+  const summary = pipelineNodePackFirstText(
+    entry.capabilityRiskSummary,
+    capabilityRisk?.summary,
+    capabilityRisk?.capabilityRiskSummary,
+    entry.declared?.capabilityRiskSummary,
+    record?.declaredCapabilityRiskSummary,
+    record?.declared?.capabilityRiskSummary,
+  );
+  const highRiskCapabilities = [
+    ...pipelineNodePackStringList(entry.highRiskCapabilities),
+    ...pipelineNodePackStringList(capabilityRisk?.highRiskCapabilities),
+    ...pipelineNodePackStringList(entry.declared?.highRiskCapabilities),
+    ...pipelineNodePackStringList(record?.declaredHighRiskCapabilities),
+    ...pipelineNodePackStringList(record?.declared?.highRiskCapabilities),
+  ];
+  const uniqueHighRiskCapabilities = [...new Set(highRiskCapabilities)];
+  return {
+    summary,
+    highRiskCapabilities: uniqueHighRiskCapabilities,
+    highRiskCount: uniqueHighRiskCapabilities.length,
+  };
 }
 
 function pipelineNodePackDiagnosticPackId(issue = {}) {
@@ -5197,6 +5524,37 @@ function renderPipelineNodePackValue(label, value, options = {}) {
   `;
 }
 
+function renderPipelineNodePackDeclaredRisk(entry, validation) {
+  const record = pipelineNodePackRecordForEntry(validation, entry);
+  const trustLevel = pipelineNodePackDeclaredTrust(entry, record);
+  const risk = pipelineNodePackDeclaredCapabilityRisk(entry, record);
+  if (!trustLevel && !risk.summary && !risk.highRiskCount) return '';
+  const highRiskLabel = risk.highRiskCount
+    ? machineCountLabel(risk.highRiskCount, 'high-risk capability', 'high-risk capabilities')
+    : '';
+  const riskLabel = risk.summary || highRiskLabel;
+  const highRiskTitle = risk.highRiskCapabilities.length
+    ? ` title="${escapeHtml(`High-risk capabilities: ${risk.highRiskCapabilities.join(', ')}`)}"`
+    : '';
+  return `
+    <div class="pipeline-node-pack-risk" aria-label="Declared package trust and capability risk">
+      ${trustLevel ? `
+        <span class="pipeline-node-pack-risk-item">
+          <span>Trust</span>
+          <strong>${escapeHtml(trustLevel)}</strong>
+        </span>
+      ` : ''}
+      ${riskLabel ? `
+        <span class="pipeline-node-pack-risk-item ${risk.highRiskCount ? 'has-high-risk' : ''}"${highRiskTitle}>
+          <span>Capability risk</span>
+          <strong>${escapeHtml(riskLabel)}</strong>
+          ${risk.summary && highRiskLabel ? `<small>${escapeHtml(highRiskLabel)}</small>` : ''}
+        </span>
+      ` : ''}
+    </div>
+  `;
+}
+
 function renderPipelineNodePackSummary(doc, validation, diagnostics = []) {
   const entries = pipelineNodePackEntries(doc);
   const unmatchedDiagnostics = pipelineUnmatchedNodePackDiagnostics(diagnostics, entries);
@@ -5218,6 +5576,7 @@ function renderPipelineNodePackSummary(doc, validation, diagnostics = []) {
           <span class="runbook-chip ${escapeHtml(status.tone)}">${escapeHtml(status.label)}</span>
         </div>
         ${action ? `<div class="pipeline-node-pack-actions">${action}</div>` : ''}
+        ${renderPipelineNodePackDeclaredRisk(entry, validation)}
         ${status.issues.length ? `<div class="pipeline-node-pack-diagnostics">${status.issues.map(renderPipelineInlineDiagnostic).join('')}</div>` : ''}
       </div>
     `;
@@ -5865,9 +6224,10 @@ function applyOrchTreeMutation(mutator) {
 }
 
 function rerenderOrchPreview(content = editor.state.doc.toString()) {
-  if (getActiveTab()?.viewType === 'orch-pipeline') renderOrchPipelinePreview(content);
-  else if (getActiveTab()?.viewType === 'orch-graph') renderOrchGraphPreview(content);
-  else renderOrchTreePreview(content);
+  const viewType = getActiveTab()?.viewType;
+  if (viewType === 'orch-pipeline') renderOrchPipelinePreview(content);
+  else if (viewType === 'orch-graph') renderOrchGraphPreview(content);
+  else if (viewType === 'orch-tree') renderOrchTreePreview(content);
 }
 
 function rerenderOrchTree() {
@@ -6290,6 +6650,28 @@ function setOrchViewport(next, options = {}) {
   updateOrchViewportDom();
 }
 
+function isActiveOrchPreviewTab() {
+  const viewType = getActiveTab()?.viewType;
+  return viewType === 'orch-pipeline' || viewType === 'orch-graph' || viewType === 'orch-tree';
+}
+
+function cancelScheduledOrchViewportRestore() {
+  if (orchGraphViewportRestoreRaf) {
+    cancelAnimationFrame(orchGraphViewportRestoreRaf);
+    orchGraphViewportRestoreRaf = 0;
+  }
+  if (orchGraphViewportRestoreSecondRaf) {
+    cancelAnimationFrame(orchGraphViewportRestoreSecondRaf);
+    orchGraphViewportRestoreSecondRaf = 0;
+  }
+}
+
+function cancelOrchNodeClickTimer() {
+  if (!orchNodeClickTimer) return;
+  clearTimeout(orchNodeClickTimer);
+  orchNodeClickTimer = 0;
+}
+
 function cancelScheduledOrchGraphFits() {
   if (orchGraphResizeFitRaf) {
     cancelAnimationFrame(orchGraphResizeFitRaf);
@@ -6299,6 +6681,7 @@ function cancelScheduledOrchGraphFits() {
     cancelAnimationFrame(orchGraphRenderFitRaf);
     orchGraphRenderFitRaf = 0;
   }
+  cancelScheduledOrchViewportRestore();
 }
 
 function suppressOrchGraphResponsiveFit(durationMs = 250) {
@@ -6308,9 +6691,19 @@ function suppressOrchGraphResponsiveFit(durationMs = 250) {
 
 function restoreOrchViewportAfterRender(viewport) {
   if (!viewport) return;
-  requestAnimationFrame(() => {
+  cancelScheduledOrchViewportRestore();
+  const tabId = getActiveTab()?.id || '';
+  const stillActive = () => isActiveOrchPreviewTab()
+    && (!tabId || getActiveTab()?.id === tabId)
+    && !!contentEl.querySelector('[data-orch-frame]');
+  orchGraphViewportRestoreRaf = requestAnimationFrame(() => {
+    orchGraphViewportRestoreRaf = 0;
+    if (!stillActive()) return;
     setOrchViewport(viewport, { minScale: ORCH_FIT_ZOOM_MIN });
-    requestAnimationFrame(() => setOrchViewport(viewport, { minScale: ORCH_FIT_ZOOM_MIN }));
+    orchGraphViewportRestoreSecondRaf = requestAnimationFrame(() => {
+      orchGraphViewportRestoreSecondRaf = 0;
+      if (stillActive()) setOrchViewport(viewport, { minScale: ORCH_FIT_ZOOM_MIN });
+    });
   });
 }
 
@@ -6371,6 +6764,29 @@ function orchGraphFitRect(frame, frameRect) {
     right: Math.max(padding, frameRect.width - padding),
     bottom: Math.max(padding, frameRect.height - padding),
   };
+  const reserveOverlay = (selector, edge) => {
+    const overlay = frame.querySelector(selector);
+    if (!overlay) return;
+    const overlayStyle = getComputedStyle(overlay);
+    const overlayRect = overlay.getBoundingClientRect();
+    const visible = overlayStyle.display !== 'none'
+      && overlayStyle.visibility !== 'hidden'
+      && overlayRect.width > 0
+      && overlayRect.height > 0;
+    if (!visible) return;
+    const overlapsFrame = overlayRect.left < frameRect.right
+      && overlayRect.right > frameRect.left
+      && overlayRect.top < frameRect.bottom
+      && overlayRect.bottom > frameRect.top;
+    if (!overlapsFrame) return;
+    if (edge === 'top') {
+      fitRect.top = Math.max(fitRect.top, overlayRect.bottom - frameRect.top + 12);
+    } else if (edge === 'bottom') {
+      fitRect.bottom = Math.max(fitRect.top, Math.min(fitRect.bottom, overlayRect.top - frameRect.top - 12));
+    }
+  };
+  ['.orch-graph-tools', '.orch-graph-run-banner', '.orch-graph-run-controls'].forEach(selector => reserveOverlay(selector, 'top'));
+  reserveOverlay('.orch-graph-legend', 'bottom');
   const inspector = frame.closest('.orch-graph-main')?.querySelector('.orch-floating-inspector');
   if (!inspector) return fitRect;
   const inspectorStyle = getComputedStyle(inspector);
@@ -6412,8 +6828,9 @@ function scheduleOrchGraphRenderFit(frame = contentEl.querySelector('[data-orch-
   if (orchGraphRenderFitRaf) cancelAnimationFrame(orchGraphRenderFitRaf);
   orchGraphRenderFitRaf = requestAnimationFrame(() => {
     orchGraphRenderFitRaf = 0;
+    if (!isActiveOrchPreviewTab()) return;
     const activeFrame = frame?.isConnected ? frame : contentEl.querySelector('[data-orch-frame]');
-    if (!activeFrame) return;
+    if (!activeFrame || !contentEl.contains(activeFrame)) return;
     fitOrchGraphToFrame(activeFrame);
   });
 }
@@ -6424,9 +6841,10 @@ function scheduleOrchGraphResponsiveFit(frame = contentEl.querySelector('[data-o
   if (orchGraphResizeFitRaf) cancelAnimationFrame(orchGraphResizeFitRaf);
   orchGraphResizeFitRaf = requestAnimationFrame(() => {
     orchGraphResizeFitRaf = 0;
+    if (!isActiveOrchPreviewTab()) return;
     if (Date.now() < orchGraphResponsiveFitSuppressedUntil) return;
     const activeFrame = frame.isConnected ? frame : contentEl.querySelector('[data-orch-frame]');
-    if (!activeFrame) return;
+    if (!activeFrame || !contentEl.contains(activeFrame)) return;
     fitOrchGraphToFrame(activeFrame);
   });
 }
@@ -6436,6 +6854,7 @@ function watchOrchGraphFrames() {
     orchGraphResizeObserver.disconnect();
     orchGraphResizeObserver = null;
   }
+  if (!isActiveOrchPreviewTab()) return;
   const frames = [...contentEl.querySelectorAll('[data-orch-frame]')];
   if (!frames.length || typeof ResizeObserver !== 'function') return;
   orchGraphResizeObserver = new ResizeObserver((entries) => {
@@ -6466,14 +6885,9 @@ function disconnectOrchGraphFrames() {
     orchGraphResizeObserver.disconnect();
     orchGraphResizeObserver = null;
   }
-  if (orchGraphResizeFitRaf) {
-    cancelAnimationFrame(orchGraphResizeFitRaf);
-    orchGraphResizeFitRaf = 0;
-  }
-  if (orchGraphRenderFitRaf) {
-    cancelAnimationFrame(orchGraphRenderFitRaf);
-    orchGraphRenderFitRaf = 0;
-  }
+  cancelScheduledOrchGraphFits();
+  cancelOrchNodeClickTimer();
+  closeOrchContextMenu();
 }
 
 function orchFramePoint(frame, event) {
@@ -6549,7 +6963,20 @@ function updateOrchGraphEdges(frame) {
   });
 }
 
+function clearOrchContextMenuDismissListener() {
+  if (!orchContextMenuDismissHandler) return;
+  document.removeEventListener('click', orchContextMenuDismissHandler, true);
+  orchContextMenuDismissHandler = null;
+}
+
+function installOrchContextMenuDismissListener() {
+  clearOrchContextMenuDismissListener();
+  orchContextMenuDismissHandler = () => closeOrchContextMenu();
+  document.addEventListener('click', orchContextMenuDismissHandler, true);
+}
+
 function closeOrchContextMenu() {
+  clearOrchContextMenuDismissListener();
   contentEl.querySelector('[data-orch-context-menu]')?.remove();
 }
 
@@ -7545,6 +7972,31 @@ function nodePackManagerHighRiskCapabilities(pack = {}, catalog = {}) {
   return [...highRiskCapabilities].sort((a, b) => a.localeCompare(b));
 }
 
+function nodePackManagerCapabilityRiskSummary(pack = {}) {
+  const capabilityRisk = pack.capabilityRisk && typeof pack.capabilityRisk === 'object' ? pack.capabilityRisk : null;
+  const validationCapabilityRisk = pack.validation?.capabilityRisk && typeof pack.validation.capabilityRisk === 'object'
+    ? pack.validation.capabilityRisk
+    : null;
+  return nodePackManagerString(
+    pack.capabilityRiskSummary
+      || capabilityRisk?.summary
+      || capabilityRisk?.capabilityRiskSummary
+      || pack.validation?.capabilityRiskSummary
+      || validationCapabilityRisk?.summary
+      || validationCapabilityRisk?.capabilityRiskSummary,
+    '',
+  );
+}
+
+function nodePackManagerHighRiskInstallBehaviors(pack = {}) {
+  const highRiskInstallBehaviors = new Set();
+  nodePackManagerAddCapabilities(highRiskInstallBehaviors, pack.highRiskInstallBehaviors);
+  nodePackManagerAddCapabilities(highRiskInstallBehaviors, pack.validation?.highRiskInstallBehaviors);
+  nodePackManagerAddCapabilities(highRiskInstallBehaviors, pack.capabilityRisk?.highRiskInstallBehaviors);
+  nodePackManagerAddCapabilities(highRiskInstallBehaviors, pack.validation?.capabilityRisk?.highRiskInstallBehaviors);
+  return [...highRiskInstallBehaviors].sort((a, b) => a.localeCompare(b));
+}
+
 function nodePackManagerCatalogIssueCounts(catalog = {}) {
   const diagnostics = Array.isArray(catalog.diagnostics) ? catalog.diagnostics : [];
   const conflicts = nodePackManagerCatalogConflictIssues(catalog);
@@ -7852,6 +8304,8 @@ function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
   }
   const capabilities = nodePackManagerCapabilities(pack);
   const highRiskCapabilities = nodePackManagerHighRiskCapabilities(pack, catalog);
+  const capabilityRiskSummary = nodePackManagerCapabilityRiskSummary(pack);
+  const highRiskInstallBehaviors = nodePackManagerHighRiskInstallBehaviors(pack);
   const status = nodePackManagerStatusForPack(pack, catalog);
   const nodes = Array.isArray(pack.nodes) ? pack.nodes : [];
   const packDiagnostics = nodePackManagerPackDiagnostics(pack, catalog);
@@ -7878,8 +8332,10 @@ function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
         ${renderNodePackManagerMetaRow('Origin / source', nodePackManagerOrigin(pack))}
         ${renderNodePackManagerMetaRow('Trust level', pack.trustLevel || 'unknown')}
         ${renderNodePackManagerMetaRow('Validation status', status.label)}
+        ${capabilityRiskSummary ? renderNodePackManagerMetaRow('Capability risk', capabilityRiskSummary) : ''}
         ${renderNodePackManagerMetaRow('Components', nodePackManagerComponentSummary(pack))}
         ${renderNodePackManagerMetaRow('High-risk capabilities', highRiskCapabilities.length ? highRiskCapabilities.join(', ') : 'None reported')}
+        ${highRiskInstallBehaviors.length ? renderNodePackManagerMetaRow('High-risk install behaviors', highRiskInstallBehaviors.join(', ')) : ''}
         ${renderNodePackManagerMetaRow('Diagnostic count', issueCount.total ? `${issueCount.total} issue${issueCount.total === 1 ? '' : 's'}` : '0 diagnostics')}
         ${renderNodePackManagerMetaRow('Source path', nodePackManagerPackPath(pack), { code: true })}
         ${renderNodePackManagerMetaRow('Manifest path', pack.discovery?.manifestPath || pack.manifestPath, { code: true })}
@@ -7893,6 +8349,12 @@ function renderNodePackManagerDetail(pack = null, catalog = {}, state = {}) {
     <section class="node-pack-manager-section">
       <h4>High-Risk Capability Review</h4>
       <div class="node-pack-manager-capabilities">${highRiskCapabilities.length ? renderNodePackManagerCapabilities(highRiskCapabilities) : '<span class="node-pack-manager-muted">No high-risk capabilities reported.</span>'}</div>
+      ${highRiskInstallBehaviors.length ? `
+        <div class="node-pack-manager-component-group">
+          <h5>High-Risk Install Behaviors</h5>
+          <div class="node-pack-manager-capabilities">${renderNodePackManagerCapabilities(highRiskInstallBehaviors)}</div>
+        </div>
+      ` : ''}
     </section>
     ${renderNodePackManagerLifecycleSection(pack, state)}
     ${renderNodePackManagerWorkspaceLockSection(pack, state)}
@@ -8209,6 +8671,67 @@ function renderNodePackManagerRegistrySourceOptions(registryState = {}) {
   `).join('');
 }
 
+function nodePackManagerRegistrySignatureSummary(registryState = {}) {
+  const registry = registryState.catalog?.registry || {};
+  const signature = entryTruthy(registry.signature) ? registry.signature : null;
+  const verification = entryTruthy(registry.signatureVerification) ? registry.signatureVerification : {};
+  const verified = Boolean(signature) && (signature.verified === true || verification.verified === true);
+  const attempted = signature?.verificationAttempted === true
+    || verification.verificationAttempted === true
+    || verification.attempted === true;
+  const keyId = nodePackManagerString(signature?.keyId || verification.keyId, '');
+  const fingerprint = nodePackManagerString(signature?.fingerprint || verification.fingerprint, '');
+  const scheme = nodePackManagerString(signature?.scheme || verification.scheme, '');
+  if (verified) {
+    return {
+      label: 'verified',
+      tone: 'good',
+      message: 'Registry signature verified.',
+      scheme,
+      keyId,
+      fingerprint,
+    };
+  }
+  if (signature && attempted) {
+    return {
+      label: 'verification failed',
+      tone: 'danger',
+      message: 'Registry signature was checked but did not verify.',
+      scheme,
+      keyId,
+      fingerprint,
+    };
+  }
+  if (signature) {
+    return {
+      label: 'declared / not attempted',
+      tone: 'warn',
+      message: 'Registry signature is declared, but verification was not attempted.',
+      scheme,
+      keyId,
+      fingerprint,
+    };
+  }
+  if (attempted) {
+    return {
+      label: 'missing / attempted',
+      tone: 'warn',
+      message: 'Registry signature is missing; verification was attempted with no signature evidence.',
+      scheme,
+      keyId,
+      fingerprint,
+    };
+  }
+  return {
+    label: 'missing / not attempted',
+    tone: 'warn',
+    message: 'Registry signature is missing and verification was not attempted.',
+    scheme,
+    keyId,
+    fingerprint,
+  };
+}
+
 function renderNodePackManagerRegistrySourcePanel(registryState = {}) {
   const source = nodePackManagerString(registryState.source, '');
   const catalog = registryState.catalog || {};
@@ -8223,11 +8746,16 @@ function renderNodePackManagerRegistrySourcePanel(registryState = {}) {
   const rawGovernance = registry.governance || {};
   const submissionsUrl = nodePackManagerString(rawGovernance.submissions?.url, '');
   const reviewPolicyUrl = nodePackManagerString(rawGovernance.reviewPolicyUrl, '');
+  const signature = nodePackManagerRegistrySignatureSummary(registryState);
   const rows = [
     ['Selected source', source || 'Not configured', true],
     ['Source type', kindLabel, false],
     ['Registry governance', governance.message, false],
     ['Metadata trust', nodePackManagerMetadataTrustLabel(governance.metadataTrust), false],
+    ['Registry signature', `${signature.label}: ${signature.message}`, false],
+    signature.keyId ? ['Signature key id', signature.keyId, true] : null,
+    signature.fingerprint ? ['Signature fingerprint', signature.fingerprint, true] : null,
+    signature.scheme ? ['Signature scheme', signature.scheme, true] : null,
     ['Status', health.message, false],
     registryName ? ['Loaded registry', registryName, false] : null,
     registryId ? ['Registry id', registryId, true] : null,
@@ -8249,6 +8777,7 @@ function renderNodePackManagerRegistrySourcePanel(registryState = {}) {
           <span class="runbook-chip">${escapeHtml(kindLabel)}</span>
           <span class="runbook-chip ${escapeHtml(governance.tone)}">${escapeHtml(governance.label)}</span>
           <span class="runbook-chip ${escapeHtml(health.tone)}">${escapeHtml(health.label)}</span>
+          <span class="runbook-chip ${escapeHtml(signature.tone)}">signature ${escapeHtml(signature.label)}</span>
           ${catalog.fromCache ? '<span class="runbook-chip warn">fromCache</span>' : ''}
           ${diagnostics.length ? `<span class="runbook-chip warn">${escapeHtml(String(diagnostics.length))} diagnostic${diagnostics.length === 1 ? '' : 's'}</span>` : ''}
         </div>
@@ -8574,6 +9103,26 @@ function nodePackManagerWorkspaceApplyStatusLabel(item = {}) {
   if (item.action === 'install') return 'needs install';
   if (item.action === 'update') return 'needs update';
   return item.kind || 'review';
+}
+
+function nodePackManagerWorkspaceApplyActionLabel(item = {}, canApply = false) {
+  if (item.status === 'synced') return 'Imported';
+  if (item.action === 'update') return canApply ? 'Update' : 'Update blocked';
+  if (item.action === 'install') return canApply ? 'Install' : 'Install blocked';
+  return canApply ? 'Apply' : 'Apply blocked';
+}
+
+function nodePackManagerWorkspaceApplyActionTitle(item = {}, canApply = false) {
+  if (canApply && item.action === 'update') {
+    return 'Update this package to the exact version recorded in the workspace lock.';
+  }
+  if (canApply && item.action === 'install') {
+    return 'Install the exact package version recorded in the workspace lock.';
+  }
+  if (item.status === 'synced') {
+    return 'No install or update is needed for this workspace lock package.';
+  }
+  return 'Run or resolve dry-run review before applying this package.';
 }
 
 function nodePackManagerWorkspaceApplyTone(item = {}) {
@@ -9486,6 +10035,169 @@ function nodePackManagerMakerLabel(pack = {}) {
   );
 }
 
+function nodePackManagerRegistryRowStatusTone(kind, value = '', entry = {}) {
+  const text = nodePackManagerString(value, '').toLowerCase();
+  if (kind === 'signature') {
+    if (nodePackManagerStatusHasAny(text, ['invalid', 'mismatch', 'failed', 'failure', 'untrusted', 'revoked', 'tampered'])) return 'danger';
+    if (nodePackManagerStatusHasAny(text, ['missing', 'none', 'not declared', 'unknown'])) return 'warn';
+    if (nodePackManagerStatusHasAny(text, ['verified', 'valid'])) return 'good';
+    return 'info';
+  }
+  if (kind === 'checksum') {
+    if (nodePackManagerStatusHasAny(text, ['mismatch', 'invalid', 'failed', 'failure', 'tampered', 'unsafe'])) return 'danger';
+    if (nodePackManagerStatusHasAny(text, ['missing', 'none', 'not declared', 'unknown'])) return 'warn';
+    return 'good';
+  }
+  if (kind === 'review') {
+    if (nodePackManagerStatusHasAny(text, ['rejected', 'blocked', 'unsafe', 'malicious', 'failed', 'denied'])) return 'danger';
+    if (nodePackManagerStatusHasAny(text, ['missing', 'none', 'unreviewed', 'pending', 'unknown'])) return 'warn';
+    return nodePackManagerString(entry.metadataTrust, '') === 'orpad-official-registry-reviewed' ? 'good' : 'info';
+  }
+  if (kind === 'metadata') {
+    const trust = nodePackManagerString(value, 'registry-discovery-only');
+    if (trust === 'orpad-official-registry-reviewed') return 'good';
+    if (trust === 'third-party-registry-reviewed') return 'warn';
+    return 'warn';
+  }
+  return 'info';
+}
+
+function nodePackManagerRegistryRowShortStatus(value = '', fallback = 'missing') {
+  const text = nodePackManagerString(value, fallback).trim();
+  if (!text) return fallback;
+  const lower = text.toLowerCase();
+  if (lower === 'manifest-and-files-declared') return 'covered';
+  if (lower === 'registry-discovery-only') return 'discovery';
+  if (lower === 'orpad-official-registry-reviewed') return 'official';
+  if (lower === 'third-party-registry-reviewed') return 'third-party';
+  if (lower === 'not declared') return 'missing';
+  return text.length > 18 ? `${text.slice(0, 17)}...` : text;
+}
+
+function renderNodePackManagerRegistryRowTrustChip({ kind, label, value, tone, title }) {
+  const chipTone = ['good', 'warn', 'danger', 'info'].includes(tone) ? tone : 'info';
+  const text = `${label} ${value}`.trim();
+  const chipTitle = title || text;
+  return `
+    <span class="node-pack-manager-trust-chip ${escapeHtml(chipTone)}" data-node-pack-manager-row-trust-chip="${escapeHtml(kind)}" data-node-pack-manager-row-trust-tone="${escapeHtml(chipTone)}" title="${escapeHtml(chipTitle)}" aria-label="${escapeHtml(chipTitle)}">${escapeHtml(text)}</span>
+  `;
+}
+
+function renderNodePackManagerRegistryRowTrustChips(entry = {}, risk = null) {
+  if (!entry || typeof entry !== 'object') return '';
+  const summary = risk || nodePackManagerRegistryEntryRisk(entry, {});
+  const signatureStatus = nodePackManagerString(entry.signatureStatus, 'missing');
+  const checksumStatus = nodePackManagerString(entry.checksumStatus, 'missing');
+  const reviewStatus = nodePackManagerString(entry.reviewStatus, 'unreviewed');
+  const metadataTrust = nodePackManagerString(entry.metadataTrust, 'registry-discovery-only');
+  const highRiskCapabilities = summary.highRiskCapabilities || nodePackManagerHighRiskCapabilities(entry, {});
+  const chips = [
+    {
+      kind: 'signature',
+      label: 'sig',
+      value: nodePackManagerRegistryRowShortStatus(signatureStatus, 'missing'),
+      tone: nodePackManagerRegistryRowStatusTone('signature', signatureStatus, entry),
+      title: `Signature status: ${signatureStatus}`,
+    },
+    {
+      kind: 'checksum',
+      label: 'hash',
+      value: nodePackManagerRegistryRowShortStatus(checksumStatus, 'missing'),
+      tone: nodePackManagerRegistryRowStatusTone('checksum', checksumStatus, entry),
+      title: `Checksum status: ${checksumStatus}`,
+    },
+    {
+      kind: 'review',
+      label: 'review',
+      value: nodePackManagerRegistryRowShortStatus(reviewStatus, 'unreviewed'),
+      tone: nodePackManagerRegistryRowStatusTone('review', reviewStatus, entry),
+      title: `Review status: ${reviewStatus}`,
+    },
+    {
+      kind: 'metadata',
+      label: 'trust',
+      value: nodePackManagerRegistryRowShortStatus(metadataTrust, 'registry-discovery-only'),
+      tone: nodePackManagerRegistryRowStatusTone('metadata', metadataTrust, entry),
+      title: `Metadata trust: ${nodePackManagerMetadataTrustLabel(metadataTrust)}`,
+    },
+  ];
+  if (highRiskCapabilities.length) {
+    chips.push({
+      kind: 'high-risk',
+      label: String(highRiskCapabilities.length),
+      value: 'high-risk',
+      tone: summary.blocked ? 'danger' : 'warn',
+      title: `High-risk capabilities: ${highRiskCapabilities.join(', ')}`,
+    });
+  }
+  return `
+    <div class="node-pack-manager-package-row-trust" data-node-pack-manager-row-trust aria-label="Registry trust and risk summary">
+      ${chips.map(renderNodePackManagerRegistryRowTrustChip).join('')}
+    </div>
+  `;
+}
+
+function nodePackManagerInstalledTrustLevel(pack = {}) {
+  const rootKind = nodePackManagerString(pack.discovery?.rootKind || pack.origin, '').toLowerCase();
+  return nodePackManagerString(
+    pack.trustLevel || pack.trust || pack.metadataTrust || (rootKind === 'built-in' || pack.origin === 'built-in' ? 'official' : ''),
+    'unknown',
+  );
+}
+
+function nodePackManagerInstalledTrustTone(pack = {}) {
+  const rootKind = nodePackManagerString(pack.discovery?.rootKind || pack.origin, '').toLowerCase();
+  const trust = nodePackManagerInstalledTrustLevel(pack).toLowerCase();
+  if (nodePackManagerStatusHasAny(trust, ['blocked', 'denied', 'invalid', 'rejected', 'untrusted'])) return 'danger';
+  if (rootKind === 'built-in' || pack.origin === 'built-in' || trust.includes('official')) return 'good';
+  if (nodePackManagerStatusHasAny(trust, ['community', 'third-party', 'user', 'signed'])) return 'warn';
+  return 'info';
+}
+
+function renderNodePackManagerInstalledRowTrustChips(pack = {}, status = null, catalog = {}) {
+  if (!pack || typeof pack !== 'object') return '';
+  const rowStatus = status || nodePackManagerStatusForPack(pack, catalog);
+  const trustLevel = nodePackManagerInstalledTrustLevel(pack);
+  const validationStatus = nodePackManagerString(pack.validationStatus || pack.status || pack.validation?.status, '');
+  const resolutionState = nodePackManagerString(pack.resolutionState || pack.validation?.resolutionState || pack.validation?.state, '');
+  const rowState = nodePackManagerString(rowStatus?.label || validationStatus || resolutionState, 'valid');
+  const highRiskCapabilities = nodePackManagerHighRiskCapabilities(pack, catalog);
+  const stateTitle = [
+    validationStatus ? `Validation status: ${validationStatus}` : '',
+    resolutionState ? `Resolution state: ${resolutionState}` : '',
+  ].filter(Boolean).join('; ') || `Validation status: ${rowState}`;
+  const chips = [
+    {
+      kind: 'metadata',
+      label: 'trust',
+      value: nodePackManagerRegistryRowShortStatus(trustLevel, 'unknown'),
+      tone: nodePackManagerInstalledTrustTone(pack),
+      title: `Trust level: ${trustLevel}`,
+    },
+    {
+      kind: 'validation',
+      label: 'state',
+      value: nodePackManagerRegistryRowShortStatus(rowState, 'valid'),
+      tone: rowStatus?.tone || 'info',
+      title: stateTitle,
+    },
+  ];
+  if (highRiskCapabilities.length) {
+    chips.push({
+      kind: 'high-risk',
+      label: String(highRiskCapabilities.length),
+      value: 'high-risk',
+      tone: rowStatus?.tone === 'danger' ? 'danger' : 'warn',
+      title: `High-risk capabilities: ${highRiskCapabilities.join(', ')}`,
+    });
+  }
+  return `
+    <div class="node-pack-manager-package-row-trust" data-node-pack-manager-row-trust aria-label="Installed package trust and risk summary">
+      ${chips.map(renderNodePackManagerRegistryRowTrustChip).join('')}
+    </div>
+  `;
+}
+
 function renderNodePackManagerPackageRow(options = {}) {
   const className = nodePackManagerString(options.className, '');
   const validation = nodePackManagerString(options.validation, '');
@@ -9505,12 +10217,14 @@ function renderNodePackManagerPackageRow(options = {}) {
   const importDataAttr = importAttr
     ? ` ${escapeHtml(importAttr)}="${escapeHtml(importValue)}"`
     : '';
+  const rowTrustHtml = nodePackManagerString(options.rowTrustHtml, '');
   return `
     <div class="node-pack-manager-pack node-pack-manager-package-row ${escapeHtml(className)}" data-node-pack-validation="${escapeHtml(validation)}" role="listitem"${extraAttrs}>
       <div class="node-pack-manager-package-row-main">
         <strong>${escapeHtml(nodePackManagerString(options.name, 'Package'))}</strong>
         <span class="node-pack-manager-package-maker">${escapeHtml(nodePackManagerMakerLabel(options.pack || options.entry || options.item || {}))}</span>
       </div>
+      ${rowTrustHtml}
       <div class="node-pack-manager-package-row-actions">
         <button type="button" data-node-pack-manager-detail-open="${escapeHtml(detailKind)}" data-node-pack-manager-detail-index="${escapeHtml(detailIndex)}" title="${escapeHtml(detailTitle)}">Detail</button>
         <button type="button"${importDataAttr} ${disabled ? 'disabled' : ''} title="${escapeHtml(importTitle)}">${escapeHtml(importLabel)}</button>
@@ -10070,11 +10784,7 @@ function openOrchNodePackManager(resolutionContext = null) {
         const tone = nodePackManagerWorkspaceApplyTone(item);
         const label = nodePackManagerWorkspaceApplyStatusLabel(item);
         const canApply = item.status === 'ready' && item.action !== 'none' && item.registryEntry;
-        const importTitle = canApply
-          ? 'Import the exact package version recorded in the workspace lock.'
-          : (item.status === 'synced'
-            ? 'This workspace lock package is already imported.'
-            : 'Run or resolve dry-run review before importing this package.');
+        const importTitle = nodePackManagerWorkspaceApplyActionTitle(item, canApply);
         return renderNodePackManagerPackageRow({
           name: item.lockEntry?.name || item.registryEntry?.name || item.lockEntry?.id || item.id || 'Workspace lock package',
           pack: item.registryEntry || item.lockEntry || { origin: item.registrySource },
@@ -10085,7 +10795,7 @@ function openOrchNodePackManager(resolutionContext = null) {
           detailTitle: 'Open workspace lock package details.',
           importAttr: 'data-node-pack-manager-workspace-apply',
           importValue: String(index),
-          importLabel: item.status === 'synced' ? 'Imported' : (canApply ? 'Import' : 'Import blocked'),
+          importLabel: nodePackManagerWorkspaceApplyActionLabel(item, canApply),
           importDisabled: !canApply,
           importTitle,
           item,
@@ -10165,7 +10875,7 @@ function openOrchNodePackManager(resolutionContext = null) {
         return renderNodePackManagerPackageRow({
           name: entry.name || entry.id,
           entry,
-          className: risk.blocked ? 'node-pack-manager-pack-danger' : '',
+          className: risk.blocked ? 'node-pack-manager-pack-danger' : (risk.warningDiagnostics?.length ? 'node-pack-manager-pack-warn' : ''),
           validation,
           detailKind: 'registry',
           detailIndex: index,
@@ -10175,6 +10885,7 @@ function openOrchNodePackManager(resolutionContext = null) {
           importLabel: installed ? 'Imported' : (actionState.disabled ? 'Import blocked' : 'Import'),
           importDisabled: actionState.disabled,
           importTitle: actionState.reason || 'Import this package from the selected Registry source.',
+          rowTrustHtml: renderNodePackManagerRegistryRowTrustChips(entry, risk),
           dataAttrs: [{ name: 'data-node-pack-manager-registry-index', value: index }],
         });
       }).join('');
@@ -10230,16 +10941,17 @@ function openOrchNodePackManager(resolutionContext = null) {
         return renderNodePackManagerPackageRow({
           name: entry.name || entry.id,
           entry,
-          className: risk.blocked ? 'node-pack-manager-pack-danger' : '',
+          className: risk.blocked ? 'node-pack-manager-pack-danger' : (risk.warningDiagnostics?.length ? 'node-pack-manager-pack-warn' : ''),
           validation: risk.blocked ? 'update-blocked' : 'update-available',
           detailKind: 'update',
           detailIndex: index,
           detailTitle: `Open update details for ${nodePackManagerString(installed?.version, 'installed')} to ${entry.latestVersion || 'latest'}.`,
           importAttr: 'data-node-pack-manager-registry-update',
           importValue: entry.id,
-          importLabel: actionState.disabled ? 'Import blocked' : 'Import',
+          importLabel: actionState.disabled ? 'Update blocked' : 'Update',
           importDisabled: actionState.disabled,
           importTitle: actionState.reason || 'Import the latest package version from the selected Registry source.',
+          rowTrustHtml: renderNodePackManagerRegistryRowTrustChips(entry, risk),
           dataAttrs: [{ name: 'data-node-pack-manager-update-index', value: index }],
         });
       }).join('');
@@ -10333,6 +11045,7 @@ function openOrchNodePackManager(resolutionContext = null) {
         importLabel: 'Import',
         importDisabled: true,
         importTitle: 'This package is already imported.',
+        rowTrustHtml: renderNodePackManagerInstalledRowTrustChips(pack, status, state.catalog),
         dataAttrs: [{ name: 'data-node-pack-manager-pack-index', value: index }],
       });
     }).join('');
@@ -11291,6 +12004,28 @@ function handleOrchTransitionMouseDown(event) {
 
 document.addEventListener('mousedown', handleOrchTransitionMouseDown, true);
 
+// Steer-from-the-graph run controls (Pause/Resume/Cancel rendered on the canvas).
+// Routed here rather than through the run-bar dispatch because these buttons live
+// inside the graph frame, not the run-bar slot. The pan/marquee guards exclude
+// `.orch-graph-run-controls`, so the click reaches us without starting a drag.
+contentEl?.addEventListener('click', async (event) => {
+  const btn = event.target?.closest?.('[data-graph-run-action]');
+  if (!btn || !contentEl.contains(btn)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const action = btn.dataset.graphRunAction || '';
+  const runId = btn.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
+  const targetPath = btn.dataset.path || pipelineContextForPath()?.pipelinePath || selectedRunbookPath || '';
+  if (!runId || !targetPath) return;
+  try {
+    if (action === 'pause') await pauseSelectedMachineRun(targetPath, runId);
+    else if (action === 'resume') await resumeSelectedMachineRun(targetPath, runId);
+    else if (action === 'cancel') await cancelSelectedMachineRun(targetPath, runId);
+  } catch (err) {
+    notifyFormatError('Run control', err);
+  }
+});
+
 function handleOrchTransitionContextMenu(event) {
   if (!isOrchViewType(getActiveTab()?.viewType)) return;
   if (shouldSuppressOrchContextMenu(event)) return;
@@ -11342,8 +12077,10 @@ function renderOrchGraphNode(item, readwrite, runProjection = null) {
     ? {
       ...runtime,
       state: 'blocked',
-      label: `Paused (${progress.done}/${progress.total})`,
-      title: `${progress.done} of ${progress.total} items processed; remaining items will resume on the next run step.`,
+      // Avoid the word "Paused" here — that now means the run-control pause. This
+      // is a partially-drained batch, a different concept.
+      label: `Partial (${progress.done}/${progress.total})`,
+      title: `${progress.done} of ${progress.total} items processed; remaining items continue on the next run step.`,
     }
     : runtime;
   const runtimeClass = displayRuntime ? ` runtime-${displayRuntime.state}` : '';
@@ -11660,13 +12397,58 @@ function renderOrchGraphCanvas(graph, readwrite, tools = true, runProjection = n
   const gy = Math.round(graph.minY);
   const gw = Math.round(graph.width);
   const gh = Math.round(graph.height);
+  // Supervised-autonomy: reflect a paused/cancelling RUN on the live graph itself
+  // (the vision's primary surface). is-run-paused freezes every descendant
+  // animation (see base.css) so the graph visibly STOPS while suspended instead
+  // of pulsing as if work were still in flight, and a banner names the state.
+  const runFrameLifecycle = String(runProjection?.record?.runState?.lifecycleStatus || '').toLowerCase();
+  const runFrameStateClass = runFrameLifecycle === 'paused'
+    ? ' is-run-paused'
+    : (runFrameLifecycle === 'cancelling' ? ' is-run-cancelling' : '');
+  const runFrameBannerHtml = runFrameLifecycle === 'paused'
+    ? '<div class="orch-graph-run-banner is-paused" role="status">Run paused — execution suspended</div>'
+    : (runFrameLifecycle === 'cancelling'
+      ? '<div class="orch-graph-run-banner is-cancelling" role="status">Cancelling run — stopping work…</div>'
+      : '');
+  // Steer-from-the-graph controls (the vision's "control at any time from the
+  // live graph"). A compact cluster anchored on the canvas mirrors the run-bar
+  // Pause/Resume/Cancel so the user never has to leave the graph to act —
+  // important in editor-mode where the run-bar header is not present. The pan /
+  // marquee handlers below exclude `.orch-graph-run-controls`, the same way they
+  // exclude `.orch-graph-tools`, so clicking these never starts a drag.
+  const runFrameRunId = runProjection?.record?.runState?.runId || runProjection?.record?.runId || '';
+  const runFramePath = runProjection?.pipelinePath || '';
+  let runFrameControlsHtml = '';
+  if (runFrameRunId && runFramePath && (runProjection?.runInProgress || runFrameLifecycle === 'paused')) {
+    const pauseBridge = !!(window.orpad && window.orpad.machine && window.orpad.machine.pauseRun);
+    const resumeBridge = !!(window.orpad && window.orpad.machine && window.orpad.machine.resumeRun);
+    const cancelBridge = !!(window.orpad && window.orpad.machine && window.orpad.machine.cancelRun);
+    const cancelP = isMachineRunCancelPending(runFramePath, runFrameRunId);
+    const dataAttrs = `data-run-id="${escapeHtml(runFrameRunId)}" data-path="${escapeHtml(runFramePath)}"`;
+    const ctlButtons = [];
+    if (runFrameLifecycle === 'paused') {
+      const resumeP = isMachineRunResumePending(runFramePath, runFrameRunId);
+      ctlButtons.push(`<button class="orch-graph-run-btn resume" data-graph-run-action="resume" ${dataAttrs} ${resumeBridge && !resumeP ? '' : 'disabled'} title="${escapeHtml(resumeP ? 'Resuming…' : 'Resume the paused run and continue autonomously.')}" aria-label="Resume run">${orchToolIcon('M4 3v10M7 3l6 5-6 5z')}</button>`);
+    } else if (runFrameLifecycle !== 'cancelling') {
+      const pauseP = isMachineRunPausePending(runFramePath, runFrameRunId);
+      ctlButtons.push(`<button class="orch-graph-run-btn pause" data-graph-run-action="pause" ${dataAttrs} ${pauseBridge && !cancelP && !pauseP ? '' : 'disabled'} title="${escapeHtml(pauseP ? 'Pausing — suspends after the current step.' : 'Pause at the next step boundary; in-flight work finishes first.')}" aria-label="Pause run">${orchToolIcon('M5 4h2v8H5z M9 4h2v8H9z')}</button>`);
+    }
+    if (runFrameLifecycle !== 'cancelling') {
+      ctlButtons.push(`<button class="orch-graph-run-btn cancel" data-graph-run-action="cancel" ${dataAttrs} ${cancelBridge && !cancelP ? '' : 'disabled'} title="${escapeHtml(cancelP ? 'Cancel requested…' : 'Cancel the run (in-flight work is discarded).')}" aria-label="Cancel run">${orchToolIcon('M5 5h8v8H5z')}</button>`);
+    }
+    if (ctlButtons.length) {
+      runFrameControlsHtml = `<div class="orch-graph-run-controls" data-graph-run-controls>${ctlButtons.join('')}</div>`;
+    }
+  }
   return `
     <section class="orch-tree">
       <header>
         <strong>${escapeHtml(graph.tree?.label || graph.tree?.id || `Tree ${graph.treeIndex + 1}`)}</strong>
         <span>${escapeHtml(graph.tree?.id || '')}</span>
       </header>
-      <div class="orch-graph-frame ${orchGraphTool === 'hand' ? 'hand' : ''}" data-orch-frame data-x="${gx}" data-y="${gy}" data-w="${gw}" data-h="${gh}">
+      <div class="orch-graph-frame ${orchGraphTool === 'hand' ? 'hand' : ''}${runFrameStateClass}" data-orch-frame data-x="${gx}" data-y="${gy}" data-w="${gw}" data-h="${gh}">
+        ${runFrameBannerHtml}
+        ${runFrameControlsHtml}
         ${tools ? `<div class="orch-graph-tools">
           <button class="orch-tool-btn" data-orch-history="undo" title="Undo" aria-label="Undo" ${getOrchHistoryState()?.undo?.length ? '' : 'disabled'}>${ORCH_TOOL_ICON_UNDO}</button>
           <button class="orch-tool-btn" data-orch-history="redo" title="Redo" aria-label="Redo" ${getOrchHistoryState()?.redo?.length ? '' : 'disabled'}>${ORCH_TOOL_ICON_REDO}</button>
@@ -12025,7 +12807,7 @@ function renderOrchTreePreview(content) {
     let rightPan = null;
     let selectDrag = null;
     frame.addEventListener('pointerdown', (event) => {
-      if (event.button !== 2 || event.target.closest('.orch-graph-tools')) return;
+      if (event.button !== 2 || event.target.closest('.orch-graph-tools') || event.target.closest('.orch-graph-run-controls')) return;
       if (event.target.closest('.orch-graph-node') || orchTransitionTarget(event.target)) return;
       closeOrchContextMenu();
       rightPan = {
@@ -12043,7 +12825,7 @@ function renderOrchTreePreview(content) {
     }, true);
     frame.addEventListener('pointerdown', (event) => {
       if (event.button !== 0 || orchGraphTool !== 'hand') return;
-      if (event.target.closest('.orch-graph-tools')) return;
+      if (event.target.closest('.orch-graph-tools') || event.target.closest('.orch-graph-run-controls')) return;
       event.preventDefault();
       event.stopPropagation();
       pan = {
@@ -12059,7 +12841,7 @@ function renderOrchTreePreview(content) {
     frame.addEventListener('pointerdown', (event) => {
       if (event.button !== 0 || orchGraphTool !== 'select') return;
       if (event.target.closest('.orch-graph-node')) return;
-      if (event.target.closest('.orch-graph-tools') || orchTransitionTarget(event.target)) return;
+      if (event.target.closest('.orch-graph-tools') || event.target.closest('.orch-graph-run-controls') || orchTransitionTarget(event.target)) return;
       event.preventDefault();
       closeOrchContextMenu();
       const start = orchFramePoint(frame, event);
@@ -12476,7 +13258,7 @@ function renderOrchTreePreview(content) {
       });
     });
   });
-  document.addEventListener('click', closeOrchContextMenu, { once: true, capture: true });
+  installOrchContextMenuDismissListener();
   updateOrchViewportDom();
   watchOrchGraphFrames();
   if (orchGraphFitAfterRender) {
@@ -12524,7 +13306,7 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
     let rightPan = null;
     let selectDrag = null;
     frame.addEventListener('pointerdown', (event) => {
-      if (event.button !== 2 || event.target.closest('.orch-graph-tools')) return;
+      if (event.button !== 2 || event.target.closest('.orch-graph-tools') || event.target.closest('.orch-graph-run-controls')) return;
       if (event.target.closest('.orch-graph-node') || orchTransitionTarget(event.target)) return;
       closeOrchContextMenu();
       rightPan = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, viewX: orchGraphViewport.x, viewY: orchGraphViewport.y, moved: false };
@@ -12863,7 +13645,7 @@ function bindOrchGraphEditorInteractions(readwrite, graphDoc = null, graphBaseFi
       });
     });
   });
-  document.addEventListener('click', closeOrchContextMenu, { once: true, capture: true });
+  installOrchContextMenuDismissListener();
   updateOrchViewportDom();
   watchOrchGraphFrames();
   if (orchGraphFitAfterRender) {
@@ -14191,6 +14973,13 @@ function showSidebar(panel) {
     renderRunbooksPanel();
     void refreshWorkspaceRunbookSummary();
   }
+}
+
+function isRunbooksPanelVisible() {
+  return !!runbooksContentEl
+    && sidebarVisible
+    && sidebarActivePanel === 'runbooks'
+    && !sidebarEl.classList.contains('hidden');
 }
 
 function ensureSidebar(panel) {
@@ -16109,7 +16898,7 @@ function machineWorkInProgressLabel(count) {
 }
 
 function machineLatestWorkerEvent(record) {
-  return record?.worker?.event || latestMachineEvent(record?.events, 'worker.result');
+  return record?.worker?.event || machineLatestRunEventProjection(record).latestWorkerEvent;
 }
 
 function machineWorkerResultState(record) {
@@ -16145,11 +16934,7 @@ function machineWorkerSummaryForEvent(record, workerEvent) {
 }
 
 function machineLatestPartialArtifactContract(record) {
-  return latestMachineEvent(record?.events, 'node.completed', event => {
-    const payload = event?.payload || {};
-    return payload.nodeType === 'orpad.artifactContract'
-      && ((Number(payload.missingArtifactCount) || 0) > 0 || (Number(payload.missingQueueCount) || 0) > 0);
-  });
+  return machineLatestRunEventProjection(record).latestPartialArtifactContract;
 }
 
 function machineWorkerReviewInfo(record) {
@@ -16698,13 +17483,7 @@ function machineStatusChipClass(status, kind = 'lifecycle') {
 }
 
 function machineLatestCompletionBlock(record) {
-  const events = Array.isArray(record?.events) ? record.events : [];
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (!['run.summary', 'run.status'].includes(event?.eventType)) continue;
-    if (event.payload?.completionBlocked) return event.payload.completionBlocked;
-  }
-  return record?.runState?.completionBlocked || null;
+  return machineLatestRunEventProjection(record).latestCompletionBlock;
 }
 
 function machineCompletionBlockSummary(block = null) {
@@ -16973,35 +17752,11 @@ function machineCandidateInventoryDetails(record) {
 }
 
 function machineWorkerProofDetails(record) {
-  const workerEvents = (record?.events || []).filter(event => event?.eventType === 'worker.result');
-  const event = workerEvents[workerEvents.length - 1] || null;
-  if (!event) return 'No work result yet';
-  if (workerEvents.length > 1) {
-    const evidenceCount = workerEvents.reduce((sum, item) => sum + (item.artifactRefs || []).length, 0);
-    const checkCount = workerEvents.reduce((sum, item) => sum + (item.payload?.verification || []).length, 0);
-    const changedFileCount = workerEvents.reduce((sum, item) => sum + (item.payload?.changedFiles || []).length, 0);
-    return [
-      machineCountLabel(workerEvents.length, 'work result'),
-      machineCountLabel(evidenceCount, 'evidence file'),
-      machineCountLabel(checkCount, 'check'),
-      machineCountLabel(changedFileCount, 'changed file'),
-    ].filter(Boolean).join('; ');
-  }
-  const payload = event.payload || {};
-  const artifacts = event.artifactRefs || [];
-  const verification = payload.verification || [];
-  const changedFiles = payload.changedFiles || [];
-  return [
-    machineWorkerStatusLabel(payload.status),
-    machineCountLabel(artifacts.length, 'evidence file'),
-    machineCountLabel(verification.length, 'check'),
-    machineCountLabel(changedFiles.length, 'changed file'),
-  ].filter(Boolean).join('; ');
+  return machineLatestRunEventProjection(record).workerProofDetails;
 }
 
 function machineNodeCompletionDetails(record) {
-  const completed = (record?.events || []).filter(event => event?.eventType === 'node.completed');
-  return completed.length ? `${machineCountLabel(completed.length, 'step')} completed` : 'No steps completed yet';
+  return machineLatestRunEventProjection(record).nodeCompletionDetails;
 }
 
 function machineRunWaitingDecisionState(record, {
@@ -17382,17 +18137,51 @@ function machineRunActionKey(runbookPath, runId) {
   return `${runbookNormalizePath(runbookPath).toLowerCase()}::${runId || ''}`;
 }
 
+function machineRunActionKeyRunbookPart(key) {
+  const index = String(key || '').lastIndexOf('::');
+  return index >= 0 ? String(key).slice(0, index) : String(key || '');
+}
+
+function disposeMachineRunProgressRefreshStateByKey(key) {
+  if (!key) return;
+  const state = machineRunProgressRefreshState.get(key);
+  if (state?.timer) clearTimeout(state.timer);
+  machineRunProgressRefreshState.delete(key);
+}
+
 function stopMachineRunProgressPollingByKey(key) {
+  if (!key) return;
   const timer = machineRunProgressTimers.get(key);
-  if (!timer) return;
-  clearInterval(timer);
+  if (timer) clearInterval(timer);
   machineRunProgressTimers.delete(key);
+  disposeMachineRunProgressRefreshStateByKey(key);
+}
+
+function stopMachineRunProgressPollingForUnselectedRunbooks(selectedPath = selectedRunbookPath) {
+  const selectedKey = runbookNormalizePath(selectedPath || '').toLowerCase();
+  const keys = new Set([
+    ...machineRunProgressTimers.keys(),
+    ...machineRunProgressRefreshState.keys(),
+  ]);
+  for (const key of keys) {
+    if (!selectedKey || machineRunActionKeyRunbookPart(key) !== selectedKey) {
+      stopMachineRunProgressPollingByKey(key);
+    }
+  }
 }
 
 function clearMachineRunProgressState() {
   for (const key of [...machineRunProgressTimers.keys()]) {
     stopMachineRunProgressPollingByKey(key);
   }
+  // PUSH STREAM: cancel any pending throttled-refresh timers (so a stale refresh
+  // can't fire after teardown/navigation) and drop the per-run coalesce + chain
+  // state so neither Map grows unbounded across runs/workspace switches.
+  for (const state of machineRunProgressRefreshState.values()) {
+    if (state?.timer) clearTimeout(state.timer);
+  }
+  machineRunProgressRefreshState.clear();
+  machineRunRefreshChains.clear();
   machineRunStartPendingPaths.clear();
   machineRunPendingActions.clear();
 }
@@ -17417,6 +18206,13 @@ function setMachineRunStartPending(runbookPath, pending) {
 // (runbookKey, runId|'__start__').
 const machineRunMutationLocks = new Set();
 const machineRunCancelPendingKeys = new Set();
+// Supervised-autonomy intent acks. Pause/resume are intent-then-ack (the run
+// only reaches 'paused'/'running' at the driver's next step boundary, which can
+// be a long worker step away), so — exactly like cancel — we record an
+// optimistic "requested" flag synchronously on click and surface it until the
+// durable lifecycle lands. Without this the click looks inert for seconds.
+const machineRunPausePendingKeys = new Set();
+const machineRunResumePendingKeys = new Set();
 
 function machineRunMutationLockKey(runbookPath, runId) {
   const key = runbookNormalizePath(runbookPath).toLowerCase();
@@ -17471,6 +18267,47 @@ function setMachineRunCancelPending(runbookPath, runId, pending) {
 function isMachineRunCancelPending(runbookPath, runId) {
   if (!runbookPath || !runId) return false;
   return machineRunCancelPendingKeys.has(machineRunActionKey(runbookPath, runId));
+}
+
+function setMachineRunPausePending(runbookPath, runId, pending) {
+  if (!runbookPath || !runId) return;
+  const key = machineRunActionKey(runbookPath, runId);
+  if (pending) machineRunPausePendingKeys.add(key);
+  else machineRunPausePendingKeys.delete(key);
+}
+
+function isMachineRunPausePending(runbookPath, runId) {
+  if (!runbookPath || !runId) return false;
+  return machineRunPausePendingKeys.has(machineRunActionKey(runbookPath, runId));
+}
+
+function setMachineRunResumePending(runbookPath, runId, pending) {
+  if (!runbookPath || !runId) return;
+  const key = machineRunActionKey(runbookPath, runId);
+  if (pending) machineRunResumePendingKeys.add(key);
+  else machineRunResumePendingKeys.delete(key);
+}
+
+function isMachineRunResumePending(runbookPath, runId) {
+  if (!runbookPath || !runId) return false;
+  return machineRunResumePendingKeys.has(machineRunActionKey(runbookPath, runId));
+}
+
+// The pause/resume "requested" flags are intent acks: a pause-pending only makes
+// sense while the autonomous drive is still in flight and not yet paused (an
+// autonomous run briefly flips running<->waiting between driver steps, so we key
+// off the in-progress predicate, not the literal 'running' string), and a
+// resume-pending only while still 'paused'. Once the durable lifecycle settles,
+// the flag is stale — clear it so it never bleeds into a later state of the same
+// runId. Idempotent and cheap; safe to call from the run-bar render path.
+function reconcileMachineRunControlPending(runbookPath, runId, { inProgress = false, paused = false } = {}) {
+  if (!runbookPath || !runId) return;
+  if (!(inProgress && !paused) && isMachineRunPausePending(runbookPath, runId)) {
+    setMachineRunPausePending(runbookPath, runId, false);
+  }
+  if (!paused && isMachineRunResumePending(runbookPath, runId)) {
+    setMachineRunResumePending(runbookPath, runId, false);
+  }
 }
 
 function setMachineRunActionPending(runbookPath, runId, pending) {
@@ -17628,6 +18465,23 @@ function machineRuntimeNodeProjection(record) {
         state: 'cancelled',
         label: 'Stopped',
         title: `Stopped: ${nodePath}`,
+      });
+    }
+  }
+  // Supervised-autonomy: when the RUN is paused (or tearing down via cancelling),
+  // re-label any still-'running' node so the graph reads as suspended rather than
+  // actively churning. The graph-frame freeze (is-run-paused) is the belt; this
+  // is the suspenders — together they ensure a paused run never *looks* live.
+  if (lifecycle === 'paused' || lifecycle === 'cancelling') {
+    const suspendedState = lifecycle === 'paused' ? 'paused' : 'cancelling';
+    const suspendedLabel = lifecycle === 'paused' ? 'Paused' : 'Stopping…';
+    for (const [nodePath, status] of statuses.entries()) {
+      if (status.state !== 'running') continue;
+      statuses.set(nodePath, {
+        ...status,
+        state: suspendedState,
+        label: suspendedLabel,
+        title: `${suspendedLabel}: ${nodePath}`,
       });
     }
   }
@@ -17847,17 +18701,17 @@ function harnessImplementationSupersedesRunDetails(record, state, pending = fals
 }
 
 function harnessImplementationReplacesRunDetails(record, state, pending = false) {
-  const status = String(state?.status || '').toLowerCase();
-  if (status === 'succeeded') return false;
   return harnessImplementationSupersedesRunDetails(record, state, pending);
 }
 
 function renderHarnessImplementationSidebarSection(record, runbookPath, state, pending = false) {
   if (!runbookPath || !harnessImplementationReplacesRunDetails(record, state, pending)) return '';
+  const validation = selectedPipelineValidation(runbookPath);
+  const pipelineDoc = validation?.pipeline || validation?.doc || validation?.pipelineDoc || null;
   return `
       <section class="runbook-panel-section" data-runbook-section="harness-implementation">
-        <h3>Harness Implementation</h3>
-        ${renderHarnessImplementationBannerHtml(runbookPath, state, null, pending)}
+        <h3>VM Harness</h3>
+        ${renderHarnessImplementationBannerHtml(runbookPath, state, pipelineDoc, pending)}
       </section>
     `;
 }
@@ -17874,6 +18728,121 @@ function pipelinePreviewHarnessRunStatus(state, pending = false, progress = null
   return { state: 'warn', text: 'Harness implementation pending.' };
 }
 
+function harnessDashboardCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function harnessDashboardSummaryCount(summary, keys) {
+  const source = (summary && typeof summary === 'object') ? summary : {};
+  return keys.reduce((total, key) => total + harnessDashboardCount(source[key]), 0);
+}
+
+function harnessDashboardSummaryText(summary, primaryKeys = [], detailKeys = []) {
+  const source = (summary && typeof summary === 'object') ? summary : {};
+  const total = harnessDashboardCount(source.total);
+  const primary = harnessDashboardSummaryCount(source, primaryKeys);
+  const primaryText = total
+    ? `${primary} ready / ${total} total`
+    : (primary ? `${primary} ready` : '');
+  const details = detailKeys
+    .map(([key, label]) => {
+      const count = harnessDashboardCount(source[key]);
+      return count ? `${count} ${label}` : '';
+    })
+    .filter(Boolean);
+  return {
+    value: primaryText || (total ? `${total} total` : 'Not recorded'),
+    detail: details.join(', ') || '',
+  };
+}
+
+function harnessDashboardStatusClass(status, fallback = 'warn') {
+  const value = String(status || '').toLowerCase();
+  if (['ready', 'succeeded', 'success', 'ok', 'available', 'enabled', 'passed', 'completed', 'done'].includes(value)) return 'good';
+  if (['blocked', 'failed', 'error', 'missing', 'unavailable', 'denied'].includes(value)) return 'danger';
+  if (['degraded', 'warn', 'warning', 'running', 'pending', 'unknown', 'configured-not-running'].includes(value)) return 'warn';
+  return fallback;
+}
+
+function harnessDashboardStatusLabel(status, fallback = 'Pending') {
+  const value = String(status || '').trim();
+  if (!value) return fallback;
+  return value
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function harnessDashboardArtifactRef(pipelineDoc, state, key, fallback) {
+  const implementation = pipelineDoc?.metadata?.harnessImplementation || {};
+  const harness = pipelineDoc?.harness || {};
+  const provisioning = state?.provisioning || {};
+  const refs = {
+    state: implementation.statePath || harness.implementationState || state?.path,
+    profile: implementation.projectProfilePath || harness.projectProfile || state?.projectProfile?.path,
+    provisioning: implementation.provisioningPath || harness.provisioning || provisioning.path,
+    toolHealth: harness.toolHealth || provisioning.toolHealthPath,
+    validationPreflight: harness.validationPreflight || provisioning.validationPreflightPath,
+    mcpPlan: harness.mcpPlan || provisioning.mcpPlanPath,
+    readme: harness.readme || state?.readmePath,
+  };
+  return refs[key] || fallback;
+}
+
+function renderHarnessDashboardArtifactButton(label, ref, pipelineDir, harnessRoot) {
+  if (!pipelineDir || !ref) return '';
+  const root = String(harnessRoot || 'harness/generated').trim().replace(/\/+$/, '') || 'harness/generated';
+  const normalized = runbookNormalizePath(ref);
+  const rootPrefix = `${root}/`.toLowerCase();
+  const isAbsolute = /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('/');
+  const abs = isAbsolute
+    ? normalizeRunbookFilePath(normalized)
+    : normalizeRunbookFilePath(`${pipelineDir}/${normalized.toLowerCase().startsWith(rootPrefix) ? normalized : `${root}/${normalized}`}`);
+  return `<button class="pipe-lifecycle-banner-link vm-harness-dashboard-action" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(abs)}" title="${escapeHtml(abs)}">${escapeHtml(label)}</button>`;
+}
+
+function renderHarnessDashboardStepRail(state, pending = false) {
+  const status = String(state?.status || '').toLowerCase();
+  const rawStage = String(state?.stage || '').toLowerCase();
+  const normalizedStage = ['nodes', 'node-contracts', 'contracts'].includes(rawStage)
+    ? 'nodes'
+    : rawStage;
+  const stage = status === 'succeeded'
+    ? 'ready'
+    : (normalizedStage === 'blocked' || normalizedStage === 'failed' ? 'provisioning' : normalizedStage);
+  const steps = [
+    { id: 'profile', label: 'Profile' },
+    { id: 'authoring', label: 'Spec' },
+    { id: 'provisioning', label: 'Provision' },
+    { id: 'nodes', label: 'Contracts' },
+    { id: 'ready', label: 'Ready' },
+  ];
+  const currentIndex = steps.findIndex(step => step.id === (stage || (pending ? 'profile' : 'provisioning')));
+  const safeCurrentIndex = currentIndex === -1 ? 0 : currentIndex;
+  const isTerminalGood = status === 'succeeded';
+  const isTerminalBad = ['blocked', 'failed'].includes(status);
+  return `
+    <ol class="vm-harness-stage-rail" aria-label="VM Harness stage progress">
+      ${steps.map((step, index) => {
+        const stateClass = isTerminalGood || index < safeCurrentIndex
+          ? 'done'
+          : (index === safeCurrentIndex ? (isTerminalBad ? 'danger' : 'current') : 'wait');
+        return `<li class="${stateClass}"><span>${escapeHtml(step.label)}</span></li>`;
+      }).join('')}
+    </ol>
+  `;
+}
+
+function renderHarnessDashboardMetric(label, value, detail = '', state = 'neutral') {
+  return `
+    <div class="vm-harness-metric vm-harness-metric--${escapeHtml(state)}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      ${detail ? `<em>${escapeHtml(detail)}</em>` : ''}
+    </div>
+  `;
+}
+
 function renderHarnessImplementationBannerHtml(runbookPath, state, pipelineDoc = null, pending = false) {
   const status = String(state?.status || '').toLowerCase();
   if (!pending && !status) return '';
@@ -17882,54 +18851,130 @@ function renderHarnessImplementationBannerHtml(runbookPath, state, pipelineDoc =
   const readyCount = nodes.filter(node => ['succeeded', 'ready'].includes(String(node?.status || '').toLowerCase())).length;
   const runningCount = countByStatus('running');
   const failedCount = countByStatus('failed');
-  const pendingCount = nodes.length ? Math.max(0, nodes.length - readyCount - runningCount - failedCount) : 0;
-  const countText = nodes.length
-    ? `Nodes: ${readyCount}/${nodes.length} ready${runningCount ? `, ${runningCount} running` : ''}${failedCount ? `, ${failedCount} failed` : ''}${pendingCount ? `, ${pendingCount} pending` : ''}.`
-    : '';
+  const nodeTotal = nodes.length || harnessDashboardCount(state?.nodeCount);
+  const pendingCount = nodeTotal ? Math.max(0, nodeTotal - readyCount - runningCount - failedCount) : 0;
   const progress = harnessImplementationProgressForPath(runbookPath);
   let kind = 'warn';
-  let title = 'Harness implementation';
+  let title = 'VM Harness';
   let detail = state?.message || 'Preparing pipeline harness artifacts.';
-  let conclusion = countText;
+  let nextAction = 'Keep the run history visible while readiness evidence is collected.';
   if (pending && !status) {
-    title = 'Harness implementation starting';
+    title = 'VM Harness starting';
     detail = 'OrPAD is preparing the harness implementation request for this pipeline.';
   } else if (status === 'running') {
     title = progress?.label || state?.stageLabel || 'Implementing harness';
     detail = state?.message || progress?.title || 'Writing harness contracts and operational artifacts.';
+    nextAction = 'Wait for readiness checks before starting managed work.';
   } else if (status === 'blocked') {
     kind = 'error';
-    title = 'Harness implementation blocked';
+    title = 'VM Harness blocked';
     detail = state?.message || 'Harness provisioning found a blocker that must be resolved before running this pipeline.';
     const blockers = state?.provisioning?.blockers || [];
-    conclusion = blockers.length ? `Blockers: ${blockers.slice(0, 3).join(' | ')}` : countText;
+    nextAction = blockers.length ? `Resolve: ${blockers[0]}` : 'Resolve provisioning blockers before starting managed work.';
   } else if (status === 'failed') {
     kind = 'error';
-    title = 'Harness implementation failed';
+    title = 'VM Harness failed';
     detail = state?.message || 'Harness artifacts could not be generated.';
+    nextAction = 'Review implementation-state.json and rerun harness implementation.';
   } else if (status === 'succeeded') {
     kind = 'success';
-    title = 'Harness ready';
+    title = 'VM Harness ready';
     detail = state?.message || 'Harness implementation completed.';
-    conclusion = countText || 'The pipeline harness is ready for a new run.';
+    nextAction = 'Ready for a managed run with the recorded authority checks.';
   }
   const context = pipelineContextForPath(runbookPath);
   const pipelineDir = context?.pipelineDir || runbookDirPath(runbookPath);
   const harnessRoot = pipelineDoc?.harness?.path || 'harness/generated';
-  const artifactButton = (label, relativePath) => {
-    if (!pipelineDir || !relativePath) return '';
-    const abs = normalizeRunbookFilePath(`${pipelineDir}/${harnessRoot}/${relativePath}`);
-    return `<button class="pipe-lifecycle-banner-link" data-probe-action="open-artifact" data-artifact-path="${escapeHtml(abs)}" title="${escapeHtml(abs)}">${escapeHtml(label)}</button>`;
-  };
+  const provisioning = (state?.provisioning && typeof state.provisioning === 'object') ? state.provisioning : {};
+  const projectProfile = (state?.projectProfile && typeof state.projectProfile === 'object') ? state.projectProfile : {};
+  const toolHealthSummary = state?.toolHealthSummary || state?.toolHealth?.summary || provisioning.toolHealthSummary || provisioning.toolHealth?.summary || null;
+  const validationSummary = state?.validationPreflightSummary || state?.validationPreflight?.summary || provisioning.validationPreflightSummary || provisioning.validationPreflight?.summary || null;
+  const mcpPlan = state?.mcpPlan || provisioning.mcpPlan || {};
+  const mcpServers = Array.isArray(mcpPlan.recommendedServers)
+    ? mcpPlan.recommendedServers
+    : (Array.isArray(provisioning.mcpRecommendedServers) ? provisioning.mcpRecommendedServers : (Array.isArray(state?.mcpRecommendedServers) ? state.mcpRecommendedServers : []));
+  const mcpCapabilities = Array.isArray(mcpPlan.orpadCapabilities)
+    ? mcpPlan.orpadCapabilities
+    : (Array.isArray(provisioning.orpadCapabilities) ? provisioning.orpadCapabilities : (Array.isArray(state?.orpadCapabilities) ? state.orpadCapabilities : []));
+  const mcpRecommendationCount = Array.isArray(state?.toolPlan?.mcpRecommendations) ? state.toolPlan.mcpRecommendations.length : 0;
+  const requiredTools = Array.isArray(projectProfile.requiredTools) ? projectProfile.requiredTools : [];
+  const toolSummary = toolHealthSummary
+    ? harnessDashboardSummaryText(toolHealthSummary, ['ready', 'available'], [
+      ['degraded', 'degraded'],
+      ['missing', 'missing'],
+      ['unknown', 'unknown'],
+    ])
+    : {
+      value: requiredTools.length ? `${requiredTools.length} required` : 'Not recorded',
+      detail: requiredTools.slice(0, 3).join(', '),
+    };
+  const validationCommandCount = harnessDashboardCount(projectProfile.validationCommandCount);
+  const validationSummaryText = validationSummary
+    ? harnessDashboardSummaryText(validationSummary, ['ready', 'passed'], [
+      ['blocked', 'blocked'],
+      ['failed', 'failed'],
+      ['unknown', 'unknown'],
+    ])
+    : {
+      value: validationCommandCount ? `${validationCommandCount} commands` : 'Not recorded',
+      detail: validationCommandCount ? 'Preflight pending' : '',
+    };
+  const blockers = Array.isArray(provisioning.blockers) ? provisioning.blockers : [];
+  const warnings = Array.isArray(provisioning.warnings) ? provisioning.warnings : [];
+  const provisioningStatus = provisioning.status || status || (pending ? 'pending' : '');
+  const provisioningDetail = blockers.length
+    ? `${blockers.length} blocker${blockers.length === 1 ? '' : 's'}`
+    : (warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : 'No blockers recorded');
+  const nodeDetail = [
+    runningCount ? `${runningCount} running` : '',
+    failedCount ? `${failedCount} failed` : '',
+    pendingCount ? `${pendingCount} pending` : '',
+  ].filter(Boolean).join(', ') || (nodeTotal ? 'All contracts ready' : 'No node contracts yet');
+  const mcpDetailParts = [
+    mcpServers.length ? `${mcpServers.length} server${mcpServers.length === 1 ? '' : 's'}` : '',
+    mcpCapabilities.length ? `${mcpCapabilities.length} cap${mcpCapabilities.length === 1 ? '' : 's'}` : '',
+    !mcpServers.length && !mcpCapabilities.length && mcpRecommendationCount ? `${mcpRecommendationCount} rec${mcpRecommendationCount === 1 ? '' : 's'}` : '',
+  ].filter(Boolean);
+  const mcpBlocked = mcpServers.some(server => harnessDashboardStatusClass(server?.status || server?.state, 'good') === 'danger');
+  const mcpWarn = mcpServers.some(server => harnessDashboardStatusClass(server?.status || server?.state, 'good') === 'warn');
+  const mcpState = mcpBlocked ? 'danger' : (mcpWarn ? 'warn' : (mcpDetailParts.length ? 'good' : 'neutral'));
+  const toolState = toolHealthSummary
+    ? (harnessDashboardSummaryCount(toolHealthSummary, ['missing']) ? 'danger' : (harnessDashboardSummaryCount(toolHealthSummary, ['degraded', 'unknown']) ? 'warn' : 'good'))
+    : 'neutral';
+  const validationState = validationSummary
+    ? (harnessDashboardSummaryCount(validationSummary, ['blocked', 'failed']) ? 'danger' : (harnessDashboardSummaryCount(validationSummary, ['unknown']) ? 'warn' : 'good'))
+    : (validationCommandCount ? 'warn' : 'neutral');
   const actions = state ? [
-    artifactButton('implementation-state.json', 'implementation-state.json'),
-    artifactButton('README.md', 'README.md'),
+    renderHarnessDashboardArtifactButton('implementation-state.json', harnessDashboardArtifactRef(pipelineDoc, state, 'state', 'implementation-state.json'), pipelineDir, harnessRoot),
+    renderHarnessDashboardArtifactButton('project-profile.json', harnessDashboardArtifactRef(pipelineDoc, state, 'profile', 'project-profile.json'), pipelineDir, harnessRoot),
+    renderHarnessDashboardArtifactButton('tool-health.json', harnessDashboardArtifactRef(pipelineDoc, state, 'toolHealth', 'tool-health.json'), pipelineDir, harnessRoot),
+    renderHarnessDashboardArtifactButton('validation-preflight.json', harnessDashboardArtifactRef(pipelineDoc, state, 'validationPreflight', 'validation-preflight.json'), pipelineDir, harnessRoot),
+    renderHarnessDashboardArtifactButton('mcp-plan.json', harnessDashboardArtifactRef(pipelineDoc, state, 'mcpPlan', 'mcp-plan.json'), pipelineDir, harnessRoot),
+    renderHarnessDashboardArtifactButton('README.md', harnessDashboardArtifactRef(pipelineDoc, state, 'readme', 'README.md'), pipelineDir, harnessRoot),
   ].filter(Boolean) : [];
+  const chips = [
+    ...blockers.slice(0, 3).map(blocker => ({ state: 'danger', label: blocker })),
+    ...warnings.slice(0, Math.max(0, 3 - Math.min(3, blockers.length))).map(warning => ({ state: 'warn', label: warning })),
+  ];
   return `
-    <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(kind)}" data-harness-implementation-banner>
-      <div class="pipe-lifecycle-banner-title">${escapeHtml(title)}</div>
-      <div class="pipe-lifecycle-banner-detail">${escapeHtml(detail)}</div>
-      ${conclusion ? `<div class="pipe-lifecycle-banner-conclusion">${escapeHtml(conclusion)}</div>` : ''}
+    <div class="pipe-lifecycle-banner pipe-lifecycle-banner--${escapeHtml(kind)} vm-harness-dashboard vm-harness-dashboard--${escapeHtml(kind)}" data-harness-implementation-banner data-vm-harness-dashboard>
+      <div class="vm-harness-dashboard-head">
+        <div>
+          <div class="pipe-lifecycle-banner-title">${escapeHtml(title)}</div>
+          <div class="pipe-lifecycle-banner-detail">${escapeHtml(detail)}</div>
+        </div>
+        <span class="vm-harness-state-chip vm-harness-state-chip--${escapeHtml(harnessDashboardStatusClass(provisioningStatus, kind === 'error' ? 'danger' : kind === 'success' ? 'good' : 'warn'))}">${escapeHtml(harnessDashboardStatusLabel(provisioningStatus))}</span>
+      </div>
+      ${renderHarnessDashboardStepRail(state, pending)}
+      <div class="vm-harness-metric-grid">
+        ${renderHarnessDashboardMetric('Node contracts', nodeTotal ? `${readyCount}/${nodeTotal} ready` : 'Not started', nodeDetail, failedCount ? 'danger' : (runningCount || pendingCount ? 'warn' : (nodeTotal ? 'good' : 'neutral')))}
+        ${renderHarnessDashboardMetric('Provisioning', harnessDashboardStatusLabel(provisioningStatus), provisioningDetail, harnessDashboardStatusClass(provisioningStatus, kind === 'error' ? 'danger' : 'warn'))}
+        ${renderHarnessDashboardMetric('Tool health', toolSummary.value, toolSummary.detail, toolState)}
+        ${renderHarnessDashboardMetric('Validation', validationSummaryText.value, validationSummaryText.detail, validationState)}
+        ${renderHarnessDashboardMetric('MCP capability', mcpDetailParts.join(' / ') || 'Not recorded', mcpDetailParts.length ? 'Source plan linked' : '', mcpState)}
+      </div>
+      <div class="pipe-lifecycle-banner-conclusion vm-harness-next-action">${escapeHtml(nextAction)}</div>
+      ${chips.length ? `<div class="vm-harness-chip-row">${chips.map(chip => `<span class="vm-harness-chip vm-harness-chip--${escapeHtml(chip.state)}" title="${escapeHtml(chip.label)}">${escapeHtml(chip.label)}</span>`).join('')}</div>` : ''}
       ${actions.length ? `<div class="pipe-lifecycle-banner-actions">${actions.join('')}</div>` : ''}
     </div>
   `;
@@ -18309,6 +19354,7 @@ function machineRuntimeProjectionForGraph(context, graphDoc) {
     runInProgress: isMachineRunVisualProjectionInProgress(record, context.pipelinePath),
     statuses,
     record,
+    pipelinePath: context.pipelinePath,
   };
 }
 
@@ -18558,6 +19604,7 @@ function machineUpdateRunRecord(runbookPath, record) {
   if (runbookPath) setRunbookCache(machineRunRecordCache, runbookPath, next);
   if (runbookPath && runId && isMachineRunTerminal(next.runState || {})) {
     setMachineRunCancelPending(runbookPath, runId, false);
+    stopMachineRunProgressPollingByKey(machineRunActionKey(runbookPath, runId));
   }
   if (selectedMatches) {
     selectedRunbookPath = runbookPath || selectedRunbookPath;
@@ -19072,24 +20119,144 @@ function scheduleMachineRunDecisionPrompts(runbookPath, record) {
   }, 0);
 }
 
+// PUSH STREAM: refresh the live run surface, coalescing bursts of fast steps into
+// at most one getRun per window. Decision prompts are suppressed because a push
+// arrives WHILE the drive is still in flight — the execute response handles those
+// once the drive returns; opening a modal mid-drive would be wrong.
+// Is this run the one the user is currently viewing? Re-checked both when a nudge
+// arrives AND just before a throttled refresh fires, because the user may navigate
+// away during the throttle window (a stale refresh would render the wrong run).
+function machineRunIsSelectedRun(runbookPath, runId) {
+  if (!runbookPath || !runId) return false;
+  if (runbookNormalizePath(selectedRunbookPath || '').toLowerCase() !== runbookNormalizePath(runbookPath).toLowerCase()) {
+    disposeMachineRunProgressRefreshStateByKey(machineRunActionKey(runbookPath, runId));
+    return false;
+  }
+  const currentRunId = String(
+    (getLiveMachineRunRecord(runbookPath) || lastMachineRunRecord)?.runState?.runId
+    || lastMachineRunRecord?.runId
+    || '',
+  );
+  // An empty currentRunId means we can't disprove the match (record not loaded yet) —
+  // allow it; a concrete mismatch means a different run is selected, so skip.
+  const selected = !currentRunId || currentRunId === runId;
+  if (!selected) disposeMachineRunProgressRefreshStateByKey(machineRunActionKey(runbookPath, runId));
+  return selected;
+}
+
+// Serialize all refreshes for one run (push nudge + poll tick) through a promise
+// chain so an older snapshot can never render after a newer one.
+function serializedMachineRunRefresh(runbookPath, runId, options = {}) {
+  const key = machineRunActionKey(runbookPath, runId);
+  const prev = machineRunRefreshChains.get(key) || Promise.resolve();
+  const next = prev
+    .catch(() => {})
+    .then(() => refreshMachineRunPanelSnapshot(runbookPath, runId, options));
+  machineRunRefreshChains.set(key, next);
+  next.catch(() => {}).finally(() => {
+    if (machineRunRefreshChains.get(key) === next) machineRunRefreshChains.delete(key);
+  });
+  return next;
+}
+
+function throttledMachineRunProgressRefresh(runbookPath, runId) {
+  const key = machineRunActionKey(runbookPath, runId);
+  const current = getLiveMachineRunRecord(runbookPath);
+  const currentRunId = current?.runState?.runId || current?.runId || '';
+  if (currentRunId === runId && isMachineRunTerminal(current?.runState || {})) {
+    disposeMachineRunProgressRefreshStateByKey(key);
+    return;
+  }
+  const state = machineRunProgressRefreshState.get(key) || { last: 0, timer: null };
+  machineRunProgressRefreshState.set(key, state);
+  const run = async () => {
+    state.last = Date.now();
+    state.timer = null;
+    // Re-validate: the user may have navigated away during the throttle window, and
+    // a hidden tab need not repaint. Either way, do not refresh the wrong/stale run.
+    if (document.hidden || !machineRunIsSelectedRun(runbookPath, runId)) {
+      disposeMachineRunProgressRefreshStateByKey(key);
+      return;
+    }
+    try {
+      const record = await serializedMachineRunRefresh(runbookPath, runId, { suppressDecisionPrompts: true });
+      if (isMachineRunTerminal(record?.runState || {}) || !machineRunIsSelectedRun(runbookPath, runId)) {
+        disposeMachineRunProgressRefreshStateByKey(key);
+      }
+    } catch {
+      /* the execute response will surface failures; a missed nudge is harmless */
+    }
+  };
+  const since = Date.now() - state.last;
+  if (since >= MACHINE_RUN_PROGRESS_REFRESH_MS) {
+    void run();
+  } else if (!state.timer) {
+    state.timer = setTimeout(run, MACHINE_RUN_PROGRESS_REFRESH_MS - since);
+  }
+}
+
+function handleMachineRunProgress(payload) {
+  const runId = String(payload?.runId || '');
+  if (!runId) return;
+  // Only refresh when the nudge is for the run the user is actually viewing.
+  if (!machineRunIsSelectedRun(selectedRunbookPath, runId)) return;
+  throttledMachineRunProgressRefresh(selectedRunbookPath, runId);
+}
+
+// Idempotent: wire the push subscription once, lazily, the first time a run begins
+// polling. The poll remains the fallback/reconciler if the push is ever missed.
+function ensureMachineRunProgressSubscription() {
+  if (machineRunProgressSubscribed) return;
+  if (typeof window.orpad?.machine?.onRunProgress !== 'function') return;
+  machineRunProgressSubscribed = true;
+  window.orpad.machine.onRunProgress((payload) => {
+    try {
+      handleMachineRunProgress(payload);
+    } catch {
+      /* a malformed nudge must never break the renderer */
+    }
+  });
+}
+
 function startMachineRunProgressPolling(runbookPath, runId) {
   if (!runbookPath || !runId) return;
+  ensureMachineRunProgressSubscription();
   const key = machineRunActionKey(runbookPath, runId);
   if (machineRunProgressTimers.has(key)) return;
   let polling = false;
   const tick = async () => {
     if (polling) return;
-    if (!isMachineRunActionPending(runbookPath, runId)) {
+    // CC-07: keep the surface live while a run is PAUSED too (not just while an
+    // action is in flight), so a resume/cancel/lifecycle change is reflected
+    // without a manual refresh — but only while THIS run is the selected one, so
+    // the timer tears down when the user navigates away.
+    const selectedForRun = runbookNormalizePath(selectedRunbookPath || '').toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+    if (!selectedForRun) {
+      stopMachineRunProgressPollingByKey(key);
+      return;
+    }
+    const actionPending = isMachineRunActionPending(runbookPath, runId);
+    if (!actionPending) disposeMachineRunProgressRefreshStateByKey(key);
+    const pausedAndSelected = !actionPending
+      && selectedForRun
+      && String((getLiveMachineRunRecord(runbookPath) || lastMachineRunRecord)?.runState?.lifecycleStatus || '').toLowerCase() === 'paused';
+    if (!actionPending && !pausedAndSelected) {
       stopMachineRunProgressPollingByKey(key);
       return;
     }
     polling = true;
     try {
-      const record = await refreshMachineRunPanelSnapshot(runbookPath, runId);
+      // Through the shared per-run chain so a poll tick never interleaves with a
+      // push-triggered refresh (which would risk an out-of-order render).
+      const record = await serializedMachineRunRefresh(runbookPath, runId);
       if (isMachineRunTerminal(record?.runState)) {
         setMachineRunActionPending(runbookPath, runId, false);
       }
-      if (record && !isMachineRunInProgress(record, runbookPath)) {
+      // A paused run is intentionally suspended — do NOT auto-open patch-review /
+      // blocked decision modals for it on every poll tick (that would spam the
+      // user). Those gates fire once the run actually advances past pause.
+      const recordLifecycle = String(record?.runState?.lifecycleStatus || '').toLowerCase();
+      if (record && recordLifecycle !== 'paused' && !isMachineRunInProgress(record, runbookPath)) {
         const openedPatch = await maybeOpenMachinePatchReviewModal(runbookPath, record);
         if (!openedPatch) await maybeOpenMachineBlockedDecisionModal(runbookPath, record);
       }
@@ -19259,7 +20426,7 @@ function machineRunListForRunbook(runbookPath) {
 const machineRunHistoryFilter = new Map();
 const HISTORY_LIFECYCLE_FILTERS = Object.freeze([
   { id: 'all', label: 'All', match: () => true },
-  { id: 'running', label: 'Live', match: r => ['running', 'cancelling', 'waiting', 'created', 'approval-required'].includes(String(r.lifecycleStatus || '').toLowerCase()) },
+  { id: 'running', label: 'Live', match: r => ['running', 'cancelling', 'waiting', 'created', 'approval-required', 'paused'].includes(String(r.lifecycleStatus || '').toLowerCase()) },
   { id: 'completed', label: 'Done', match: r => String(r.lifecycleStatus || '').toLowerCase() === 'completed' && String(r.summaryStatus || '').toLowerCase() === 'done' },
   { id: 'partial', label: 'Partial', match: r => String(r.summaryStatus || '').toLowerCase() === 'partial' },
   { id: 'failed', label: 'Failed', match: r => String(r.lifecycleStatus || '').toLowerCase() === 'failed' },
@@ -19353,6 +20520,61 @@ function renderMachineRunHistory(runbookPath, currentRunId) {
   `;
 }
 
+// HUD/VIZ: live cumulative-cost meter for the active run. Mounts the
+// createBudgetMeter DOM component into the Latest Run panel's host element and
+// keeps it across the panel's innerHTML re-renders (re-append + throttled refresh
+// on the render cadence — deliberately NO orphan polling timer to leak). Replaces
+// the long-dead createBudgetMeter import (instantiated 0 times until now).
+let machineBudgetMeterInstance = null;
+let machineBudgetMeterLastRefreshAt = 0;
+const machineBudgetLedgerBridge = {
+  invoke: (_channel, payload) => window.orpad?.machine?.readBudgetLedger?.(payload),
+};
+
+function machineBudgetConfigForRun(runbookPath) {
+  const validation = selectedPipelineValidation(runbookPath);
+  const doc = validation?.pipeline || validation?.doc || validation?.pipelineDoc || null;
+  const adapter = doc?.run?.machineAdapter;
+  const budget = adapter?.budget || adapter?.default?.budget;
+  return (budget && typeof budget === 'object') ? budget : {};
+}
+
+function mountMachineBudgetMeter() {
+  if (!runbooksContentEl) return;
+  const host = runbooksContentEl.querySelector('[data-machine-budget-meter-host]');
+  if (!host || !window.orpad?.machine?.readBudgetLedger) {
+    // No active run with a runRoot is showing (or the bridge is unavailable) —
+    // tear down so a stale meter doesn't linger.
+    if (machineBudgetMeterInstance) {
+      machineBudgetMeterInstance.stopPolling?.();
+      machineBudgetMeterInstance = null;
+    }
+    return;
+  }
+  const runRoot = host.getAttribute('data-run-root') || '';
+  if (!runRoot) return;
+  const budget = machineBudgetConfigForRun(host.getAttribute('data-runbook-path') || selectedRunbookPath);
+  if (!machineBudgetMeterInstance || machineBudgetMeterInstance.state?.runRoot !== runRoot) {
+    machineBudgetMeterInstance?.stopPolling?.();
+    machineBudgetMeterInstance = createBudgetMeter({ bridge: machineBudgetLedgerBridge, runRoot, budget });
+    machineBudgetMeterLastRefreshAt = 0;
+  } else {
+    machineBudgetMeterInstance.setBudget?.(budget);
+  }
+  // The panel's innerHTML wiped the host's children — re-attach the
+  // state-preserving meter root so the last value shows immediately.
+  if (machineBudgetMeterInstance.root && !host.contains(machineBudgetMeterInstance.root)) {
+    host.appendChild(machineBudgetMeterInstance.root);
+  }
+  // Throttle the ledger read so rapid re-renders don't hammer the IPC/disk; the
+  // run-progress poll re-renders the panel, which drives the cadence.
+  const nowMs = Date.now();
+  if (nowMs - machineBudgetMeterLastRefreshAt > 1500) {
+    machineBudgetMeterLastRefreshAt = nowMs;
+    machineBudgetMeterInstance.refresh().catch(() => {});
+  }
+}
+
 function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = selectedRunbookPath) {
   const harnessPending = runbookPath
     ? pipelineHarnessImplementationPendingPaths.has(harnessImplementationKey(runbookPath))
@@ -19398,8 +20620,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
   const actionRecord = liveMatchesSnapshot ? liveRecord : record;
   const actionRunState = actionRecord?.runState || {};
   const actionRunId = actionRunState.runId || actionRecord?.runId || recordRunId || '';
-  const events = record.events || [];
-  const queueEvents = events.filter(event => event?.itemId || String(event?.eventType || '').startsWith('queue.'));
+  const latestRunProjection = machineLatestRunEventProjection(record);
+  const events = Array.isArray(record.events) ? record.events : [];
+  const recentEvents = latestRunProjection.recentEvents;
   const exported = record.exported || null;
   const runTerminal = isMachineRunTerminal(actionRunState);
   const pendingApprovals = machinePendingApprovals(record);
@@ -19484,6 +20707,45 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         ${approvalActions}
       </div>
     ` : '';
+  // HUD/VIZ: live cost meter host (mounted post-render by mountMachineBudgetMeter)
+  // + a model-downgrade indicator counting adapter.model.downgraded events (the
+  // model-tier router downgrading to stay within budget — the OMC/OMX cost story).
+  const budgetMeterRunRoot = record.runRoot || runState.runRoot || '';
+  const modelDowngradeCount = latestRunProjection.modelDowngradeCount;
+  const budgetMeterHostHtml = budgetMeterRunRoot && window.orpad?.machine?.readBudgetLedger
+    ? `<div class="runbook-budget-meter-host" data-machine-budget-meter-host data-run-root="${escapeHtml(budgetMeterRunRoot)}" data-runbook-path="${escapeHtml(runbookPath)}"></div>`
+    : '';
+  const modelDowngradeChipHtml = modelDowngradeCount > 0
+    ? `<div class="runbook-chip-row"><span class="runbook-chip warn" title="The model-tier router downgraded the model ${modelDowngradeCount} time(s) on this run to stay within budget.">Model downgraded ×${modelDowngradeCount}</span></div>`
+    : '';
+  // STEER: per-item queue list with a Reject control ("leave this out"). Reject is
+  // fail-fast on the main side while a step runs, so it's disabled until the run is
+  // paused/idle (the pause -> steer -> resume flow).
+  const rejectableItems = window.orpad?.machine?.rejectItem ? machineRejectableQueueItems(record) : [];
+  const steerQueueCap = 12;
+  const canInjectItem = !isMachineRunTerminal(runState) && !!window.orpad?.machine?.injectItem;
+  const showSteerSection = canInjectItem || rejectableItems.length > 0;
+  const steerQueueHtml = showSteerSection ? `
+      <div class="runbook-steer-queue" data-runbook-steer-queue>
+        <div class="runbook-steer-queue-head">
+          <span>Queue steering</span>
+          <span class="runbook-steer-queue-head-actions">
+            ${rejectableItems.length ? `<span class="runbook-chip">${escapeHtml(machineCountLabel(rejectableItems.length, 'pending item'))}</span>` : ''}
+            ${canInjectItem ? `<button data-runbook-action="machine-inject-item" data-run-id="${escapeHtml(runId)}" ${actionRunInProgress ? 'disabled' : ''} title="${escapeHtml(actionRunInProgress ? 'Pause the run to steer the queue.' : 'Add a new work item to the queue.')}">Inject task</button>` : ''}
+          </span>
+        </div>
+        ${rejectableItems.slice(0, steerQueueCap).map(it => `
+          <div class="runbook-steer-item" data-item-id="${escapeHtml(it.itemId)}">
+            <span class="runbook-chip ${it.state === 'blocked' ? 'warn' : ''}" title="Queue state: ${escapeHtml(it.state)}">${escapeHtml(it.state)}</span>
+            <span class="runbook-steer-item-id" title="${escapeHtml(it.itemId)}">${escapeHtml(it.itemId)}</span>
+            ${it.state === 'queued' && window.orpad?.machine?.reprioritizeItem ? `<button data-runbook-action="machine-reprioritize-item" data-run-id="${escapeHtml(runId)}" data-item-id="${escapeHtml(it.itemId)}" ${actionRunInProgress ? 'disabled' : ''} title="${escapeHtml(actionRunInProgress ? 'Pause the run to steer the queue.' : `Do "${it.itemId}" first — claim it before other queued work.`)}">First</button>` : ''}
+            ${it.state === 'queued' && window.orpad?.machine?.editItem ? `<button data-runbook-action="machine-edit-item" data-run-id="${escapeHtml(runId)}" data-item-id="${escapeHtml(it.itemId)}" ${actionRunInProgress ? 'disabled' : ''} title="${escapeHtml(actionRunInProgress ? 'Pause the run to steer the queue.' : `Edit "${it.itemId}" — fix its title, target files, or acceptance criteria.`)}">Edit</button>` : ''}
+            <button data-runbook-action="machine-reject-item" data-run-id="${escapeHtml(runId)}" data-item-id="${escapeHtml(it.itemId)}" ${actionRunInProgress ? 'disabled' : ''} title="${escapeHtml(actionRunInProgress ? 'Pause the run to steer the queue.' : `Reject "${it.itemId}" — leave it out of this run.`)}">Reject</button>
+          </div>
+        `).join('')}
+        ${rejectableItems.length > steerQueueCap ? `<div class="runbook-muted">+${escapeHtml(machineCountLabel(rejectableItems.length - steerQueueCap, 'more item'))} not shown</div>` : ''}
+      </div>
+    ` : '';
   return `
     <section class="runbook-panel-section">
       <h3>Latest Run</h3>
@@ -19491,6 +20753,9 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
         <span class="runbook-chip ${escapeHtml(displayStatus.lifecycleClass)}" title="${escapeHtml(displayStatus.lifecycleTitle)}">${escapeHtml(displayStatus.lifecycleLabel)}</span>
         <span class="runbook-chip ${escapeHtml(displayStatus.summaryClass)}" title="${escapeHtml(displayStatus.summaryTitle)}">${escapeHtml(displayStatus.summaryLabel)}</span>
       </div>
+      ${budgetMeterHostHtml}
+      ${modelDowngradeChipHtml}
+      ${steerQueueHtml}
       <div class="runbook-latest-run-summary ${escapeHtml(latestRunSummary.state)}">
         <div class="runbook-latest-run-main">
           <strong>${escapeHtml(latestRunSummary.headline)}</strong>
@@ -19515,16 +20780,16 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
       <details class="runbook-run-details" data-runbook-run-details data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}">
         <summary>
           <span>Run details</span>
-          <span>${escapeHtml(machineCountLabel(events.length, 'event'))}</span>
+          <span>${escapeHtml(machineCountLabel(latestRunProjection.eventCount, 'event'))}</span>
         </summary>
         <div class="runbook-run-details-body">
           ${renderReplayTimelineHtml(record, runbookPath, runId, events)}
           <div class="runbook-replay-events-bar">
-            <span>Recent events (${events.length})</span>
+            <span>Recent events (${latestRunProjection.eventCount})</span>
             <button class="runbook-replay-stick-toggle ${replayStickEnabled ? 'active' : ''}" data-runbook-action="toggle-replay-stick" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}" title="${replayStickEnabled ? 'Auto-scroll on. Click to disable.' : 'Auto-scroll off. Click to enable.'}">${replayStickEnabled ? 'Auto-scroll' : 'Manual scroll'}</button>
           </div>
           <div class="runbook-replay-events" data-runbook-replay-events data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(runId)}">
-            ${(events.length ? events : []).slice(-100).map(event => {
+            ${(recentEvents.length ? recentEvents : []).map(event => {
               const timeLabel = machineEventTimeLabel(event);
               const seq = event?.sequence != null ? Number(event.sequence) : -1;
               const lastSeq = lastReplayRenderedSequence.get(replayScopeKey) || 0;
@@ -19547,7 +20812,7 @@ function renderMachineRunPanel(record = lastMachineRunRecord, runbookPath = sele
             </div>
             <div class="runbook-guide ${queueCounts.activeCount || queueCounts.blockedCount ? 'warn' : ''}">
               <strong>Work status</strong>
-              <span>${escapeHtml([queueInventoryDetails || (queueEvents.length ? machineCountLabel(queueEvents.length, 'work update') : 'No work updates yet'), blockedWorkDetails, activeClaimDetails, activeWriteSetDetails].filter(Boolean).join('; '))}</span>
+              <span>${escapeHtml([queueInventoryDetails || (latestRunProjection.queueUpdateCount ? machineCountLabel(latestRunProjection.queueUpdateCount, 'work update') : 'No work updates yet'), blockedWorkDetails, activeClaimDetails, activeWriteSetDetails].filter(Boolean).join('; '))}</span>
             </div>
             <div class="runbook-guide ${escapeHtml(resumeDetails.state)}">
               <strong>Recovery</strong>
@@ -19632,10 +20897,15 @@ function renderMachineHistoryInspectionPanel(record, runbookPath) {
 
 function renderRunbooksPanel(options = {}) {
   if (!runbooksContentEl) return;
+  if (!isRunbooksPanelVisible()) {
+    deferredRunbooksPanelRefresh = true;
+    return;
+  }
   if (!options.force && shouldDeferOrchestrationRefresh()) {
     deferRunbooksPanelRefresh();
     return;
   }
+  deferredRunbooksPanelRefresh = false;
   return withOrchestrationUiStatePreserved(() => {
   if (!workspacePath) {
     runbooksContentEl.innerHTML = `
@@ -19657,6 +20927,7 @@ function renderRunbooksPanel(options = {}) {
   const templateCount = templateItems.length;
   const legacyCount = legacyItems.length;
   const selected = selectedRunbookPath || '';
+  stopMachineRunProgressPollingForUnselectedRunbooks(selected);
   const selectedRunRecord = lastRunRecord || getRunbookCache(runbookRecordCache, selected);
   const selectedMachineRunRecord = selected ? getActiveMachineRunRecord(selected) : null;
   const selectedMachineRunList = selected ? getRunbookCache(machineRunListCache, selected) : null;
@@ -19738,6 +21009,10 @@ function renderRunbooksPanel(options = {}) {
   // only genuinely new events as fresh.
   applyReplayStickAfterRender();
   refreshOrchestrationRunbarFromSelection();
+  // HUD/VIZ: (re)mount the live cost meter into the Latest Run panel host. Runs
+  // every render so it survives the innerHTML rebuild and tears down when no
+  // active run is shown.
+  mountMachineBudgetMeter();
   });
 }
 
@@ -20930,6 +22205,10 @@ async function implementSelectedMachineHarnessInner(runbookPath) {
       error: harnessProvisioning.error || '',
       blockers: provisioningBlockers,
       warnings: harnessProvisioning.report?.enforcement?.warnings || [],
+      toolHealthSummary: harnessProvisioning.report?.toolHealthSummary || harnessProvisioning.report?.toolHealth?.summary || {},
+      validationPreflightSummary: harnessProvisioning.report?.validationPreflightSummary || harnessProvisioning.report?.validationPreflight?.summary || {},
+      mcpRecommendedServers: harnessProvisioning.report?.mcpRecommendedServers || harnessProvisioning.report?.mcpPlan?.recommendedServers || [],
+      orpadCapabilities: harnessProvisioning.report?.orpadCapabilities || harnessProvisioning.report?.mcpPlan?.orpadCapabilities || [],
     },
     nodes: nodes.map((node, index) => ({
       nodePath: harnessNodePathForGraphNode(node, index),
@@ -21327,6 +22606,7 @@ async function refreshMachineRunList(runbookPath) {
     runs,
     loadedAt: new Date().toISOString(),
   });
+  if (listed?.success) pruneMachineRunReplayTransientStateForRunList(runbookPath, runs);
   return runs;
 }
 
@@ -21357,13 +22637,95 @@ function setReplayPosition(runbookPath, runId, position) {
   const key = machineRunTransientScopeKey(runbookPath, runId);
   if (!key) return;
   if (position == null) machineRunReplayPosition.delete(key);
-  else machineRunReplayPosition.set(key, Math.max(1, Math.floor(Number(position))));
+  else {
+    const next = Math.floor(Number(position));
+    if (!Number.isFinite(next) || next <= 0) machineRunReplayPosition.delete(key);
+    else machineRunReplayPosition.set(key, next);
+  }
 }
 
 function clearReplayPosition(runbookPath, runId) {
   const key = machineRunTransientScopeKey(runbookPath, runId);
   if (!key) return;
   machineRunReplayPosition.delete(key);
+}
+
+function machineRunTransientScopePrefix(runbookPath) {
+  const normalizedRunbook = runbookNormalizePath(runbookPath || selectedRunbookPath || '').toLowerCase();
+  if (!normalizedRunbook) return '';
+  const normalizedWorkspace = normalizeComparablePath(workspacePath || '');
+  return `${normalizedWorkspace}::${normalizedRunbook}::`;
+}
+
+function machineRunIdFromReplayTransientKey(key, scopePrefix) {
+  const normalized = String(key || '');
+  const scopedKey = normalized.startsWith('off:') ? normalized.slice(4) : normalized;
+  return scopedKey.startsWith(scopePrefix) ? scopedKey.slice(scopePrefix.length) : '';
+}
+
+function clearMachineRunReplayTransientState(runbookPath, runId) {
+  const key = machineRunTransientScopeKey(runbookPath, runId);
+  if (!key) return;
+  machineRunReplayPosition.delete(key);
+  machineRunReplayStickRunIds.delete(`off:${key}`);
+  lastReplayRenderedSequence.delete(key);
+}
+
+function machineRunVisibleTransientRunIds(runbookPath, options = {}) {
+  const ids = new Set();
+  const addRecord = (record) => {
+    const runId = String(record?.runState?.runId || record?.runId || '').trim();
+    if (runId) ids.add(runId);
+  };
+  addRecord(getRunbookCache(machineRunRecordCache, runbookPath));
+  const selectedMatches = runbookPath
+    && selectedRunbookPath
+    && runbookNormalizePath(selectedRunbookPath).toLowerCase() === runbookNormalizePath(runbookPath).toLowerCase();
+  if (selectedMatches) addRecord(lastMachineRunRecord);
+  if (options.includeHistoryInspection !== false) addRecord(getHistoryInspectionRecord(runbookPath));
+  return ids;
+}
+
+function clearMachineRunReplayTransientStateIfUnreferenced(runbookPath, runId) {
+  const normalizedRunId = String(runId || '').trim();
+  if (!normalizedRunId) return;
+  if (machineRunVisibleTransientRunIds(runbookPath).has(normalizedRunId)) return;
+  clearMachineRunReplayTransientState(runbookPath, normalizedRunId);
+}
+
+function pruneMachineRunReplayTransientState(runbookPath, retainedRunIds) {
+  const scopePrefix = machineRunTransientScopePrefix(runbookPath);
+  if (!scopePrefix) return;
+  const retained = new Set([...(retainedRunIds || [])].map(runId => String(runId || '').trim()).filter(Boolean));
+  const shouldPrune = key => {
+    const runId = machineRunIdFromReplayTransientKey(key, scopePrefix);
+    return runId && !retained.has(runId);
+  };
+  for (const key of [...machineRunReplayPosition.keys()]) {
+    if (shouldPrune(key)) machineRunReplayPosition.delete(key);
+  }
+  for (const key of [...lastReplayRenderedSequence.keys()]) {
+    if (shouldPrune(key)) lastReplayRenderedSequence.delete(key);
+  }
+  for (const key of [...machineRunReplayStickRunIds]) {
+    if (shouldPrune(key)) machineRunReplayStickRunIds.delete(key);
+  }
+}
+
+function pruneMachineRunReplayTransientStateForRunList(runbookPath, runs) {
+  const retained = new Set();
+  for (const run of runs || []) {
+    const runId = String(run?.runId || run?.runState?.runId || run || '').trim();
+    if (runId) retained.add(runId);
+  }
+  for (const runId of machineRunVisibleTransientRunIds(runbookPath, { includeHistoryInspection: false })) retained.add(runId);
+  pruneMachineRunReplayTransientState(runbookPath, retained);
+}
+
+function pruneMachineRunReplayTransientStateForCachedRunList(runbookPath) {
+  const cached = getRunbookCache(machineRunListCache, runbookPath);
+  if (!cached || !Array.isArray(cached.runs)) return;
+  pruneMachineRunReplayTransientStateForRunList(runbookPath, cached.runs);
 }
 
 function machineReplayRunStateFromEvents(record, events) {
@@ -21407,7 +22769,10 @@ function applyReplaySnapshot(record, runbookPath = selectedRunbookPath) {
   const position = getReplayPosition(runbookPath, runId);
   if (position == null) return record;
   const events = Array.isArray(record.events) ? record.events : [];
-  if (position >= events.length) return record;
+  if (position >= events.length) {
+    clearReplayPosition(runbookPath, runId);
+    return record;
+  }
   const truncated = events.slice(0, position);
   return {
     ...record,
@@ -21567,7 +22932,10 @@ function setHistoryInspectionRecord(runbookPath, snapshot) {
 }
 
 function clearHistoryInspection(runbookPath) {
+  const inspected = getHistoryInspectionRecord(runbookPath);
+  const inspectedRunId = inspected?.runState?.runId || inspected?.runId || '';
   setHistoryInspectionRecord(runbookPath, null);
+  clearMachineRunReplayTransientStateIfUnreferenced(runbookPath, inspectedRunId);
 }
 
 function machineHistoryRecoverKey(runbookPath, runId) {
@@ -21626,6 +22994,7 @@ async function selectMachineRunRecord(runbookPath, runId) {
     // Clicking the run that is already active = clear the inspection
     // overlay so the panel collapses back to the single active view.
     clearHistoryInspection(runbookPath);
+    pruneMachineRunReplayTransientStateForCachedRunList(runbookPath);
     selectedRunbookPath = runbookPath;
     renderRunbooksPanel();
     return;
@@ -21634,6 +23003,7 @@ async function selectMachineRunRecord(runbookPath, runId) {
   if (!snapshot) return;
   selectedRunbookPath = runbookPath;
   setHistoryInspectionRecord(runbookPath, snapshot);
+  pruneMachineRunReplayTransientStateForCachedRunList(runbookPath);
   renderRunbooksPanel();
 }
 
@@ -21733,7 +23103,7 @@ async function startSelectedMachineRunInner(runbookPath, cachedRecord, runOption
   machineCapabilityToken = token;
   const providerConfirmed = await confirmMachineRunProviderSelection(runbookPath);
   if (!providerConfirmed) return;
-  const taskText = currentRunbookTaskText();
+  const taskText = await currentRunbookTaskTextForPipeline(runbookPath);
   const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText);
   if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
   let created = null;
@@ -21865,7 +23235,13 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
     return;
   }
   machineCapabilityToken = token;
-  const taskText = currentRunbookTaskText();
+  const liveTaskRecord = getLiveMachineRunRecord(runbookPath);
+  const cachedTaskRecord = machineRunRecordMatchesRunId(liveTaskRecord, runId)
+    ? liveTaskRecord
+    : (machineRunRecordMatchesRunId(lastMachineRunRecord, runId) ? lastMachineRunRecord : null);
+  const taskText = await currentRunbookTaskTextForPipeline(runbookPath, {
+    record: cachedTaskRecord,
+  });
   const externalResearch = await ensureExternalResearchRunState(runbookPath, taskText, runId, providedExternalResearch);
   if (externalResearch === null && (await externalResearchLaunchContext(runbookPath, taskText)).intentDetected) return;
   const effectivePatchReviewMode = machinePatchReviewModeForRun(getLiveMachineRunRecord(runbookPath), runOptions);
@@ -21923,6 +23299,71 @@ async function executeSelectedMachineRunStepInner(runbookPath, runId, providedEx
   if (!refreshed) scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
 }
 
+// Supervised-autonomy pause (RC-IPC). Records pause intent so the autonomous
+// driver suspends at its NEXT step boundary — in-flight work always finishes
+// first; this never kills a running subprocess. Uses a distinct mutation-lock
+// key (runId + ":pause") so the request can be issued WHILE executeRunStep /
+// the driver holds the base (runId) lock — requestRunPause is lock-free on the
+// main side. The run flips to 'paused' asynchronously, so we keep polling.
+async function pauseSelectedMachineRun(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.pauseRun) return;
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, `${runId}:pause`);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Pause');
+    return;
+  }
+  // Optimistic ack: flip the button to 'Pausing…' and disable it synchronously,
+  // before the IPC and before the (possibly minutes-long) in-flight step reaches
+  // its boundary — so the click is never perceived as inert. Mirrors Cancel.
+  setMachineRunPausePending(runbookPath, runId, true);
+  rerenderPipelinePreviewIfActive(runbookPath);
+  try {
+    return await pauseSelectedMachineRunInner(runbookPath, runId);
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+async function pauseSelectedMachineRunInner(runbookPath, runId) {
+  const clearPending = () => {
+    setMachineRunPausePending(runbookPath, runId, false);
+    rerenderPipelinePreviewIfActive(runbookPath);
+  };
+  if (!await ensureMachineRuntimeReady()) { clearPending(); return; }
+  const token = await requestMachineCapabilityToken();
+  if (!token) { clearPending(); return; }
+  let paused = null;
+  try {
+    paused = await window.orpad.machine.pauseRun({
+      workspacePath,
+      pipelinePath: runbookPath,
+      runId,
+      capabilityToken: token,
+      exportLatestRun: true,
+    });
+  } catch (err) {
+    clearPending();
+    notifyFormatError('Pause run', new Error(err?.message || 'Could not pause the run.'));
+    return;
+  }
+  if (!paused?.success) {
+    clearPending();
+    if (paused?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+    notifyFormatError('Pause run', new Error(paused?.error || 'Could not pause the run.'));
+    return;
+  }
+  selectedRunbookPath = runbookPath;
+  lastMachineRunRecord = machineUpdateRunRecord(runbookPath, paused);
+  await refreshMachineRunList(runbookPath);
+  renderRunbooksPanel();
+  rerenderPipelinePreviewIfActive(runbookPath);
+  void refreshWorkspaceRunbookSummary();
+  // The lifecycle flips to 'paused' only when the driver reaches its next
+  // boundary; keep polling so the panel swaps Pause -> Resume and clears the
+  // 'Pausing…' ack (via reconcileMachineRunControlPending) when that lands.
+  startMachineRunProgressPolling(runbookPath, runId);
+}
+
 async function resumeSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.resumeRun) return;
   const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, runId);
@@ -21930,17 +23371,35 @@ async function resumeSelectedMachineRun(runbookPath, runId) {
     notifyMachineRunBusy('Resume');
     return;
   }
+  // Optimistic ack while the resume IPC (lifecycle lock + stale-claim repair) runs.
+  setMachineRunResumePending(runbookPath, runId, true);
+  rerenderPipelinePreviewIfActive(runbookPath);
+  let outcome = null;
   try {
-    return await resumeSelectedMachineRunInner(runbookPath, runId);
+    outcome = await resumeSelectedMachineRunInner(runbookPath, runId);
   } finally {
     releaseMachineRunMutationLock(mutationLock);
+  }
+  // Re-drive the autonomous loop after resume once the lifecycle lock is free.
+  // Paused resumes keep their existing "continue autonomously" behavior.
+  // Orphaned adapter recovery is also a continuation: the Machine requeued work
+  // that was already running before the subprocess disappeared.
+  if (outcome && outcome.shouldRedrive && outcome.capabilityToken) {
+    await executeSelectedMachineRunStep(runbookPath, runId, null, {
+      capabilityToken: outcome.capabilityToken,
+      runUntil: 'human-decision',
+    });
+  } else {
+    // No re-drive will transition the lifecycle for us; clear the optimistic ack.
+    setMachineRunResumePending(runbookPath, runId, false);
+    rerenderPipelinePreviewIfActive(runbookPath);
   }
 }
 
 async function resumeSelectedMachineRunInner(runbookPath, runId) {
-  if (!await ensureMachineRuntimeReady()) return;
+  if (!await ensureMachineRuntimeReady()) return null;
   const token = await requestMachineCapabilityToken();
-  if (!token) return;
+  if (!token) return null;
   const resumed = await window.orpad.machine.resumeRun({
     workspacePath,
     pipelinePath: runbookPath,
@@ -21951,8 +23410,8 @@ async function resumeSelectedMachineRunInner(runbookPath, runId) {
   if (!resumed?.success) {
     if (resumed?.code === 'MACHINE_IPC_CAPABILITY_DENIED') {
       machineCapabilityToken = '';
-      alert(resumed?.error || 'Recovery failed.');
-      return;
+      notifyFormatError('Resume run', new Error(resumed?.error || 'Resume failed.'));
+      return null;
     }
     lastMachineRunRecord = {
       ...(lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {}),
@@ -21962,7 +23421,7 @@ async function resumeSelectedMachineRunInner(runbookPath, runId) {
     setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
     await refreshMachineRunList(runbookPath);
     renderRunbooksPanel();
-    return;
+    return null;
   }
   selectedRunbookPath = runbookPath;
   const cached = lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath) || {};
@@ -21975,7 +23434,19 @@ async function resumeSelectedMachineRunInner(runbookPath, runId) {
   await refreshMachineRunList(runbookPath);
   renderRunbooksPanel();
   void refreshWorkspaceRunbookSummary();
-  scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
+  const shouldContinueAfterRecovery = resumed.resume?.shouldContinueAfterRecovery === true;
+  const shouldRedrive = resumed.resume?.pausedResume === true || shouldContinueAfterRecovery;
+  // When the caller re-drives the autonomous loop, opening a decision modal here
+  // would race that continuation. Prompt only for truly idle recovery.
+  if (!shouldRedrive) {
+    scheduleMachineRunDecisionPrompts(runbookPath, lastMachineRunRecord);
+  }
+  return {
+    pausedResume: resumed.resume?.pausedResume === true,
+    shouldContinueAfterRecovery,
+    shouldRedrive,
+    capabilityToken: token,
+  };
 }
 
 // Adopt the inspected History snapshot as the active run. The user's
@@ -22096,8 +23567,308 @@ async function cancelSelectedMachineClaim(runbookPath, runId, claimId, itemId) {
   void refreshWorkspaceRunbookSummary();
 }
 
+// STEER "leave this out": reject a still-pending queue item. The main side
+// fail-fast rejects (MACHINE_RUN_BUSY) if a step is in flight — the flow is
+// pause -> reject -> resume — so the UI disables Reject while the run is running.
+async function rejectSelectedMachineItem(runbookPath, runId, itemId) {
+  if (!workspacePath || !runbookPath || !runId || !itemId || !window.orpad?.machine?.rejectItem) return;
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, `${runId}:steer`);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Reject');
+    return;
+  }
+  try {
+    if (!await ensureMachineRuntimeReady()) return;
+    const token = await requestMachineCapabilityToken();
+    if (!token) return;
+    let rejected = null;
+    try {
+      rejected = await window.orpad.machine.rejectItem({
+        workspacePath,
+        pipelinePath: runbookPath,
+        runId,
+        itemId,
+        capabilityToken: token,
+        exportLatestRun: true,
+      });
+    } catch (err) {
+      notifyFormatError('Reject item', new Error(err?.message || 'Could not reject the item.'));
+      return;
+    }
+    if (!rejected?.success) {
+      if (rejected?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+      notifyFormatError('Reject item', new Error(rejected?.error || `Could not reject the item (${rejected?.code || 'unknown'}).`));
+      return;
+    }
+    selectedRunbookPath = runbookPath;
+    lastMachineRunRecord = machineUpdateRunRecord(runbookPath, rejected);
+    await refreshMachineRunList(runbookPath);
+    renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
+    void refreshWorkspaceRunbookSummary();
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+// STEER "do this first": pull a queued item to the front of the claim order.
+// Like reject, the main side is fail-fast while a step runs (pause -> steer -> resume).
+async function reprioritizeSelectedMachineItem(runbookPath, runId, itemId) {
+  if (!workspacePath || !runbookPath || !runId || !itemId || !window.orpad?.machine?.reprioritizeItem) return;
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, `${runId}:steer`);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Reprioritize');
+    return;
+  }
+  try {
+    if (!await ensureMachineRuntimeReady()) return;
+    const token = await requestMachineCapabilityToken();
+    if (!token) return;
+    let reprioritized = null;
+    try {
+      reprioritized = await window.orpad.machine.reprioritizeItem({
+        workspacePath,
+        pipelinePath: runbookPath,
+        runId,
+        itemId,
+        capabilityToken: token,
+        exportLatestRun: true,
+      });
+    } catch (err) {
+      notifyFormatError('Reprioritize item', new Error(err?.message || 'Could not reprioritize the item.'));
+      return;
+    }
+    if (!reprioritized?.success) {
+      if (reprioritized?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+      notifyFormatError('Reprioritize item', new Error(reprioritized?.error || `Could not reprioritize the item (${reprioritized?.code || 'unknown'}).`));
+      return;
+    }
+    selectedRunbookPath = runbookPath;
+    lastMachineRunRecord = machineUpdateRunRecord(runbookPath, reprioritized);
+    await refreshMachineRunList(runbookPath);
+    renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
+    void refreshWorkspaceRunbookSummary();
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+// STEER add/edit: gather a work item's human-meaningful fields via a modal
+// (Electron has no window.prompt). Reuses the openFmtModal helper so the input
+// survives the 2s panel re-render (a separate overlay, not inline). Shared by
+// "Inject task" (empty initial) and "Edit" (prefilled from the current item) so
+// both flows feel identical. Resolves { title, targetFiles, acceptanceCriteria }
+// or null if cancelled.
+function promptMachineWorkItemForm(opts = {}) {
+  const modalTitle = opts.modalTitle || 'Work item';
+  const submitLabel = opts.submitLabel || 'Save';
+  const intro = opts.intro || '';
+  const initial = opts.initial || {};
+  const initialTitle = typeof initial.title === 'string' ? initial.title : '';
+  const initialTargets = Array.isArray(initial.targetFiles) ? initial.targetFiles.join(', ') : '';
+  const initialAccept = Array.isArray(initial.acceptanceCriteria) ? initial.acceptanceCriteria.join('\n') : '';
+  return new Promise((resolve) => {
+    let settled = false;
+    const body = document.createElement('div');
+    body.className = 'runbook-modal-body';
+    body.innerHTML = `
+      ${intro ? `<p>${escapeHtml(intro)}</p>` : ''}
+      <label class="runbook-inject-label">Task title
+        <input class="runbook-task-input" type="text" data-inject-title autocomplete="off" placeholder="e.g. Fix the typo in README.md" value="${escapeHtml(initialTitle)}">
+      </label>
+      <label class="runbook-inject-label">Target files <span class="runbook-muted">comma-separated — the files the worker may edit</span>
+        <input class="runbook-task-input" type="text" data-inject-targets autocomplete="off" placeholder="src/a.md, src/b.md" value="${escapeHtml(initialTargets)}">
+      </label>
+      <label class="runbook-inject-label">Acceptance criteria <span class="runbook-muted">optional — one per line</span>
+        <textarea class="runbook-task-input runbook-task-textarea" data-inject-accept rows="3" autocomplete="off" placeholder="What does done look like?">${escapeHtml(initialAccept)}</textarea>
+      </label>
+    `;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      closeFmtModal({ force: true });
+      resolve(value);
+    };
+    openFmtModal({
+      title: modalTitle,
+      body,
+      onClose: () => finish(null),
+      footer: [
+        { label: 'Cancel', onClick: () => finish(null) },
+        {
+          label: submitLabel,
+          primary: true,
+          onClick: () => {
+            const title = (body.querySelector('[data-inject-title]')?.value || '').trim();
+            if (!title) {
+              body.querySelector('[data-inject-title]')?.focus();
+              return; // keep the modal open until a title is provided
+            }
+            const targetFiles = (body.querySelector('[data-inject-targets]')?.value || '')
+              .split(',').map(s => s.trim()).filter(Boolean);
+            const acceptanceCriteria = (body.querySelector('[data-inject-accept]')?.value || '')
+              .split('\n').map(s => s.trim()).filter(Boolean);
+            finish({ title, targetFiles, acceptanceCriteria });
+          },
+        },
+      ],
+    });
+    setTimeout(() => body.querySelector('[data-inject-title]')?.focus(), 30);
+  });
+}
+
+async function injectMachineCandidate(runbookPath, runId) {
+  if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.injectItem) return;
+  const input = await promptMachineWorkItemForm({
+    modalTitle: 'Inject work item',
+    submitLabel: 'Inject',
+    intro: 'Add a new work item to this run. It is triaged to queued and the worker can claim it on the next step.',
+  });
+  if (!input || !input.title) return;
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, `${runId}:steer`);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Inject');
+    return;
+  }
+  try {
+    if (!await ensureMachineRuntimeReady()) return;
+    const token = await requestMachineCapabilityToken();
+    if (!token) return;
+    let injected = null;
+    try {
+      injected = await window.orpad.machine.injectItem({
+        workspacePath,
+        pipelinePath: runbookPath,
+        runId,
+        title: input.title,
+        targetFiles: input.targetFiles,
+        acceptanceCriteria: input.acceptanceCriteria,
+        capabilityToken: token,
+        exportLatestRun: true,
+      });
+    } catch (err) {
+      notifyFormatError('Inject item', new Error(err?.message || 'Could not inject the item.'));
+      return;
+    }
+    if (!injected?.success) {
+      if (injected?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+      notifyFormatError('Inject item', new Error(injected?.error || `Could not inject the item (${injected?.code || 'unknown'}).`));
+      return;
+    }
+    selectedRunbookPath = runbookPath;
+    lastMachineRunRecord = machineUpdateRunRecord(runbookPath, injected);
+    await refreshMachineRunList(runbookPath);
+    renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
+    void refreshWorkspaceRunbookSummary();
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
+// Read a queue item's current human-editable content from its on-disk snapshot
+// (the latest queue/ transition artifact for the item), so the Edit modal can be
+// prefilled with what's actually there. Returns null if it can't be read — the
+// edit flow then aborts rather than risk overwriting fields blind.
+async function machineQueueItemContent(record, itemId) {
+  if (!itemId || !window.orpad?.readFile) return null;
+  const transition = [...(record?.events || [])].reverse().find(event => (
+    event?.eventType === 'queue.transition'
+    && (event.itemId === itemId || event.payload?.itemId === itemId)
+    && (event.artifactRefs || []).some(ref => /^queue\//.test(ref))
+  ));
+  const itemPath = (transition?.artifactRefs || []).find(ref => /^queue\//.test(ref)) || '';
+  const filePath = machineSafeRunArtifactPath(record, itemPath);
+  if (!filePath) return null;
+  try {
+    const result = await window.orpad.readFile(filePath);
+    const item = JSON.parse(result?.content || '{}');
+    return {
+      title: typeof item.title === 'string' ? item.title : '',
+      targetFiles: Array.isArray(item.targetFiles) ? item.targetFiles : [],
+      acceptanceCriteria: Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+// STEER "fix this": edit a queued item's title / target files / acceptance
+// criteria in place. Prefills from the current snapshot so the human edits what's
+// really there (aborts if it can't be read, rather than blank-overwriting). Like
+// the other steer ops, the main side is fail-fast while a step runs (pause ->
+// steer -> resume) and the button is disabled until then.
+async function editMachineItem(runbookPath, runId, itemId) {
+  if (!workspacePath || !runbookPath || !runId || !itemId || !window.orpad?.machine?.editItem) return;
+  const current = await machineQueueItemContent(lastMachineRunRecord, itemId);
+  if (!current) {
+    notifyFormatError('Edit item', new Error('Could not load the current item content to edit.'));
+    return;
+  }
+  const input = await promptMachineWorkItemForm({
+    modalTitle: 'Edit work item',
+    submitLabel: 'Save changes',
+    intro: 'Edit this queued work item. Changes apply the next time the worker claims it.',
+    initial: current,
+  });
+  if (!input || !input.title) return;
+  const mutationLock = tryAcquireMachineRunMutationLock(runbookPath, `${runId}:steer`);
+  if (!mutationLock) {
+    notifyMachineRunBusy('Edit');
+    return;
+  }
+  try {
+    if (!await ensureMachineRuntimeReady()) return;
+    const token = await requestMachineCapabilityToken();
+    if (!token) return;
+    let edited = null;
+    try {
+      edited = await window.orpad.machine.editItem({
+        workspacePath,
+        pipelinePath: runbookPath,
+        runId,
+        itemId,
+        title: input.title,
+        targetFiles: input.targetFiles,
+        acceptanceCriteria: input.acceptanceCriteria,
+        capabilityToken: token,
+        exportLatestRun: true,
+      });
+    } catch (err) {
+      notifyFormatError('Edit item', new Error(err?.message || 'Could not edit the item.'));
+      return;
+    }
+    if (!edited?.success) {
+      if (edited?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
+      notifyFormatError('Edit item', new Error(edited?.error || `Could not edit the item (${edited?.code || 'unknown'}).`));
+      return;
+    }
+    selectedRunbookPath = runbookPath;
+    lastMachineRunRecord = machineUpdateRunRecord(runbookPath, edited);
+    await refreshMachineRunList(runbookPath);
+    renderRunbooksPanel();
+    rerenderPipelinePreviewIfActive(runbookPath);
+    void refreshWorkspaceRunbookSummary();
+  } finally {
+    releaseMachineRunMutationLock(mutationLock);
+  }
+}
+
 async function cancelSelectedMachineRun(runbookPath, runId) {
   if (!workspacePath || !runbookPath || !runId || !window.orpad?.machine?.cancelRun) return;
+  // Destructive-action guard: cancelling an in-flight or paused run discards its
+  // in-flight work and is hard to undo, so confirm before tearing it down (the
+  // safer Pause sits right next to Cancel and is a single misclick away). Only a
+  // genuinely active/paused run is confirmed — cancelling an already-finished run
+  // is a no-op and needs no prompt.
+  const liveRecord = getLiveMachineRunRecord(runbookPath) || lastMachineRunRecord || getRunbookCache(machineRunRecordCache, runbookPath);
+  const liveLifecycle = String(liveRecord?.runState?.lifecycleStatus || '').toLowerCase();
+  const cancelIsDestructive = isMachineRunInProgress(liveRecord, runbookPath) || liveLifecycle === 'paused';
+  if (cancelIsDestructive && typeof window.confirm === 'function') {
+    const proceed = window.confirm('Stop this run?\n\nIn-flight work is discarded and the run is marked cancelled — this cannot be undone. To suspend the run instead, use Pause.');
+    if (!proceed) return;
+  }
   // Cancel still acquires the mutation lock, but uses a distinct key
   // (runId + ":cancel") so it CAN run while executeRunStep holds the
   // base (runId) lock -the IPC layer's withRunLifecycleQueued queues
@@ -22158,13 +23929,13 @@ async function cancelSelectedMachineRunInner(runbookPath, runId, options = {}) {
     });
   } catch (err) {
     clearPending();
-    alert(err?.message || 'Could not stop the run.');
+    notifyFormatError('Stop run', new Error(err?.message || 'Could not stop the run.'));
     return;
   }
   clearPending();
   if (!cancelled?.success) {
     if (cancelled?.code === 'MACHINE_IPC_CAPABILITY_DENIED') machineCapabilityToken = '';
-    alert(cancelled?.error || 'Could not stop the run.');
+    notifyFormatError('Stop run', new Error(cancelled?.error || 'Could not stop the run.'));
     return;
   }
   selectedRunbookPath = runbookPath;
@@ -22434,6 +24205,11 @@ async function machinePatchChangeSummary(change) {
   return summary;
 }
 
+function machinePatchViolationIsGeneratedArtifact(violation) {
+  const normalized = runbookNormalizePath(violation?.path || '').toLowerCase();
+  return /(^|\/)(test-results|playwright-report|blob-report|coverage|\.nyc_output)\//.test(normalized);
+}
+
 async function machinePatchArtifactSummary(record, workerReview) {
   if (!workerReview?.patchArtifact) return null;
   const filePath = machineSafeRunArtifactPath(record, workerReview.patchArtifact);
@@ -22447,7 +24223,10 @@ async function machinePatchArtifactSummary(record, workerReview) {
       return { error: 'Patch artifact schema is not recognized.' };
     }
     const changes = Array.isArray(patch.changes) ? patch.changes : [];
-    const violations = Array.isArray(patch.violations) ? patch.violations : [];
+    const rawViolations = Array.isArray(patch.violations) ? patch.violations : [];
+    const ignoredGeneratedViolations = rawViolations.filter(machinePatchViolationIsGeneratedArtifact);
+    const ignoredGeneratedFiles = Array.isArray(patch.ignoredGeneratedFiles) ? patch.ignoredGeneratedFiles : [];
+    const violations = rawViolations.filter(violation => !machinePatchViolationIsGeneratedArtifact(violation));
     const allowedFiles = Array.isArray(patch.allowedFiles) ? patch.allowedFiles : [];
     const summarizedChanges = await Promise.all(changes
       .filter(change => change?.path)
@@ -22459,6 +24238,7 @@ async function machinePatchArtifactSummary(record, workerReview) {
       allowedFileCount: allowedFiles.length,
       changeCount: changes.length,
       violationCount: violations.length,
+      ignoredGeneratedFileCount: ignoredGeneratedViolations.length + ignoredGeneratedFiles.length,
       changes: summarizedChanges,
       hasMoreChanges: changes.length > 12,
       violations: violations
@@ -22500,6 +24280,9 @@ function machinePatchArtifactMarkdown(summary) {
   }
   if (summary.violations.length) {
     lines.push('', `Write-set violations: ${summary.violations.join(', ')}`);
+  }
+  if (summary.ignoredGeneratedFileCount) {
+    lines.push('', `Ignored generated validation artifacts: ${machineCountLabel(summary.ignoredGeneratedFileCount, 'file')}.`);
   }
   return lines;
 }
@@ -22881,7 +24664,7 @@ function openMachinePatchReviewModal(runbookPath, runId, record, workerReview, p
     ${hasWriteSetViolations ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(violationCount, 'write-set violation'))}</strong> The worker patch includes paths outside its declared write set. Direct apply is disabled; use <strong>${escapeHtml(followUpButtonLabel)}</strong> if this change is still needed.</div>` : ''}
     ${overlapCount ? `<div class="runbook-diagnostic warning"><strong>${escapeHtml(machineCountLabel(overlapCount, 'overlapping file'))}</strong> Another approved patch in this run already selected this file. Two patches cannot safely write the same file in one batch. Apply the approved batch first, then use <strong>${escapeHtml(followUpButtonLabel)}</strong> if this change is still needed.</div>` : ''}
     <div class="runbook-diagnostic">Patch artifact: ${escapeHtml(workerReview.patchArtifact)}</div>
-    <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}</div>
+    <div class="runbook-diagnostic">${escapeHtml(machineCountLabel(patchSummary.changeCount, 'file change'))}; ${escapeHtml(machineCountLabel(patchSummary.violationCount, 'write-set violation'))}${patchSummary.ignoredGeneratedFileCount ? `; ${escapeHtml(machineCountLabel(patchSummary.ignoredGeneratedFileCount, 'generated validation artifact'))} ignored` : ''}</div>
     <div class="machine-patch-change-list">${changeRows}</div>
     <label style="display:block; margin-top:12px;">
       Follow-up prompt
@@ -23224,6 +25007,69 @@ function normalizeRunbookTask(value) {
 
 function currentRunbookTaskText() {
   return normalizeRunbookTask(runbookDraftTask);
+}
+
+function machineRunRecordTaskText(record) {
+  return normalizeRunbookTask(record?.runState?.metadata?.taskText || record?.metadata?.taskText || '');
+}
+
+function machineRunRecordMatchesRunId(record, runId) {
+  if (!record || !runId) return false;
+  const recordRunId = record.runState?.runId || record.runId || '';
+  return recordRunId === runId;
+}
+
+function pipelineDocumentTaskText(doc) {
+  if (!doc || typeof doc !== 'object') return '';
+  const metadata = doc.metadata && typeof doc.metadata === 'object' ? doc.metadata : {};
+  const authoring = metadata.orchestrationAuthoring && typeof metadata.orchestrationAuthoring === 'object'
+    ? metadata.orchestrationAuthoring
+    : {};
+  return normalizeRunbookTask(
+    authoring.taskText
+    || metadata.taskText
+    || metadata.objective
+    || doc.taskText
+    || doc.objective
+    || doc.run?.taskText
+    || '',
+  );
+}
+
+function openTabPipelineTaskText(runbookPath) {
+  if (!runbookPath) return '';
+  const tab = findTabByPath(runbookPath);
+  if (!tab) return '';
+  const source = tab.id === activeTabId
+    ? editor.state.doc.toString()
+    : (tab.editorState?.doc?.toString?.() || '');
+  if (!source) return '';
+  try {
+    return pipelineDocumentTaskText(JSON.parse(source));
+  } catch {
+    return '';
+  }
+}
+
+async function readPipelineTaskText(runbookPath) {
+  const fromOpenTab = openTabPipelineTaskText(runbookPath);
+  if (fromOpenTab) return fromOpenTab;
+  if (!runbookPath || !window.orpad?.readFile) return '';
+  try {
+    const result = await window.orpad.readFile(runbookPath);
+    if (result?.error) return '';
+    return pipelineDocumentTaskText(JSON.parse(result.content || '{}'));
+  } catch {
+    return '';
+  }
+}
+
+async function currentRunbookTaskTextForPipeline(runbookPath, options = {}) {
+  const fromRun = machineRunRecordTaskText(options.record);
+  if (fromRun) return fromRun;
+  const fromPipeline = await readPipelineTaskText(runbookPath);
+  if (fromPipeline) return fromPipeline;
+  return currentRunbookTaskText();
 }
 
 function hasExternalResearchIntent(taskText) {
@@ -24151,6 +25997,10 @@ async function handlePipelineRunButton(button) {
   try {
     if (action === 'machine-cancel-run') {
       await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    } else if (action === 'machine-pause-run') {
+      await pauseSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    } else if (action === 'machine-resume-run') {
+      await resumeSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     } else if (action === 'machine-start-run') {
       const startPath = button.dataset.runbookPath || targetPath;
       if (startPath) await startSelectedMachineRun(startPath);
@@ -24544,6 +26394,10 @@ runbooksContentEl?.addEventListener('click', async (event) => {
     else if (action === 'machine-resume-run') await resumeSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-cancel-run') await cancelSelectedMachineRun(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
     else if (action === 'machine-cancel-claim') await cancelSelectedMachineClaim(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.claimId || '', button.dataset.itemId || '');
+    else if (action === 'machine-reject-item') await rejectSelectedMachineItem(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.itemId || '');
+    else if (action === 'machine-reprioritize-item') await reprioritizeSelectedMachineItem(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.itemId || '');
+    else if (action === 'machine-inject-item') await injectMachineCandidate(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '');
+    else if (action === 'machine-edit-item') await editMachineItem(targetPath, button.dataset.runId || lastMachineRunRecord?.runState?.runId || '', button.dataset.itemId || '');
     else if (action === 'machine-open-patch-review') {
       const runId = button.dataset.runId || lastMachineRunRecord?.runState?.runId || '';
       const record = runId
@@ -24616,6 +26470,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
       const path = button.dataset.path || targetPath;
       if (runId) {
         clearReplayPosition(path, runId);
+        clearMachineRunReplayTransientStateIfUnreferenced(path, runId);
         renderRunbooksPanel();
         rerenderPipelinePreviewIfActive(path);
       }
@@ -24665,6 +26520,7 @@ runbooksContentEl?.addEventListener('click', async (event) => {
       }
       const runs = Array.isArray(listed.runs) ? listed.runs : [];
       setRunbookCache(machineRunListCache, targetPath, { runs, loadedAt: new Date().toISOString() });
+      pruneMachineRunReplayTransientStateForRunList(targetPath, runs);
       if (!runs.length) {
         notifyFormatError('Runbooks', new Error('listRuns returned 0 runs for this pipeline.'));
         renderRunbooksPanel();
@@ -24722,7 +26578,13 @@ runbooksContentEl?.addEventListener('input', (event) => {
     const path = event.target.dataset.path || selectedRunbookPath || '';
     const value = Number(event.target.value) || 1;
     if (!runId) return;
-    setReplayPosition(path, runId, value);
+    const max = Number(event.target.max) || 0;
+    if (max > 0 && value >= max) {
+      clearReplayPosition(path, runId);
+      clearMachineRunReplayTransientStateIfUnreferenced(path, runId);
+    } else {
+      setReplayPosition(path, runId, value);
+    }
     if (machineReplaySliderDebounce) clearTimeout(machineReplaySliderDebounce);
     machineReplaySliderDebounce = setTimeout(() => {
       machineReplaySliderDebounce = null;

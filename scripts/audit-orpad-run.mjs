@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { auditNodeSchemas } from './audit-orpad-node-schemas.mjs';
+// Static (not createRequire) import so esbuild can inline this dependency when the
+// script is bundled for packaging. work-items is CommonJS, so default-import the
+// module object and destructure. Behaviour is identical when run standalone.
+import workItems from '../src/main/runbooks/work-items.js';
 
-const require = createRequire(import.meta.url);
-const { auditWorkQueue } = require('../src/main/runbooks/work-items');
+const { auditWorkQueue } = workItems;
 
 const RUN_METADATA_SCHEMA = 'orpad.runEvidence.v1';
 const DISCOVERY_COVERAGE_SCHEMA = 'orpad.discoveryCoverage.v1';

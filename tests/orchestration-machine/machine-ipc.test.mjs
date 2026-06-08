@@ -12,15 +12,21 @@ const require = createRequire(import.meta.url);
 const { createAuthorityManager } = require('../../src/main/authority');
 const {
   MACHINE_IPC_CHANNELS,
+  MACHINE_RUN_PROGRESS_CHANNEL,
   appendMachineEvent,
   appendRunLifecycleStatus,
+  clearRunControlToken,
   claimNextQueuedItem,
+  editQueueItem,
   findQueueItem,
   ingestCandidateProposal,
   patchReviewStateFromEvents,
+  projectQueueStateFromEvents,
   readMachineEvents,
+  readRunControlToken,
   registerPatchArtifact,
   registerMachineHandlers,
+  repairDerivedQueueFilesFromEvents,
   transitionQueueItem,
 } = require('../../src/main/orchestration-machine');
 
@@ -198,6 +204,15 @@ test('Machine IPC registers only typed channels and preload exposes no generic m
   assert.equal(preloadSource.includes('machine-enable-session'), true);
   assert.equal(preloadSource.includes('machine-validate-pipeline'), true);
   assert.equal(preloadSource.includes('machine-resume-run'), true);
+  assert.equal(preloadSource.includes('machine-pause-run'), true);
+  assert.equal(preloadSource.includes('machine-reject-item'), true);
+  assert.equal(preloadSource.includes('machine-reprioritize-item'), true);
+  assert.equal(preloadSource.includes('machine-inject-item'), true);
+  assert.equal(preloadSource.includes('machine-edit-item'), true);
+  // PUSH STREAM: a one-way main->renderer progress channel exposed via onRunProgress.
+  assert.equal(preloadSource.includes('machine-run-progress'), true);
+  assert.equal(preloadSource.includes('onRunProgress'), true);
+  assert.equal(MACHINE_RUN_PROGRESS_CHANNEL, 'machine-run-progress');
   assert.equal(preloadSource.includes('machine-cancel-claim'), true);
   assert.equal(preloadSource.includes('machine-decide-approval'), true);
   assert.equal(preloadSource.includes('machine-review-patch'), true);
@@ -410,6 +425,124 @@ test('Machine IPC validates, creates, reads, lists, and exports a Machine run wi
   assert.equal((await fs.stat(path.join(exported.targetRoot, 'run-metadata.json'))).isFile(), true);
 });
 
+test('Machine IPC resume reports orphaned adapter recovery as autonomous continuation', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260430_ipc_orphaned_adapter_resume',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const itemId = 'ipc-orphaned-adapter-resume';
+  await ingestCandidateProposal(created.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-ipc-orphaned-adapter-resume',
+    suggestedWorkItemId: itemId,
+    sourceNode: 'probe/ipc-orphaned-adapter',
+    title: 'Exercise orphaned adapter recovery',
+    fingerprint: 'ipc:orphaned-adapter-resume',
+    evidence: [{ id: 'ipc-orphaned-adapter-source', file: 'src/smoke-target.md' }],
+    acceptanceCriteria: ['Resume reports recovered adapter work as continuable.'],
+    sourceOfTruthTargets: ['src/smoke-target.md'],
+  }, {
+    runId: created.runId,
+    transitionId: 'ingest:ipc-orphaned-adapter-resume',
+  });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId,
+    toState: 'queued',
+    transitionId: 'triage:ipc-orphaned-adapter-resume',
+  });
+  const claimed = await claimNextQueuedItem(created.runRoot, {
+    runId: created.runId,
+    claimId: 'claim-ipc-orphaned-adapter-resume',
+    leaseMs: 30 * 60 * 1000,
+    now: '2026-04-30T00:00:10.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+  await appendRunLifecycleStatus(created.runRoot, {
+    runId: created.runId,
+    toState: 'running',
+    reason: 'test.running-before-orphaned-adapter',
+  });
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    actor: 'machine',
+    eventType: 'node.started',
+    nodePath: 'main/worker',
+    payload: {
+      nodeExecutionId: `${created.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'started',
+      attempt: 1,
+      itemId,
+      claimId: 'claim-ipc-orphaned-adapter-resume',
+    },
+  });
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    timestamp: '2026-04-30T00:00:12.000Z',
+    actor: 'machine',
+    eventType: 'adapter.requested',
+    nodePath: 'main/worker',
+    payload: {
+      adapter: 'cli-agent-overlay',
+      adapterCallId: 'claim-ipc-orphaned-adapter-resume-graph-cli',
+      attemptId: 'claim-ipc-orphaned-adapter-resume-graph-cli-attempt-1',
+      idempotencyKey: 'claim-ipc-orphaned-adapter-resume-graph-cli:attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+      inputArtifacts: [`queue/claimed/${itemId}.json`],
+      outputContract: 'orpad.workerResult.v1',
+      adapterResultPath: 'adapters/claim-ipc-orphaned-adapter-resume-graph-cli.result.json',
+    },
+  });
+  await appendMachineEvent(created.runRoot, {
+    runId: created.runId,
+    timestamp: '2026-04-30T00:00:13.000Z',
+    actor: 'machine',
+    eventType: 'adapter.process.finished',
+    nodePath: 'main/worker',
+    payload: {
+      adapter: 'cli-agent-overlay',
+      adapterCallId: 'claim-ipc-orphaned-adapter-resume-graph-cli',
+      attemptId: 'claim-ipc-orphaned-adapter-resume-graph-cli-attempt-1',
+      idempotencyKey: 'claim-ipc-orphaned-adapter-resume-graph-cli:attempt-1',
+      taskKind: 'workerLoop',
+      pid: 999999,
+      processKey: 'claim-ipc-orphaned-adapter-resume-graph-cli',
+      code: 0,
+      timedOut: false,
+      cancelled: false,
+      startedAt: '2026-04-30T00:00:12.000Z',
+      finishedAt: '2026-04-30T00:00:13.000Z',
+    },
+  });
+
+  const resumed = await handlers.get(MACHINE_IPC_CHANNELS.resumeRun)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    exportLatestRun: false,
+    now: '2026-04-30T00:03:00.000Z',
+  });
+
+  assert.equal(resumed.success, true);
+  assert.equal(resumed.runState.lifecycleStatus, 'waiting');
+  assert.equal(resumed.resume.staleClaimCount, 1);
+  assert.equal(resumed.resume.orphanedAdapterRecoveryCount, 1);
+  assert.equal(resumed.resume.shouldContinueAfterRecovery, true);
+  assert.equal(resumed.resume.cancelledNodeCount, 1);
+  assert.equal((await findQueueItem(created.runRoot, itemId)).state, 'queued');
+});
+
 test('Machine IPC snapshots expose active claims and cancel a claimed item', async () => {
   const { workspaceRoot, pipelinePath } = await makeWorkspace();
   const event = senderEvent();
@@ -614,6 +747,128 @@ test('Machine IPC execute step runs dispatcher, worker loop, and CLI overlay ada
   assert.equal(repeated.runState.eventSequence, snapshot.runState.eventSequence);
 });
 
+test('Machine IPC PUSH STREAM nudges the requesting renderer after each completed step of an autonomous drive', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const captured = [];
+  const event = senderEvent();
+  // Attach a capturing webContents so the driver's per-step pusher fires.
+  event.sender.send = (channel, payload) => captured.push({ channel, payload });
+  event.sender.isDestroyed = () => false;
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260601_push_stream',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  // Drive to a human decision — this runs >=1 step inside ONE IPC call, which is
+  // exactly when the renderer would otherwise be blind until the invoke resolves.
+  const driven = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: { runUntil: 'human-decision' },
+  });
+  assert.equal(driven.success, true);
+  assert.ok(driven.drive, 'the human-decision driver ran');
+
+  // At least one machine-run-progress nudge was pushed to the requesting renderer.
+  const progress = captured.filter(c => c.channel === MACHINE_RUN_PROGRESS_CHANNEL);
+  assert.ok(progress.length >= 1, `expected >=1 progress push, got ${progress.length}`);
+  for (const { payload } of progress) {
+    assert.equal(payload.runId, created.runId);
+    assert.equal(typeof payload.sequence, 'number');
+    assert.equal(typeof payload.stepIndex, 'number');
+    assert.equal(payload.phase, 'step');
+    // The nudge must NOT smuggle full run state — events.jsonl stays the source of
+    // truth and the renderer re-fetches via the gated getRun handler.
+    assert.equal(payload.events, undefined);
+    assert.equal(payload.runState, undefined);
+  }
+  // Sequences strictly advance across pushes (each push = one event-log advance).
+  for (let i = 1; i < progress.length; i += 1) {
+    assert.ok(
+      progress[i].payload.sequence > progress[i - 1].payload.sequence,
+      'event sequence advances per push',
+    );
+  }
+});
+
+test('Machine IPC autonomous drive without a live webContents pushes nothing and still completes (PUSH STREAM gating)', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent(); // the default sender has no .send → pusher is null
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260601_push_stream_nosender',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  const driven = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    capabilityToken: 'test-token',
+    options: { runUntil: 'human-decision' },
+  });
+  // makeRunProgressPusher returns null without a live sender; the drive is unaffected.
+  assert.equal(driven.success, true);
+  assert.ok(driven.drive, 'the drive completed without a push channel');
+});
+
+test('Machine IPC autonomous drive ignores pause intent after terminal completion', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const runId = 'run_20260607_pause_after_terminal';
+  try {
+    const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+    });
+    assert.equal(created.success, true);
+
+    const completed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { runUntil: 'human-decision' },
+    });
+    assert.equal(completed.success, true);
+    assert.equal(completed.runState.lifecycleStatus, 'completed');
+
+    const pauseIntent = await handlers.get(MACHINE_IPC_CHANNELS.pauseRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+    });
+    assert.equal(pauseIntent.success, true);
+
+    const redriven = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { runUntil: 'human-decision' },
+    });
+    assert.equal(redriven.success, true);
+    assert.equal(redriven.drive.stopReason, 'terminal');
+    assert.equal(redriven.runState.lifecycleStatus, 'completed');
+    assert.equal(redriven.events.some(item => item.eventType === 'run.status' && item.toState === 'paused'), false);
+  } finally {
+    clearRunControlToken(runId);
+  }
+});
+
 test('Machine IPC apply patch returns refreshed evidence on base mismatch', async () => {
   const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
   const event = senderEvent();
@@ -687,6 +942,7 @@ test('Machine IPC approve+applyApproved defers writes until batch and emits sequ
   });
   assert.equal(approved.success, true);
   assert.equal(approved.events.at(-1).eventType, 'patch.approved');
+  assert.equal(approved.runState.eventSequence, approved.events.at(-1).sequence);
   assert.equal(approved.events.at(-1).payload.patchArtifact, patchArtifact);
   assert.deepEqual(approved.events.at(-1).payload.selectedFiles, ['src/smoke-target.md']);
   assert.equal(await fs.readFile(targetPath, 'utf8'), 'before\n', 'workspace must remain untouched until batch apply runs');
@@ -715,6 +971,7 @@ test('Machine IPC approve+applyApproved defers writes until batch and emits sequ
   assert.equal(applied.success, true);
   assert.equal(applied.appliedCount, 1);
   assert.equal(applied.conflictCount, 0);
+  assert.equal(applied.runState.eventSequence, applied.events.at(-1).sequence);
   assert.equal(await fs.readFile(targetPath, 'utf8'), 'after from Machine IPC harness\n');
 
   const eventTypes = applied.events.map(item => item.eventType);
@@ -813,6 +1070,7 @@ test('Machine IPC approve+applyApproved applies reviewable blocked worker patch 
     selectedFiles: ['src/smoke-target.md'],
   });
   assert.equal(approved.success, true);
+  assert.equal(approved.runState.eventSequence, approved.events.at(-1).sequence);
   assert.equal(await fs.readFile(targetPath, 'utf8'), 'before\n');
 
   const applied = await handlers.get(MACHINE_IPC_CHANNELS.applyApprovedPatches)(event, {
@@ -823,6 +1081,7 @@ test('Machine IPC approve+applyApproved applies reviewable blocked worker patch 
   assert.equal(applied.success, true);
   assert.equal(applied.appliedCount, 1);
   assert.equal(applied.conflictCount, 0);
+  assert.equal(applied.runState.eventSequence, applied.events.at(-1).sequence);
   assert.equal(await fs.readFile(targetPath, 'utf8'), afterContent);
 });
 
@@ -1061,8 +1320,8 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   assert.equal(executed.approvals.pending[0].itemId, 'ipc-harness-smoke');
   assert.equal(executed.approvals.pending[0].approvalId, 'approval-ipc-harness-smoke');
   assert.equal(executed.runState.lifecycleStatus, 'approval-required');
-  assert.equal(executed.runState.summaryStatus, 'blocked');
-  assert.equal(executed.finalization.summaryStatus, 'blocked');
+  assert.equal(executed.runState.summaryStatus, 'partial');
+  assert.equal(executed.finalization.summaryStatus, 'partial');
   assert.equal(executed.finalization.approvalRequired, true);
   assert.equal(executed.worker, null);
 
@@ -1071,7 +1330,7 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
     runId: created.runId,
   });
   assert.equal(snapshot.runState.lifecycleStatus, 'approval-required');
-  assert.equal(snapshot.runState.summaryStatus, 'blocked');
+  assert.equal(snapshot.runState.summaryStatus, 'partial');
   assert.equal(snapshot.approvals.pendingCount, 1);
   assert.equal(snapshot.approvals.pending[0].status, 'requested');
 
@@ -1083,7 +1342,7 @@ test('Machine IPC snapshots expose pending approval summaries', async () => {
   assert.equal(resumePending.success, false);
   assert.equal(resumePending.code, 'MACHINE_APPROVAL_PENDING');
   assert.equal(resumePending.runState.lifecycleStatus, 'approval-required');
-  assert.equal(resumePending.runState.summaryStatus, 'blocked');
+  assert.equal(resumePending.runState.summaryStatus, 'partial');
   assert.equal(resumePending.approvals.pendingCount, 1);
 
   const listed = await handlers.get(MACHINE_IPC_CHANNELS.listRuns)(event, baseRequest);
@@ -1204,6 +1463,7 @@ test('Machine IPC autonomous run with patchReviewMode auto-apply approves and ap
   assert.equal(executed.drive.autoAppliedPatchCount, 1);
   assert.equal(executed.drive.autoApplyConflictCount, 0);
   assert.equal(executed.drive.autoAppliedPatches[0].patchArtifact.endsWith('.patch.json'), true);
+  assert.equal(executed.runState.eventSequence, executed.events.at(-1).sequence);
 
   const eventTypes = executed.events.map(item => item.eventType);
   assert.ok(eventTypes.includes('patch.approved'), 'driver emits patch.approved');
@@ -1251,6 +1511,7 @@ test('Machine IPC autonomous run with patchReviewMode auto-apply applies routine
   assert.equal(executed.drive.mode, 'human-decision');
   assert.equal(executed.drive.autoAppliedPatchCount, 1);
   assert.notEqual(executed.drive.stopReason, 'patch-review');
+  assert.equal(executed.runState.eventSequence, executed.events.at(-1).sequence);
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/smoke-target.md'), 'utf8'), 'after from Machine IPC harness\n');
 
   const review = patchReviewStateFromEvents(await readMachineEvents(path.join(path.dirname(pipelinePath), 'runs', created.runId)));
@@ -1371,6 +1632,7 @@ test('Machine IPC auto-apply records preflight base mismatches as patch conflict
   assert.equal(executed.success, true);
   assert.equal(executed.drive.autoAppliedPatchCount, 0);
   assert.equal(executed.drive.autoApplyConflictCount, 1);
+  assert.equal(executed.runState.eventSequence, executed.events.at(-1).sequence);
   const events = await readMachineEvents(created.runRoot);
   assert.equal(events.some(item => (
     item.eventType === 'patch.apply_conflict'
@@ -1470,7 +1732,7 @@ test('Machine IPC denied approval decisions cancel blocked work without grants',
   assert.equal(executed.approvals.pendingCount, 1);
   assert.equal(executed.approvals.pending[0].approvalId, 'approval-ipc-harness-smoke');
   assert.equal(executed.runState.lifecycleStatus, 'approval-required');
-  assert.equal(executed.runState.summaryStatus, 'blocked');
+  assert.equal(executed.runState.summaryStatus, 'partial');
   assert.equal(executed.worker, null);
 
   const denied = await handlers.get(MACHINE_IPC_CHANNELS.decideApproval)(event, {
@@ -1830,4 +2092,521 @@ test('Machine IPC retryNode rejects when nodePath is missing', async () => {
   });
   assert.equal(rejected.success, false);
   assert.equal(rejected.code, 'MACHINE_IPC_NODE_PATH_REQUIRED');
+});
+
+// ---------------------------------------------------------------------------
+// RC-IPC: supervised-autonomy pause / resume / cancel-intent over IPC.
+// These exercise the channels exposed in this increment on top of RC-1's
+// run-control core. The pre-existing autonomous auto-approve / auto-apply tests
+// above double as the regression guard that, with NO control token set, the
+// driver boundary check is a no-op.
+// ---------------------------------------------------------------------------
+
+test('Machine IPC pause records intent + token and the autonomous driver suspends at the next step boundary', async () => {
+  const { workspaceRoot, pipelinePath } = await makeHarnessWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const runId = 'run_20260531_rcipc_pause';
+  try {
+    const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { llmApprovalMode: 'bypass' },
+    });
+    assert.equal(created.success, true);
+
+    // Request pause BEFORE driving. The in-process token is set synchronously,
+    // so the very first driver boundary observes it and suspends with zero steps
+    // run — in-flight work is never interrupted.
+    const paused = await handlers.get(MACHINE_IPC_CHANNELS.pauseRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+    });
+    assert.equal(paused.success, true);
+    assert.equal(paused.pause.intent.present, true);
+    assert.equal(paused.pause.intent.pauseRequested, true);
+    assert.equal(paused.events.some(e => e.eventType === 'run.pause-requested'), true);
+
+    const executed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { llmApprovalMode: 'bypass', runUntil: 'human-decision' },
+    });
+    assert.equal(executed.success, true);
+    assert.equal(executed.drive.mode, 'human-decision');
+    assert.equal(executed.drive.stopReason, 'paused');
+    assert.equal(executed.drive.stepsRun, 0, 'driver halts at the boundary before running any step');
+    assert.equal(executed.runState.lifecycleStatus, 'paused');
+    assert.equal(executed.events.some(e => e.eventType === 'run.status' && e.toState === 'paused'), true);
+  } finally {
+    clearRunControlToken(runId);
+  }
+});
+
+test('Machine IPC resume of a paused run clears intent, returns to waiting, and the driver re-advances to its real decision point', async () => {
+  const { workspaceRoot, pipelinePath, pipelineDir } = await makeHarnessWorkspace();
+  // reviewRequired makes the worker stop at a patch-review decision, giving the
+  // run GENUINE pending work to preserve across the pause/resume round-trip.
+  await updateHarnessGraphNodeConfig(pipelineDir, 'worker', { reviewRequired: true });
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const runId = 'run_20260531_rcipc_resume';
+  try {
+    const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { llmApprovalMode: 'bypass' },
+    });
+    assert.equal(created.success, true);
+
+    // Prime via a single step-mode call (token-agnostic) so the run reaches a
+    // realistic mid-flight state: waiting with a pending patch review.
+    const primed = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { llmApprovalMode: 'bypass' },
+    });
+    assert.equal(primed.runState.lifecycleStatus, 'waiting');
+
+    // Pause, then drive: the boundary check halts the run with its pending work
+    // intact, taking precedence over the pending patch-review decision.
+    await handlers.get(MACHINE_IPC_CHANNELS.pauseRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+    });
+    const drivenPaused = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { llmApprovalMode: 'bypass', runUntil: 'human-decision' },
+    });
+    assert.equal(drivenPaused.drive.stopReason, 'paused');
+    assert.equal(drivenPaused.runState.lifecycleStatus, 'paused');
+
+    // machine-resume-run is unified: a paused run takes the RC path
+    // (clear token + run.resume-requested + paused -> waiting); a non-paused run
+    // keeps the original idle-recovery behavior.
+    const resumed = await handlers.get(MACHINE_IPC_CHANNELS.resumeRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+    });
+    assert.equal(resumed.success, true);
+    assert.equal(resumed.resume.pausedResume, true, 'resume took the RC (paused) path');
+    assert.equal(resumed.runState.lifecycleStatus, 'waiting');
+    assert.equal(resumed.events.some(e => e.eventType === 'run.resume-requested'), true);
+    // The in-process pause token is cleared so the re-entering driver does not re-pause.
+    assert.equal(readRunControlToken(runId).pauseRequested, false);
+
+    // Re-drive: the resumed run is NOT stuck paused — it re-advances to surface
+    // its genuine pending decision (patch-review), exactly where it left off.
+    const reDriven = await handlers.get(MACHINE_IPC_CHANNELS.executeRunStep)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+      options: { llmApprovalMode: 'bypass', runUntil: 'human-decision' },
+    });
+    assert.equal(reDriven.success, true);
+    assert.notEqual(reDriven.drive.stopReason, 'paused', 'cleared pause intent must not re-pause the resumed run');
+    assert.equal(reDriven.drive.stopReason, 'patch-review', 'resume restores the run to its real decision point');
+    assert.notEqual(reDriven.runState.lifecycleStatus, 'paused');
+  } finally {
+    clearRunControlToken(runId);
+  }
+});
+
+test('Machine IPC cancel records run.cancel-requested intent before the cancelled ack', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+  const runId = 'run_20260531_rcipc_cancel_intent';
+  try {
+    const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+    });
+    assert.equal(created.success, true);
+
+    const cancelled = await handlers.get(MACHINE_IPC_CHANNELS.cancelRun)(event, {
+      ...baseRequest,
+      runId,
+      capabilityToken: 'test-token',
+    });
+    assert.equal(cancelled.success, true);
+    assert.equal(cancelled.runState.lifecycleStatus, 'cancelled');
+
+    const events = cancelled.events;
+    const intentIdx = events.findIndex(e => e.eventType === 'run.cancel-requested');
+    const ackIdx = events.findIndex(e => e.eventType === 'run.status' && e.toState === 'cancelled');
+    assert.ok(intentIdx >= 0, 'cancel records a durable run.cancel-requested intent');
+    assert.ok(ackIdx >= 0, 'cancel still records the cancelled lifecycle ack');
+    assert.ok(intentIdx < ackIdx, 'intent-then-ack: cancel intent precedes the cancelled status');
+    assert.equal(readRunControlToken(runId).cancelRequested, true);
+  } finally {
+    clearRunControlToken(runId);
+  }
+});
+
+test('Machine IPC reject-item rejects a pending queue item via a replayable queue.transition (STEER)', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260601_steer_reject',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  await ingestCandidateProposal(created.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-steer-reject',
+    suggestedWorkItemId: 'steer-reject-item',
+    sourceNode: 'probe/steer',
+    title: 'Exercise STEER reject',
+    fingerprint: 'steer:reject',
+    evidence: [{ id: 'steer-src', file: 'src/smoke-target.md' }],
+    acceptanceCriteria: ['Reject is a Machine-owned queue transition.'],
+    sourceOfTruthTargets: ['src/smoke-target.md'],
+  }, { runId: created.runId, transitionId: 'ingest:steer-reject' });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'steer-reject-item',
+    toState: 'queued',
+    transitionId: 'triage:steer-reject',
+  });
+
+  // Mutating op requires a capability token.
+  const denied = await handlers.get(MACHINE_IPC_CHANNELS.rejectItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-reject-item',
+  });
+  assert.equal(denied.success, false);
+
+  // Unknown item is reported, not silently ignored.
+  const missing = await handlers.get(MACHINE_IPC_CHANNELS.rejectItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'no-such-item',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(missing.success, false);
+  assert.equal(missing.code, 'MACHINE_QUEUE_ITEM_NOT_FOUND');
+
+  // Reject the queued item.
+  const rejected = await handlers.get(MACHINE_IPC_CHANNELS.rejectItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-reject-item',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(rejected.success, true);
+  assert.equal(rejected.steer.op, 'reject');
+  assert.equal(rejected.steer.fromState, 'queued');
+
+  const item = await findQueueItem(created.runRoot, 'steer-reject-item', { canonicalOnly: false });
+  assert.equal(item.item.state, 'rejected', 'the item is now rejected');
+  const events = await readMachineEvents(created.runRoot);
+  assert.equal(
+    events.some(e => e.eventType === 'queue.transition' && e.toState === 'rejected'
+      && (e.itemId === 'steer-reject-item' || e.payload?.itemId === 'steer-reject-item')),
+    true,
+    'reject is a standard queue.transition (replayable)',
+  );
+
+  // An already-rejected item is not re-rejectable (state gate).
+  const again = await handlers.get(MACHINE_IPC_CHANNELS.rejectItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-reject-item',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(again.success, false);
+  assert.equal(again.code, 'MACHINE_STEER_NOT_REJECTABLE');
+});
+
+test('Machine IPC reprioritize-item pulls a queued item to the front of the dispatcher claim order (STEER)', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260601_steer_reprioritize',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  // Two queued items: A is higher severity (P0 -> claimed first by default), B is P3.
+  for (const [id, severity] of [['steer-item-a', 'P0'], ['steer-item-b', 'P3']]) {
+    await ingestCandidateProposal(created.runRoot, {
+      schemaVersion: 'orpad.candidateProposal.v1',
+      proposalId: `proposal-${id}`,
+      suggestedWorkItemId: id,
+      sourceNode: 'probe/steer',
+      title: `Item ${id}`,
+      fingerprint: `steer:${id}`,
+      severity,
+      evidence: [{ id: `${id}-src`, file: 'src/smoke-target.md' }],
+      acceptanceCriteria: ['Reprioritize is a Machine-owned, replayable steer.'],
+      sourceOfTruthTargets: ['src/smoke-target.md'],
+    }, { runId: created.runId, transitionId: `ingest:${id}` });
+    await transitionQueueItem(created.runRoot, {
+      runId: created.runId,
+      itemId: id,
+      toState: 'queued',
+      transitionId: `triage:${id}`,
+    });
+  }
+
+  // Mutating op requires a capability token.
+  const denied = await handlers.get(MACHINE_IPC_CHANNELS.reprioritizeItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-item-b',
+  });
+  assert.equal(denied.success, false);
+
+  // Reprioritize B ("do this first").
+  const reprioritized = await handlers.get(MACHINE_IPC_CHANNELS.reprioritizeItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-item-b',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(reprioritized.success, true);
+  assert.equal(reprioritized.steer.op, 'reprioritize');
+  const events = await readMachineEvents(created.runRoot);
+  assert.equal(
+    events.some(e => e.eventType === 'queue.reprioritized'
+      && (e.itemId === 'steer-item-b' || e.payload?.itemId === 'steer-item-b')),
+    true,
+    'reprioritize is a durable queue.reprioritized event (replayable)',
+  );
+
+  // The dispatcher now claims B first despite A's higher severity.
+  const claimed = await claimNextQueuedItem(created.runRoot, {
+    runId: created.runId,
+    claimId: 'claim-steer-reprioritize',
+    now: '2026-06-01T00:00:05.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+  assert.equal(claimed.item.id, 'steer-item-b', 'the reprioritized item is claimed before the higher-severity one');
+
+  // A now-claimed item is no longer reprioritizable (queued-only state gate).
+  const notQueued = await handlers.get(MACHINE_IPC_CHANNELS.reprioritizeItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-item-b',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(notQueued.success, false);
+  assert.equal(notQueued.code, 'MACHINE_STEER_NOT_REPRIORITIZABLE');
+});
+
+test('Machine IPC inject-item adds a human work item to the queue via ingest + triage (STEER)', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260601_steer_inject',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  // A title is required.
+  const noTitle = await handlers.get(MACHINE_IPC_CHANNELS.injectItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    title: '   ',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(noTitle.success, false);
+  assert.equal(noTitle.code, 'MACHINE_STEER_TITLE_REQUIRED');
+
+  // Inject a task with a target file.
+  const injected = await handlers.get(MACHINE_IPC_CHANNELS.injectItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    title: 'Fix the README typo',
+    targetFiles: ['README.md'],
+    capabilityToken: 'test-token',
+  });
+  assert.equal(injected.success, true);
+  assert.equal(injected.steer.op, 'inject');
+  const newItemId = injected.steer.itemId;
+  assert.match(newItemId, /^steer-fix-the-readme-typo-/);
+
+  // The injected item is queued (claimable), with the human title + target.
+  const item = await findQueueItem(created.runRoot, newItemId, { canonicalOnly: false });
+  assert.equal(item.item.state, 'queued');
+  assert.equal(item.item.title, 'Fix the README typo');
+  assert.ok((item.item.targetFiles || []).length >= 1, 'the injected target files are recorded');
+
+  // Both transitions are recorded (replayable): inbox->candidate then candidate->queued.
+  const events = await readMachineEvents(created.runRoot);
+  assert.equal(
+    events.some(e => e.eventType === 'queue.transition' && e.toState === 'candidate'
+      && (e.itemId === newItemId || e.payload?.itemId === newItemId)),
+    true,
+    'ingest recorded inbox->candidate',
+  );
+  assert.equal(
+    events.some(e => e.eventType === 'queue.transition' && e.toState === 'queued'
+      && (e.itemId === newItemId || e.payload?.itemId === newItemId)),
+    true,
+    'triage recorded candidate->queued',
+  );
+
+  // The injected item is a normal queued item the dispatcher can claim.
+  const claimed = await claimNextQueuedItem(created.runRoot, {
+    runId: created.runId,
+    claimId: 'claim-inject',
+    now: '2026-06-01T00:00:05.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+  assert.equal(claimed.item.id, newItemId, 'the injected item can be claimed');
+});
+
+test('Machine IPC edit-item edits a queued item in place, re-validating and preserving the edit through repair (STEER)', async () => {
+  const { workspaceRoot, pipelinePath } = await makeWorkspace();
+  const event = senderEvent();
+  const { handlers, authority } = createIpcHarness();
+  authority.grantWorkspace(event.sender, workspaceRoot);
+  const baseRequest = { workspacePath: workspaceRoot, pipelinePath };
+
+  const created = await handlers.get(MACHINE_IPC_CHANNELS.createRun)(event, {
+    ...baseRequest,
+    runId: 'run_20260601_steer_edit',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(created.success, true);
+
+  await ingestCandidateProposal(created.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-edit',
+    suggestedWorkItemId: 'steer-edit-item',
+    sourceNode: 'probe/steer',
+    title: 'Original title',
+    fingerprint: 'steer:edit-item',
+    severity: 'P2',
+    evidence: [{ id: 'edit-src', file: 'src/original-target.md' }],
+    acceptanceCriteria: ['Original acceptance criterion.'],
+    sourceOfTruthTargets: ['src/original-target.md'],
+  }, { runId: created.runId, transitionId: 'ingest:edit-item' });
+  await transitionQueueItem(created.runRoot, {
+    runId: created.runId,
+    itemId: 'steer-edit-item',
+    toState: 'queued',
+    transitionId: 'triage:edit-item',
+  });
+
+  // Mutating op requires a capability token.
+  const denied = await handlers.get(MACHINE_IPC_CHANNELS.editItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-edit-item',
+    title: 'Should be denied',
+  });
+  assert.equal(denied.success, false);
+
+  // An edit with no editable fields is rejected.
+  const empty = await handlers.get(MACHINE_IPC_CHANNELS.editItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-edit-item',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(empty.success, false);
+  assert.equal(empty.code, 'MACHINE_STEER_EDIT_EMPTY');
+
+  // Edit the title, target files, and acceptance criteria.
+  const edited = await handlers.get(MACHINE_IPC_CHANNELS.editItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-edit-item',
+    title: 'Corrected title',
+    targetFiles: ['src/corrected-target.md', '   '],
+    acceptanceCriteria: ['Corrected acceptance criterion.', ''],
+    capabilityToken: 'test-token',
+  });
+  assert.equal(edited.success, true);
+  assert.equal(edited.steer.op, 'edit');
+  assert.deepEqual([...edited.steer.fields].sort(), ['acceptanceCriteria', 'targetFiles', 'title']);
+
+  // The snapshot reflects the edit; the item stays queued (edit is not a state change).
+  const item = await findQueueItem(created.runRoot, 'steer-edit-item', { canonicalOnly: false });
+  assert.equal(item.item.state, 'queued');
+  assert.equal(item.item.title, 'Corrected title');
+  assert.deepEqual(item.item.targetFiles, ['src/corrected-target.md'], 'blank target entries are dropped');
+  assert.deepEqual(item.item.acceptanceCriteria, ['Corrected acceptance criterion.'], 'blank criteria are dropped');
+
+  // The edit is a durable queue.edited event carrying the patch (replay-of-intent).
+  const events = await readMachineEvents(created.runRoot);
+  const editEvent = events.find(e => e.eventType === 'queue.edited' && e.itemId === 'steer-edit-item');
+  assert.ok(editEvent, 'a queue.edited event was recorded');
+  assert.equal(editEvent.payload?.patch?.title, 'Corrected title');
+  // The event is self-documenting about which snapshot file holds the edit.
+  assert.deepEqual(editEvent.artifactRefs, ['queue/queued/steer-edit-item.json']);
+
+  // Edit is NOT a state transition — the queue-state projection still reads 'queued'.
+  assert.equal(projectQueueStateFromEvents(events).get('steer-edit-item'), 'queued');
+
+  // The edit survives the resume repair path (snapshot content is preserved).
+  await repairDerivedQueueFilesFromEvents(created.runRoot);
+  const afterRepair = await findQueueItem(created.runRoot, 'steer-edit-item', { canonicalOnly: false });
+  assert.equal(afterRepair.item.title, 'Corrected title', 'the edit survives a queue repair/replay');
+  assert.equal(afterRepair.item.state, 'queued');
+
+  // editQueueItem re-validates against the workItem schema: an empty title is rejected
+  // (defense-in-depth below the handler's field sanitization).
+  await assert.rejects(
+    () => editQueueItem(created.runRoot, {
+      runId: created.runId,
+      itemId: 'steer-edit-item',
+      patch: { title: '' },
+    }),
+    (err) => err.code === 'MACHINE_QUEUE_ITEM_INVALID',
+    'an edit that would write a malformed item is rejected before persisting',
+  );
+
+  // A claimed (in-flight) item is no longer editable.
+  const claimed = await claimNextQueuedItem(created.runRoot, {
+    runId: created.runId,
+    claimId: 'claim-edit',
+    now: '2026-06-01T00:00:05.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+  const notEditable = await handlers.get(MACHINE_IPC_CHANNELS.editItem)(event, {
+    ...baseRequest,
+    runId: created.runId,
+    itemId: 'steer-edit-item',
+    title: 'Too late',
+    capabilityToken: 'test-token',
+  });
+  assert.equal(notEditable.success, false);
+  assert.equal(notEditable.code, 'MACHINE_STEER_NOT_EDITABLE');
 });

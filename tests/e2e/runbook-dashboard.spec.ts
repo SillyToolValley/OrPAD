@@ -420,6 +420,68 @@ test('toolbar opens Orchestration in a dedicated workspace window', async () => 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Orchestration windows stay scoped to the opener workspace', async () => {
+  const firstWorkspace = writeFixtureWorkspace();
+  const secondWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-runbook-empty-'));
+  fs.writeFileSync(path.join(secondWorkspace, 'README.md'), '# Empty pipeline workspace\n');
+  const app = await launchElectron();
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, firstWorkspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  const firstOrchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const firstOrchestrationWin = await firstOrchestrationWindowPromise;
+  await firstOrchestrationWin.waitForLoadState('domcontentloaded');
+  await firstOrchestrationWin.waitForSelector('body.orchestration-window');
+  await firstOrchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await expect(firstOrchestrationWin.locator('#runbooks-content')).toContainText(path.basename(firstWorkspace));
+  await firstOrchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
+  await expect(firstOrchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: firstOrchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })).toBeVisible();
+  await firstOrchestrationWin.locator('#toolbar [data-pipeline-select]').evaluate((el: HTMLElement) => el.removeAttribute('open'));
+
+  const patchedDialog = await app.evaluate(({ dialog }, nextWorkspace) => {
+    if (!dialog?.showOpenDialog) return false;
+    dialog.showOpenDialog = async () => ({
+      canceled: false,
+      filePaths: [nextWorkspace],
+    });
+    return true;
+  }, secondWorkspace);
+  expect(patchedDialog).toBe(true);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('file.openFolder');
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await expect(win.locator('[data-runbook-workspace-meta] strong')).toContainText(path.basename(secondWorkspace));
+
+  const secondOrchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const secondOrchestrationWin = await secondOrchestrationWindowPromise;
+  await secondOrchestrationWin.waitForLoadState('domcontentloaded');
+  await secondOrchestrationWin.waitForSelector('body.orchestration-window');
+  await secondOrchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await expect(secondOrchestrationWin.locator('#runbooks-content')).toContainText(path.basename(secondWorkspace));
+  await expect(secondOrchestrationWin.locator('#runbooks-content [data-runbook-section="pipelines"]')).toHaveCount(0);
+  await expect(secondOrchestrationWin.locator('#toolbar [data-pipeline-preview-runbar]')).toHaveCount(0);
+  await expect(firstOrchestrationWin.locator('#runbooks-content')).toContainText(path.basename(firstWorkspace));
+  await firstOrchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
+  await expect(firstOrchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: firstOrchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })).toBeVisible();
+
+  await app.close();
+  fs.rmSync(firstWorkspace, { recursive: true, force: true });
+  fs.rmSync(secondWorkspace, { recursive: true, force: true });
+});
+
 test('Orchestration button asks for a project folder before opening', async () => {
   const workspace = writeFixtureWorkspace();
   const app = await launchElectron();

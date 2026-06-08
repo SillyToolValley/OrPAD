@@ -26,6 +26,9 @@ const PIPELINE_TEMPLATE_PATHS = [
   'nodes/orpad.core/examples/release-risk-routing/pipeline.or-pipeline',
   'nodes/orpad.workstream/examples/product-build-workstream/pipeline.or-pipeline',
   'nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline',
+  'nodes/orpad.workstream/examples/ralph-verify-fix-loop/pipeline.or-pipeline',
+  'nodes/orpad.workstream/examples/ultraqa-gate-cycle/pipeline.or-pipeline',
+  'nodes/orpad.core/examples/consensus-decision-gate/pipeline.or-pipeline',
 ];
 
 const STARTER_PACK_IDS = [

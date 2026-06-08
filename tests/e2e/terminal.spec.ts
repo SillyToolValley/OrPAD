@@ -36,6 +36,54 @@ async function openTerminal(win: Page): Promise<void> {
   await expect(win.locator('.terminal-panel')).toBeVisible();
 }
 
+async function expectDockSurfaceThemeSafe(win: Page, selector: string): Promise<void> {
+  const styles = await win.locator(selector).evaluate((node) => {
+    const computed = window.getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return {
+      backgroundColor: computed.backgroundColor,
+      backgroundImage: computed.backgroundImage,
+      borderColor: computed.borderColor,
+      boxShadow: computed.boxShadow,
+      height: rect.height,
+      width: rect.width,
+    };
+  });
+
+  expect(styles.width).toBeGreaterThan(0);
+  expect(styles.height).toBeGreaterThan(0);
+  expect(styles.backgroundImage).toBe('none');
+  expect(styles.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+  expect(styles.borderColor).not.toBe('rgba(0, 0, 0, 0)');
+  expect(styles.boxShadow).not.toBe('none');
+  expect(styles.backgroundImage).not.toMatch(/gradient\(/i);
+}
+
+async function setTerminalHistoryLimit(win: Page, limit: number): Promise<void> {
+  await win.evaluate((value) => {
+    (window as any).__ORPAD_TERMINAL_HISTORY_LIMIT__ = value;
+  }, limit);
+}
+
+async function capturePtyListeners(win: Page): Promise<void> {
+  await win.evaluate(() => {
+    const pty = (window as any).pty;
+    if (!pty || pty.__orpadTerminalTestCapture) return;
+    const originalOnEvent = typeof pty.onEvent === 'function' ? pty.onEvent.bind(pty) : null;
+    (window as any).__orpadTerminalPtyListeners = [];
+    pty.onEvent = (handler: (payload: any) => void) => {
+      (window as any).__orpadTerminalPtyListeners.push(handler);
+      const removeOriginal = originalOnEvent ? originalOnEvent(handler) : null;
+      return () => {
+        (window as any).__orpadTerminalPtyListeners = ((window as any).__orpadTerminalPtyListeners || [])
+          .filter((item: (payload: any) => void) => item !== handler);
+        if (typeof removeOriginal === 'function') removeOriginal();
+      };
+    };
+    pty.__orpadTerminalTestCapture = true;
+  });
+}
+
 async function launchProfile(win: Page, profileId: string): Promise<string> {
   const before = await win.locator('.terminal-tab[data-session-id]').count();
   await win.locator('.terminal-tab-add').click();
@@ -86,6 +134,20 @@ async function runTerminalEcho(win: Page, sessionId: string, marker: string): Pr
   await win.waitForTimeout(250);
 }
 
+async function emitSyntheticPtyBlock(win: Page, sessionId: string, marker: string): Promise<void> {
+  await win.evaluate(({ id, text }) => {
+    const listeners = [...((window as any).__orpadTerminalPtyListeners || [])];
+    if (!listeners.length) throw new Error('No PTY event listeners were captured.');
+    const emit = (chunk: string) => {
+      for (const listener of listeners) listener({ sessionId: id, type: 'data', chunk });
+    };
+    emit('\x1b]633;A\x07');
+    emit(`${text}\r\n`);
+    emit('\x1b]633;D;0\x07');
+  }, { id: sessionId, text: marker });
+  await expect(win.locator('.terminal-block-list .terminal-block').first()).toContainText(marker, { timeout: 5000 });
+}
+
 async function expectDragSelectionCopies(win: Page, marker: string): Promise<void> {
   await win.evaluate(() => navigator.clipboard.writeText(''));
   const box = await win.locator('.terminal-pty-container:not(.hidden) .xterm').boundingBox();
@@ -118,6 +180,104 @@ test('terminal runner executes a command in the approved workspace', async () =>
     await win.locator('.terminal-form button[type="submit"]').click();
 
     await expect(win.locator('.terminal-block').first()).toContainText(marker, { timeout: 20000 });
+  } finally {
+    await closeElectronApp(app);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('terminal dock overlay uses theme-safe solid surfaces', async () => {
+  const workspace = createTerminalWorkspace();
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await approveWorkspace(app, win, workspace);
+    await openTerminal(win);
+
+    const headerBox = await win.locator('.terminal-head').boundingBox();
+    expect(headerBox).not.toBeNull();
+    await win.mouse.move(headerBox!.x + headerBox!.width / 2, headerBox!.y + headerBox!.height / 2);
+    await win.mouse.down();
+    await win.mouse.move(24, Math.max(140, headerBox!.y + 96), { steps: 10 });
+
+    await expect(win.locator('.terminal-dock-overlay')).toBeVisible();
+    await expect(win.locator('.terminal-dock-preview')).toBeVisible();
+    await expect(win.locator('.terminal-dock-guide')).toBeVisible();
+    await expectDockSurfaceThemeSafe(win, '.terminal-dock-preview');
+    await expectDockSurfaceThemeSafe(win, '.terminal-dock-guide');
+    await win.mouse.up();
+  } finally {
+    await closeElectronApp(app);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('terminal runner prunes old command blocks after the retention cap', async () => {
+  const workspace = createTerminalWorkspace();
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await approveWorkspace(app, win, workspace);
+    await setTerminalHistoryLimit(win, 3);
+    await openTerminal(win);
+
+    await win.locator('[data-terminal-mode="runner"]').click();
+    await expect(win.locator('.terminal-runner-view')).toBeVisible();
+    const markers = Array.from({ length: 5 }, (_, index) => `ORPAD_RUNNER_CAP_${Date.now()}_${index}`);
+
+    for (const marker of markers) {
+      await win.locator('.terminal-input').fill(`node -e "console.log('${marker}')"`);
+      await win.locator('.terminal-form button[type="submit"]').click();
+      await expect(win.locator('.terminal-runner-view .terminal-block').first()).toContainText(marker, { timeout: 20000 });
+    }
+
+    await expect(win.locator('.terminal-runner-view .terminal-block')).toHaveCount(3);
+    await expect(win.locator('.terminal-runner-view .terminal-output')).not.toContainText(markers[0]);
+    await expect(win.locator('.terminal-runner-view .terminal-output')).not.toContainText(markers[1]);
+    await expect(win.locator('.terminal-runner-view .terminal-output')).toContainText(markers[4]);
+  } finally {
+    await closeElectronApp(app);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('terminal PTY command drawer prunes old completed blocks after the retention cap', async () => {
+  const workspace = createTerminalWorkspace();
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await approveWorkspace(app, win, workspace);
+    await setTerminalHistoryLimit(win, 3);
+    await capturePtyListeners(win);
+    await openTerminal(win);
+
+    const status = await win.evaluate(() => (window as any).pty.status());
+    test.skip(!status?.available, status?.reason || 'PTY support is unavailable in this Electron build.');
+
+    const profiles = await win.evaluate(() => (window as any).pty.shells()) as TerminalProfile[];
+    const preferredIds = process.platform === 'win32'
+      ? ['powershell', 'cmd', 'git-bash', 'wsl']
+      : ['bash', 'zsh', 'fish'];
+    const profile = preferredIds
+      .map(id => profiles.find(item => item.id === id && item.kind === 'shell' && item.available !== false && item.command))
+      .find(Boolean) as TerminalProfile | undefined;
+    if (!profile) {
+      test.skip(true, 'No executable shell profiles were detected.');
+      return;
+    }
+
+    const sessionId = await launchProfile(win, profile.id);
+    const markers = Array.from({ length: 5 }, (_, index) => `ORPAD_PTY_CAP_${Date.now()}_${index}`);
+    for (const marker of markers) {
+      await emitSyntheticPtyBlock(win, sessionId, marker);
+    }
+
+    await expect(win.locator('.terminal-block-list .terminal-block')).toHaveCount(3);
+    await expect(win.locator('.terminal-block-count')).toHaveText('3');
+    await expect(win.locator('.terminal-block-list')).not.toContainText(markers[0]);
+    await expect(win.locator('.terminal-block-list')).not.toContainText(markers[1]);
+    await expect(win.locator('.terminal-block-list')).toContainText(markers[4]);
+    await closeProfile(win, sessionId);
   } finally {
     await closeElectronApp(app);
     fs.rmSync(workspace, { recursive: true, force: true });

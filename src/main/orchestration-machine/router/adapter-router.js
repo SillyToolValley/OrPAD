@@ -17,6 +17,7 @@ const {
   assertWithinBudget,
   nextEstimateFromUsage,
   readBudgetLedger,
+  summarizeLedger,
 } = require('./budget-ledger');
 const {
   applyCacheHitToResult,
@@ -29,6 +30,14 @@ const {
   sweepRunCacheOnce,
   writeCacheEntry,
 } = require('./response-cache');
+const {
+  computeBudgetPressure,
+  isCostOptimized,
+  resolveModel,
+} = require('./model-tier-resolver');
+const {
+  estimateNextCostUsd: estimateNextCostUsdFromTokens,
+} = require('./token-estimator');
 
 const ERROR_CLASSES = Object.freeze([
   'KEY_MISSING',
@@ -102,6 +111,7 @@ function selectionFromV2Default(defaults = {}, overrides = {}) {
     qualityTier: overrides.qualityTier || defaults.qualityTier || 'standard',
     sessionStrategy: overrides.sessionStrategy || defaults.sessionStrategy || 'none',
     toolPolicy: overrides.toolPolicy || defaults.toolPolicy || 'none',
+    modelPolicy: overrides.modelPolicy || defaults.modelPolicy || 'explicit',
     sandbox: overrides.sandbox !== undefined ? overrides.sandbox : (defaults.sandbox ?? null),
     approvalPolicy: overrides.approvalPolicy || defaults.approvalPolicy || 'never',
     timeoutMs: overrides.timeoutMs || defaults.timeoutMs || 600000,
@@ -112,30 +122,62 @@ function selectionFromV2Default(defaults = {}, overrides = {}) {
   return merged;
 }
 
+// Resolve a selection's concrete model from its quality tier when the caller
+// left the model empty/"auto" or opted into `modelPolicy: 'cost-optimized'`.
+// Explicit, pinned models are returned untouched. `budgetPressure` (optional)
+// enables the budget-aware tier downgrade; decideAttempts resolves without it
+// (no ledger yet), and dispatchAdapter re-resolves with it once the per-run
+// ledger is known. Returns the (possibly rewritten) selection plus the audit
+// decision (null when nothing was resolved).
+function resolveSelectionModel(selection, budgetPressure = null) {
+  if (!isPlainObject(selection)) return { selection, decision: null };
+  const requestedModel = String(selection.model || '').trim();
+  const isAuto = !requestedModel || requestedModel.toLowerCase() === 'auto';
+  const costOptimized = isCostOptimized(selection.modelPolicy);
+  if (!isAuto && !costOptimized) return { selection, decision: null };
+  const decision = resolveModel({
+    providerId: selection.providerId,
+    model: selection.model,
+    qualityTier: selection.qualityTier,
+    modelPolicy: selection.modelPolicy,
+    budgetPressure,
+  });
+  if (!decision || !decision.model || decision.model === selection.model) {
+    return { selection, decision };
+  }
+  return {
+    selection: {
+      ...selection,
+      model: decision.model,
+      qualityTier: decision.qualityTier || selection.qualityTier,
+    },
+    decision,
+  };
+}
+
 function decideAttempts({ pipelineAdapter, nodeAdapter = null, attempt = 0 } = {}) {
   const v2 = liftedPipelineAdapter(pipelineAdapter);
   if (!v2 || !isPlainObject(v2.default)) return [];
 
   const candidates = [];
+  const pushCandidate = (rawSelection, meta) => {
+    const { selection, decision } = resolveSelectionModel(rawSelection);
+    const candidate = { selection, ...meta, attemptIndex: candidates.length };
+    if (decision && decision.resolvedBy && decision.resolvedBy !== 'explicit') {
+      candidate.modelResolution = decision;
+    }
+    candidates.push(candidate);
+  };
+
   if (isPlainObject(nodeAdapter) && (nodeAdapter.providerId || nodeAdapter.model || nodeAdapter.family)) {
-    candidates.push({
-      selection: selectionFromV2Default(v2.default, nodeAdapter),
-      chosenBy: 'node-override',
-      attemptIndex: candidates.length,
-    });
+    pushCandidate(selectionFromV2Default(v2.default, nodeAdapter), { chosenBy: 'node-override' });
   }
-  candidates.push({
-    selection: selectionFromV2Default(v2.default),
-    chosenBy: candidates.length === 0 ? 'pipeline' : 'pipeline',
-    attemptIndex: candidates.length,
-  });
+  pushCandidate(selectionFromV2Default(v2.default), { chosenBy: 'pipeline' });
 
   const fallback = Array.isArray(v2.fallback) ? v2.fallback : [];
   for (const entry of fallback) {
-    candidates.push({
-      selection: selectionFromV2Default(v2.default, entry),
+    pushCandidate(selectionFromV2Default(v2.default, entry), {
       chosenBy: 'fallback',
-      attemptIndex: candidates.length,
       fallbackOf: entry?.reason || `${entry?.providerId || ''}:${entry?.model || ''}`,
     });
   }
@@ -400,6 +442,7 @@ async function dispatchAdapter(input = {}) {
     estimateNextCostUsd,
     cacheConfig: explicitCache,
     cachePrompt,
+    expectedCompletionTokens,
     retryBudget,
     onFallback,
     onRetry,
@@ -433,6 +476,63 @@ async function dispatchAdapter(input = {}) {
   const budgetConfig = explicitBudget || lifted?.budget || null;
   const cacheConfig = explicitCache || lifted?.cache || null;
   const ledger = runRoot ? await readBudgetLedger(runRoot) : null;
+
+  // Forward cost estimate for a candidate. Prefers a caller-supplied
+  // estimateNextCostUsd override; otherwise derives a deterministic estimate
+  // from the prompt length + expected completion size priced via the plugin's
+  // own estimateCost(). Used both to give the budget-downgrade a forward signal
+  // and to make the per-call budget guard fire on a real (non-zero) estimate.
+  async function estimateForCandidate(currentPlugin, currentCandidate) {
+    if (typeof estimateNextCostUsd === 'function') {
+      return Number(await estimateNextCostUsd({ candidate: currentCandidate, request, plugin: currentPlugin })) || 0;
+    }
+    return estimateNextCostUsdFromTokens({
+      plugin: currentPlugin,
+      model: currentCandidate?.selection?.model,
+      prompt: cachePrompt,
+      expectedCompletionTokens,
+    });
+  }
+
+  // Budget-aware model downgrade (cost-optimized selections only). Re-resolve
+  // the active candidate's model under the current per-run ledger BEFORE the
+  // cache key and cost estimate below, so they reflect the final model. The
+  // provider never changes here — only the model (and its effective tier) may
+  // drop one step when the run is near (or projected to cross) its per-run
+  // budget — the projected next call cost folds into the pressure utilization.
+  if (budgetConfig && ledger && isCostOptimized(candidate?.selection?.modelPolicy)) {
+    const projectedNextCostUsd = await estimateForCandidate(plugin, candidate);
+    const pressure = computeBudgetPressure({
+      budgetConfig,
+      ledgerSummary: summarizeLedger(ledger),
+      projectedNextCostUsd,
+    });
+    if (pressure.downgrade) {
+      const beforeModel = candidate.selection.model;
+      const { selection: optimized, decision } = resolveSelectionModel(candidate.selection, pressure);
+      if (decision && optimized.model && optimized.model !== beforeModel) {
+        candidate = { ...candidate, selection: optimized, modelResolution: decision };
+        if (typeof beforeAttempt === 'function') {
+          await beforeAttempt({
+            eventType: 'adapter.model.downgraded',
+            nodePath: request.nodePath,
+            payload: {
+              adapterCallId: request.adapterCallId,
+              attemptId: request.attemptId,
+              providerId,
+              fromModel: beforeModel,
+              toModel: optimized.model,
+              requestedTier: decision.requestedTier,
+              effectiveTier: decision.qualityTier,
+              utilization: pressure.utilization,
+              threshold: pressure.threshold,
+              reason: pressure.reason,
+            },
+          });
+        }
+      }
+    }
+  }
 
   // Cache lookup before any network/process work. Sweep expired entries once
   // per run root so a long-lived run doesn't pile up stale rows.
@@ -497,15 +597,7 @@ async function dispatchAdapter(input = {}) {
   }
   let preCallEstimateUsd = 0;
   if (budgetConfig && ledger) {
-    if (typeof estimateNextCostUsd === 'function') {
-      preCallEstimateUsd = Number(await estimateNextCostUsd({ candidate, request })) || 0;
-    } else if (typeof plugin.estimateCost === 'function') {
-      preCallEstimateUsd = Number(plugin.estimateCost({
-        model: candidate.selection.model,
-        promptTokens: 0,
-        completionTokens: 0,
-      })) || 0;
-    }
+    preCallEstimateUsd = await estimateForCandidate(plugin, candidate);
     const guard = assertWithinBudget(budgetConfig, ledger, preCallEstimateUsd);
     if (!guard.ok && typeof beforeAttempt === 'function') {
       await beforeAttempt({
@@ -534,16 +626,7 @@ async function dispatchAdapter(input = {}) {
   async function reassertBudgetBeforeNextAttempt(currentPlugin) {
     if (!runRoot || !budgetConfig) return true;
     const updatedLedger = await readBudgetLedger(runRoot);
-    let nextEstimate = 0;
-    if (typeof estimateNextCostUsd === 'function') {
-      nextEstimate = Number(await estimateNextCostUsd({ candidate, request })) || 0;
-    } else if (typeof currentPlugin?.estimateCost === 'function') {
-      nextEstimate = Number(currentPlugin.estimateCost({
-        model: candidate.selection.model,
-        promptTokens: 0,
-        completionTokens: 0,
-      })) || 0;
-    }
+    const nextEstimate = await estimateForCandidate(currentPlugin, candidate);
     try {
       assertWithinBudget(budgetConfig, updatedLedger, nextEstimate);
       return true;
@@ -735,5 +818,6 @@ module.exports = {
   executeAttempt,
   liftedPipelineAdapter,
   resolveProviderIdFromAdapter,
+  resolveSelectionModel,
   selectionFromV2Default,
 };

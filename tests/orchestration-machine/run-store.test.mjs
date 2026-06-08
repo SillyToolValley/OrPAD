@@ -237,6 +237,28 @@ test('Machine event append is monotonic and validates contract shape', async () 
   assert.equal(statusEvent.sequence, 1);
   const events = await readMachineEvents(run.runRoot);
   assert.deepEqual(events.map(event => event.sequence), [0, 1]);
+  let runState = await readRunState(run.runRoot);
+  assert.equal(runState.lifecycleStatus, 'running');
+  assert.equal(runState.eventSequence, statusEvent.sequence);
+
+  const adapterEvent = await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-04-30T00:00:02.000Z',
+    actor: 'machine',
+    nodePath: 'main/probe',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: 'proposal-fixture',
+      adapterCallId: 'run-store-auto-projection-call',
+      attemptId: 'run-store-auto-projection-attempt-1',
+      idempotencyKey: 'run-store-auto-projection-call:run-store-auto-projection-attempt-1',
+      taskKind: 'probe',
+      workspaceMode: 'read-only',
+    },
+  });
+  runState = await readRunState(run.runRoot);
+  assert.equal(runState.lifecycleStatus, 'running');
+  assert.equal(runState.eventSequence, adapterEvent.sequence);
 
   await assert.rejects(
     appendMachineEvent(run.runRoot, {
@@ -249,7 +271,7 @@ test('Machine event append is monotonic and validates contract shape', async () 
     }),
     error => error?.code === 'MACHINE_EVENT_RUN_ID_MISMATCH',
   );
-  assert.equal((await readMachineEvents(run.runRoot)).length, 2);
+  assert.equal((await readMachineEvents(run.runRoot)).length, 3);
 
   await assert.rejects(
     appendMachineEvent(run.runRoot, {
@@ -263,7 +285,7 @@ test('Machine event append is monotonic and validates contract shape', async () 
     }),
     error => error?.code === 'MACHINE_EVENT_SEQUENCE_OWNED',
   );
-  assert.equal((await readMachineEvents(run.runRoot)).length, 2);
+  assert.equal((await readMachineEvents(run.runRoot)).length, 3);
 
   await assert.rejects(
     appendMachineEvent(run.runRoot, {
@@ -358,6 +380,18 @@ test('Machine run-state rejects symlinked derived state files', async t => {
     writeRunState(run.runRoot, run.runState),
     error => error?.code === 'MACHINE_RUN_STATE_SYMLINK_UNSAFE',
   );
+  await assert.rejects(
+    appendMachineEvent(run.runRoot, {
+      runId: run.runId,
+      timestamp: '2026-04-30T00:00:01.000Z',
+      actor: 'machine',
+      eventType: 'run.status',
+      fromState: 'created',
+      toState: 'running',
+    }),
+    error => error?.code === 'MACHINE_RUN_STATE_SYMLINK_UNSAFE',
+  );
+  assert.equal((await readMachineEvents(run.runRoot)).length, 1);
   const outside = JSON.parse(await fs.readFile(outsideRunState, 'utf8'));
   assert.equal(outside.lifecycleStatus, 'completed');
 });

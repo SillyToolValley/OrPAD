@@ -5,6 +5,10 @@ asarUnpack:
   - "node_modules/**/*.node"
   - "node_modules/@homebridge/node-pty-prebuilt-multiarch/**"
   - "src/renderer/terminal/shell-integration/**"
+  # The self-contained bundled audit is spawned as a child process by the main
+  # process (runbooks/ipc.js evidence check), so it must live on the real filesystem —
+  # a spawned node process cannot read inside app.asar.
+  - "dist/audit-orpad-run.mjs"
 compression: maximum
 electronLanguages:
   - en-US
@@ -26,6 +30,7 @@ files:
   - src/shared/**/*
   - src/locales/**/*
   - nodes/**/*
+  - registry/**/*
   - dist/**/*
   - assets/**/*
   - scripts/audit-orpad-run.mjs

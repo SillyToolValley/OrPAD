@@ -16,6 +16,15 @@ test('JSON file displays tree view with expected keys', async () => {
   // The fixture has a top-level "name" key
   const keyNames = win.locator('.jedit-key-name');
   await expect(keyNames.filter({ hasText: 'name' }).first()).toBeVisible({ timeout: 5000 });
+  const treeChrome = await win.locator('.jedit-scroll').evaluate((el: Element) => {
+    const styles = getComputedStyle(el);
+    return {
+      backgroundImage: styles.backgroundImage,
+      keyColor: getComputedStyle(document.querySelector('.jedit-key-name') as Element).color,
+    };
+  });
+  expect(treeChrome.backgroundImage).toContain('radial-gradient');
+  expect(treeChrome.keyColor).toBe('rgb(56, 163, 255)');
 
   await app.close();
 });

@@ -83,6 +83,17 @@ function trimOutput(current, chunk, maxBytes) {
   };
 }
 
+function processPidIsActive(pid) {
+  const value = Number(pid);
+  if (!Number.isInteger(value) || value <= 0) return false;
+  try {
+    process.kill(value, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
+}
+
 function runMachineProcess(input = {}) {
   const command = String(input.command || '').trim();
   if (!command) throw new Error('Process command is required.');
@@ -109,6 +120,7 @@ function runMachineProcess(input = {}) {
     let timedOut = false;
     let cancelled = false;
     let settled = false;
+    let startedHookDone = Promise.resolve();
 
     const child = spawn(command, args, {
       cwd,
@@ -152,6 +164,18 @@ function runMachineProcess(input = {}) {
       activeMachineProcesses.set(key, existing);
     }
     input.signal?.addEventListener?.('abort', abort, { once: true });
+    if (typeof input.onStarted === 'function') {
+      startedHookDone = Promise.resolve().then(() => input.onStarted({
+        command,
+        args: redactedArgs.args,
+        cwd,
+        runId,
+        adapterCallId,
+        processKey,
+        pid: child.pid || null,
+        startedAt,
+      })).catch(() => {});
+    }
 
     child.stdout?.on('data', chunk => {
       const next = trimOutput(stdout, chunk, maxOutputBytes);
@@ -163,20 +187,57 @@ function runMachineProcess(input = {}) {
       stderr = next.value;
       stderrTruncated ||= next.truncated;
     });
-    child.on('error', err => {
+    child.on('error', async err => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       unregister();
       input.signal?.removeEventListener?.('abort', abort);
+      await startedHookDone;
+      if (typeof input.onFinished === 'function') {
+        await Promise.resolve().then(() => input.onFinished({
+          command,
+          args: redactedArgs.args,
+          cwd,
+          runId,
+          adapterCallId,
+          processKey,
+          pid: child.pid || null,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          spawnErrorCode: err?.code || '',
+          spawnErrorMessage: err?.message || '',
+          timedOut,
+          cancelled,
+        })).catch(() => {});
+      }
       reject(err);
     });
-    child.on('close', (code, signal) => {
+    child.on('close', async (code, signal) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       unregister();
       input.signal?.removeEventListener?.('abort', abort);
+      const finishedAt = new Date().toISOString();
+      await startedHookDone;
+      if (typeof input.onFinished === 'function') {
+        await Promise.resolve().then(() => input.onFinished({
+          command,
+          args: redactedArgs.args,
+          cwd,
+          runId,
+          adapterCallId,
+          processKey,
+          pid: child.pid || null,
+          startedAt,
+          finishedAt,
+          code: typeof code === 'number' ? code : null,
+          signal: signal || null,
+          timedOut,
+          cancelled,
+        })).catch(() => {});
+      }
       resolve({
         command,
         args: redactedArgs.args,
@@ -193,7 +254,7 @@ function runMachineProcess(input = {}) {
         maskedEnvCount: maskedCount,
         maskedEnvNames: masked,
         startedAt,
-        finishedAt: new Date().toISOString(),
+        finishedAt,
       });
     });
   });
@@ -208,6 +269,12 @@ function abortRegisteredProcesses(key) {
     controller.abort();
   }
   return count;
+}
+
+function registeredMachineProcessCount(key) {
+  const normalized = String(key || '').trim();
+  if (!normalized) return 0;
+  return activeMachineProcesses.get(normalized)?.size || 0;
 }
 
 function cancelMachineProcessRun(runId) {
@@ -227,7 +294,9 @@ module.exports = {
   cancelMachineProcess,
   cancelMachineProcessRun,
   isSecretEnvName,
+  processPidIsActive,
   redactCommandArgs,
+  registeredMachineProcessCount,
   runMachineProcess,
   sanitizeEnvironment,
 };

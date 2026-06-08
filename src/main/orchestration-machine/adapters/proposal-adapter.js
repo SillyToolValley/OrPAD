@@ -4,12 +4,15 @@ const { assertRunRelativePath } = require('../artifacts');
 const { SCHEMA_VERSIONS, createContractValidator } = require('../contracts');
 const { appendMachineEvent, readMachineEvents } = require('../events');
 const { assertMachineStorageId } = require('../ids');
-const {
-  isNonRunnableExternalGenerationWork,
-  nonRunnableExternalGenerationReason,
-} = require('../non-runnable-work');
+const { classifyNonRunnableWork } = require('../non-runnable-work');
 const { repairRunStateFromEvents } = require('../run-store');
-const { ingestCandidateProposal, transitionQueueItem } = require('../queue-store');
+const {
+  assertQueueState,
+  findQueueItem,
+  ingestCandidateProposal,
+  transitionAction,
+  transitionQueueItem,
+} = require('../queue-store');
 
 const validator = createContractValidator();
 
@@ -206,7 +209,6 @@ function assertProposalOnlyResultPolicy(result) {
 }
 
 function summaryStatusForProposalResult(result) {
-  if (['blocked', 'approval-required', 'failed', 'rejected'].includes(result.status)) return 'blocked';
   return 'partial';
 }
 
@@ -225,6 +227,100 @@ async function findAdapterResultEvent(runRoot, idempotencyKey) {
 async function findAdapterRequestEvent(runRoot, idempotencyKey) {
   const events = await readMachineEvents(runRoot);
   return events.find(event => event.eventType === 'adapter.requested' && event.payload?.idempotencyKey === idempotencyKey) || null;
+}
+
+function triageTransitionId(request, transition, toState = transition?.toState) {
+  return `triage:${request.adapterCallId}:${transition.itemId}:${toState}`;
+}
+
+async function findTransitionEventById(runRoot, transitionId) {
+  const events = await readMachineEvents(runRoot);
+  return events.find(event => event.payload?.transitionId === transitionId) || null;
+}
+
+async function recordSkippedTriageTransition(runRoot, request, transition, current, options = {}) {
+  const itemId = assertMachineStorageId(transition.itemId, 'itemId');
+  const toState = assertQueueState(transition.toState);
+  const transitionId = triageTransitionId(request, transition, toState);
+  const duplicate = await findTransitionEventById(runRoot, transitionId);
+  if (duplicate) {
+    return {
+      duplicate: true,
+      skipped: true,
+      event: duplicate,
+      item: current?.item || null,
+    };
+  }
+  const reason = options.reason || 'triage.transition-skipped';
+  const currentState = current?.state || '';
+  const event = await appendMachineEvent(runRoot, {
+    runId: request.runId,
+    actor: 'machine',
+    eventType: 'queue.transition.skipped',
+    itemId,
+    fromState: currentState,
+    toState,
+    reason,
+    artifactRefs: currentState ? [`queue/${currentState}/${itemId}.json`] : [],
+    payload: {
+      action: 'triage-skip',
+      transitionId,
+      adapterCallId: request.adapterCallId,
+      taskKind: request.taskKind,
+      requestedToState: toState,
+      currentState,
+      skipReason: reason,
+      ...(options.payload || {}),
+    },
+  });
+  return {
+    skipped: true,
+    event,
+    item: current?.item || null,
+  };
+}
+
+async function applyTriageTransition(runRoot, request, transition, options = {}) {
+  const itemId = assertMachineStorageId(transition.itemId, 'itemId');
+  const toState = assertQueueState(transition.toState);
+  const transitionId = triageTransitionId(request, transition, toState);
+  const duplicate = await findTransitionEventById(runRoot, transitionId);
+  if (duplicate) {
+    return {
+      duplicate: true,
+      skipped: duplicate.eventType === 'queue.transition.skipped',
+      event: duplicate,
+      item: (await findQueueItem(runRoot, itemId))?.item || null,
+    };
+  }
+
+  const current = await findQueueItem(runRoot, itemId);
+  if (!current) {
+    return recordSkippedTriageTransition(runRoot, request, transition, null, {
+      reason: 'triage.transition.item-not-found',
+    });
+  }
+
+  const action = transitionAction(current.state, toState);
+  if (!action) {
+    return recordSkippedTriageTransition(runRoot, request, transition, current, {
+      reason: current.state === 'rejected'
+        ? 'triage.transition.terminal-rejected'
+        : 'triage.transition.invalid-current-state',
+      payload: {
+        itemState: current.state,
+      },
+    });
+  }
+
+  return transitionQueueItem(runRoot, {
+    runId: request.runId,
+    itemId,
+    toState,
+    reason: transition.reason || 'triage.adapter-proposed-machine-owned',
+    transitionId,
+    now: options.now,
+  });
 }
 
 async function duplicateAdapterResultResponse(runRoot, event) {
@@ -278,27 +374,32 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
   const proposals = [];
   const rejectedProposals = [];
   for (const proposal of candidateProposals(normalizedResult)) {
+    const nonRunnable = classifyNonRunnableWork(proposal);
     const ingested = await ingestCandidateProposal(runRoot, proposal, {
       runId: request.runId,
       transitionId: `proposal:${request.adapterCallId}:${proposal.proposalId}`,
       now: options.now,
     });
     proposals.push(ingested);
-    if (!ingested.duplicate && !ingested.deduped && isNonRunnableExternalGenerationWork(proposal)) {
+    if (!ingested.duplicate && !ingested.deduped && nonRunnable) {
       rejectedProposals.push(await transitionQueueItem(runRoot, {
         runId: request.runId,
         itemId: ingested.item.id,
         expectedFromState: 'candidate',
         toState: 'rejected',
-        reason: 'candidate.non-runnable-external-generation',
-        transitionId: `reject-non-runnable:${request.adapterCallId}:${ingested.item.id}`,
+        reason: `candidate.${nonRunnable.classifier}`,
+        transitionId: `reject-${nonRunnable.classifier}:${request.adapterCallId}:${ingested.item.id}`,
         now: options.now,
         itemPatch: {
           machineRejected: true,
-          rejectionReason: nonRunnableExternalGenerationReason(proposal),
+          rejectionReason: nonRunnable.reason,
+          ...(nonRunnable.classifier === 'oversized-worker-scope' ? {
+            splitRequired: true,
+            nextAction: 'split-work-item-before-dispatch',
+          } : {}),
         },
         payload: {
-          classifier: 'non-runnable-external-generation',
+          classifier: nonRunnable.classifier,
           proposalId: proposal.proposalId,
         },
       }));
@@ -306,15 +407,11 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
   }
 
   const triage = [];
+  const skippedTriage = [];
   for (const transition of triageTransitions(normalizedResult)) {
-    triage.push(await transitionQueueItem(runRoot, {
-      runId: request.runId,
-      itemId: transition.itemId,
-      toState: transition.toState,
-      reason: transition.reason || 'triage.adapter-proposed-machine-owned',
-      transitionId: `triage:${request.adapterCallId}:${transition.itemId}:${transition.toState}`,
-      now: options.now,
-    }));
+    const result = await applyTriageTransition(runRoot, request, transition, options);
+    if (result.skipped) skippedTriage.push(result);
+    else triage.push(result);
   }
 
   const summaryStatus = summaryStatusForProposalResult(normalizedResult);
@@ -336,6 +433,7 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
       proposalCount: proposals.length,
       rejectedProposalCount: rejectedProposals.length,
       triageTransitionCount: triage.length,
+      skippedTriageTransitionCount: skippedTriage.length,
       ...(normalizedResult.deferredReason ? { deferredReason: normalizedResult.deferredReason } : {}),
       ...(normalizedResult.emptyPass ? { emptyPass: normalizedResult.emptyPass } : {}),
       ...(normalizedResult.infrastructureBlocked ? { infrastructureBlocked: true } : {}),
@@ -354,6 +452,7 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
       proposalCount: proposals.length,
       rejectedProposalCount: rejectedProposals.length,
       triageTransitionCount: triage.length,
+      skippedTriageTransitionCount: skippedTriage.length,
       message: normalizedResult.summary,
       ...(normalizedResult.deferredReason ? { deferredReason: normalizedResult.deferredReason } : {}),
       ...(normalizedResult.infrastructureBlocked ? { infrastructureBlocked: true } : {}),
@@ -366,6 +465,7 @@ async function applyProposalAdapterResult(runRoot, request, result, options = {}
     proposals,
     rejectedProposals,
     triage,
+    skippedTriage,
     runState: await repairRunStateFromEvents(runRoot),
   };
 }

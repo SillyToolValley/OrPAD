@@ -13,7 +13,7 @@ const {
   markClaimLeaseReleased,
   readClaimLease,
 } = require('./claims');
-const { createContractValidator } = require('./contracts');
+const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
 const { isPathAllowedByWriteSet } = require('./patches');
 const {
@@ -24,15 +24,28 @@ const {
 } = require('./queue-store');
 const { normalizeLockPath } = require('./file-lock-manager');
 const { normalizeWriteSetPath, releaseWriteSetLock } = require('./write-sets');
+// RC-2: cooperative-cancel helpers. run-control.js depends only on
+// events/lifecycle/run-store, so importing it here is acyclic.
+const { normalizeRunCancellationError, throwIfRunSignalAborted } = require('./run-control');
 
 const validator = createContractValidator();
 
-function targetQueueStateForWorkerResult(result) {
+function workerResultIsReviewableBlockedPatch(result = {}) {
+  return result.status === 'blocked'
+    && result.patchArtifact
+    && (result.changedFiles || []).length > 0;
+}
+
+function targetQueueStateForWorkerResult(result, queueItem = {}) {
   if (result.status === 'done') return 'done';
   if (result.status === 'queued') return 'queued';
   if (result.status === 'requeued') return 'queued';
   if (result.status === 'approval-required') return 'queued';
-  return 'blocked';
+  if (workerResultIsReviewableBlockedPatch(result)) return 'blocked';
+  if (['blocked', 'failed', 'rejected'].includes(result.status)) {
+    return (Number(queueItem.managedRetryCount) || 0) > 0 ? 'rejected' : 'queued';
+  }
+  return 'queued';
 }
 
 function readOnlyFilesForClaim(claim = {}) {
@@ -45,7 +58,6 @@ function readOnlyFilesForClaim(claim = {}) {
 }
 
 function summaryStatusForWorkerResult(result) {
-  if (['blocked', 'failed', 'approval-required', 'rejected'].includes(result.status)) return 'blocked';
   return 'partial';
 }
 
@@ -177,12 +189,65 @@ function workerResultNextAction(result = {}, toState = '') {
   if (explicit) return explicit;
   if (result.status === 'approval-required') return 'approve-or-decline-worker-tool-permission';
   if (result.status === 'queued' || result.status === 'requeued' || toState === 'queued') {
+    if (['blocked', 'failed', 'rejected'].includes(result.status)) return 'managed-retry-worker-item';
     return 'retry-queued-worker-item';
   }
+  if (toState === 'rejected' && ['blocked', 'failed', 'rejected'].includes(result.status)) return 'managed-worker-exception-recorded';
   if (result.status === 'failed') return 'inspect-worker-failure-and-retry-or-requeue';
   if (result.status === 'rejected') return 'revise-worker-result-or-requeue';
   if (result.status === 'blocked' || toState === 'blocked') return 'resolve-worker-block-and-retry-or-requeue';
   return '';
+}
+
+function adapterInvokeErrorWorkerResult(request = {}, err) {
+  const code = String(err?.code || err?.name || 'ADAPTER_INVOKE_FAILED').trim();
+  const message = String(err?.message || 'Adapter failed before returning a worker result.').trim();
+  const summary = `${code ? `${code}: ` : ''}${message}`.slice(0, 500)
+    || 'Adapter failed before returning a worker result.';
+  return {
+    schemaVersion: SCHEMA_VERSIONS.adapterResult,
+    adapterCallId: request.adapterCallId,
+    attemptId: request.attemptId,
+    idempotencyKey: request.idempotencyKey,
+    status: 'failed',
+    summary,
+    artifacts: [],
+    changedFiles: [],
+    verification: [{
+      command: request.adapter || 'adapter.invoke',
+      status: 'failed',
+      phase: 'adapter-invoke',
+      spawnErrorCode: code,
+      spawnErrorMessage: message,
+      managedInternalException: true,
+    }],
+    deferredReason: 'adapter-invoke-exception',
+    failingSymptom: 'The worker adapter failed before it returned a Machine worker result.',
+    rootCause: summary,
+    residualRisk: 'The work item was returned to managed queue handling instead of leaving a claimed item or terminal node failure.',
+    reportedStatus: 'failed',
+  };
+}
+
+function workerResultApplicationErrorWorkerResult(request = {}, err) {
+  const result = adapterInvokeErrorWorkerResult(request, err);
+  const code = String(err?.code || err?.name || 'WORKER_RESULT_APPLICATION_FAILED').trim();
+  const message = String(err?.message || 'Worker result could not be applied safely.').trim();
+  return {
+    ...result,
+    summary: `${code ? `${code}: ` : ''}${message}`.slice(0, 500),
+    verification: [{
+      command: request.adapter || 'worker-result.apply',
+      status: 'failed',
+      phase: 'worker-result-application',
+      spawnErrorCode: code,
+      spawnErrorMessage: message,
+      managedInternalException: true,
+    }],
+    deferredReason: 'worker-result-application-exception',
+    failingSymptom: 'The worker returned a result that could not be applied safely.',
+    residualRisk: 'The item was kept in managed queue handling instead of surfacing an internal node failure.',
+  };
 }
 
 function workerResultBlockedReason(result = {}) {
@@ -255,6 +320,15 @@ async function findWorkerResultEvent(runRoot, claimId, idempotencyKey = '') {
   )) || null;
 }
 
+async function findIgnoredWorkerResultEvent(runRoot, claimId, idempotencyKey = '') {
+  const events = await readMachineEvents(runRoot);
+  return events.find(event => (
+    event.eventType === 'worker.result.ignored'
+    && event.payload?.claimId === claimId
+    && (!idempotencyKey || event.payload?.idempotencyKey === idempotencyKey)
+  )) || null;
+}
+
 async function assertClaimCanAcceptResult(runRoot, options = {}) {
   const { claimId, itemId, now = new Date().toISOString() } = options;
   const lease = await readClaimLease(runRoot, claimId);
@@ -281,6 +355,86 @@ async function assertClaimCanAcceptResult(runRoot, options = {}) {
     throw err;
   }
   return { lease, queueItem: current.item };
+}
+
+function workerResultApplicationErrorIsLateClaim(error) {
+  return [
+    'CLAIM_LEASE_NOT_ACTIVE',
+    'CLAIM_QUEUE_STATE_MISMATCH',
+  ].includes(String(error?.code || ''));
+}
+
+async function recordIgnoredLateWorkerResult(runRoot, options = {}, error = null) {
+  const {
+    runId,
+    claimId,
+    itemId,
+    result = {},
+    request = {},
+    now = new Date().toISOString(),
+  } = options;
+  if (!workerResultApplicationErrorIsLateClaim(error)) return null;
+  const current = await findQueueItem(runRoot, itemId, { canonicalOnly: false }).catch(() => null);
+  const lease = await readClaimLease(runRoot, claimId).catch(() => null);
+  const stillOwnsClaim = current?.state === 'claimed' && current?.item?.claimId === claimId;
+  if (stillOwnsClaim) return null;
+  if (String(error?.code || '') === 'CLAIM_LEASE_NOT_ACTIVE' && !lease) return null;
+  if (String(error?.code || '') === 'CLAIM_LEASE_NOT_ACTIVE' && lease?.state === 'active') return null;
+
+  const duplicate = await findIgnoredWorkerResultEvent(runRoot, claimId, result.idempotencyKey);
+  if (duplicate) {
+    return {
+      ignored: true,
+      duplicate: true,
+      event: duplicate,
+      runState: await readRunState(runRoot),
+      summaryStatus: 'partial',
+      toState: current?.state || '',
+    };
+  }
+
+  const event = await appendMachineEvent(runRoot, {
+    runId,
+    actor: 'machine',
+    eventType: 'worker.result.ignored',
+    itemId,
+    reason: 'worker-result.late-ignored',
+    artifactRefs: workerResultArtifactRefs(result),
+    payload: {
+      claimId,
+      adapterCallId: result.adapterCallId || request.adapterCallId || '',
+      attemptId: result.attemptId || request.attemptId || '',
+      idempotencyKey: result.idempotencyKey || request.idempotencyKey || '',
+      status: result.status || '',
+      summary: result.summary || '',
+      ignoredReason: 'claim-no-longer-active',
+      errorCode: error?.code || '',
+      errorMessage: error?.message || '',
+      leaseState: lease?.state || '',
+      currentQueueState: current?.state || '',
+      currentQueueClaimId: current?.item?.claimId || '',
+      patchArtifact: result.patchArtifact || '',
+      changedFiles: normalizeLockFileList(result.changedFiles || []),
+    },
+  });
+  const runState = await appendRunSummary(runRoot, runId, 'partial', {
+    reason: 'worker-result.late-ignored',
+    payload: {
+      itemId,
+      claimId,
+      workerStatus: result.status || '',
+      message: 'Late worker result ignored because the claim had already been recovered or cancelled.',
+      summaryStatus: 'partial',
+    },
+  });
+  return {
+    ignored: true,
+    event,
+    runState,
+    summaryStatus: 'partial',
+    toState: current?.state || '',
+    ignoredAt: now,
+  };
 }
 
 async function applyWorkerResult(runRoot, options = {}) {
@@ -323,10 +477,14 @@ async function applyWorkerResult(runRoot, options = {}) {
 
   const { lease, queueItem } = await assertClaimCanAcceptResult(runRoot, { claimId, itemId, now });
   assertWorkerResultWithinWriteSet(result, lease);
-  const toState = assertWorkerResultTargetQueueState(options.toState || targetQueueStateForWorkerResult(result));
+  const toState = assertWorkerResultTargetQueueState(options.toState || targetQueueStateForWorkerResult(result, queueItem));
   await assertWorkerResultArtifactsRegistered(runRoot, result);
   const nextAction = workerResultNextAction(result, toState);
   const blockedReason = workerResultBlockedReason(result);
+  const managedWorkerException = ['blocked', 'failed', 'rejected'].includes(result.status) && !workerResultIsReviewableBlockedPatch(result);
+  const managedRetry = managedWorkerException && toState === 'queued';
+  const managedFinal = managedWorkerException && toState === 'rejected';
+  const managedRetryCount = managedWorkerException ? (Number(queueItem.managedRetryCount) || 0) + 1 : 0;
   const workerEvent = await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
@@ -348,6 +506,9 @@ async function applyWorkerResult(runRoot, options = {}) {
       lockTargetFiles: normalizeLockFileList(lockTargetFiles),
       targetFilesSource: targetFilesSource || '',
       reviewRequired: reviewRequired === true,
+      managedRetry,
+      managedFinal,
+      ...(managedWorkerException ? { managedRetryCount } : {}),
       verification: result.verification || [],
       ...(nextAction ? { nextAction } : {}),
       ...(blockedReason ? { blockedReason } : {}),
@@ -369,6 +530,17 @@ async function applyWorkerResult(runRoot, options = {}) {
       closedAt: now,
       ...(nextAction ? { nextAction } : {}),
       ...(blockedReason ? { blockedReason } : {}),
+      ...(managedWorkerException ? {
+        managedRetry: true,
+        managedFinal,
+        managedRetryCount,
+        lastManagedWorkerStatus: result.status,
+        lastManagedWorkerReason: blockedReason || result.summary || '',
+        ...(managedFinal ? {
+          machineRejected: true,
+          rejectionReason: blockedReason || result.summary || 'Worker exception was bounded by managed recovery.',
+        } : {}),
+      } : {}),
       ...(result.status === 'approval-required' ? {
         approvalRequired: true,
         approvalRequiredReason: result.approvalRequest?.reason || 'llm-cli-permission-required',
@@ -382,6 +554,24 @@ async function applyWorkerResult(runRoot, options = {}) {
       workerResultEventSequence: workerEvent.sequence,
     },
   });
+  if (managedWorkerException) {
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      eventType: 'managed-block.recovered',
+      itemId,
+      reason: managedFinal ? 'worker-result.managed-finalized' : 'worker-result.managed-retry',
+      payload: {
+        claimId,
+        workerStatus: result.status,
+        toState,
+        managedRetryCount,
+        managedFinal,
+        nextAction,
+        blockedReason,
+      },
+    });
+  }
   await markClaimLeaseReleased(runRoot, claimId, {
     now,
     state: 'released',
@@ -448,9 +638,18 @@ async function runWorkerLoopOnce(options = {}) {
     // (the per-candidate sourceOfTruthTargets). Empty array still
     // falls back so the safe-default semantics are preserved.
     lockTargetFiles = null,
+    // RC-2: the run's cooperative abort signal. Lets the worker bail BEFORE
+    // claiming (no partial queue.transition) and skip the expensive invoke if a
+    // cancel landed during claim acquisition.
+    signal = null,
   } = options;
   if (!runRoot) throw new Error('runRoot is required.');
   if (!runId) throw new Error('runId is required.');
+
+  // RC-2 pre-claim checkpoint: if a cancel was already requested, bail before
+  // claimNextQueuedItem so no write-set lock / claim lease / queued->claimed
+  // transition is committed (avoids a partial-then-immediately-cancelled claim).
+  throwIfRunSignalAborted(signal, 'Run cancelled before worker claim.');
 
   const claim = options.claim || await claimNextQueuedItem(runRoot, {
     ...options,
@@ -572,7 +771,12 @@ async function runWorkerLoopOnce(options = {}) {
   }
   let result;
   let applied;
+  let invokeApplicationSourceError = null;
   try {
+    // RC-2 pre-invoke checkpoint: a cancel may have landed while we acquired the
+    // claim / file lock above. Bail before the expensive adapter invoke; the
+    // finally below releases the durable lease + write-set lock idempotently.
+    throwIfRunSignalAborted(signal, 'Run cancelled before worker invoke.');
     if (claim.claim?.writeSetLockId) {
       await assertClaimCanAcceptResult(runRoot, {
         claimId: claim.claim.claimId,
@@ -581,24 +785,56 @@ async function runWorkerLoopOnce(options = {}) {
       });
     }
     await recordAdapterRequest(runRoot, request);
-    result = adapter?.invoke
-      ? await adapter.invoke(request, { claim, item: claim.item })
-      : (typeof fixtureResult === 'function' ? await fixtureResult({ request, claim, item: claim.item }) : fixtureResult);
+    try {
+      result = adapter?.invoke
+        ? await adapter.invoke(request, { claim, item: claim.item })
+        : (typeof fixtureResult === 'function' ? await fixtureResult({ request, claim, item: claim.item }) : fixtureResult);
+    } catch (invokeErr) {
+      // RC-2: if the invoke threw because the run was cancelled (e.g. its
+      // subprocess was SIGKILLed by cancelMachineProcessRun while the signal is
+      // aborted), surface it as a clean MACHINE_RUN_CANCELLED so the node records
+      // cancelled rather than failed.
+      const normalizedErr = normalizeRunCancellationError(invokeErr, signal, 'Run cancelled during worker execution.');
+      if (normalizedErr?.cancelled || normalizedErr?.code === 'MACHINE_RUN_CANCELLED') throw normalizedErr;
+      invokeApplicationSourceError = normalizedErr;
+      result = adapterInvokeErrorWorkerResult(request, normalizedErr);
+    }
     if (!result) throw new Error('WorkerLoop fixture/adapter did not return a result.');
 
-    applied = await applyWorkerResult(runRoot, {
+    const applyOptions = {
       runId,
       claimId: claim.claim.claimId,
       itemId: claim.item.id,
       request,
-      result,
       now: options.now,
       declaredTargetFiles,
       lockTargetFiles: effectiveLockTargetFiles,
       targetFilesSource: lockTargetFilesSource,
       reviewRequired: options.reviewRequired === true,
-      requiredValidationCommands: options.requiredValidationCommands || [],
-    });
+    };
+    try {
+      applied = await applyWorkerResult(runRoot, {
+        ...applyOptions,
+        result,
+        requiredValidationCommands: options.requiredValidationCommands || [],
+      });
+    } catch (applyErr) {
+      const normalizedErr = normalizeRunCancellationError(applyErr, signal, 'Run cancelled during worker result application.');
+      if (normalizedErr?.cancelled || normalizedErr?.code === 'MACHINE_RUN_CANCELLED') throw normalizedErr;
+      applied = await recordIgnoredLateWorkerResult(runRoot, {
+        ...applyOptions,
+        result,
+      }, normalizedErr);
+      if (!applied) {
+        const durableLease = await readClaimLease(runRoot, applyOptions.claimId).catch(() => null);
+        if (!durableLease && invokeApplicationSourceError) throw invokeApplicationSourceError;
+        applied = await applyWorkerResult(runRoot, {
+          ...applyOptions,
+          result: workerResultApplicationErrorWorkerResult(request, normalizedErr),
+          requiredValidationCommands: [],
+        });
+      }
+    }
   } finally {
     if (lockManager) {
       const released = lockManager.release(lockTaskId);
@@ -614,6 +850,46 @@ async function runWorkerLoopOnce(options = {}) {
           released: released.released,
         },
       }).catch(() => null);
+    }
+    // If the adapter or result application throws before applyWorkerResult closes
+    // the item, do not leave a durable claimed item behind. The scheduler path
+    // passes a pre-claimed item, so this recovery must cover both local and
+    // caller-owned claims.
+    if (applied === undefined && claim?.claimed && claim?.claim?.claimId && claim?.item?.id) {
+      const releaseNow = options.now || new Date().toISOString();
+      await transitionQueueItem(runRoot, {
+        runId,
+        itemId: claim.item.id,
+        toState: 'queued',
+        reason: 'worker-loop.unapplied-claim-recovered',
+        evidence: `locks/claims/${claim.claim.claimId}.json`,
+        transitionId: `recover:${claim.claim.claimId}:unapplied-worker-result`,
+        now: releaseNow,
+        itemPatch: {
+          claimId: undefined,
+          claimLeaseExpiresAt: undefined,
+          writeSetLockId: undefined,
+          lastManagedWorkerStatus: 'failed',
+          lastManagedWorkerReason: 'Worker attempt ended before a result could be applied.',
+          managedRetry: true,
+          nextAction: 'managed-retry-worker-item',
+        },
+        payload: {
+          claimId: claim.claim.claimId,
+          recoveredUnappliedClaim: true,
+        },
+      }).catch(() => null);
+      await markClaimLeaseReleased(runRoot, claim.claim.claimId, {
+        now: releaseNow,
+        state: 'released',
+        reason: 'worker-loop.unapplied-claim-recovered',
+      }).catch(() => null);
+      if (claim.claim.writeSetLockId) {
+        await releaseWriteSetLock(runRoot, claim.claim.writeSetLockId, {
+          now: releaseNow,
+          reason: 'worker-loop.unapplied-claim-recovered',
+        }).catch(() => null);
+      }
     }
   }
 

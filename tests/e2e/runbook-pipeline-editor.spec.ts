@@ -52,6 +52,210 @@ async function expectFittedGraphNodesClearOfFloatingInspector(win: Page, label: 
   ).toEqual([]);
 }
 
+async function expectHeroGraphChromeAtViewport(win: Page, label: string, viewport: { width: number; height: number }): Promise<void> {
+  await win.setViewportSize(viewport);
+  await win.locator('.orch-graph-frame [data-orch-action="fit"]').first().click();
+  await win.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  const audit = await win.locator('.orch-graph-frame').first().evaluate((frame) => {
+    const rectOf = (element: Element | null) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      if (!rect.width && !rect.height) return null;
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+    const overlaps = (a: ReturnType<typeof rectOf>, b: ReturnType<typeof rectOf>, tolerance = 1) => !!a && !!b
+      && a.left < b.right - tolerance
+      && a.right > b.left + tolerance
+      && a.top < b.bottom - tolerance
+      && a.bottom > b.top + tolerance;
+    const frameRect = rectOf(frame)!;
+    const frameStyle = getComputedStyle(frame);
+    const frameBeforeStyle = getComputedStyle(frame, '::before');
+    const frameAfterStyle = getComputedStyle(frame, '::after');
+    const graphTools = frame.querySelector<HTMLElement>('.orch-graph-tools');
+    const toolsRect = rectOf(graphTools);
+    const legendRect = rectOf(frame.querySelector('.orch-graph-legend'));
+    const sampleChrome = (element: HTMLElement) => {
+      const rect = rectOf(element);
+      const style = getComputedStyle(element);
+      return {
+        backgroundImage: style.backgroundImage,
+        backgroundColor: style.backgroundColor,
+        boxShadow: style.boxShadow,
+        visible: !!rect && style.display !== 'none' && style.visibility !== 'hidden',
+        disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
+      };
+    };
+    const toolButtons = [...frame.querySelectorAll<HTMLElement>('.orch-graph-tools .orch-tool-btn')];
+    const toolButtonSamples = toolButtons.slice(0, 3).map(sampleChrome);
+    const activeToolButtonSample = (() => {
+      const button = toolButtons[0];
+      if (!button) return null;
+      const wasActive = button.classList.contains('active');
+      button.classList.add('active');
+      const sample = sampleChrome(button);
+      if (!wasActive) button.classList.remove('active');
+      return sample;
+    })();
+    const nodeRects = [...frame.querySelectorAll<HTMLElement>('.orch-graph-node')].map((node) => {
+      const rect = rectOf(node)!;
+      const style = getComputedStyle(node);
+      const title = node.querySelector<HTMLElement>('.orch-graph-node-top strong');
+      return {
+        ...rect,
+        className: node.className,
+        backgroundImage: style.backgroundImage,
+        backgroundColor: style.backgroundColor,
+        borderRadius: style.borderRadius,
+        boxShadow: style.boxShadow,
+        labelFits: title ? title.scrollWidth <= title.clientWidth + 1 : false,
+      };
+    });
+    const nodeBadgeSamples = [...frame.querySelectorAll<HTMLElement>('.orch-graph-node-top span')]
+      .slice(0, 2)
+      .map(sampleChrome);
+    const runningNodeSample = (() => {
+      const node = frame.querySelector<HTMLElement>('.orch-graph-node');
+      if (!node) return null;
+      const previousClassName = node.className;
+      node.classList.add('runtime-running');
+      const style = getComputedStyle(node);
+      const sample = {
+        backgroundImage: style.backgroundImage,
+        backgroundColor: style.backgroundColor,
+        boxShadow: style.boxShadow,
+      };
+      node.className = previousClassName;
+      return sample;
+    })();
+    const edgeRects = [...frame.querySelectorAll<SVGPathElement>('.orch-transition')].map((edge) => {
+      const rect = rectOf(edge);
+      if (!rect) return null;
+      const style = getComputedStyle(edge);
+      return {
+        ...rect,
+        markerEnd: edge.getAttribute('marker-end') || style.markerEnd,
+        strokeWidth: Number.parseFloat(style.strokeWidth || '0'),
+      };
+    }).filter(Boolean) as Array<{
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      width: number;
+      height: number;
+      markerEnd: string;
+      strokeWidth: number;
+    }>;
+    const labelRects = [...frame.querySelectorAll<SVGGraphicsElement>('.orch-transition-label-bg')].map(rectOf).filter(Boolean);
+    const nodeOverlaps = nodeRects.flatMap((node, index) =>
+      nodeRects.slice(index + 1).filter(other => overlaps(node, other)).map(other => [node.className, other.className])
+    );
+    const nodeToolOverlaps = nodeRects.filter(node => overlaps(node, toolsRect));
+    const nodeLegendOverlaps = nodeRects.filter(node => overlaps(node, legendRect));
+    const labelNodeOverlaps = labelRects.filter(labelRect => nodeRects.some(node => overlaps(labelRect, node)));
+    const edgeToolOverlaps = edgeRects.filter(edge => overlaps(edge, toolsRect, 0));
+    const edgeLegendOverlaps = edgeRects.filter(edge => overlaps(edge, legendRect, 0));
+    const nodesInFrame = nodeRects.every(node =>
+      node.left >= frameRect.left - 1
+      && node.top >= frameRect.top - 1
+      && node.right <= frameRect.right + 1
+      && node.bottom <= frameRect.bottom + 1
+    );
+
+    return {
+      frame: {
+        backgroundImage: frameStyle.backgroundImage,
+        backgroundColor: frameStyle.backgroundColor,
+        beforeBackgroundImage: frameBeforeStyle.backgroundImage,
+        afterBackgroundImage: frameAfterStyle.backgroundImage,
+        borderRadius: frameStyle.borderRadius,
+        boxShadow: frameStyle.boxShadow,
+      },
+      tools: graphTools ? sampleChrome(graphTools) : null,
+      toolButtonCount: toolButtons.length,
+      enabledToolButtonCount: toolButtons.filter(button => !button.matches(':disabled') && button.getAttribute('aria-disabled') !== 'true').length,
+      toolButtonSamples,
+      activeToolButtonSample,
+      edgeCount: edgeRects.length,
+      minEdgeStrokeWidth: edgeRects.reduce((min, edge) => Math.min(min, edge.strokeWidth), Number.POSITIVE_INFINITY),
+      allEdgesHaveMarkers: edgeRects.every(edge => edge.markerEnd && edge.markerEnd !== 'none'),
+      nodeCount: nodeRects.length,
+      nodeSamples: nodeRects.slice(0, 2),
+      nodeBadgeSamples,
+      runningNodeSample,
+      nodesInFrame,
+      nodeOverlaps,
+      nodeToolOverlapCount: nodeToolOverlaps.length,
+      nodeLegendOverlapCount: nodeLegendOverlaps.length,
+      labelNodeOverlapCount: labelNodeOverlaps.length,
+      edgeToolOverlapCount: edgeToolOverlaps.length,
+      edgeLegendOverlapCount: edgeLegendOverlaps.length,
+    };
+  });
+
+  const transparentColor = 'rgba(0, 0, 0, 0)';
+  const graphToolButton = win.locator('.orch-graph-tools .orch-tool-btn:not(:disabled):not([aria-disabled="true"])').first();
+  await expect(win.locator('.orch-graph-tools'), `${label}: graph tools should stay visible`).toBeVisible();
+  await expect(graphToolButton, `${label}: graph tool button should stay visible`).toBeVisible();
+  await expect(graphToolButton, `${label}: graph tool button should stay usable`).toBeEnabled();
+  await graphToolButton.hover();
+  const hoveredToolButton = await graphToolButton.evaluate((button) => {
+    const style = getComputedStyle(button as HTMLElement);
+    return {
+      backgroundImage: style.backgroundImage,
+      backgroundColor: style.backgroundColor,
+    };
+  });
+  expect(audit.frame.backgroundImage, `${label}: frame should use a solid soft dashboard surface`).toBe('none');
+  expect(audit.frame.beforeBackgroundImage, `${label}: frame chrome should avoid decorative pseudo-element gradients`).toBe('none');
+  expect(audit.frame.afterBackgroundImage, `${label}: frame depth overlay should avoid decorative gradients`).toBe('none');
+  expect(audit.frame.backgroundColor, `${label}: frame should retain a visible surface color`).not.toBe(transparentColor);
+  expect(audit.frame.boxShadow, `${label}: frame should have neumorphic depth`).not.toBe('none');
+  expect(audit.tools?.backgroundImage, `${label}: graph tools should use solid toolbar chrome`).toBe('none');
+  expect(audit.tools?.backgroundColor, `${label}: graph tools should retain a visible surface color`).not.toBe(transparentColor);
+  expect(audit.tools?.boxShadow, `${label}: graph tools should retain soft depth`).not.toBe('none');
+  expect(audit.toolButtonCount, `${label}: graph tool buttons should render`).toBeGreaterThan(0);
+  expect(audit.enabledToolButtonCount, `${label}: graph tools should keep at least one usable control`).toBeGreaterThan(0);
+  expect(audit.toolButtonSamples.every(button => button.visible), `${label}: sampled graph tool buttons should stay visible`).toBe(true);
+  expect(audit.toolButtonSamples.every(button => button.backgroundImage === 'none'), `${label}: graph tool buttons should avoid decorative gradients`).toBe(true);
+  expect(audit.toolButtonSamples.every(button => button.backgroundColor !== transparentColor), `${label}: graph tool buttons should retain visible surfaces`).toBe(true);
+  expect(audit.toolButtonSamples.every(button => button.boxShadow !== 'none'), `${label}: graph tool buttons should retain soft depth`).toBe(true);
+  expect(audit.activeToolButtonSample?.backgroundImage, `${label}: active graph tool button should avoid decorative gradients`).toBe('none');
+  expect(audit.activeToolButtonSample?.backgroundColor, `${label}: active graph tool button should retain a visible state surface`).not.toBe(transparentColor);
+  expect(hoveredToolButton.backgroundImage, `${label}: hovered graph tool button should avoid decorative gradients`).toBe('none');
+  expect(hoveredToolButton.backgroundColor, `${label}: hovered graph tool button should retain a visible state surface`).not.toBe(transparentColor);
+  expect(audit.nodeCount, `${label}: graph nodes should render`).toBeGreaterThan(0);
+  expect(audit.nodeSamples.every(node => node.backgroundImage === 'none'), `${label}: nodes should use solid operational surfaces`).toBe(true);
+  expect(audit.nodeSamples.every(node => node.backgroundColor !== transparentColor), `${label}: node surfaces should remain visible`).toBe(true);
+  expect(audit.nodeSamples.every(node => node.boxShadow !== 'none'), `${label}: nodes should have depth`).toBe(true);
+  expect(audit.nodeBadgeSamples.length, `${label}: node type badges should render`).toBeGreaterThan(0);
+  expect(audit.nodeBadgeSamples.every(badge => badge.backgroundImage === 'none'), `${label}: node type badges should avoid decorative gradients`).toBe(true);
+  expect(audit.nodeBadgeSamples.every(badge => badge.backgroundColor !== transparentColor), `${label}: node type badges should keep visible surfaces`).toBe(true);
+  expect(audit.runningNodeSample?.backgroundImage, `${label}: running node should avoid decorative gradients`).toBe('none');
+  expect(audit.runningNodeSample?.backgroundColor, `${label}: running node should keep a visible state surface`).not.toBe(transparentColor);
+  expect(audit.runningNodeSample?.boxShadow, `${label}: running node should keep state depth`).not.toBe('none');
+  expect(audit.nodeSamples.every(node => node.labelFits), `${label}: node labels should fit their cards`).toBe(true);
+  expect(audit.edgeCount, `${label}: graph edges should render`).toBeGreaterThan(0);
+  expect(audit.minEdgeStrokeWidth, `${label}: edges should be substantial glowing conduits`).toBeGreaterThanOrEqual(3);
+  expect(audit.allEdgesHaveMarkers, `${label}: edges should keep direction markers`).toBe(true);
+  expect(audit.nodesInFrame, `${label}: fitted nodes should stay inside the frame`).toBe(true);
+  expect(audit.nodeOverlaps, `${label}: graph node cards should not overlap`).toEqual([]);
+  expect(audit.nodeToolOverlapCount, `${label}: graph tools should not cover nodes`).toBe(0);
+  expect(audit.nodeLegendOverlapCount, `${label}: legend should not cover nodes`).toBe(0);
+  expect(audit.labelNodeOverlapCount, `${label}: edge labels should not cover nodes`).toBe(0);
+  expect(audit.edgeToolOverlapCount, `${label}: tools should not cover visible conduits`).toBe(0);
+  expect(audit.edgeLegendOverlapCount, `${label}: legend should not cover visible conduits`).toBe(0);
+}
+
 function nodePackManagerRow(win: Page, label: string): Locator {
   return win.locator('.node-pack-manager-pack').filter({ hasText: label });
 }
@@ -1140,6 +1344,13 @@ async function setNodePackRegistrySourceManagementMock(win: Page): Promise<void>
           name: 'Default Fixture Registry',
           governance: officialGovernance,
           metadataTrust: 'orpad-official-registry-reviewed',
+          signature: {
+            scheme: 'ed25519',
+            keyId: 'orpad-registry-test-key',
+            verified: true,
+            verificationAttempted: true,
+            fingerprint: 'SHA256:default-registry-fixture',
+          },
         },
         source,
         sourceKind: 'url',
@@ -1350,6 +1561,9 @@ test('pipeline details preview exposes editable contract fields', async () => {
   await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).not.toContainText('Type');
   await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).not.toContainText('Step key');
   await expect(win.locator('.orch-floating-inspector .orch-inspector dl')).not.toContainText('reference-context');
+  await expectHeroGraphChromeAtViewport(win, 'pipeline fixture graph desktop', { width: 1280, height: 760 });
+  await expectHeroGraphChromeAtViewport(win, 'pipeline fixture graph narrow', { width: 900, height: 760 });
+  await win.setViewportSize({ width: 1280, height: 760 });
   await win.locator('button[data-orch-mode="readwrite"]').click();
   const kindField = win.locator('.orch-floating-inspector label', { has: win.locator('select[data-orch-edit="type"]') });
   await expect(kindField).toContainText('Kind');
@@ -1507,7 +1721,14 @@ test('pipeline details surfaces missing Package diagnostics inline', async () =>
   const { workspace, pipelinePath } = writePipelineWorkspace();
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
   pipeline.nodePacks = [
-    { id: 'community.missing-pack', version: '>=9.9.0', origin: 'user-installed' },
+    {
+      id: 'community.missing-pack',
+      version: '>=9.9.0',
+      origin: 'user-installed',
+      trustLevel: 'community',
+      capabilityRiskSummary: 'Workspace read and shell execution requested',
+      highRiskCapabilities: ['read.workspace', 'run.process'],
+    },
   ];
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 
@@ -1533,6 +1754,11 @@ test('pipeline details surfaces missing Package diagnostics inline', async () =>
   await expect(nodePacksSection).toContainText('community.missing-pack');
   await expect(nodePacksSection).toContainText('>=9.9.0');
   await expect(nodePacksSection).toContainText('user-installed');
+  const nodePackRisk = nodePacksSection.locator('.pipeline-node-pack-risk');
+  await expect(nodePackRisk).toContainText('Trust');
+  await expect(nodePackRisk).toContainText('community');
+  await expect(nodePackRisk).toContainText('Workspace read and shell execution requested');
+  await expect(nodePackRisk).toContainText('2 high-risk capabilities');
   await expect(nodePacksSection).toContainText('PIPELINE_NODE_PACK_UNKNOWN');
   await expect(nodePacksSection.locator('.pipeline-inline-diagnostic')).toContainText('community.missing-pack');
   await expect(nodePacksSection.locator('[data-node-pack-manager-open]').first()).toContainText('Resolve in Package Manager');
@@ -1751,6 +1977,10 @@ test('Package manager lists metadata and safe pack prose states', async () => {
   await expect(corePack).toContainText('built-in');
   await expect(corePack.locator('[data-node-pack-manager-detail-open]')).toHaveText('Detail');
   await expect(corePack.locator('[data-node-pack-manager-pack-import="orpad.core"]')).toHaveText('Import');
+  const corePackTrust = corePack.locator('[data-node-pack-manager-row-trust]');
+  await expect(corePackTrust.locator('[data-node-pack-manager-row-trust-chip]')).toHaveCount(2);
+  await expect(corePackTrust.locator('[data-node-pack-manager-row-trust-chip="metadata"]')).toContainText('trust official');
+  await expect(corePackTrust.locator('[data-node-pack-manager-row-trust-chip="high-risk"]')).toHaveCount(0);
   const safePack = nodePackManagerRow(win, 'Community Safe Pack');
   await expect(safePack).toContainText('user-installed');
   await expect(safePack).toHaveAttribute('data-node-pack-validation', 'valid');
@@ -1759,6 +1989,12 @@ test('Package manager lists metadata and safe pack prose states', async () => {
   const reviewPack = nodePackManagerRow(win, 'Review Required Pack');
   await expect(reviewPack).toHaveAttribute('data-node-pack-validation', 'approval-required');
   await expect(reviewPack).toContainText('user-installed');
+  const reviewPackTrust = reviewPack.locator('[data-node-pack-manager-row-trust]');
+  await expect(reviewPackTrust.locator('[data-node-pack-manager-row-trust-chip="metadata"]')).toContainText('trust signed-community');
+  await expect(reviewPackTrust.locator('[data-node-pack-manager-row-trust-chip="validation"]')).toContainText('state approval-required');
+  await expect(reviewPackTrust.locator('[data-node-pack-manager-row-trust-chip="validation"]')).toHaveAttribute('data-node-pack-manager-row-trust-tone', 'danger');
+  await expect(reviewPackTrust.locator('[data-node-pack-manager-row-trust-chip="high-risk"]')).toContainText('1 high-risk');
+  await expect(reviewPackTrust.locator('[data-node-pack-manager-row-trust-chip="high-risk"]')).toHaveAttribute('data-node-pack-manager-row-trust-tone', 'danger');
   let detail = await openNodePackManagerRowDetail(win, safePack);
   await expect(detail).toContainText('Trusted Discovery Metadata');
   await expect(detail).toContainText('Diagnostic count');
@@ -1886,6 +2122,8 @@ test('Package manager manages registry source defaults recents and offline cache
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Default OrPAD Registry');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://registry.example/default.json');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Registry metadata is discovery input, not trust evidence.');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Registry signature');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('missing / not attempted');
 
   await win.locator('[data-node-pack-manager-registry-load]').click();
   await expect(win.locator('.node-pack-manager')).toHaveAttribute('data-node-pack-manager-state', 'success');
@@ -1893,6 +2131,9 @@ test('Package manager manages registry source defaults recents and offline cache
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('loaded');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('official PR-reviewed');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('OrPAD official review');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('signature verified');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('orpad-registry-test-key');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('SHA256:default-registry-fixture');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://github.com/orpad/registry/pulls');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('https://orpad.dev/docs/package-registry-review');
 
@@ -1906,6 +2147,7 @@ test('Package manager manages registry source defaults recents and offline cache
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Recent Registry source');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('offline cache');
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('fromCache');
+  await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('missing / not attempted');
   await expect(win.locator('.node-pack-manager-diagnostics')).toContainText('NODE_PACK_REGISTRY_SOURCE_FAILED_CACHE_USED');
   await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('Recent Registry source');
   await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('https://registry.example/custom.json');
@@ -1983,6 +2225,11 @@ test('Package manager shows registry trust review warnings and blocks unsafe pac
 
   const warningPack = nodePackManagerRow(win, 'Registry Warning Pack');
   await expect(warningPack.locator('[data-node-pack-manager-registry-install="community.warning-pack"]')).toBeEnabled();
+  const warningPackTrust = warningPack.locator('[data-node-pack-manager-row-trust]');
+  await expect(warningPackTrust.locator('[data-node-pack-manager-row-trust-chip="signature"]')).toContainText('sig missing');
+  await expect(warningPackTrust.locator('[data-node-pack-manager-row-trust-chip="checksum"]')).toContainText('hash missing');
+  await expect(warningPackTrust.locator('[data-node-pack-manager-row-trust-chip="review"]')).toContainText('review unreviewed');
+  await expect(warningPackTrust.locator('[data-node-pack-manager-row-trust-chip="metadata"]')).toHaveAttribute('data-node-pack-manager-row-trust-tone', 'warn');
   let detail = await openNodePackManagerRowDetail(win, warningPack);
   await expect(detail).toContainText('Package Risk Review');
   await expect(detail).toContainText('NODE_PACK_REGISTRY_SIGNATURE_MISSING');
@@ -1992,6 +2239,10 @@ test('Package manager shows registry trust review warnings and blocks unsafe pac
 
   const reviewedHighRiskPack = nodePackManagerRow(win, 'Registry Reviewed High Risk Pack');
   await expect(reviewedHighRiskPack.locator('[data-node-pack-manager-registry-install="community.reviewed-high-risk"]')).toBeEnabled();
+  const reviewedHighRiskTrust = reviewedHighRiskPack.locator('[data-node-pack-manager-row-trust]');
+  await expect(reviewedHighRiskTrust.locator('[data-node-pack-manager-row-trust-chip="metadata"]')).toContainText('trust third-party');
+  await expect(reviewedHighRiskTrust.locator('[data-node-pack-manager-row-trust-chip="high-risk"]')).toContainText('1 high-risk');
+  await expect(reviewedHighRiskTrust.locator('[data-node-pack-manager-row-trust-chip="high-risk"]')).toHaveAttribute('data-node-pack-manager-row-trust-tone', 'warn');
   detail = await openNodePackManagerRowDetail(win, reviewedHighRiskPack);
   await expect(detail).toContainText('Third-party review');
   await expect(detail).toContainText('third-party-review-7');
@@ -2002,6 +2253,11 @@ test('Package manager shows registry trust review warnings and blocks unsafe pac
 
   const unsafePack = nodePackManagerRow(win, 'Registry Unsafe Pack');
   await expect(unsafePack).toHaveAttribute('data-node-pack-validation', 'blocked');
+  const unsafePackTrust = unsafePack.locator('[data-node-pack-manager-row-trust]');
+  await expect(unsafePackTrust.locator('[data-node-pack-manager-row-trust-chip="checksum"]')).toContainText('hash mismatch');
+  await expect(unsafePackTrust.locator('[data-node-pack-manager-row-trust-chip="checksum"]')).toHaveAttribute('data-node-pack-manager-row-trust-tone', 'danger');
+  await expect(unsafePackTrust.locator('[data-node-pack-manager-row-trust-chip="high-risk"]')).toContainText('1 high-risk');
+  await expect(unsafePackTrust.locator('[data-node-pack-manager-row-trust-chip="high-risk"]')).toHaveAttribute('data-node-pack-manager-row-trust-tone', 'danger');
   detail = await openNodePackManagerRowDetail(win, unsafePack);
   await expect(detail).toContainText('NODE_PACK_REGISTRY_CHECKSUM_UNSAFE');
   await expect(detail).toContainText('NODE_PACK_REGISTRY_HIGH_RISK_REVIEW_REQUIRED');
@@ -2014,12 +2270,15 @@ test('Package manager shows registry trust review warnings and blocks unsafe pac
   await win.locator('[data-node-pack-manager-tab="updates"]').click();
   const unsafeUpdate = nodePackManagerRow(win, 'Registry Unsafe Update Pack');
   await expect(unsafeUpdate).toHaveAttribute('data-node-pack-validation', 'update-blocked');
+  const unsafeUpdateTrust = unsafeUpdate.locator('[data-node-pack-manager-row-trust]');
+  await expect(unsafeUpdateTrust.locator('[data-node-pack-manager-row-trust-chip="checksum"]')).toContainText('hash mismatch');
+  await expect(unsafeUpdateTrust.locator('[data-node-pack-manager-row-trust-chip="metadata"]')).toContainText('trust third-party');
   detail = await openNodePackManagerRowDetail(win, unsafeUpdate);
   await expect(detail).toContainText('Package Risk Review');
   await expect(detail).toContainText('NODE_PACK_REGISTRY_CHECKSUM_UNSAFE');
   await closeNodePackManagerRowDetail(win);
   await expect(unsafeUpdate.locator('[data-node-pack-manager-registry-update="community.unsafe-update"]')).toBeDisabled();
-  await expect(unsafeUpdate.locator('[data-node-pack-manager-registry-update="community.unsafe-update"]')).toHaveText('Import blocked');
+  await expect(unsafeUpdate.locator('[data-node-pack-manager-registry-update="community.unsafe-update"]')).toHaveText('Update blocked');
   await win.locator('[data-node-pack-manager-tab="browse"]').click();
   const warningInstallDialog = win.waitForEvent('dialog').then(async (dialog) => {
     const message = dialog.message();
@@ -2083,6 +2342,7 @@ test('Package manager applies an available registry update from the updates tab'
     expect(dialog.message()).toContain('Registry source: https://registry.example/orpad-node-packs.json');
     await dialog.accept();
   });
+  await expect(updatePack.locator('[data-node-pack-manager-registry-update="community.update-pack"]')).toHaveText('Update');
   await updatePack.locator('[data-node-pack-manager-registry-update="community.update-pack"]').click();
   await registryUpdateDialog;
   await win.locator('[data-node-pack-manager-tab="installed"]').click();
@@ -2206,7 +2466,7 @@ test('Package manager dry-runs workspace lock apply before package install', asy
 
   const driftLocked = nodePackManagerRow(win, 'Workspace Locked Pack');
   await expect(driftLocked).toHaveAttribute('data-node-pack-validation', 'ready to update');
-  await expect(driftLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Import');
+  await expect(driftLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Update');
   const updateDialog = win.waitForEvent('dialog').then(async (dialog) => {
     expect(dialog.message()).toContain('Package id: community.locked-pack');
     expect(dialog.message()).toContain('Version: 0.2.0');
@@ -2216,7 +2476,10 @@ test('Package manager dry-runs workspace lock apply before package install', asy
   await driftLocked.locator('[data-node-pack-manager-workspace-apply]').click();
   await updateDialog;
   await expect(win.locator('.node-pack-manager-action-notice')).toContainText('Updated Package');
-  await expect(nodePackManagerRow(win, 'community.locked-pack')).toHaveAttribute('data-node-pack-validation', 'synced');
+  const syncedLockedPack = nodePackManagerRow(win, 'community.locked-pack');
+  await expect(syncedLockedPack).toHaveAttribute('data-node-pack-validation', 'synced');
+  await expect(syncedLockedPack.locator('[data-node-pack-manager-workspace-apply]')).toBeDisabled();
+  await expect(syncedLockedPack.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Imported');
 
   const unsafeLocked = nodePackManagerRow(win, 'Workspace Lock Unsafe Pack');
   await expect(unsafeLocked).toHaveAttribute('data-node-pack-validation', 'blocked');
@@ -2224,7 +2487,7 @@ test('Package manager dry-runs workspace lock apply before package install', asy
   await expect(unsafeDetail).toContainText('Package checksum status blocks install and update.');
   await closeNodePackManagerRowDetail(win);
   await expect(unsafeLocked.locator('[data-node-pack-manager-workspace-apply]')).toBeDisabled();
-  await expect(unsafeLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Import blocked');
+  await expect(unsafeLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Install blocked');
 
   const missingLocked = nodePackManagerRow(win, 'Workspace Lock Missing Candidate');
   await expect(missingLocked).toHaveAttribute('data-node-pack-validation', 'ready to install');
@@ -2232,7 +2495,7 @@ test('Package manager dry-runs workspace lock apply before package install', asy
   await expect(missingDetail).toContainText('Dry-Run Registry Match');
   await expect(missingDetail).toContainText('Registry metadata is discovery input, not trust evidence.');
   await closeNodePackManagerRowDetail(win);
-  await expect(missingLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Import');
+  await expect(missingLocked.locator('[data-node-pack-manager-workspace-apply]')).toHaveText('Install');
 
   const applyDialog = win.waitForEvent('dialog').then(async (dialog) => {
     expect(dialog.message()).toContain('Package id: community.missing-pack');

@@ -106,7 +106,16 @@ function firstAttemptScheduledOrder(events) {
     .map(event => event.nodePath);
 }
 
-test('maintenance historical run first-attempt schedule replays in ready-set visit order', async () => {
+test('maintenance historical run first-attempt schedule replays in ready-set visit order', async t => {
+  try {
+    await fs.access(maintenanceHistoricalEventsPath);
+  } catch (err) {
+    if (err?.code === 'ENOENT') {
+      t.skip('historical maintenance run snapshot is not present in this checkout');
+      return;
+    }
+    throw err;
+  }
   const [graphSet, historicalEvents] = await Promise.all([
     loadPipelineGraphSet({ pipelinePath: maintenancePipelinePath }),
     readJsonl(maintenanceHistoricalEventsPath),

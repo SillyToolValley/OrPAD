@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
-const { ensureDir } = require('./metadata-store');
+const { ensureDir, writeJsonAtomic } = require('./metadata-store');
 
 const fsp = fs.promises;
 const validator = createContractValidator();
@@ -12,12 +12,29 @@ function eventsPath(runRoot) {
   return path.join(path.resolve(runRoot), 'events.jsonl');
 }
 
+function projectedRunStatePath(runRoot) {
+  return path.join(path.resolve(runRoot), 'run-state.json');
+}
+
 async function assertEventLogPathSafe(runRoot) {
   const filePath = eventsPath(runRoot);
   try {
     const stats = await fsp.lstat(filePath);
     if (stats.isSymbolicLink()) {
       throw eventLogError('MACHINE_EVENT_LOG_SYMLINK_UNSAFE', 'Machine event log must not be a symlink.');
+    }
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+}
+
+async function assertProjectedRunStatePathSafe(runRoot) {
+  const filePath = projectedRunStatePath(runRoot);
+  try {
+    const stats = await fsp.lstat(filePath);
+    if (stats.isSymbolicLink()) {
+      throw eventLogError('MACHINE_RUN_STATE_SYMLINK_UNSAFE', 'Machine run-state.json must not be a symlink.');
     }
   } catch (err) {
     if (err?.code === 'ENOENT') return;
@@ -34,10 +51,21 @@ async function readMachineEvents(runRoot) {
   await assertEventLogPathSafe(runRoot);
   try {
     const source = await fsp.readFile(filePath, 'utf8');
-    return source
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map(line => JSON.parse(line));
+    const lines = source.split(/\r?\n/).filter(Boolean);
+    return lines.map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch (parseErr) {
+        // Appends are serialized (eventAppendQueues) and only ever add a complete
+        // "<json>\n" at EOF, so a torn read from a concurrent append can corrupt
+        // ONLY the final line. Tolerate a partial trailing line — the next read
+        // sees the completed record. A parse failure on any interior line is
+        // genuine corruption (not a torn read): surface it rather than silently
+        // dropping a durable event.
+        if (index === lines.length - 1) return null;
+        throw parseErr;
+      }
+    }).filter(Boolean);
   } catch (err) {
     if (err?.code === 'ENOENT') return [];
     throw err;
@@ -90,9 +118,14 @@ async function appendMachineEventUnlocked(runRoot, event) {
     sequence: nextSequence(existing),
   };
   validator.assertValid('machineEvent', record);
+  const projectedRunState = projectValidRunStateFromEvents([...existing, record]);
+  if (projectedRunState) await assertProjectedRunStatePathSafe(runRoot);
   await ensureDir(path.resolve(runRoot));
   await assertEventLogPathSafe(runRoot);
   await fsp.appendFile(eventsPath(runRoot), `${JSON.stringify(record)}\n`, 'utf8');
+  if (projectedRunState) {
+    await writeJsonAtomic(projectedRunStatePath(runRoot), projectedRunState);
+  }
   return record;
 }
 
@@ -132,6 +165,17 @@ function projectRunStateFromEvents(events) {
     canonicalStoreKind: payload.canonicalStoreKind || 'jsonl',
     metadata: payload.metadata || {},
   };
+}
+
+function projectValidRunStateFromEvents(events) {
+  const runState = projectRunStateFromEvents(events);
+  if (!runState) return null;
+  try {
+    validator.assertValid('machineRun', runState);
+    return runState;
+  } catch {
+    return null;
+  }
 }
 
 module.exports = {

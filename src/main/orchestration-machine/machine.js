@@ -37,20 +37,33 @@ const { evaluateOutgoingEdges } = require('./edge-evaluator');
 const { createFileLockManager, normalizeLockPath } = require('./file-lock-manager');
 const { appendMachineEvent, projectRunStateFromEvents, readMachineEvents } = require('./events');
 const { normalizeRunLlmApprovalMode, readRunState } = require('./run-store');
+// RC-3: read the in-process pause intent so the scheduler can checkpoint + bail
+// MID-step (between node dispatches), not only at the step boundary. run-control
+// depends only on events/lifecycle/run-store, so this require is acyclic.
+const { readRunControlToken } = require('./run-control');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
 const { applyPatchArtifact, loadRunPatchArtifact } = require('./patches');
 const { PATCH_REVIEW_REASONS, shouldRequestPatchReview } = require('./patch-review-classifier');
+const {
+  workerResultIsPatchReviewEligible,
+  workerResultRequiresManualPatchReview,
+} = require('./patch-review-eligibility');
 const { runProposalProbe } = require('./probe-runner');
 const { runProposalTriage } = require('./triage-runner');
 const { runWorkerLoopOnce } = require('./worker-loop');
 const { readQueueItems, transitionQueueItem, writeLegacyJournalProjection } = require('./queue-store');
-const { dispatchAdapter } = require('./router/adapter-router');
-const { normalizeWriteSetPath } = require('./write-sets');
-const contentEditorialEvaluator = require('./content-editorial-evaluator');
+const { dispatchAdapter, liftedPipelineAdapter } = require('./router/adapter-router');
 const {
-  isNonRunnableExternalGenerationWork,
-  nonRunnableExternalGenerationReason,
-} = require('./non-runnable-work');
+  assertWorkerBudget,
+  estimateWorkerBudget,
+  recordWorkerBudgetEstimate,
+  workerPromptForEstimate,
+} = require('./router/worker-budget');
+const { normalizeWriteSetPath, releaseWriteSetLock } = require('./write-sets');
+const { markClaimLeaseReleased } = require('./claims');
+const contentEditorialEvaluator = require('./content-editorial-evaluator');
+const { judgeUnsupportedGateCriteria } = require('./gate-criterion-judge');
+const { classifyNonRunnableWork } = require('./non-runnable-work');
 
 const fsp = fs.promises;
 const contractValidator = createContractValidator();
@@ -1105,6 +1118,9 @@ function liveProbePrompt(input = {}) {
     '',
     `Return at most ${candidateLimit} candidateProposals.`,
     'Use current, concrete evidence only. Prefer a small user-visible, source-of-truth fix.',
+    'Every candidate must be small enough for one worker to finish and emit its JSON contract within the worker timeout. Do not propose whole-surface overhauls, full redesigns, or multi-area rewrites.',
+    'Keep each candidate to a bounded slice: at most two implementation files plus one focused test file. If renderer.js or base.css is involved, scope the title and criteria to one component/selector/state, not an entire surface.',
+    'Keep acceptanceCriteria focused: no more than three concrete criteria unless the item is only a read-only/test item.',
     'If no actionable current finding is visible for this node, return status "done", candidateProposals: [], and an evidence-backed emptyPass.',
     'Do not create broad refactor candidates. Do not make generated latest-run evidence files the only sourceOfTruthTargets.',
   ].join('\n');
@@ -1174,6 +1190,8 @@ function buildLiveWorkerPrompt(input = {}) {
     'Use status "done" only if you changed allowedFiles in the overlay toward the acceptance criteria.',
     'Use status "blocked" if the allowed files are insufficient or the change is unsafe.',
     'Always include verification evidence. If a recommended validation command is impractical in the overlay, record status "blocked" or "failed" for that check with the concrete reason.',
+    'Work to a hard timebox: make the smallest acceptance-criteria slice that fits the allowedFiles, then stop and emit the JSON result. The JSON result is mandatory and has priority over additional polish.',
+    'Do not attempt broad visual overhauls or full-surface rewrites inside one worker claim. If the claim is too broad to complete safely in one pass, implement the smallest coherent slice or return status "blocked" with the precise smaller follow-up split.',
     'For docs, slides, tutorials, or other content work, OrPAD will independently evaluate the diff after patch review; leave concrete removals, merges, rewrites, and focused validation evidence instead of only claiming editorial quality in the summary.',
   ].join('\n');
 }
@@ -2383,6 +2401,52 @@ function proposalResultForRequest(request, options = {}) {
   };
 }
 
+async function rejectNonRunnableCandidateQueueItems(runRoot, options = {}) {
+  const rejected = [];
+  const candidateItems = (await readQueueItems(runRoot))
+    .filter(entry => entry.state === 'candidate')
+    .map(entry => ({ ...entry, nonRunnable: classifyNonRunnableWork(entry.item) }))
+    .filter(entry => entry.nonRunnable);
+  for (const entry of candidateItems) {
+    const classifier = entry.nonRunnable.classifier;
+    const reason = entry.nonRunnable.reason;
+    rejected.push(await transitionQueueItem(runRoot, {
+      runId: options.runId,
+      itemId: entry.item.id,
+      expectedFromState: 'candidate',
+      toState: 'rejected',
+      reason: `candidate.${classifier}`,
+      transitionId: `reject-${classifier}:${entry.item.id}`,
+      now: options.now,
+      itemPatch: {
+        machineRejected: true,
+        rejectionReason: reason,
+        nextAction: classifier === 'oversized-worker-scope'
+          ? 'split-work-item-before-dispatch'
+          : 'non-runnable-external-generation-recorded',
+        ...(classifier === 'oversized-worker-scope' ? { splitRequired: true } : {}),
+      },
+      payload: {
+        classifier,
+        triageSource: 'live-triage-candidate-filter',
+      },
+    }));
+  }
+  return rejected;
+}
+
+async function liveTriageCandidatesFromQueue(runRoot, options = {}) {
+  if (options.runId) {
+    await rejectNonRunnableCandidateQueueItems(runRoot, {
+      runId: options.runId,
+      now: options.now,
+    });
+  }
+  return (await readQueueItems(runRoot))
+    .filter(entry => entry.state === 'candidate' && !classifyNonRunnableWork(entry.item))
+    .map(entry => ({ suggestedWorkItemId: entry.item.id }));
+}
+
 function isRunAbortSignalAborted(signal) {
   return Boolean(signal && typeof signal === 'object' && signal.aborted === true);
 }
@@ -2454,6 +2518,25 @@ function cancellationLifecyclePayload(err) {
   };
 }
 
+// RC-3: find the scheduler checkpoint to rehydrate on resume, if any. A
+// `run.pause-checkpoint` event (written when a step pauses mid-drain) stays
+// "active" until a `run.pause-checkpoint-consumed` (written when a resumed step
+// rehydrates it). Last-writer-wins: returns the latest active checkpoint payload
+// (with its source event sequence) or null. Pure function of the event log, so
+// the in-memory scheduler readiness survives a pause/resume across a fresh step.
+function findActivePauseCheckpoint(events = []) {
+  let checkpoint = null;
+  for (const event of events || []) {
+    const type = String(event?.eventType || '');
+    if (type === 'run.pause-checkpoint') {
+      checkpoint = { ...(event.payload || {}), sequence: event.sequence };
+    } else if (type === 'run.pause-checkpoint-consumed') {
+      checkpoint = null;
+    }
+  }
+  return checkpoint;
+}
+
 async function withNodeLifecycle(runRoot, node, options = {}, fn) {
   const { runId } = options;
   const attempt = options.attempt || 1;
@@ -2516,12 +2599,13 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
       }).catch(() => null);
       await appendRunSummaryStatus(runRoot, {
         runId,
-        summaryStatus: 'blocked',
+        summaryStatus: 'partial',
         reason: 'machine-node.cancelled',
         payload: {
           nodePath: node.nodePath,
           nodeType: node.nodeType,
           attempt,
+          managedInternalBlock: true,
           ...cancellationPayload,
         },
       }).catch(() => null);
@@ -2553,12 +2637,14 @@ async function withNodeLifecycle(runRoot, node, options = {}, fn) {
     }).catch(() => null);
     await appendRunSummaryStatus(runRoot, {
       runId,
-      summaryStatus: 'blocked',
+      summaryStatus: 'partial',
       reason: 'machine-node.failed',
       payload: {
         nodePath: node.nodePath,
         nodeType: node.nodeType,
         attempt,
+        managedInternalBlock: true,
+        nextAction: 'retry-node-or-continue-managed-recovery',
         ...failurePayload,
       },
     }).catch(() => null);
@@ -2608,6 +2694,45 @@ async function executeBlockingSupportNode(runRoot, node, options = {}, evaluate)
     });
     return result || {};
   } catch (err) {
+    // RC-2: a cooperative cancel (MACHINE_RUN_CANCELLED) thrown inside a blocking
+    // support node (patchReview / exit) must record node.cancelled + waiting, not
+    // node.failed — mirroring withNodeLifecycle's cancel branch so the live graph
+    // and run state read as "cancelled", not "failed".
+    if (isRunCancellationError(err)) {
+      const cancellationPayload = cancellationLifecyclePayload(err);
+      await recordNodeLifecycleEvent(runRoot, {
+        runId,
+        nodePath: node.nodePath,
+        nodeType: node.nodeType,
+        attempt,
+        status: 'cancelled',
+        payload: cancellationPayload,
+      });
+      await appendRunLifecycleStatus(runRoot, {
+        runId,
+        toState: 'waiting',
+        reason: 'machine-node.cancelled',
+        payload: {
+          nodePath: node.nodePath,
+          nodeType: node.nodeType,
+          attempt,
+          ...cancellationPayload,
+        },
+      }).catch(() => null);
+      await appendRunSummaryStatus(runRoot, {
+        runId,
+        summaryStatus: 'partial',
+        reason: 'machine-node.cancelled',
+        payload: {
+          nodePath: node.nodePath,
+          nodeType: node.nodeType,
+          attempt,
+          managedInternalBlock: true,
+          ...cancellationPayload,
+        },
+      }).catch(() => null);
+      throw err;
+    }
     const failurePayload = {
       code: err?.code || 'MACHINE_NODE_FAILED',
       message: err?.message || String(err),
@@ -2633,12 +2758,14 @@ async function executeBlockingSupportNode(runRoot, node, options = {}, evaluate)
     }).catch(() => null);
     await appendRunSummaryStatus(runRoot, {
       runId,
-      summaryStatus: 'blocked',
+      summaryStatus: 'partial',
       reason: 'machine-node.failed',
       payload: {
         nodePath: node.nodePath,
         nodeType: node.nodeType,
         attempt,
+        managedInternalBlock: true,
+        nextAction: 'retry-node-or-continue-managed-recovery',
         ...failurePayload,
       },
     }).catch(() => null);
@@ -2914,7 +3041,7 @@ async function executePatchReviewNode(runRoot, node, options = {}) {
     if (review.required && !review.resolved) {
       return {
         blocked: true,
-        summaryStatus: 'blocked',
+        summaryStatus: 'partial',
         reason: review.failedCount ? 'patch-review.apply-failed' : 'patch-review.required',
         status: 'blocked',
         reviewRequired: true,
@@ -2935,7 +3062,7 @@ async function executePatchReviewNode(runRoot, node, options = {}) {
     if (review.rejectedCount > 0) {
       return {
         blocked: true,
-        summaryStatus: 'blocked',
+        summaryStatus: 'partial',
         reason: 'patch-review.rejected',
         status: 'rejected',
         reviewDecision: 'rejected',
@@ -3117,25 +3244,31 @@ async function noActionableWorkDiscovered(runRoot, events = null) {
 async function normalizeNonRunnableBlockedQueueItems(runRoot, options = {}) {
   const rejected = [];
   const blockedItems = (await readQueueItems(runRoot))
-    .filter(entry => entry.state === 'blocked' && isNonRunnableExternalGenerationWork(entry.item));
+    .filter(entry => entry.state === 'blocked')
+    .map(entry => ({ ...entry, nonRunnable: classifyNonRunnableWork(entry.item) }))
+    .filter(entry => entry.nonRunnable);
   for (const entry of blockedItems) {
-    const reason = nonRunnableExternalGenerationReason(entry.item);
+    const reason = entry.nonRunnable.reason;
+    const classifier = entry.nonRunnable.classifier;
     rejected.push(await transitionQueueItem(runRoot, {
       runId: options.runId,
       itemId: entry.item.id,
       expectedFromState: 'blocked',
       toState: 'rejected',
-      reason: 'blocked.non-runnable-external-generation',
-      transitionId: `reject-non-runnable:${entry.item.id}`,
+      reason: `blocked.${classifier}`,
+      transitionId: `reject-${classifier}:${entry.item.id}`,
       now: options.now,
       itemPatch: {
         machineRejected: true,
         rejectionReason: reason,
         previousBlockedReason: entry.item.blockedReason || '',
-        nextAction: 'non-runnable-external-generation-recorded',
+        nextAction: classifier === 'oversized-worker-scope'
+          ? 'split-work-item-before-dispatch'
+          : 'non-runnable-external-generation-recorded',
+        ...(classifier === 'oversized-worker-scope' ? { splitRequired: true } : {}),
       },
       payload: {
-        classifier: 'non-runnable-external-generation',
+        classifier,
         previousBlockedReason: entry.item.blockedReason || '',
       },
     }));
@@ -3272,10 +3405,11 @@ async function completionAuditBlock(runRoot, options = {}) {
   const adapterFailures = latestAdapterResultFailures(events);
   if (adapterFailures.length) {
     return {
-      summaryStatus: 'blocked',
+      summaryStatus: 'partial',
       reason: 'completion.adapter-result-blocked',
       audit: {
         kind: 'adapter-results',
+        managedInternalBlock: true,
         valid: false,
         failedAdapterCount: adapterFailures.length,
         failedAdapters: adapterFailures,
@@ -3290,10 +3424,11 @@ async function completionAuditBlock(runRoot, options = {}) {
   });
   if (!requiredGates.valid) {
     return {
-      summaryStatus: 'blocked',
+      summaryStatus: 'partial',
       reason: 'completion.required-gate-failed',
       audit: {
         kind: 'required-gates',
+        managedInternalBlock: true,
         normalizedBlockedQueueCount: normalizedBlockedQueue.length,
         ...requiredGates,
       },
@@ -3302,10 +3437,11 @@ async function completionAuditBlock(runRoot, options = {}) {
   const provenance = await auditDiscoveryQueueProvenance(runRoot, events);
   if (!provenance.valid) {
     return {
-      summaryStatus: 'blocked',
+      summaryStatus: 'partial',
       reason: 'completion.discovery-queue-provenance-missing',
       audit: {
         kind: 'discovery-queue-provenance',
+        managedInternalBlock: true,
         normalizedBlockedQueueCount: normalizedBlockedQueue.length,
         ...provenance,
       },
@@ -3332,7 +3468,7 @@ async function appendCompletionAuditBlock(runRoot, options = {}) {
   });
   const runState = await appendRunSummaryStatus(runRoot, {
     runId,
-    summaryStatus: block.summaryStatus || 'blocked',
+    summaryStatus: block.summaryStatus || 'partial',
     reason: block.reason,
     payload: {
       inventory,
@@ -3342,7 +3478,7 @@ async function appendCompletionAuditBlock(runRoot, options = {}) {
   });
   return {
     inventory,
-    summaryStatus: block.summaryStatus || 'blocked',
+    summaryStatus: block.summaryStatus || 'partial',
     runState,
     completionBlocked: block.audit,
   };
@@ -3355,7 +3491,7 @@ async function executeExitNode(runRoot, node, options = {}) {
     if (review.required && !review.resolved) {
       return {
         blocked: true,
-        summaryStatus: 'blocked',
+        summaryStatus: 'partial',
         reason: 'exit.patch-review-required',
         status: 'blocked',
         patchCount: review.patchCount,
@@ -4051,21 +4187,6 @@ async function evaluateContentEditorialQualityGate(input = {}) {
   return contentEditorialEvaluator.evaluateContentEditorialQualityGate(input);
 }
 
-function workerResultIsPatchReviewEligible(payload = {}) {
-  const status = String(payload.status || '').trim().toLowerCase();
-  const toState = String(payload.toState || '').trim().toLowerCase();
-  if ((status === 'blocked' || toState === 'blocked') && payload.patchArtifact) return true;
-  if (status && status !== 'done') return false;
-  if (toState && toState !== 'done') return false;
-  return true;
-}
-
-function workerResultRequiresManualPatchReview(payload = {}) {
-  const status = String(payload.status || '').trim().toLowerCase();
-  const toState = String(payload.toState || '').trim().toLowerCase();
-  return Boolean(payload.patchArtifact) && (status === 'blocked' || toState === 'blocked');
-}
-
 function patchReviewStateFromEvents(events = [], options = {}) {
   const patchArtifacts = [];
   const seen = new Set();
@@ -4272,6 +4393,13 @@ function booleanConfigTrue(value) {
   return ['1', 'true', 'yes', 'y', 'on'].includes(value.trim().toLowerCase());
 }
 
+function isAdvisoryGateConfig(config = {}) {
+  return config.advisory === true
+    || config.auditOnly === true
+    || booleanConfigTrue(config.advisory)
+    || booleanConfigTrue(config.auditOnly);
+}
+
 function hasDeclaredFailureRouting(value) {
   if (value == null || value === false) return false;
   if (typeof value === 'string') return Boolean(value.trim());
@@ -4288,9 +4416,10 @@ async function validateGateNode(runRoot, config = {}, options = {}) {
   const inventory = await summarizeQueueInventory(runRoot);
   const evaluationMode = String(config.evaluationMode || '').trim();
   const strictFailure = evaluationMode === 'content-editorial-quality';
+  const advisory = isAdvisoryGateConfig(config);
   const failureRouting = config.failureRouting;
   const warningDoesNotPass = booleanConfigTrue(config.warningDoesNotPass) || hasDeclaredFailureRouting(failureRouting);
-  const evaluations = strictFailure
+  let evaluations = strictFailure
     ? await evaluateContentEditorialQualityGate({
       events,
       inventory,
@@ -4309,6 +4438,35 @@ async function validateGateNode(runRoot, config = {}, options = {}) {
       taskText: options.taskText || '',
       externalResearch: options.externalResearch || null,
     }));
+  // Generic gate-criterion judge tier: the deterministic evaluator above only
+  // recognizes two hardcoded phrases; every other authored criterion comes back
+  // `unsupported`. When the run threads a live judge adapter (live runs only),
+  // evaluate those unsupported criteria together against the run's worker
+  // evidence so semantic, task-specific gates can actually be assessed instead
+  // of failing by default. With no adapter (all harness/fixture runs and every
+  // existing test) this block is skipped and the prior behavior is preserved;
+  // any judge failure returns null and we keep the original unsupported evals.
+  if (!strictFailure && !advisory && options.gateJudgeAdapter && typeof options.gateJudgeAdapter.invoke === 'function') {
+    const unsupportedCriteria = evaluations
+      .filter(entry => entry && entry.supported === false && entry.reason !== 'empty-criterion')
+      .map(entry => entry.criterion);
+    if (unsupportedCriteria.length) {
+      const judged = await judgeUnsupportedGateCriteria({
+        criteria: unsupportedCriteria,
+        events,
+        inventory,
+        taskText: options.taskText || '',
+        judgeAdapter: options.gateJudgeAdapter,
+      });
+      if (judged) {
+        evaluations = evaluations.map(entry => (
+          entry && entry.supported === false && judged.has(entry.criterion)
+            ? judged.get(entry.criterion)
+            : entry
+        ));
+      }
+    }
+  }
   const failed = evaluations.filter(entry => !entry.passed);
   const result = {
     valid: failed.length === 0,
@@ -4316,6 +4474,7 @@ async function validateGateNode(runRoot, config = {}, options = {}) {
     authoredOnFail: String(authoredOnFail) !== onFail ? authoredOnFail : undefined,
     evaluationMode,
     strictFailure,
+    advisory,
     warningDoesNotPass,
     ...(failureRouting !== undefined ? { failureRouting } : {}),
     criteriaCount: criteria.length,
@@ -4730,6 +4889,124 @@ async function registerCandidateInventoryArtifact(runRoot, options = {}) {
   return { artifact, inventory };
 }
 
+// Permissively extract the first JSON object from arbitrary model/CLI text
+// (raw JSON, ```json fences, or an object embedded in prose). Mirrors the
+// providers' own adapter-result parsing so a CLI judge whose last message is
+// wrapped in fences or commentary still yields a usable verdict.
+function extractFirstJsonObjectFromText(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
+  try { return JSON.parse(trimmed); } catch {}
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) {
+    try { return JSON.parse(fenced[1].trim()); } catch {}
+  }
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(trimmed.slice(start, end + 1)); } catch {}
+  }
+  return null;
+}
+
+async function readRunArtifactText(runRoot, artifactPath) {
+  if (!runRoot || !artifactPath) return '';
+  let safePath = '';
+  try {
+    safePath = await assertNoSymlinkInRunPath(runRoot, artifactPath);
+  } catch {
+    return '';
+  }
+  try {
+    const abs = path.join(path.resolve(runRoot), ...safePath.split('/'));
+    const stat = await fsp.stat(abs);
+    if (!stat.isFile() || stat.size > 256 * 1024) return '';
+    return await fsp.readFile(abs, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+// Build the gate-criterion judge adapter for a live run. API-family providers
+// answer the judge prompt through invokeApi (free-form JSON in result); CLI
+// providers are spawned read-only via their proposal adapter and the verdict is
+// read back from the last-message artifact. Returns null for harness/fixture
+// runs so gates keep their deterministic-only behavior there.
+function createGateJudgeAdapterForRun(input = {}) {
+  const {
+    hasLiveAdapter,
+    liveApiPlugin,
+    adapter,
+    runRoot,
+    runId,
+    workspaceRoot,
+    loadProviderKey,
+    fetchImpl,
+    signal,
+    timeoutMs,
+  } = input;
+  if (!hasLiveAdapter || !adapter) return null;
+  let callCounter = 0;
+  const nextRequest = () => {
+    callCounter += 1;
+    const callId = `gate-judge-${runId}-${callCounter}`;
+    return {
+      runId,
+      workspaceRoot,
+      adapterCallId: callId,
+      attemptId: callId,
+      idempotencyKey: callId,
+      taskKind: 'gate-judge',
+    };
+  };
+  return {
+    async invoke({ prompt } = {}) {
+      const request = nextRequest();
+      if (liveApiPlugin && typeof liveApiPlugin.invokeApi === 'function') {
+        const selection = selectionForLiveApiPlugin(adapter, liveApiPlugin);
+        let providerKey = '';
+        if (typeof loadProviderKey === 'function') {
+          providerKey = String((await loadProviderKey(liveApiPlugin.id)) || '').trim();
+        }
+        const out = await liveApiPlugin.invokeApi({
+          request,
+          prompt,
+          selection,
+          providerKey,
+          fetchImpl,
+          signal,
+        });
+        return out?.result || out;
+      }
+      const cliPlugin = getProviderPluginForAdapter(adapter);
+      if (!cliPlugin || typeof cliPlugin.createProposalAdapter !== 'function') return null;
+      const proposalAdapter = cliPlugin.createProposalAdapter({
+        runRoot,
+        runId,
+        workspaceRoot,
+        command: adapter.command,
+        commandPrefixArgs: adapter.commandPrefixArgs,
+        // Judging is strictly read-only — never grant write/bypass here.
+        sandbox: adapter.proposalSandbox || adapter.sandbox || 'read-only',
+        approvalPolicy: adapter.approvalPolicy || 'never',
+        timeoutMs: adapter.proposalTimeoutMs || timeoutMs,
+        maxOutputBytes: 64 * 1024,
+        ephemeral: adapter.ephemeral,
+        prompt: () => prompt,
+      });
+      const judgeResult = await proposalAdapter.invoke(request);
+      const lastMessageRef = (judgeResult?.artifacts || [])
+        .find(ref => /\.last-message\.json$/i.test(String(ref || '')));
+      if (lastMessageRef) {
+        const text = await readRunArtifactText(runRoot, lastMessageRef);
+        const parsed = extractFirstJsonObjectFromText(text);
+        if (parsed) return parsed;
+      }
+      return judgeResult || null;
+    },
+  };
+}
+
 async function executeMachineRunStep(options = {}) {
   const {
     workspaceRoot,
@@ -4836,6 +5113,24 @@ async function executeMachineRunStep(options = {}) {
   }
   const harness = hasHarness ? assertPlainObject(harnessSource, 'run.machineHarness') : null;
   const adapter = hasLiveAdapter ? assertPlainObject(adapterSource, 'run.machineAdapter') : null;
+  // Live runs get a gate-criterion judge so semantic, agent-authored gate
+  // criteria can be evaluated against the run's own worker evidence instead of
+  // failing as `unsupported`. Null for harness/fixture runs (deterministic
+  // gate evaluation only) and threaded into executeSupportNode below.
+  const gateJudgeAdapter = (hasHarness || !hasLiveAdapter)
+    ? null
+    : createGateJudgeAdapterForRun({
+      hasLiveAdapter,
+      liveApiPlugin,
+      adapter,
+      runRoot,
+      runId,
+      workspaceRoot,
+      loadProviderKey,
+      fetchImpl,
+      signal,
+      timeoutMs,
+    });
   const candidates = hasHarness ? candidateProposalsFromHarness(harness) : [];
   let expectedChangedFiles = hasHarness ? expectedChangedFilesFromHarness(harness, candidates) : [];
   const patchConfig = hasHarness ? assertPlainObject(harness.nodeCliPatch, 'machineHarness.nodeCliPatch') : null;
@@ -5123,7 +5418,134 @@ async function executeMachineRunStep(options = {}) {
     const workerTargetFilesAuthored = Array.isArray(workerNode?.config?.targetFiles)
       ? workerNode.config.targetFiles
       : null;
-    return runWorkerLoopOnce({
+    // Worker-path budget governance (R4). The worker is the single largest token
+    // consumer but is a flat-rate CLI agent that reports no usage, so it never
+    // moved the budget ledger. When a budget is configured we estimate the call
+    // deterministically, guard a pre-spawn token/USD ceiling, and record the
+    // estimate (tagged usageSource:'estimated') so the meter reflects it. Opt-in
+    // on a configured budget — no budget => unchanged behavior (and no estimate
+    // entries), matching the probe path which only guards under a budget.
+    const workerBudgetConfig = liftedPipelineAdapter(adapter)?.budget || null;
+    const workerBudgetPlugin = getProviderPluginForAdapter(adapter) || null;
+    let workerBudgetEstimate = null;
+    if (workerBudgetConfig && runRoot) {
+      const workerModelForEstimate = workerCandidate?.selection?.model
+        || adapter?.model
+        || workerBudgetPlugin?.defaultModel
+        || '';
+      workerBudgetEstimate = {
+        ...estimateWorkerBudget({
+          plugin: workerBudgetPlugin,
+          model: workerModelForEstimate,
+          prompt: workerPromptForEstimate(adapterRequest, runtimeTaskText),
+          expectedCompletionTokens: workerBudgetConfig.expectedCompletionTokens,
+        }),
+        providerId: workerBudgetPlugin?.id || adapter?.provider || '',
+        model: workerModelForEstimate,
+        family: workerBudgetPlugin?.family || '',
+      };
+      const emitBudgetWarning = (violations, hardStop) => appendMachineEvent(runRoot, {
+        runId,
+        actor: 'machine',
+        nodePath: workerNode.nodePath,
+        eventType: 'budget.warning',
+        payload: {
+          adapterCallId,
+          attemptId: adapterRequest.attemptId,
+          providerId: workerBudgetEstimate.providerId,
+          model: workerBudgetEstimate.model,
+          usageSource: 'estimated',
+          violations: violations || [],
+          estimateUsd: workerBudgetEstimate.estimateUsd,
+          estimateTokens: workerBudgetEstimate.estimateTokens,
+          phase: 'pre-worker',
+          hardStop: hardStop === true,
+        },
+      }).catch(() => {});
+      let workerBudgetGuard = { ok: true, violations: [] };
+      try {
+        workerBudgetGuard = await assertWorkerBudget({
+          runRoot,
+          budgetConfig: workerBudgetConfig,
+          estimateUsd: workerBudgetEstimate.estimateUsd,
+          estimateTokens: workerBudgetEstimate.estimateTokens,
+        });
+      } catch (budgetErr) {
+        // hardStop violation: surface the warning, then fail before spawning.
+        // The item was already claimed by the caller (claimWorkerItem), and the
+        // throw skips runWorkerLoopOnce — which is what normally releases the
+        // durable claim lease — so release it here (idempotent, best-effort)
+        // mirroring worker-loop.js's own abort teardown, otherwise the item is
+        // stranded in 'claimed' until lease expiry. The write-set lock is NOT
+        // held yet (it is acquired inside runWorkerLoopOnce, after this guard).
+        const failedClaimId = currentClaim?.claim?.claimId;
+        if (failedClaimId && currentClaim?.item?.id) {
+          const releaseNow = new Date().toISOString();
+          let queueRecovered = false;
+          try {
+            await transitionQueueItem(runRoot, {
+              runId,
+              itemId: currentClaim.item.id,
+              expectedFromState: 'claimed',
+              toState: 'queued',
+              reason: 'budget.hard-stop',
+              evidence: `locks/claims/${failedClaimId}.json`,
+              transitionId: `recover:${failedClaimId}:budget-hard-stop`,
+              now: releaseNow,
+              itemPatch: {
+                claimId: undefined,
+                claimLeaseExpiresAt: undefined,
+                writeSetLockId: undefined,
+                lastManagedWorkerStatus: 'failed',
+                lastManagedWorkerReason: 'Worker budget hard stop blocked this claim before adapter spawn.',
+                managedRetry: true,
+                budgetHardStop: true,
+                nextAction: 'adjust-worker-budget-or-retry',
+              },
+              payload: {
+                claimId: failedClaimId,
+                recovery: 'budget-hard-stop',
+                violations: budgetErr.violations || [],
+              },
+            });
+            queueRecovered = true;
+          } catch (transitionErr) {
+            await appendMachineEvent(runRoot, {
+              runId,
+              actor: 'machine',
+              nodePath: workerNode.nodePath,
+              eventType: 'budget.claim-recovery_failed',
+              itemId: currentClaim.item.id,
+              reason: 'budget.hard-stop',
+              payload: {
+                claimId: failedClaimId,
+                code: transitionErr?.code || '',
+                message: transitionErr?.message || '',
+              },
+            }).catch(() => {});
+          }
+          if (queueRecovered) {
+            await markClaimLeaseReleased(runRoot, failedClaimId, {
+              now: releaseNow,
+              state: 'released',
+              reason: 'budget.hard-stop',
+            }).catch(() => {});
+            if (currentClaim?.claim?.writeSetLockId) {
+              await releaseWriteSetLock(runRoot, currentClaim.claim.writeSetLockId, {
+                now: releaseNow,
+                reason: 'budget.hard-stop',
+              }).catch(() => {});
+            }
+          }
+        }
+        await emitBudgetWarning(budgetErr.violations, true);
+        throw budgetErr;
+      }
+      if (!workerBudgetGuard.ok) {
+        await emitBudgetWarning(workerBudgetGuard.violations, false);
+      }
+    }
+    const workerLoopResult = await runWorkerLoopOnce({
       runRoot,
       runId,
       workspaceRoot,
@@ -5134,6 +5556,10 @@ async function executeMachineRunStep(options = {}) {
       nodeAttempt,
       reviewRequired: workerNode?.config?.reviewRequired === true,
       requiredValidationCommands: workerRequiredValidationCommands,
+      // RC-2: thread the run's cooperative abort signal into the worker so it can
+      // bail BEFORE claiming (no partial queue.transition) and release the
+      // durable claim lease / write-set lock idempotently if a cancel lands mid-work.
+      signal,
       adapter: createCliAgentAdapter({
         enabled: true,
         runRoot,
@@ -5146,6 +5572,24 @@ async function executeMachineRunStep(options = {}) {
           : (getProviderPluginForAdapter(adapter)?.dangerousArgs || undefined),
       }),
     });
+    // Record the estimated worker spend after the loop returns. Best-effort: a
+    // ledger write must never mask or fail the worker result. Idempotent on
+    // (adapterCallId + attemptId). Bind the estimate to the worker.result event
+    // sequence so a replay can tie the cost back to the event that produced it
+    // (recordWorkerBudgetEstimate normalizes a non-finite value back to null).
+    if (workerBudgetEstimate && runRoot) {
+      await recordWorkerBudgetEstimate({
+        runRoot,
+        runId,
+        request: adapterRequest,
+        providerId: workerBudgetEstimate.providerId,
+        model: workerBudgetEstimate.model,
+        family: workerBudgetEstimate.family,
+        usage: workerBudgetEstimate.usage,
+        sourceEventSequence: workerLoopResult?.result?.event?.sequence,
+      }).catch(() => {});
+    }
+    return workerLoopResult;
   };
   const executeSerialWorkerLoop = async (dispatchAttempt) => {
     const initialWorkerInventory = await summarizeQueueInventory(runRoot);
@@ -5174,6 +5618,7 @@ async function executeMachineRunStep(options = {}) {
         approvalGrants,
         enforceWriteSetConflicts: false,
         enforcePendingPatchConflicts: hasPatchReviewSupportNode,
+        recoverOrphanedAdapters: true,
       }));
     };
 
@@ -5353,6 +5798,9 @@ async function executeMachineRunStep(options = {}) {
   const recentlyDeferredBarriers = new Set();
   let visitedSizeBeforeDispatch = 0;
   let stopScheduler = false;
+  // RC-3: set when a pause is requested mid-drain; bails the scheduler loop after
+  // checkpointing readiness, and routes finalization to the clean 'paused' branch.
+  let pausedMidStep = false;
   const schedulerLoopBackForced = new Set();
   const schedulerLoopBackRedriveCounts = new Map();
   const schedulerLoopBackRedriveLimit = configuredLoopBackRedriveLimit(machineConfig, orderedNodes.length);
@@ -5390,7 +5838,7 @@ async function executeMachineRunStep(options = {}) {
         nodeType: targetNode?.nodeType || '',
         result: {
           blocked: true,
-          summaryStatus: 'blocked',
+          summaryStatus: 'partial',
           reason: 'scheduler.loop-back-redrive-limit',
           status: 'blocked',
           sourceNodePath: reset.sourceNodePath || '',
@@ -5457,6 +5905,10 @@ async function executeMachineRunStep(options = {}) {
   // single-threaded so synchronous mutations don't race; awaits
   // interleave but per-call writes remain atomic.
   const dispatchParallelSupportNode = async (node) => {
+    // RC-2: within a concurrent support batch, each member re-checks the cancel
+    // signal before starting so a cancel that lands mid-batch stops members that
+    // have not begun (the loop-top check only guards between batches).
+    throwIfRunSignalAborted(signal, 'Run cancelled; support node skipped.');
     // Skip-and-still-propagate paths (= previous `continue` semantics).
     if (!executablePaths.has(node.nodePath)) return;
     if ((await latestLifecycleEventForNode(node.nodePath))?.eventType === 'node.skipped') return;
@@ -5513,6 +5965,7 @@ async function executeMachineRunStep(options = {}) {
         taskText: runtimeTaskText,
         externalResearch: runtimeExternalResearch,
         pipelineDir,
+        gateJudgeAdapter,
       });
     } catch (innerError) {
       // onInnerFailure mirror for the parallel batch path. Same
@@ -5562,7 +6015,76 @@ async function executeMachineRunStep(options = {}) {
       stopScheduler = true;
     }
   };
+  // RC-3: rehydrate scheduler readiness from a mid-step pause checkpoint, if one
+  // is active. The fresh seeding above added predecessor-free nodes to `ready`;
+  // here we REPLACE the mutable scheduler state with the exact snapshot captured
+  // when the run paused mid-drain, so resume continues from where it left off —
+  // no re-running completed nodes, no stranding of readied-but-unrun nodes. The
+  // plan-derived maps (predecessors/orderedIndex) are deterministic and already
+  // rebuilt identically. Gated on a checkpoint existing, so the normal path is
+  // untouched (and the consumed marker prevents re-rehydrating on later steps).
+  const rc3PauseCheckpoint = findActivePauseCheckpoint(initialEvents);
+  if (rc3PauseCheckpoint) {
+    schedulerReady.clear();
+    for (const p of rc3PauseCheckpoint.ready || []) schedulerReady.add(p);
+    schedulerVisited.clear();
+    for (const p of rc3PauseCheckpoint.visited || []) schedulerVisited.add(p);
+    schedulerDead.clear();
+    for (const p of rc3PauseCheckpoint.dead || []) schedulerDead.add(p);
+    schedulerIncomingEdgeStatus.clear();
+    for (const [k, v] of rc3PauseCheckpoint.incomingEdgeStatus || []) schedulerIncomingEdgeStatus.set(k, v);
+    schedulerSourceResults.clear();
+    for (const [k, v] of rc3PauseCheckpoint.sourceResults || []) schedulerSourceResults.set(k, v);
+    for (const p of rc3PauseCheckpoint.loopBackForced || []) schedulerLoopBackForced.add(p);
+    for (const [k, v] of rc3PauseCheckpoint.loopBackRedriveCounts || []) schedulerLoopBackRedriveCounts.set(k, v);
+    for (const p of rc3PauseCheckpoint.recentlyDeferredBarriers || []) recentlyDeferredBarriers.add(p);
+    probeFanoutExecuted = rc3PauseCheckpoint.probeFanoutExecuted === true;
+    workerLoopExecuted = rc3PauseCheckpoint.workerLoopExecuted === true;
+    visitedSizeBeforeDispatch = Number(rc3PauseCheckpoint.visitedSizeBeforeDispatch) || 0;
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      eventType: 'run.pause-checkpoint-consumed',
+      reason: 'run-control.pause-checkpoint-consumed',
+      payload: { checkpointSequence: rc3PauseCheckpoint.sequence ?? null },
+    }).catch(() => null);
+  }
   while (schedulerReady.size > 0 && !stopScheduler) {
+    // RC-2: cooperative cancel checkpoint at the SAFE BOUNDARY between node
+    // dispatches. If the run's signal was aborted (cancel requested mid-step),
+    // stop before starting any more work — the previous node already recorded its
+    // terminal event, so nothing is left dangling. Throws MACHINE_RUN_CANCELLED,
+    // which unwinds executeMachineRunStep cleanly (no partial node started here).
+    throwIfRunSignalAborted(signal, 'Run cancelled; scheduler stopped before the next node.');
+    // RC-3: cooperative PAUSE checkpoint at the same safe boundary (between node
+    // dispatches). If a pause was requested mid-drain — and not a cancel, which is
+    // handled above — snapshot the scheduler readiness into a durable
+    // run.pause-checkpoint event and bail so resume continues from exactly here.
+    // Token-only (same process), mirroring RC-1's driver-side boundary check.
+    const rc3Control = readRunControlToken(runId);
+    if (rc3Control.present && rc3Control.pauseRequested && !rc3Control.cancelRequested) {
+      await appendMachineEvent(runRoot, {
+        runId,
+        actor: 'machine',
+        eventType: 'run.pause-checkpoint',
+        reason: 'run-control.pause-checkpoint',
+        payload: {
+          ready: [...schedulerReady],
+          visited: [...schedulerVisited],
+          dead: [...schedulerDead],
+          incomingEdgeStatus: [...schedulerIncomingEdgeStatus.entries()],
+          sourceResults: [...schedulerSourceResults.entries()],
+          loopBackForced: [...schedulerLoopBackForced],
+          loopBackRedriveCounts: [...schedulerLoopBackRedriveCounts.entries()],
+          recentlyDeferredBarriers: [...recentlyDeferredBarriers],
+          probeFanoutExecuted,
+          workerLoopExecuted,
+          visitedSizeBeforeDispatch,
+        },
+      });
+      pausedMidStep = true;
+      break;
+    }
     // Step 3.B (Codex S3-Fix3): clear the recently-deferred-barriers
     // guard whenever the scheduler made progress since the previous
     // dispatch. A new visit means previously deferred barriers
@@ -5750,7 +6272,7 @@ async function executeMachineRunStep(options = {}) {
       });
       const triageCandidates = hasHarness
         ? candidates
-        : probes.flatMap(entry => entry.candidateProposals || []);
+        : await liveTriageCandidatesFromQueue(runRoot, { runId });
       triage = await withNodeLifecycle(runRoot, triageNode, {
         runId,
         attempt,
@@ -5832,6 +6354,7 @@ async function executeMachineRunStep(options = {}) {
           taskText: runtimeTaskText,
           externalResearch: runtimeExternalResearch,
           pipelineDir,
+          gateJudgeAdapter,
         });
       } catch (innerError) {
         // onInnerFailure (Phase 3+): if this node lives inside an
@@ -5938,8 +6461,10 @@ async function executeMachineRunStep(options = {}) {
       missingItemEvidence: entry.result.missingItemEvidence,
     }));
   let pendingPatchOverlapResolution = null;
-  const stoppedOnPendingPatchOverlap = claim?.stopReason === 'pending-patch-overlap'
-    || workerLoop?.stopReason === 'pending-patch-overlap';
+  // RC-3: a mid-step pause must not trigger patch-overlap resolution (which would
+  // apply/request patch reviews) — the run is merely suspended, to be resumed.
+  const stoppedOnPendingPatchOverlap = !pausedMidStep && (claim?.stopReason === 'pending-patch-overlap'
+    || workerLoop?.stopReason === 'pending-patch-overlap');
   if (stoppedOnPendingPatchOverlap) {
     const patchReviewNode = supportNodes.find(node => node.nodeType === 'orpad.patchReview') || null;
     if (!patchReviewNode) {
@@ -6004,7 +6529,23 @@ async function executeMachineRunStep(options = {}) {
     }
   }
   let finalization = null;
-  if (blockedSupport) {
+  if (pausedMidStep) {
+    // RC-3: record the durable 'paused' ack so the run reads as suspended (the
+    // run.pause-checkpoint event already captured the in-memory readiness for
+    // resume). The driver's RC-1 boundary check also observes the pause token and
+    // stops; appendRunLifecycleStatus to 'paused' dedups if already set.
+    await appendRunLifecycleStatus(runRoot, {
+      runId,
+      toState: 'paused',
+      reason: 'run-control.pause-checkpoint',
+      payload: { checkpoint: true },
+    }).catch(() => null);
+    finalization = {
+      paused: true,
+      reason: 'run-control.pause-checkpoint',
+      runState: await readRunState(runRoot),
+    };
+  } else if (blockedSupport) {
     const inventory = await summarizeQueueInventory(runRoot);
     await appendRunLifecycleStatus(runRoot, {
       runId,
@@ -6016,7 +6557,7 @@ async function executeMachineRunStep(options = {}) {
         result: blockedSupport.result,
       },
     });
-    const summaryStatus = blockedSupport.result?.summaryStatus || 'blocked';
+    const summaryStatus = blockedSupport.result?.summaryStatus || 'partial';
     const runState = await appendRunSummaryStatus(runRoot, {
       runId,
       summaryStatus,
@@ -6038,7 +6579,7 @@ async function executeMachineRunStep(options = {}) {
     const workerApproval = [...workers].reverse().find(entry => entry?.result?.approval)?.result?.approval || null;
     finalization = {
       inventory,
-      summaryStatus: 'blocked',
+      summaryStatus: 'partial',
       runState: await readRunState(runRoot),
       approvalRequired: true,
       approval: claim?.approval || workerApproval || null,
@@ -6180,4 +6721,5 @@ module.exports = {
   __test_emitEdgeEvaluationDiagnostic: emitEdgeEvaluationDiagnostic,
   __test_isParallelizableSupportNode: isParallelizableSupportNode,
   __test_detectArtifactPathConflicts: detectArtifactPathConflicts,
+  __test_liveTriageCandidatesFromQueue: liveTriageCandidatesFromQueue,
 };

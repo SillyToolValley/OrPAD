@@ -385,6 +385,67 @@ test('dispatchAdapter without runRoot or budget config gracefully no-ops the led
   // No runRoot supplied -> no ledger persistence; no error thrown.
 });
 
+// --- R4: usageSource provenance + token-based governance ---------------------
+
+test('ledger entries default usageSource to measured; estimated is preserved', async () => {
+  const runRoot = await makeRunRoot();
+  try {
+    await appendBudgetEntry(runRoot, {
+      runId: 'run_x', adapterCallId: 'm1', attemptId: 'm1', providerId: 'anthropic',
+      model: 'claude-3-5-sonnet-latest',
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150, costEstimateUsd: 0.5 },
+    });
+    await appendBudgetEntry(runRoot, {
+      runId: 'run_x', adapterCallId: 'e1', attemptId: 'e1', providerId: 'codex-cli',
+      model: 'codex', family: 'cli', usageSource: 'estimated',
+      usage: { promptTokens: 4000, completionTokens: 512, totalTokens: 4512, costEstimateUsd: 0 },
+    });
+    const ledger = await readBudgetLedger(runRoot);
+    assert.equal(ledger.entries[0].usageSource, 'measured', 'default provenance is measured');
+    assert.equal(ledger.entries[1].usageSource, 'estimated');
+  } finally {
+    await fs.rm(runRoot, { recursive: true, force: true });
+  }
+});
+
+test('summarizeLedger splits measured vs estimated cost and tokens', () => {
+  const ledger = {
+    entries: [
+      { providerId: 'anthropic', usageSource: 'measured', costEstimateUsd: 0.5, promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      { providerId: 'codex-cli', usageSource: 'estimated', costEstimateUsd: 0, promptTokens: 4000, completionTokens: 512, totalTokens: 4512 },
+      { providerId: 'codex-cli', usageSource: 'estimated', costEstimateUsd: 0, promptTokens: 1000, completionTokens: 512, totalTokens: 1512 },
+    ],
+  };
+  const summary = summarizeLedger(ledger);
+  assert.equal(summary.measuredCostUsd, 0.5);
+  assert.equal(summary.estimatedCostUsd, 0);
+  assert.equal(summary.measuredTokens, 150);
+  assert.equal(summary.estimatedTokens, 4512 + 1512);
+  assert.equal(summary.totalTokens, 150 + 4512 + 1512);
+  assert.equal(summary.measuredEntryCount, 1);
+  assert.equal(summary.estimatedEntryCount, 2);
+});
+
+test('budgetViolations reports per-call-tokens and per-run-tokens breaches', () => {
+  // USD config absent / $0 (CLI). Only the token ceilings can fire.
+  const ledger = { entries: [{ totalTokens: 8000, usageSource: 'estimated' }] };
+  const viol = budgetViolations({ perCallTokens: 5000, perRunTokens: 10000 }, ledger, 0, 6000);
+  const kinds = viol.map(v => v.kind);
+  assert.ok(kinds.includes('per-call-tokens'), 'next 6000 > 5000 per-call');
+  assert.ok(kinds.includes('per-run-tokens'), '8000 prior + 6000 next > 10000 per-run');
+  const perRun = viol.find(v => v.kind === 'per-run-tokens');
+  assert.equal(perRun.priorTotalTokens, 8000);
+  assert.equal(perRun.observedTokens, 14000);
+});
+
+test('assertWithinBudget hard-stops on a token ceiling even when USD is $0', () => {
+  const ledger = { entries: [{ totalTokens: 0, costEstimateUsd: 0 }] };
+  assert.throws(
+    () => assertWithinBudget({ perRunTokens: 1000, hardStop: true }, ledger, 0, 2000),
+    error => error.code === 'BUDGET_EXCEEDED',
+  );
+});
+
 test('budget ledger never embeds raw API key material', async () => {
   const runRoot = await makeRunRoot();
   try {

@@ -105,7 +105,7 @@ async function requestApprovalForItem(runRoot, options = {}) {
   });
   await appendRunSummaryStatus(runRoot, {
     runId,
-    summaryStatus: 'blocked',
+    summaryStatus: 'partial',
     reason,
     payload: { approvalId, itemId },
   });

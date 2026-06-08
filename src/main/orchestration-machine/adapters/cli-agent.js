@@ -4,11 +4,13 @@ const path = require('path');
 
 const { registerArtifact } = require('../artifacts');
 const { assertCommandGranted } = require('../command-grants');
+const { appendMachineEvent } = require('../events');
 const { assertCliProcessContainment } = require('./process-containment');
 const { redactCommandArgs, runMachineProcess } = require('./process-runner');
 const {
   collectOverlayPatch,
   copyAllowedFilesToOverlay,
+  fatalPatchWriteSetViolations,
   registerPatchArtifact,
 } = require('../patches');
 
@@ -60,6 +62,24 @@ function idSegment(value) {
     .replace(/[^a-zA-Z0-9_.-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 96) || 'cli-agent';
+}
+
+async function recordCliAdapterProcessEvent(runRoot, request, eventType, payload = {}) {
+  if (!runRoot || !request?.runId || !request?.adapterCallId) return null;
+  return appendMachineEvent(runRoot, {
+    runId: request.runId,
+    actor: 'machine',
+    nodePath: request.nodePath,
+    eventType,
+    payload: {
+      adapter: request.adapter,
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      taskKind: request.taskKind,
+      ...payload,
+    },
+  }).catch(() => null);
 }
 
 function cliOverlayRoot(runRoot, request) {
@@ -285,6 +305,7 @@ function processLooksApprovalRequired(processResult = {}, parsedResult = null) {
     ...parseJsonDocuments(processResult.stderr),
   ].filter(Boolean);
   if (structuredSources.some(source => hasNonEmptyPermissionDenial(source))) return true;
+  if (processHasSuccessfulDoneWorkerResult(processResult, parsedResult)) return false;
   const text = [
     approvalSearchText(processResult.stdout),
     approvalSearchText(processResult.stderr),
@@ -297,9 +318,16 @@ function processLooksApprovalRequired(processResult = {}, parsedResult = null) {
   return APPROVAL_REQUIRED_TEXT_RE.test([text, parsedText].filter(Boolean).join('\n'));
 }
 
-function resultStatusForProcess(processResult, patch, request = {}) {
-  if (processLooksApprovalRequired(processResult)) return 'approval-required';
-  if ((patch.violations || []).length) return 'blocked';
+function processHasSuccessfulDoneWorkerResult(processResult = {}, parsedResult = null) {
+  if (processResult?.code !== 0 || processResult?.timedOut || processResult?.spawnError) return false;
+  const workerResult = workerResultDocumentFromValue(parsedResult)
+    || workerResultDocumentFromProcessStdout(processResult);
+  return normalizeWorkerResultStatus(workerResult?.status) === 'done';
+}
+
+function resultStatusForProcess(processResult, patch, request = {}, parsedWorkerResult = null) {
+  if (processLooksApprovalRequired(processResult, parsedWorkerResult)) return 'approval-required';
+  if (fatalPatchWriteSetViolations(patch).length) return 'blocked';
   if (processResult.code !== 0 || processResult.timedOut) return 'failed';
   if (missingExpectedChangedFiles(patch, normalizeExpectedChangedFiles(request)).length) return 'blocked';
   return 'done';
@@ -369,9 +397,55 @@ function mergeWorkerStatus(processStatus, parsedStatus) {
   return normalizedParsed;
 }
 
+function summaryForCliAgentResult({ status, approvalRequired, parsedSummary, processResult = {}, patch = {} } = {}) {
+  if (approvalRequired) {
+    return 'CLI provider requested tool permission. Approve to retry this work item with the run bypass option, or decline to keep it blocked.';
+  }
+  if (parsedSummary) return parsedSummary;
+  if (status === 'done') return 'CLI adapter completed in overlay and produced a Machine-owned result.';
+  if (fatalPatchWriteSetViolations(patch).length) {
+    return 'CLI adapter produced overlay changes outside the allowed write set; no canonical mutation is allowed until the work item is narrowed or retried.';
+  }
+  if (processResult.spawnError) {
+    return `CLI adapter process could not start: ${processResult.spawnError.message}`;
+  }
+  if (processResult.timedOut) {
+    const hasPatch = (patch.changes || []).length > 0;
+    return hasPatch
+      ? 'CLI adapter timed out before emitting the required worker result JSON. The captured overlay diff is audit-only and will not be auto-applied; split or retry the work item.'
+      : 'CLI adapter timed out before emitting the required worker result JSON. Split or retry the work item with a smaller scope.';
+  }
+  if (processResult.code !== 0) {
+    return `CLI adapter exited with code ${processResult.code}; inspect the transcript and retry or narrow the work item.`;
+  }
+  return 'CLI adapter did not produce a valid worker result contract; inspect the transcript and retry or narrow the work item.';
+}
+
 function nonEmptyString(value) {
   const text = String(value || '').trim();
   return text || '';
+}
+
+async function canonicalDependencyEnv(workspaceRoot, baseExtraEnv = {}) {
+  const extraEnv = { ...(baseExtraEnv || {}) };
+  const nodeModules = path.join(path.resolve(workspaceRoot || ''), 'node_modules');
+  try {
+    const stats = await fsp.stat(nodeModules);
+    if (!stats.isDirectory()) return extraEnv;
+  } catch {
+    return extraEnv;
+  }
+  const nodePathParts = [
+    nodeModules,
+    ...(String(extraEnv.NODE_PATH || process.env.NODE_PATH || '').split(path.delimiter).filter(Boolean)),
+  ];
+  const pathParts = [
+    path.join(nodeModules, '.bin'),
+    ...(String(extraEnv.PATH || process.env.PATH || '').split(path.delimiter).filter(Boolean)),
+  ];
+  extraEnv.NODE_PATH = [...new Set(nodePathParts)].join(path.delimiter);
+  extraEnv.PATH = [...new Set(pathParts)].join(path.delimiter);
+  return extraEnv;
 }
 
 function stringArray(value) {
@@ -453,6 +527,7 @@ function createCliAgentAdapter(options = {}) {
 
         let processResult;
         try {
+          const extraEnv = await canonicalDependencyEnv(overlay.workspaceRoot, options.extraEnv);
           processResult = await runMachineProcess({
             command: commandSpec.command,
             args: commandSpec.args || [],
@@ -461,9 +536,29 @@ function createCliAgentAdapter(options = {}) {
             runId,
             adapterCallId: request.adapterCallId,
             env: options.env,
-            extraEnv: options.extraEnv,
+            extraEnv,
             timeoutMs: options.timeoutMs,
             maxOutputBytes: options.maxOutputBytes,
+            onStarted: processInfo => recordCliAdapterProcessEvent(runRoot, request, 'adapter.process.started', {
+              processKey: processInfo.processKey,
+              pid: processInfo.pid,
+              command: processInfo.command,
+              args: processInfo.args,
+              cwd: processInfo.cwd,
+              startedAt: processInfo.startedAt,
+            }),
+            onFinished: processInfo => recordCliAdapterProcessEvent(runRoot, request, 'adapter.process.finished', {
+              processKey: processInfo.processKey,
+              pid: processInfo.pid,
+              code: processInfo.code ?? null,
+              signal: processInfo.signal || null,
+              timedOut: processInfo.timedOut === true,
+              cancelled: processInfo.cancelled === true,
+              startedAt: processInfo.startedAt,
+              finishedAt: processInfo.finishedAt,
+              ...(processInfo.spawnErrorCode ? { spawnErrorCode: processInfo.spawnErrorCode } : {}),
+              ...(processInfo.spawnErrorMessage ? { spawnErrorMessage: processInfo.spawnErrorMessage } : {}),
+            }),
           });
         } catch (err) {
           processResult = failedProcessResult(commandSpec, err);
@@ -491,6 +586,7 @@ function createCliAgentAdapter(options = {}) {
             overlay: {
               ...overlay,
               cleanupPlanned: cleanupSystemOverlay,
+              canonicalNodeModulesAvailable: Boolean((await canonicalDependencyEnv(overlay.workspaceRoot)).NODE_PATH),
             },
             containment,
             process: processResult,
@@ -513,29 +609,34 @@ function createCliAgentAdapter(options = {}) {
         const expectedChangedFiles = normalizeExpectedChangedFiles(request);
         const missingExpectedChanges = missingExpectedChangedFiles(patch, expectedChangedFiles);
         const parsedWorkerResult = workerResultDocumentFromProcessStdout(processResult);
-        const processStatus = resultStatusForProcess(processResult, patch, request);
+        const processStatus = resultStatusForProcess(processResult, patch, request, parsedWorkerResult);
         const status = mergeWorkerStatus(processStatus, parsedWorkerResult?.status);
         const approvalRequired = status === 'approval-required';
         const changedFiles = (patch.changes || []).map(change => change.path);
         const parsedSummary = nonEmptyString(parsedWorkerResult?.summary);
+        const summary = summaryForCliAgentResult({
+          status,
+          approvalRequired,
+          parsedSummary,
+          processResult,
+          patch,
+        });
         return {
           schemaVersion: 'orpad.workerResult.v1',
           adapterCallId: request.adapterCallId,
           attemptId: request.attemptId,
           idempotencyKey: request.idempotencyKey,
           status,
-          summary: approvalRequired
-            ? 'CLI provider requested tool permission. Approve to retry this work item with the run bypass option, or decline to keep it blocked.'
-            : (parsedSummary || (status === 'done'
-              ? 'CLI adapter completed in overlay and produced a Machine-owned result.'
-              : (
-              processResult.spawnError
-                ? `CLI adapter process could not start: ${processResult.spawnError.message}`
-                : 'CLI adapter result requires Machine review before any canonical mutation.'
-              ))),
+          summary,
           artifacts,
           patchArtifact: patchArtifactPath,
           changedFiles,
+          ...(status === 'failed' ? {
+            deferredReason: summary,
+            nextAction: processResult.timedOut
+              ? 'split-or-retry-worker-item-after-timeout'
+              : 'inspect-worker-failure-and-retry-or-requeue',
+          } : {}),
           ...extractedWorkerEvidenceFields(parsedWorkerResult, changedFiles),
           ...(parsedWorkerResult?.verificationCommands !== undefined ? {
             verificationCommands: parsedWorkerResult.verificationCommands,
@@ -566,7 +667,8 @@ function createCliAgentAdapter(options = {}) {
             stdoutTruncated: processResult.stdoutTruncated,
             stderrTruncated: processResult.stderrTruncated,
             redactedArgCount: processResult.redactedArgCount || 0,
-            writeSetViolationCount: (patch.violations || []).length,
+            writeSetViolationCount: fatalPatchWriteSetViolations(patch).length,
+            ignoredGeneratedFileCount: (patch.ignoredGeneratedFiles || []).length,
             expectedChangedFiles,
             missingExpectedChanges,
             parsedWorkerStatus: parsedWorkerResult?.status || '',
@@ -593,6 +695,7 @@ module.exports = {
   failedProcessResult,
   idSegment,
   isInsideResolvedPath,
+  canonicalDependencyEnv,
   missingExpectedChangedFiles,
   normalizeExpectedChangedFiles,
   prepareCliOverlayWorkspace,

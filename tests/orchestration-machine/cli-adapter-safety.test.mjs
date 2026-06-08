@@ -312,6 +312,71 @@ test('CLI overlay adapter cannot mutate canonical queue/state files directly', a
   assert.equal((await readMachineEvents(run.runRoot)).some(event => event.eventType === 'artifact.registered'), true);
 });
 
+test('CLI overlay adapter ignores generated validation artifacts outside the write set', async () => {
+  const run = await makeRun('run_20260430_cli_generated_validation_artifacts');
+  await fs.mkdir(path.join(run.workspaceRoot, 'OrPad/src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'OrPad/src/allowed.txt'), 'before\n', 'utf8');
+
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['OrPad/src/allowed.txt'],
+    adapterCallId: 'cli-generated-validation-artifacts-call',
+    attemptId: 'cli-generated-validation-artifacts-attempt-1',
+    idempotencyKey: 'cli-generated-validation-artifacts-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("OrPad/src",{recursive:true});',
+    'fs.writeFileSync("OrPad/src/allowed.txt","after\\n");',
+    'fs.mkdirSync("OrPad/test-results",{recursive:true});',
+    'fs.writeFileSync("OrPad/test-results/.last-run.json","{}\\n");',
+    'process.stdout.write(JSON.stringify({',
+    'schemaVersion:"orpad.workerResult.v1",',
+    `adapterCallId:${JSON.stringify(request.adapterCallId)},`,
+    `attemptId:${JSON.stringify(request.attemptId)},`,
+    `idempotencyKey:${JSON.stringify(request.idempotencyKey)},`,
+    'status:"done",summary:"Changed the allowed file and ran validation.",artifacts:[]',
+    '}));',
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-generated-validation-artifacts',
+      expiresAt: '2026-04-30T01:00:00.000Z',
+    })],
+    now: '2026-04-30T00:00:30.000Z',
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.deepEqual(result.changedFiles, ['OrPad/src/allowed.txt']);
+  assert.equal(result.verification[0].writeSetViolationCount, 0);
+  assert.equal(result.verification[0].ignoredGeneratedFileCount, 1);
+
+  const patch = JSON.parse(await fs.readFile(path.join(run.runRoot, result.patchArtifact), 'utf8'));
+  assert.deepEqual(patch.violations, []);
+  assert.deepEqual(patch.ignoredGeneratedFiles, [{
+    path: 'OrPad/test-results/.last-run.json',
+    reason: 'overlay-generated-validation-artifact',
+  }]);
+});
+
 test('CLI overlay adapter refuses to run without an exact command grant', async () => {
   const run = await makeRun('run_20260430_cli_grant_block');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
@@ -417,7 +482,7 @@ test('CLI overlay adapter blocks successful no-op when expected changed files ar
   assert.deepEqual(result.verification[0].missingExpectedChanges, ['src/allowed.txt']);
 });
 
-test('CLI overlay adapter preserves blocked stdout as blocked queue work', async () => {
+test('CLI overlay adapter preserves blocked stdout as managed retry queue work', async () => {
   const run = await makeRun('run_20260524_cli_stdout_blocked');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
   await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
@@ -475,15 +540,17 @@ test('CLI overlay adapter preserves blocked stdout as blocked queue work', async
     now: '2026-04-30T00:00:30.000Z',
   });
 
-  assert.equal(applied.toState, 'blocked');
+  assert.equal(applied.toState, 'queued');
   const item = await findQueueItem(run.runRoot, claim.item.id);
-  assert.equal(item.state, 'blocked');
+  assert.equal(item.state, 'queued');
   assert.equal(item.item.workerResultStatus, 'blocked');
   assert.equal(item.item.nextAction, 'clarify-target-file-and-requeue');
-  const workerEvent = (await readMachineEvents(run.runRoot)).find(event => event.eventType === 'worker.result');
+  const events = await readMachineEvents(run.runRoot);
+  const workerEvent = events.find(event => event.eventType === 'worker.result');
   assert.equal(workerEvent.payload.status, 'blocked');
-  assert.equal(workerEvent.payload.toState, 'blocked');
+  assert.equal(workerEvent.payload.toState, 'queued');
   assert.equal(workerEvent.payload.nextAction, 'clarify-target-file-and-requeue');
+  assert.equal(events.some(event => event.eventType === 'managed-block.recovered'), true);
 });
 
 test('CLI overlay adapter extracts stdout evidence into canonical worker result fields', async () => {
@@ -631,6 +698,61 @@ test('CLI overlay adapter extracts worker result JSON nested inside provider res
   assert.deepEqual(result.verificationCommands, nestedResult.verificationCommands);
 });
 
+test('CLI overlay adapter exposes canonical node_modules for build-style validation', async () => {
+  const run = await makeRun('run_20260524_cli_overlay_canonical_deps');
+  await fs.mkdir(path.join(run.workspaceRoot, 'node_modules/fake-build-dep'), { recursive: true });
+  await fs.writeFile(
+    path.join(run.workspaceRoot, 'node_modules/fake-build-dep/index.js'),
+    'module.exports = "canonical dependency available";\n',
+    'utf8',
+  );
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/generated.txt'],
+    adapterCallId: 'cli-overlay-canonical-deps-call',
+    attemptId: 'cli-overlay-canonical-deps-attempt-1',
+    idempotencyKey: 'cli-overlay-canonical-deps-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const stdoutResult = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'done',
+    summary: 'Overlay validation loaded a canonical dependency.',
+    artifacts: [],
+  };
+  const script = [
+    'const dep=require("fake-build-dep");',
+    'if(dep!=="canonical dependency available") throw new Error("missing canonical dependency");',
+    `process.stdout.write(${JSON.stringify(JSON.stringify(stdoutResult))});`,
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-overlay-canonical-deps',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.equal(result.summary, stdoutResult.summary);
+});
+
 test('CLI overlay adapter copies source-of-truth files as read-only context', async () => {
   const run = await makeRun('run_20260430_cli_readonly_context');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
@@ -681,6 +803,28 @@ test('CLI overlay adapter copies source-of-truth files as read-only context', as
   assert.equal(result.verification[0].writeSetViolationCount, 0);
   assert.deepEqual(result.verification[0].missingExpectedChanges, []);
   assert.equal(await fs.readFile(path.join(run.workspaceRoot, 'src/input.md'), 'utf8'), 'source material\n');
+});
+
+test('CLI overlay copies .asar child seeds as the archive file instead of traversing it', async () => {
+  const run = await makeRun('run_20260607_cli_asar_archive_seed');
+  const archiveRel = 'release/win-unpacked/resources/app.asar';
+  const archivePath = path.join(run.workspaceRoot, ...archiveRel.split('/'));
+  const archiveBytes = Buffer.from([0x61, 0x73, 0x61, 0x72, 0x00, 0x01]);
+  await fs.mkdir(path.dirname(archivePath), { recursive: true });
+  await fs.writeFile(archivePath, archiveBytes);
+
+  const overlayRoot = path.join(run.runRoot, 'adapters', 'overlays', 'asar-seed');
+  const copied = await copyAllowedFilesToOverlay({
+    workspaceRoot: run.workspaceRoot,
+    overlayRoot,
+    allowedFiles: [`${archiveRel}/package.json`],
+    readOnlyFiles: [archiveRel],
+  });
+
+  assert.deepEqual(copied, [archiveRel]);
+  const copiedPath = path.join(overlayRoot, ...archiveRel.split('/'));
+  assert.equal((await fs.stat(copiedPath)).isFile(), true);
+  assert.deepEqual(await fs.readFile(copiedPath), archiveBytes);
 });
 
 test('CLI overlay patch collection and apply preserve binary files byte-for-byte', async () => {
@@ -795,6 +939,88 @@ test('CLI overlay adapter ignores empty provider permission-denial metadata on s
   assert.equal(resultStatusForProcess(processResult, patch, {
     expectedChangedFiles: ['src/allowed.txt'],
   }), 'done');
+});
+
+test('CLI overlay adapter ignores approval policy text echoed in stderr after a successful worker result', () => {
+  const workerResult = {
+    schemaVersion: 'orpad.workerResult.v1',
+    status: 'done',
+    summary: 'updated the package manager trust gate',
+    changedFiles: ['src/allowed.txt'],
+  };
+  const processResult = {
+    code: 0,
+    timedOut: false,
+    stdout: `${JSON.stringify(workerResult)}\n`,
+    stderr: [
+      'OpenAI Codex v0.137.0',
+      'user',
+      'Tool policy: approval required for external network, dependency installation, and dangerous shell.',
+      '"approvalRequiredFor":["dangerous shell/sandbox bypass"]',
+      'Return exactly one JSON object when finished.',
+    ].join('\n'),
+  };
+  const patch = {
+    changes: [{ path: 'src/allowed.txt' }],
+    violations: [],
+  };
+
+  assert.equal(processLooksApprovalRequired(processResult), false);
+  assert.equal(resultStatusForProcess(processResult, patch, {
+    expectedChangedFiles: ['src/allowed.txt'],
+  }), 'done');
+});
+
+test('CLI overlay adapter reports timeout patches as audit-only failed work', async () => {
+  const run = await makeRun('run_20260430_cli_timeout_patch_audit_only');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/allowed.txt'],
+    adapterCallId: 'cli-timeout-patch-call',
+    attemptId: 'cli-timeout-patch-attempt-1',
+    idempotencyKey: 'cli-timeout-patch-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const script = [
+    'const fs = require("fs");',
+    'fs.mkdirSync("src", { recursive: true });',
+    'fs.writeFileSync("src/allowed.txt", "after timeout\\n", "utf8");',
+    'setTimeout(() => {}, 10000);',
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-timeout-patch',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+    timeoutMs: 1000,
+  }).invoke(request);
+
+  assert.equal(result.status, 'failed');
+  assert.match(result.summary, /timed out before emitting the required worker result JSON/);
+  assert.match(result.summary, /audit-only/);
+  assert.equal(result.nextAction, 'split-or-retry-worker-item-after-timeout');
+  assert.equal(result.verification[0].timedOut, true);
+  assert.equal(result.changedFiles.includes('src/allowed.txt'), true);
+  assert.match(result.patchArtifact, /cli-timeout-patch-call\.patch\.json$/);
 });
 
 test('CLI overlay adapter blocks Codex dangerous sandbox bypass without explicit approval', async () => {
@@ -982,6 +1208,28 @@ test('Machine-applied patch rejects out-of-write-set paths and duplicate base ap
     error => error?.code === 'PATCH_WRITE_SET_VIOLATION',
   );
   assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/allowed.txt'), 'utf8'), 'before\n');
+
+  await fs.writeFile(path.join(workspaceRoot, 'src/generated-allowed.txt'), 'before generated\n', 'utf8');
+  const generatedArtifactViolationPatch = {
+    schemaVersion: 'orpad.patchArtifact.v1',
+    createdAt: '2026-04-30T00:00:00.000Z',
+    allowedFiles: ['src/generated-allowed.txt'],
+    changes: [{
+      path: 'src/generated-allowed.txt',
+      beforeExists: true,
+      afterExists: true,
+      beforeSha256: sha256Text('before generated\n'),
+      afterSha256: sha256Text('after generated\n'),
+      beforeContent: 'before generated\n',
+      afterContent: 'after generated\n',
+    }],
+    violations: [{
+      path: 'test-results/.last-run.json',
+      reason: 'outside-write-set',
+    }],
+  };
+  await applyPatchArtifact({ workspaceRoot, patch: generatedArtifactViolationPatch });
+  assert.equal(await fs.readFile(path.join(workspaceRoot, 'src/generated-allowed.txt'), 'utf8'), 'after generated\n');
 
   const validPatch = {
     schemaVersion: 'orpad.patchArtifact.v1',

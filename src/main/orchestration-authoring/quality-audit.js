@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { validateRunbookFile } = require('../runbooks/validator');
 const { loadPipelineGraphSet } = require('../orchestration-machine/graph-loader');
-const { buildTraversalPlan } = require('../orchestration-machine/traversal');
+const { buildTraversalPlan, detectGraphCycles } = require('../orchestration-machine/traversal');
 
 const GATE_CONDITIONS = new Set([
   'pass',
@@ -803,6 +803,20 @@ function auditGraphComplexity(pipeline, graphSet, diagnostics) {
   return graphComplexity;
 }
 
+// Catch tangled (non-clean-loop-back) cycles at AUTHORING time. The Machine rejects
+// these at run start (MACHINE_GRAPH_TANGLED_CYCLE) via the same detector; surfacing it
+// in the quality audit fails generation early (which triggers the deterministic fallback)
+// instead of letting a doomed pipeline reach the run.
+function auditGraphTangledCycles(graph, diagnostics) {
+  const cycles = detectGraphCycles(graph.nodes || [], graph.transitions || []);
+  if (cycles.tangledCycleNodeIds && cycles.tangledCycleNodeIds.length) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_GRAPH_TANGLED_CYCLE', 'Generated graph contains a tangled (non-clean-loop-back) cycle the Machine rejects at run start.', {
+      graphRef: graph.graphRef,
+      tangledNodeIds: cycles.tangledCycleNodeIds,
+    }));
+  }
+}
+
 function auditQueueDrain(graph, diagnostics) {
   const nodes = graph.nodes || [];
   const hasQueue = nodes.some(node => nodeType(node) === 'orpad.workQueue');
@@ -1104,6 +1118,7 @@ async function auditGeneratedPipelineQuality(pipelinePath, options = {}) {
       auditGraphRuntimeContracts(graph, graphSet, diagnostics);
       auditPatchReviewContracts(graph, diagnostics);
       auditQueueDrain(graph, diagnostics);
+      auditGraphTangledCycles(graph, diagnostics);
     }
     auditRequestedForkJoinDiscovery(pipeline, graphSet, diagnostics);
     auditMachineAdapter(pipeline, orderedNodes, diagnostics);

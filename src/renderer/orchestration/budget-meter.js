@@ -28,25 +28,70 @@ async function fetchBudgetLedger(bridge, runRoot) {
 
 function summarizeAgainstBudget(summary = {}, budget = {}) {
   const totalCostUsd = Number(summary.totalCostUsd) || 0;
+  // Provenance split (R4): estimated spend (flat-rate CLI workers that report no
+  // usage) is kept separate from measured spend (API usage) so the meter can
+  // mark an estimate-bearing total honestly rather than presenting it as a
+  // measured dollar figure.
+  const measuredCostUsd = Number(summary.measuredCostUsd) || 0;
+  const estimatedCostUsd = Number(summary.estimatedCostUsd) || 0;
+  const totalTokens = Number(summary.totalTokens)
+    || ((Number(summary.totalPromptTokens) || 0) + (Number(summary.totalCompletionTokens) || 0));
+  const estimatedTokens = Number(summary.estimatedTokens) || 0;
+  const measuredTokens = Number(summary.measuredTokens) || 0;
+  const estimatedEntryCount = Number(summary.estimatedEntryCount) || 0;
+  const measuredEntryCount = Number(summary.measuredEntryCount) || 0;
   const perRunUsd = Number(budget.perRunUsd) || 0;
   const perCallUsd = Number(budget.perCallUsd) || 0;
+  const perRunTokens = Number(budget.perRunTokens) || 0;
   const perRunRemainingUsd = perRunUsd > 0 ? Math.max(0, perRunUsd - totalCostUsd) : null;
+  const perRunTokensRemaining = perRunTokens > 0 ? Math.max(0, perRunTokens - totalTokens) : null;
   const utilization = perRunUsd > 0 ? Math.min(1, totalCostUsd / perRunUsd) : 0;
+  const tokenUtilization = perRunTokens > 0 ? Math.min(1, totalTokens / perRunTokens) : 0;
   return {
     totalCostUsd,
+    measuredCostUsd,
+    estimatedCostUsd,
+    totalTokens,
+    estimatedTokens,
+    measuredTokens,
+    estimatedEntryCount,
+    measuredEntryCount,
+    // True when any part of the ledger is an estimate (drives the detail line).
+    hasEstimates: estimatedEntryCount > 0 || estimatedTokens > 0 || estimatedCostUsd > 0,
+    // Per-dimension provenance: a flat-rate CLI worker contributes estimated
+    // TOKENS but $0 estimated cost, so the "≈" marker must be gated on the
+    // dimension actually being displayed — never mark an all-measured $ figure
+    // just because estimated tokens exist elsewhere.
+    hasEstimatedCost: estimatedCostUsd > 0,
+    hasEstimatedTokens: estimatedTokens > 0 || estimatedEntryCount > 0,
     attemptCount: Number(summary.attemptCount) || 0,
     cacheHitCount: Number(summary.cacheHitCount) || 0,
     perRunUsd,
     perRunRemainingUsd,
     perCallUsd,
+    perRunTokens,
+    perRunTokensRemaining,
     utilization,
+    tokenUtilization,
+    // The bar tracks whichever budget dimension is configured; for flat-rate CLI
+    // runs that is the token ceiling (USD stays 0), so the bar still moves.
+    displayUtilization: Math.max(utilization, tokenUtilization),
     overBudget: perRunUsd > 0 && totalCostUsd > perRunUsd,
+    overTokenBudget: perRunTokens > 0 && totalTokens > perRunTokens,
   };
 }
 
 function formatUsd(amount) {
   const value = Number(amount) || 0;
   return `$${value.toFixed(4)}`;
+}
+
+// Compact token count for the meter label (e.g. 1234 -> "1.2k", 2_500_000 -> "2.5M").
+function formatTokens(amount) {
+  const value = Number(amount) || 0;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return `${Math.round(value)}`;
 }
 
 function formatPercent(fraction) {
@@ -114,13 +159,29 @@ function createBudgetMeter({ bridge, runRoot, budget = {}, pollIntervalMs = 0, o
       state.summary = response.summary;
       state.snapshot = summarizeAgainstBudget(response.summary, state.budget);
       const snap = state.snapshot;
-      setLabel(`Cost: ${formatUsd(snap.totalCostUsd)} / ${snap.perRunUsd ? formatUsd(snap.perRunUsd) : '∞'}`, snap.overBudget ? 'over' : 'info');
-      setUtilization(snap.utilization);
-      setDetailText(
-        snap.perRunUsd
-          ? `${snap.attemptCount} attempts · ${snap.cacheHitCount} cache hits · ${formatPercent(snap.utilization)} of run budget`
-          : `${snap.attemptCount} attempts · ${snap.cacheHitCount} cache hits`,
-      );
+      // "≈" marks a displayed figure that includes estimated (non-measured)
+      // spend, so an estimate is never shown as measured — and is gated on the
+      // displayed dimension so an all-measured $ figure is not falsely marked
+      // when only estimated tokens exist.
+      const costMark = snap.hasEstimatedCost ? ' ≈' : '';
+      const tokenMark = snap.hasEstimatedTokens ? ' ≈' : '';
+      let labelText;
+      if (snap.perRunUsd) {
+        labelText = `Cost:${costMark} ${formatUsd(snap.totalCostUsd)} / ${formatUsd(snap.perRunUsd)}`;
+      } else if (snap.perRunTokens) {
+        labelText = `Tokens:${tokenMark} ${formatTokens(snap.totalTokens)} / ${formatTokens(snap.perRunTokens)}`;
+      } else {
+        labelText = `Cost:${costMark} ${formatUsd(snap.totalCostUsd)} / ∞`;
+      }
+      setLabel(labelText, (snap.overBudget || snap.overTokenBudget) ? 'over' : 'info');
+      setUtilization(snap.displayUtilization);
+      const detailParts = [`${snap.attemptCount} attempts`, `${snap.cacheHitCount} cache hits`];
+      if (snap.perRunUsd) detailParts.push(`${formatPercent(snap.utilization)} of run budget`);
+      else if (snap.perRunTokens) detailParts.push(`${formatPercent(snap.tokenUtilization)} of token budget`);
+      if (snap.hasEstimates) {
+        detailParts.push(`${formatTokens(snap.estimatedTokens)} est. tokens (worker)`);
+      }
+      setDetailText(detailParts.join(' · '));
       if (typeof onUpdate === 'function') await onUpdate(snap);
       return snap;
     } catch (err) {
@@ -168,6 +229,7 @@ export {
   createBudgetMeter,
   fetchBudgetLedger,
   formatPercent,
+  formatTokens,
   formatUsd,
   summarizeAgainstBudget,
 };

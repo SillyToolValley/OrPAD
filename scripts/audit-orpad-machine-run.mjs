@@ -8,8 +8,11 @@ const {
   artifactManifestPath,
   assertRunRelativePath,
   createContractValidator,
+  fatalPatchWriteSetViolations,
   fileDigest,
+  isIgnoredOverlayGeneratedArtifactPath,
   legacyJournalRecordsFromEvents,
+  loadRunPatchArtifact,
   projectQueueStateFromEvents,
   projectRunStateFromEvents,
   readMachineEvents,
@@ -323,6 +326,237 @@ function auditWorkerResultProof(events) {
         adapterCallId: event.payload?.adapterCallId || '',
         hasArtifact,
         hasVerification,
+      }));
+    }
+  }
+  return diagnostics;
+}
+
+function runMetadataFromEvents(events = []) {
+  return events.find(event => event.eventType === 'run.created')?.payload?.metadata || {};
+}
+
+function isBypassRun(events = [], runState = null) {
+  const metadata = {
+    ...runMetadataFromEvents(events),
+    ...(runState?.metadata || {}),
+  };
+  return String(metadata.llmApprovalMode || '').toLowerCase() === 'bypass';
+}
+
+function isMachineOwnedFailureCode(code) {
+  return /^(MACHINE|PATCH|WORKER|CLAIM|QUEUE|RUN|CONTRACT)_/.test(String(code || '').toUpperCase());
+}
+
+function eventNodeAttempt(event) {
+  const direct = Number(event?.payload?.attempt);
+  if (Number.isInteger(direct) && direct > 0) return direct;
+  const match = String(event?.payload?.nodeExecutionId || '').match(/:attempt-(\d+)$/);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function nodeFailureHasLaterRecovery(events, failedEvent) {
+  return Boolean(findLaterEvent(events, failedEvent.sequence, event => (
+    event.eventType === 'scheduler.innerFailureRecovered'
+    && event.payload?.failingNodePath === failedEvent.nodePath
+  )));
+}
+
+function nodeFailureHasLaterResolution(events, failedEvent) {
+  const failedAttempt = eventNodeAttempt(failedEvent);
+  return Boolean(findLaterEvent(events, failedEvent.sequence, event => {
+    if (!['node.completed', 'node.skipped', 'node.cancelled'].includes(event.eventType)) return false;
+    if (event.nodePath !== failedEvent.nodePath) return false;
+    const attempt = eventNodeAttempt(event);
+    return failedAttempt == null || attempt == null || attempt >= failedAttempt;
+  }));
+}
+
+function pendingApprovalsFromEvents(events = []) {
+  const approvals = new Map();
+  for (const event of events || []) {
+    const approvalId = event?.payload?.approvalId || '';
+    if (!approvalId) continue;
+    if (event.eventType === 'approval.requested') {
+      approvals.set(approvalId, {
+        approvalId,
+        itemId: event.itemId || event.payload?.itemId || '',
+        requestedSequence: event.sequence,
+      });
+    } else if (event.eventType === 'approval.decided') {
+      approvals.delete(approvalId);
+    }
+  }
+  return [...approvals.values()];
+}
+
+function adapterRequestResolved(events, request) {
+  const identity = adapterIdentity(request);
+  if (identity.idempotencyKey && events.some(event => (
+    (event.eventType === 'adapter.result' || event.eventType === 'worker.result')
+    && event.payload?.idempotencyKey === identity.idempotencyKey
+    && Number(event.sequence) > Number(request.sequence)
+  ))) {
+    return true;
+  }
+  const requestAttempt = inferAdapterNodeAttempt(events, request);
+  return events.some(event => (
+    ['node.completed', 'node.failed', 'node.blocked', 'node.skipped', 'node.cancelled'].includes(event.eventType)
+    && event.nodePath === request.nodePath
+    && Number(event.sequence) > Number(request.sequence)
+    && (requestAttempt == null || eventAttempt(event) === requestAttempt)
+  ));
+}
+
+function unresolvedAdapterRequests(events = [], options = {}) {
+  const nowMs = Number.isFinite(Number(options.nowMs)) ? Number(options.nowMs) : Date.now();
+  const minAgeMs = Number.isFinite(Number(options.minAgeMs)) ? Math.max(0, Number(options.minAgeMs)) : 120_000;
+  const unresolved = [];
+  for (const event of events) {
+    if (event.eventType !== 'adapter.requested') continue;
+    if (adapterRequestResolved(events, event)) continue;
+    const requestedAtMs = Date.parse(event.timestamp || '');
+    const ageMs = Number.isFinite(requestedAtMs) ? nowMs - requestedAtMs : Number.POSITIVE_INFINITY;
+    if (ageMs < minAgeMs) continue;
+    unresolved.push({ event, ageMs });
+  }
+  return unresolved;
+}
+
+function auditBypassRunInternalStops(events, runState) {
+  const diagnostics = [];
+  if (!isBypassRun(events, runState)) return diagnostics;
+
+  const lastSequence = events.at(-1)?.sequence ?? 0;
+  if (runState && Number(runState.eventSequence) < Number(lastSequence)) {
+    diagnostics.push(diagnostic('MACHINE_BYPASS_RUN_STATE_STALE', 'Bypass run-state must not lag behind the durable event log.', {
+      expectedEventSequence: lastSequence,
+      actualEventSequence: runState.eventSequence,
+    }));
+  }
+
+  for (const event of events) {
+    if (event.eventType !== 'node.failed') continue;
+    const code = event.payload?.code || '';
+    if (!isMachineOwnedFailureCode(code)) continue;
+    if (nodeFailureHasLaterRecovery(events, event) || nodeFailureHasLaterResolution(events, event)) continue;
+    diagnostics.push(diagnostic('MACHINE_BYPASS_INTERNAL_NODE_FAILED', 'Bypass runs must not stop on unresolved Machine-owned node failures.', {
+      sequence: event.sequence,
+      nodePath: event.nodePath || '',
+      nodeType: event.payload?.nodeType || '',
+      attempt: eventNodeAttempt(event) ?? undefined,
+      failureCode: code,
+      message: event.payload?.message || '',
+    }));
+  }
+
+  const pendingApprovals = pendingApprovalsFromEvents(events);
+  if (pendingApprovals.length) {
+    diagnostics.push(diagnostic('MACHINE_BYPASS_APPROVAL_REQUIRED_STUCK', 'Bypass runs must auto-approve bypassable Machine approval requests instead of leaving pending approvals.', {
+      pendingApprovals,
+    }));
+  }
+
+  const adapterApprovalBlocks = events.filter(event => (
+    event.eventType === 'adapter.result'
+    && String(event.payload?.status || '').toLowerCase() === 'approval-required'
+    && !(Number(event.payload?.proposalCount) > 0 || Number(event.payload?.triageTransitionCount) > 0)
+  ));
+  for (const event of adapterApprovalBlocks) {
+    diagnostics.push(diagnostic('MACHINE_BYPASS_ADAPTER_APPROVAL_REQUIRED', 'Bypass runs must not leave adapter permission prompts as terminal adapter approval-required blocks.', {
+      sequence: event.sequence,
+      nodePath: event.nodePath || '',
+      adapterCallId: event.payload?.adapterCallId || '',
+      taskKind: event.payload?.taskKind || '',
+      summary: event.payload?.summary || event.payload?.deferredReason || '',
+    }));
+  }
+
+  for (const { event, ageMs } of unresolvedAdapterRequests(events)) {
+    diagnostics.push(diagnostic('MACHINE_BYPASS_UNRESOLVED_ADAPTER_REQUEST', 'Bypass runs must not leave adapter.requested without a matching result or node terminal event.', {
+      sequence: event.sequence,
+      nodePath: event.nodePath || '',
+      adapterCallId: event.payload?.adapterCallId || '',
+      idempotencyKey: event.payload?.idempotencyKey || '',
+      taskKind: event.payload?.taskKind || '',
+      ageSeconds: Math.max(0, Math.round(ageMs / 1000)),
+    }));
+  }
+
+  return diagnostics;
+}
+
+function verificationWriteSetViolationCount(event) {
+  const counts = (Array.isArray(event.payload?.verification) ? event.payload.verification : [])
+    .filter(item => Object.prototype.hasOwnProperty.call(item || {}, 'writeSetViolationCount'))
+    .map(item => Number(item.writeSetViolationCount))
+    .filter(count => Number.isFinite(count) && count >= 0);
+  if (!counts.length) return null;
+  return counts.reduce((sum, count) => sum + count, 0);
+}
+
+function generatedArtifactViolationPaths(patch) {
+  return (patch?.violations || [])
+    .filter(violation => isIgnoredOverlayGeneratedArtifactPath(violation?.path))
+    .map(violation => violation.path);
+}
+
+async function auditWorkerPatchWriteSetConsistency(runRoot, events) {
+  const diagnostics = [];
+  for (const event of events) {
+    if (event.eventType !== 'worker.result') continue;
+    const patchArtifact = String(event.payload?.patchArtifact || '').trim().replace(/\\/g, '/');
+    if (!patchArtifact) continue;
+    const reportedViolationCount = verificationWriteSetViolationCount(event);
+    if (reportedViolationCount === null) continue;
+    let patch = null;
+    try {
+      patch = await loadRunPatchArtifact(runRoot, patchArtifact);
+    } catch (err) {
+      diagnostics.push(diagnostic('MACHINE_WORKER_PATCH_ARTIFACT_UNREADABLE', 'Worker patch write-set verification requires a registered readable patch artifact.', {
+        sequence: event.sequence,
+        itemId: event.itemId || '',
+        patchArtifact,
+        errorCode: err?.code || '',
+        error: err?.message || String(err),
+      }));
+      continue;
+    }
+
+    const fatalViolations = fatalPatchWriteSetViolations(patch);
+    const fatalViolationCount = fatalViolations.length;
+    if (reportedViolationCount !== null && reportedViolationCount !== fatalViolationCount) {
+      diagnostics.push(diagnostic('MACHINE_WORKER_WRITE_SET_VERIFICATION_MISMATCH', 'Worker write-set verification count must match fatal patch artifact violations after generated validation artifacts are ignored.', {
+        sequence: event.sequence,
+        itemId: event.itemId || '',
+        patchArtifact,
+        reportedViolationCount,
+        fatalViolationCount,
+        fatalViolationPaths: fatalViolations.map(violation => violation.path),
+        generatedArtifactViolationPaths: generatedArtifactViolationPaths(patch),
+      }));
+    }
+
+    if (event.payload?.status === 'blocked' && fatalViolationCount === 0 && reportedViolationCount > 0) {
+      diagnostics.push(diagnostic('MACHINE_WORKER_GENERATED_ARTIFACT_FALSE_BLOCK', 'Generated validation artifacts must not turn a worker patch into an out-of-write-set block.', {
+        sequence: event.sequence,
+        itemId: event.itemId || '',
+        patchArtifact,
+        reportedViolationCount,
+        generatedArtifactViolationPaths: generatedArtifactViolationPaths(patch),
+      }));
+    }
+
+    if (event.payload?.status !== 'blocked' && fatalViolationCount > 0) {
+      diagnostics.push(diagnostic('MACHINE_WORKER_FATAL_WRITE_SET_NOT_BLOCKED', 'Fatal out-of-write-set patch violations must block the worker result.', {
+        sequence: event.sequence,
+        itemId: event.itemId || '',
+        status: event.payload?.status || '',
+        patchArtifact,
+        fatalViolationCount,
+        fatalViolationPaths: fatalViolations.map(violation => violation.path),
       }));
     }
   }
@@ -1123,10 +1357,12 @@ async function auditMachineRun(runRoot, latestRunExportRoot = '') {
   const projectedRunState = projectRunStateFromEvents(events);
   const runState = await readRunState(resolvedRunRoot);
   diagnostics.push(...auditRunState(runState, projectedRunState));
+  diagnostics.push(...auditBypassRunInternalStops(events, runState || projectedRunState));
   diagnostics.push(...auditNodeLifecycle(events));
   diagnostics.push(...auditAdapterIdentity(events));
   diagnostics.push(...auditAdapterNodeLifecycle(events));
   diagnostics.push(...auditWorkerResultProof(events));
+  diagnostics.push(...await auditWorkerPatchWriteSetConsistency(resolvedRunRoot, events));
   diagnostics.push(...auditQueueTransitionCausality(events));
   diagnostics.push(...auditLockCausality(events));
   diagnostics.push(...auditApprovalCausality(events));

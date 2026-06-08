@@ -15,12 +15,12 @@
   },
   "license": "MIT",
   "compatibility": {
-    "orpad": ">=1.0.0-beta.3",
+    "orpad": ">=1.0.0-beta.4",
     "pipelineSchema": ">=1.0",
     "packFormat": "orpad.nodePack.v1"
   },
   "dependsOn": [
-    { "id": "orpad.core", "version": ">=1.0.0-beta.3" },
+    { "id": "orpad.core", "version": ">=1.0.0-beta.4" },
     { "id": "orpad.workstream", "version": ">=0.1.0" }
   ],
   "installPolicy": {

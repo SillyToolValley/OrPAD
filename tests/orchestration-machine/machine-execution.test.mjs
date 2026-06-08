@@ -23,6 +23,8 @@ const {
   registerCandidateInventoryArtifact,
   registerPatchArtifact,
   normalizeJudgeResult,
+  patchReviewResumeStateFromEvents,
+  pendingPatchWriteSetsFromEvents,
   queueJournalPath,
   runContentEditorialJudge,
   summarizeEdgeEvaluation,
@@ -43,6 +45,7 @@ const {
   __test_configuredWorkerConcurrency,
   __test_machineConfigWithQueueProtocolClaimPolicy,
   __test_gateFailureOnlyStaleQueueActive,
+  __test_liveTriageCandidatesFromQueue,
   __test_normalizeNonRunnableBlockedQueueItems,
   __test_requiredValidationCommandsForWorkerNode,
   __test_sanitizeInnerFailurePolicy,
@@ -743,6 +746,52 @@ test('live proposal prompt gives collect-all-visible probes the managed safe can
 
   assert.equal(prompt.includes('Return at most 5 candidateProposals.'), true);
   assert.equal(prompt.includes('Return at most 1 candidateProposals.'), false);
+  assert.equal(prompt.includes('Do not propose whole-surface overhauls'), true);
+  assert.equal(prompt.includes('at most two implementation files plus one focused test file'), true);
+});
+
+test('failed worker patch artifacts are not eligible for patch review auto-apply', () => {
+  const failedWithPatch = {
+    schemaVersion: 'orpad.machineEvent.v1',
+    eventType: 'worker.result',
+    itemId: 'oversized-ux-slice',
+    sequence: 1,
+    payload: {
+      status: 'failed',
+      toState: 'blocked',
+      patchArtifact: 'artifacts/patches/oversized-ux-slice.patch.json',
+      changedFiles: ['src/renderer/renderer.js'],
+      lockTargetFiles: ['src/renderer/renderer.js'],
+      reviewRequired: true,
+    },
+  };
+  const blockedWithPatch = {
+    schemaVersion: 'orpad.machineEvent.v1',
+    eventType: 'worker.result',
+    itemId: 'reviewable-blocked-slice',
+    sequence: 2,
+    payload: {
+      status: 'blocked',
+      toState: 'blocked',
+      patchArtifact: 'artifacts/patches/reviewable-blocked-slice.patch.json',
+      changedFiles: ['src/renderer/styles/base.css'],
+      lockTargetFiles: ['src/renderer/styles/base.css'],
+      reviewRequired: true,
+    },
+  };
+
+  const failedOnlyEvents = [failedWithPatch];
+  assert.equal(patchReviewStateFromEvents(failedOnlyEvents).patchCount, 0);
+  assert.equal(patchReviewResumeStateFromEvents(failedOnlyEvents).patchCount, 0);
+  assert.deepEqual(pendingPatchWriteSetsFromEvents(failedOnlyEvents), []);
+
+  const mixedReview = patchReviewStateFromEvents([failedWithPatch, blockedWithPatch]);
+  assert.equal(mixedReview.patchCount, 1);
+  assert.equal(mixedReview.reviews[0].patchArtifact, 'artifacts/patches/reviewable-blocked-slice.patch.json');
+  assert.deepEqual(
+    pendingPatchWriteSetsFromEvents([failedWithPatch, blockedWithPatch]).map(entry => entry.patchArtifact),
+    ['artifacts/patches/reviewable-blocked-slice.patch.json'],
+  );
 });
 
 test('unprovisioned harness path does not inject missing-artifact noise into prompts', async () => {
@@ -950,6 +999,8 @@ test('live prompts include harness authoring context for project-specific execut
   assert.match(workerPrompt, /validationCommands are recommended validation options/);
   assert.match(workerPrompt, /"verification"/);
   assert.match(workerPrompt, /"changedFiles"/);
+  assert.match(workerPrompt, /hard timebox/);
+  assert.match(workerPrompt, /JSON result is mandatory/);
   assert.match(workerPrompt, /validationPreflightSummary/);
   assert.match(workerPrompt, /incidentRunbook/);
   assert.match(workerPrompt, /securityRisk/);
@@ -1271,7 +1322,7 @@ test('graph-driven execute step waits at patch review before exit', async () => 
 
   const workerEvent = first.events.find(event => event.eventType === 'worker.result');
   const patchArtifact = workerEvent?.payload?.patchArtifact;
-  assert.equal(first.finalization.summaryStatus, 'blocked');
+  assert.equal(first.finalization.summaryStatus, 'partial');
   assert.equal(first.finalization.supportBlocked.nodePath, 'main/patch-review');
   assert.equal(first.events.some(event => event.eventType === 'node.blocked' && event.nodePath === 'main/patch-review'), true);
   assert.equal(first.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), false);
@@ -1324,7 +1375,7 @@ test('patch review rejection records revision metadata and routes rejected edge 
   const workerEvent = first.events.find(event => event.eventType === 'worker.result');
   const patchArtifact = workerEvent?.payload?.patchArtifact;
   assert.equal(typeof patchArtifact, 'string');
-  assert.equal(first.finalization.summaryStatus, 'blocked');
+  assert.equal(first.finalization.summaryStatus, 'partial');
   assert.equal(first.finalization.supportBlocked.nodePath, 'main/patch-review');
 
   await appendPatchReviewRejectedEvent(run.runRoot, {
@@ -1367,7 +1418,7 @@ test('patch review rejection records revision metadata and routes rejected edge 
   assert.equal(rejectedBlock.payload.reason, 'patch-review.rejected');
   assert.equal(rejectedBlock.payload.nextAction, 'revise');
   assert.equal(rejectedBlock.payload.revisionRequests[0].itemId, 'graph-harness-target');
-  assert.equal(second.finalization.summaryStatus, 'blocked');
+  assert.equal(second.finalization.summaryStatus, 'partial');
   assert.equal(second.finalization.supportBlocked.result.status, 'rejected');
 
   const edgeEval = [...second.events].reverse().find(event => (
@@ -1482,7 +1533,7 @@ test('patch review gate keeps blocking after approval until batch apply finishes
   const workerEvent = first.events.find(event => event.eventType === 'worker.result');
   const patchArtifact = workerEvent?.payload?.patchArtifact;
   assert.equal(typeof patchArtifact, 'string');
-  assert.equal(first.finalization.summaryStatus, 'blocked');
+  assert.equal(first.finalization.summaryStatus, 'partial');
 
   // Approval alone must not unblock the gate; batch apply must run first.
   await appendMachineEvent(run.runRoot, {
@@ -1511,7 +1562,7 @@ test('patch review gate keeps blocking after approval until batch apply finishes
     exportLatestRunAfterStep: false,
     nodeExecutable: process.execPath,
   });
-  assert.equal(blocked.finalization.summaryStatus, 'blocked');
+  assert.equal(blocked.finalization.summaryStatus, 'partial');
   assert.equal(blocked.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/exit'), false);
 
   // Simulate the batch apply IPC writing its three event types.
@@ -1857,9 +1908,9 @@ test('graph-driven worker spawn failures close claimed work as blocked instead o
   });
 
   assert.equal(executed.worker.result.event.payload.status, 'failed');
-  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'blocked');
+  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'queued');
   assert.equal(executed.runState.lifecycleStatus, 'waiting');
-  assert.equal(executed.runState.summaryStatus, 'blocked');
+  assert.equal(executed.runState.summaryStatus, 'partial');
   assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
   assert.equal(executed.events.some(event => event.eventType === 'node.failed' && event.nodePath === 'main/worker'), false);
@@ -1903,7 +1954,7 @@ test('graph-driven execution defers final evidence gates while queued work remai
   });
 
   assert.equal(executed.worker.result.event.payload.status, 'failed');
-  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'blocked');
+  assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target')).state, 'queued');
   assert.equal((await findQueueItem(run.runRoot, 'graph-harness-target-two')).state, 'queued');
   assert.equal(executed.finalization.summaryStatus, 'partial');
   assert.equal(executed.runState.lifecycleStatus, 'waiting');
@@ -2011,7 +2062,7 @@ test('ArtifactContract fail-run blocks completion when required artifacts are mi
   assert.equal(events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
   const state = await readRunState(run.runRoot);
   assert.equal(state.lifecycleStatus, 'waiting');
-  assert.equal(state.summaryStatus, 'blocked');
+  assert.equal(state.summaryStatus, 'partial');
 });
 
 test('ArtifactContract rejects symlinked queue requirements before treating them as present', async t => {
@@ -2346,14 +2397,14 @@ test('worker-evidence gate valid=false with onFail warn blocks final run complet
     nodeExecutable: process.execPath,
   });
 
-  assert.equal(executed.finalization.summaryStatus, 'blocked');
+  assert.equal(executed.finalization.summaryStatus, 'partial');
   assert.equal(executed.finalization.completionBlocked.kind, 'required-gates');
   assert.deepEqual(
     executed.finalization.completionBlocked.failedRequiredGates.map(gate => gate.nodePath),
     ['main/verification-gate'],
   );
   assert.equal(executed.runState.lifecycleStatus, 'waiting');
-  assert.equal(executed.runState.summaryStatus, 'blocked');
+  assert.equal(executed.runState.summaryStatus, 'partial');
   assert.equal(executed.events.some(event => event.eventType === 'run.status' && event.toState === 'completed'), false);
   const gateEvent = executed.events.find(event => event.eventType === 'node.completed' && event.nodePath === 'main/verification-gate');
   assert.equal(gateEvent.payload.valid, false);
@@ -2412,6 +2463,79 @@ test('candidate inventory carries prior candidates forward and audits queued pro
   assert.equal(audit.valid, false);
   assert.deepEqual(audit.missingItemIds, ['orphan-provenance-item']);
   assert.equal(audit.nextAction, 'repair-discovery-to-queue-provenance');
+});
+
+test('live triage retry candidates come from canonical pending queue state', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260606_live_triage_retry_candidates');
+  const proposalFor = (id, overrides = {}) => ({
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: `proposal-${id}`,
+    suggestedWorkItemId: id,
+    sourceNode: 'main/probe',
+    title: `Bounded work for ${id}`,
+    fingerprint: `retry-candidates:${id}`,
+    evidence: [{ id: `${id}-before`, file: 'src/target.md' }],
+    acceptanceCriteria: [`${id} is handled.`],
+    sourceOfTruthTargets: ['src/target.md'],
+    targetFiles: ['src/target.md'],
+    ...overrides,
+  });
+
+  for (const id of ['already-queued-item', 'pending-candidate-item', 'rejected-candidate-item']) {
+    await ingestCandidateProposal(run.runRoot, proposalFor(id), {
+      runId: run.runId,
+      transitionId: `ingest:${id}`,
+    });
+  }
+  await ingestCandidateProposal(run.runRoot, proposalFor('oversized-candidate-item', {
+    title: 'Rework the terminal cockpit dashboard into a deep-navy glowing surface',
+    evidence: [{ id: 'oversized-before', file: 'src/renderer/styles/base.css' }],
+    acceptanceCriteria: [
+      'Terminal dock profile tiles, active state, blocked state, and reduced-motion state all use deep navy glowing dashboard styling.',
+      'The profile tile controls remain keyboard reachable.',
+      'E2E coverage verifies desktop and narrow layout without overlap.',
+    ],
+    sourceOfTruthTargets: [
+      'src/renderer/renderer.js',
+      'src/renderer/styles/base.css',
+      'tests/e2e/terminal.spec.ts',
+      'tests/e2e/runbook-machine-run.spec.ts',
+    ],
+    targetFiles: [
+      'src/renderer/renderer.js',
+      'src/renderer/styles/base.css',
+      'tests/e2e/terminal.spec.ts',
+      'tests/e2e/runbook-machine-run.spec.ts',
+    ],
+  }), {
+    runId: run.runId,
+    transitionId: 'ingest:oversized-candidate-item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'already-queued-item',
+    toState: 'queued',
+    transitionId: 'triage:already-queued-item',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'rejected-candidate-item',
+    toState: 'rejected',
+    transitionId: 'triage:rejected-candidate-item',
+  });
+
+  assert.deepEqual(
+    (await __test_liveTriageCandidatesFromQueue(run.runRoot, {
+      runId: run.runId,
+      now: '2026-06-06T00:00:00.000Z',
+    })).map(candidate => candidate.suggestedWorkItemId),
+    ['pending-candidate-item'],
+  );
+  const oversized = await findQueueItem(run.runRoot, 'oversized-candidate-item');
+  assert.equal(oversized.state, 'rejected');
+  assert.equal(oversized.item.machineRejected, true);
+  assert.equal(oversized.item.splitRequired, true);
+  assert.equal(oversized.item.nextAction, 'split-work-item-before-dispatch');
 });
 
 test('runtime support nodes reject non-string contract arrays before coercion', async () => {
@@ -2614,6 +2738,108 @@ test('Gate failureRouting on warn propagates strict routing for generated harden
   assert.equal(decisions.find(edge => edge.condition === 'revise').reason, 'gate-failure-routing-revise');
 });
 
+test('Gate judge tier passes a semantic criterion when a judge adapter confirms it', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260602_gate_judge_pass');
+  let prompted = '';
+  const gateJudgeAdapter = {
+    async invoke({ prompt }) {
+      prompted = prompt;
+      return { evaluations: [{ criterion: 'transform anchors match the MSW protocol', passed: true, reason: 'evidence confirms', evidenceRefs: ['src/transform/anchor.ts'] }] };
+    },
+  };
+  const result = await validateGateNode(
+    run.runRoot,
+    { criteria: ['transform anchors match the MSW protocol'], onFail: 'block' },
+    { gateJudgeAdapter },
+  );
+  assert.equal(result.valid, true);
+  assert.equal(result.evaluations[0].passed, true);
+  assert.equal(result.evaluations[0].supported, true);
+  assert.equal(result.evaluations[0].source, 'llm-judge');
+  assert.ok(prompted.includes('transform anchors match the MSW protocol'));
+});
+
+test('Gate judge tier still blocks when the judge rejects a semantic criterion', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260602_gate_judge_block');
+  const gateJudgeAdapter = {
+    async invoke() {
+      return { evaluations: [{ criterion: 'transform anchors match the MSW protocol', passed: false, reason: 'no evidence of anchor work' }] };
+    },
+  };
+  await assert.rejects(
+    validateGateNode(
+      run.runRoot,
+      { criteria: ['transform anchors match the MSW protocol'], onFail: 'block' },
+      { gateJudgeAdapter },
+    ),
+    error => error?.code === 'MACHINE_GATE_CRITERIA_UNMET',
+  );
+});
+
+test('Gate judge tier degrades to unsupported when the judge adapter fails', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260602_gate_judge_degrade');
+  const gateJudgeAdapter = { async invoke() { throw new Error('judge transport failed'); } };
+  // With the judge unavailable, an unsupported criterion under onFail:block
+  // keeps exactly the prior deterministic behavior (no silent pass).
+  await assert.rejects(
+    validateGateNode(
+      run.runRoot,
+      { criteria: ['transform anchors match the MSW protocol'], onFail: 'block' },
+      { gateJudgeAdapter },
+    ),
+    error => error?.code === 'MACHINE_GATE_CRITERIA_UNMET',
+  );
+});
+
+test('Gate judge tier does not override deterministically supported criteria', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260602_gate_judge_supported');
+  let invoked = false;
+  const gateJudgeAdapter = {
+    async invoke() {
+      invoked = true;
+      return { evaluations: [{ criterion: 'queue empty', passed: false, reason: 'should be ignored' }] };
+    },
+  };
+  // 'queue empty' is deterministically supported; with an empty queue it passes
+  // on the rule tier and the judge must not be consulted for it.
+  const result = await validateGateNode(
+    run.runRoot,
+    { criteria: ['queue empty'], onFail: 'block' },
+    { gateJudgeAdapter },
+  );
+  assert.equal(result.valid, true);
+  assert.equal(invoked, false);
+  assert.notEqual(result.evaluations[0].source, 'llm-judge');
+});
+
+test('Gate judge tier skips advisory pre-worker discovery gates', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260605_gate_judge_advisory_discovery');
+  let invoked = false;
+  const gateJudgeAdapter = {
+    async invoke() {
+      invoked = true;
+      return { evaluations: [{ criterion: 'candidate inventory covers every UX surface', passed: false, reason: 'should not run' }] };
+    },
+  };
+
+  const result = await validateGateNode(
+    run.runRoot,
+    {
+      criteria: ['candidate inventory covers every UX surface'],
+      onFail: 'warn',
+      advisory: true,
+      requiredForCompletion: false,
+    },
+    { gateJudgeAdapter },
+  );
+
+  assert.equal(invoked, false);
+  assert.equal(result.advisory, true);
+  assert.equal(result.valid, false);
+  assert.equal(result.warningDoesNotPass, false);
+  assert.equal(result.evaluations[0].reason, 'unsupported-criterion');
+});
+
 test('Content editorial gate writes OrPAD-owned rule evaluation artifacts from content diffs', async () => {
   const { run } = await makeGraphHarnessWorkspace('run_20260521_content_editorial_gate_pass');
   const patchArtifact = await registerContentPatch(run, [{
@@ -2790,6 +3016,76 @@ test('blocked Unity-generated meta work is reclassified as rejected before compl
   assert.equal(item.state, 'rejected');
   assert.equal(item.item.machineRejected, true);
   assert.match(item.item.rejectionReason, /Unity-generated \.meta files/);
+});
+
+test('blocked oversized UX work is reclassified as split-required rejected work', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260606_non_runnable_oversized_ux');
+  await ingestCandidateProposal(run.runRoot, {
+    schemaVersion: 'orpad.candidateProposal.v1',
+    proposalId: 'proposal-graph-canvas-hero-overhaul',
+    suggestedWorkItemId: 'frontend-ux-graph-canvas-hero-overhaul',
+    sourceNode: 'main/probe',
+    title: 'Rework the pipeline builder canvas into the deep-navy glowing orchestration surface',
+    fingerprint: 'graph-harness:oversized-ux-overhaul',
+    evidence: [{ id: 'graph-css-current', file: 'src/renderer/styles/base.css' }],
+    acceptanceCriteria: [
+      'Graph frame, nodes, active edges, selected state, running state, blocked state, and reduced-motion state all use deep navy glowing orchestration styling.',
+      'The active path treatment scans first without relying on color alone.',
+      'E2E coverage verifies desktop and narrow layout without overlap.',
+    ],
+    sourceOfTruthTargets: [
+      'src/renderer/renderer.js',
+      'src/renderer/styles/base.css',
+      'tests/e2e/runbook-machine-run.spec.ts',
+      'tests/e2e/runbook-pipeline-editor.spec.ts',
+    ],
+    targetFiles: [
+      'src/renderer/renderer.js',
+      'src/renderer/styles/base.css',
+      'tests/e2e/runbook-machine-run.spec.ts',
+      'tests/e2e/runbook-pipeline-editor.spec.ts',
+    ],
+    verificationPlan: 'Run renderer build and the focused Electron graph tests.',
+  }, {
+    runId: run.runId,
+    transitionId: 'ingest:oversized-ux',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'frontend-ux-graph-canvas-hero-overhaul',
+    toState: 'queued',
+    transitionId: 'triage:oversized-ux',
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'frontend-ux-graph-canvas-hero-overhaul',
+    toState: 'claimed',
+    transitionId: 'claim:oversized-ux',
+    itemPatch: { claimId: 'claim-oversized-ux', claimedBy: 'test-worker' },
+  });
+  await transitionQueueItem(run.runRoot, {
+    runId: run.runId,
+    itemId: 'frontend-ux-graph-canvas-hero-overhaul',
+    toState: 'blocked',
+    transitionId: 'close:oversized-ux-blocked',
+    itemPatch: {
+      workerResultStatus: 'failed',
+      blockedReason: 'CLI adapter timed out before emitting the required worker result JSON.',
+    },
+  });
+
+  const rejected = await __test_normalizeNonRunnableBlockedQueueItems(run.runRoot, {
+    runId: run.runId,
+    now: '2026-06-06T00:00:00.000Z',
+  });
+
+  assert.equal(rejected.length, 1);
+  const item = await findQueueItem(run.runRoot, 'frontend-ux-graph-canvas-hero-overhaul');
+  assert.equal(item.state, 'rejected');
+  assert.equal(item.item.machineRejected, true);
+  assert.equal(item.item.splitRequired, true);
+  assert.equal(item.item.nextAction, 'split-work-item-before-dispatch');
+  assert.match(item.item.rejectionReason, /too broad for a single worker timeout/);
 });
 
 test('required completion gate audit ignores stale queue-active failure after inventory drains', () => {

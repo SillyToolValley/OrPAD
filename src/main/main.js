@@ -11,12 +11,13 @@ const { registerMachineHandlers } = require('./orchestration-machine/ipc');
 const { registerOrchestrationAuthoringHandlers } = require('./orchestration-authoring/ipc');
 const { registerRunbookHandlers } = require('./runbooks/ipc');
 const { registerTerminalHandlers } = require('./terminal/ipc');
-const { createAuthorityManager, isInsidePath } = require('./authority');
+const { createAuthorityManager, isInsidePath, normalizeForCompare } = require('./authority');
 
 const windows = new Set();
 const terminalWindows = new Set();
 const orchestrationWindows = new Set();
 const terminalWindowContexts = new Map();
+const orchestrationWindowContexts = new Map();
 const watchers = new Map();
 const snippetWatchers = new Map();
 const authority = createAuthorityManager();
@@ -341,9 +342,25 @@ function closeTerminalWindows() {
   }
 }
 
-function activeOrchestrationWindow() {
+function orchestrationWindowContextMatches(context = {}, target = {}) {
+  const targetWorkspace = target.workspaceRoot ? normalizeForCompare(target.workspaceRoot) : '';
+  const contextWorkspace = context.workspaceRoot ? normalizeForCompare(context.workspaceRoot) : '';
+  const targetOpener = Number(target.openerWebContentsId || 0);
+  const contextOpener = Number(context.openerWebContentsId || 0);
+  if (targetOpener && contextOpener && targetOpener !== contextOpener) return false;
+  if (targetWorkspace && contextWorkspace && targetWorkspace !== contextWorkspace) return false;
+  if (targetWorkspace && !contextWorkspace) return false;
+  if (targetOpener && !contextOpener) return false;
+  return true;
+}
+
+function activeOrchestrationWindow(target = {}) {
   for (const win of orchestrationWindows) {
-    if (win && !win.isDestroyed()) return win;
+    if (!win || win.isDestroyed()) continue;
+    const hasTarget = !!(target.openerWebContentsId || target.workspaceRoot);
+    if (!hasTarget) return win;
+    const context = orchestrationWindowContexts.get(win.webContents.id) || {};
+    if (orchestrationWindowContextMatches(context, target)) return win;
   }
   return null;
 }
@@ -365,6 +382,21 @@ function mainWindowForTerminalContext(context = {}) {
     if (!win.isDestroyed()) return win;
   }
   return null;
+}
+
+async function orchestrationWorkspaceForRequest(event, request = {}) {
+  const grantedWorkspace = await existingWorkspaceRoot(authority.getWorkspaceRoot(event.sender));
+  if (grantedWorkspace) return path.resolve(String(grantedWorkspace));
+  const approvedWorkspace = await readApprovedWorkspace();
+  if (approvedWorkspace) return path.resolve(String(approvedWorkspace));
+  return '';
+}
+
+async function orchestrationWindowTargetForRequest(event, request = {}) {
+  return {
+    openerWebContentsId: event.sender?.id || 0,
+    workspaceRoot: await orchestrationWorkspaceForRequest(event, request),
+  };
 }
 
 function createTerminalWindow({ openerWebContents, workspaceRoot = '', cwd = '', bounds = null } = {}) {
@@ -445,7 +477,12 @@ function createOrchestrationWindow({ openerWebContents, workspaceRoot = '' } = {
 
   win.setMenuBarVisibility(false);
   const webContentsId = win.webContents.id;
-  if (workspaceRoot) authority.grantWorkspace(win.webContents, workspaceRoot);
+  const context = {
+    openerWebContentsId: openerWebContents?.id || 0,
+    workspaceRoot: workspaceRoot ? path.resolve(String(workspaceRoot)) : '',
+  };
+  if (context.workspaceRoot) authority.grantWorkspace(win.webContents, context.workspaceRoot);
+  orchestrationWindowContexts.set(webContentsId, context);
   orchestrationWindows.add(win);
   win.loadFile(path.join(__dirname, '../renderer/index.html'), { query: { mode: 'orchestration' } });
   win.webContents.setVisualZoomLevelLimits(1, 1);
@@ -460,6 +497,7 @@ function createOrchestrationWindow({ openerWebContents, workspaceRoot = '' } = {
   });
   win.on('closed', () => {
     orchestrationWindows.delete(win);
+    orchestrationWindowContexts.delete(webContentsId);
     authority.forget({ id: webContentsId });
   });
   return win;
@@ -600,28 +638,30 @@ ipcMain.handle('terminal-window-focus', async () => {
   return focusTerminalWindow();
 });
 
-ipcMain.handle('orchestration-window-open', async (event) => {
-  const existing = activeOrchestrationWindow();
+ipcMain.handle('orchestration-window-open', async (event, request = {}) => {
+  const target = await orchestrationWindowTargetForRequest(event, request);
+  if (!target.workspaceRoot) return { success: false, error: 'Open a project folder before opening Orchestration.' };
+  const existing = activeOrchestrationWindow(target);
   if (existing) {
     focusOrchestrationWindow(existing);
-    return { id: existing.id, success: true, reused: true };
+    return { id: existing.id, success: true, reused: true, workspaceRoot: target.workspaceRoot };
   }
-  const openerWorkspace = authority.getWorkspaceRoot(event.sender) || await readApprovedWorkspace();
-  const workspaceRoot = openerWorkspace ? path.resolve(String(openerWorkspace)) : '';
   const win = createOrchestrationWindow({
     openerWebContents: event.sender,
-    workspaceRoot,
+    workspaceRoot: target.workspaceRoot,
   });
-  return { id: win.id, success: true };
+  return { id: win.id, success: true, workspaceRoot: target.workspaceRoot };
 });
 
-ipcMain.handle('orchestration-window-status', async () => {
-  const win = activeOrchestrationWindow();
-  return win ? { open: true, id: win.id } : { open: false };
+ipcMain.handle('orchestration-window-status', async (event, request = {}) => {
+  const target = await orchestrationWindowTargetForRequest(event, request);
+  const win = activeOrchestrationWindow(target);
+  return win ? { open: true, id: win.id, workspaceRoot: target.workspaceRoot } : { open: false, workspaceRoot: target.workspaceRoot };
 });
 
-ipcMain.handle('orchestration-window-focus', async () => {
-  return focusOrchestrationWindow();
+ipcMain.handle('orchestration-window-focus', async (event, request = {}) => {
+  const target = await orchestrationWindowTargetForRequest(event, request);
+  return focusOrchestrationWindow(activeOrchestrationWindow(target));
 });
 
 ipcMain.handle('terminal-window-dock-main', async (event) => {
@@ -771,6 +811,8 @@ ipcMain.handle('read-file', async (event, filePath) => {
 });
 
 ipcMain.handle('get-approved-workspace', async (event) => {
+  const grantedWorkspace = await existingWorkspaceRoot(authority.getWorkspaceRoot(event.sender));
+  if (grantedWorkspace) return grantedWorkspace;
   const workspaceRoot = await readApprovedWorkspace();
   return workspaceRoot ? authority.grantWorkspace(event.sender, workspaceRoot) : null;
 });
@@ -796,14 +838,19 @@ async function rememberApprovedWorkspace(dirPath) {
   return workspaceRoot;
 }
 
+async function existingWorkspaceRoot(dirPath) {
+  const workspaceRoot = dirPath ? path.resolve(String(dirPath)) : '';
+  if (!workspaceRoot) return '';
+  const realRoot = await fsp.realpath(workspaceRoot).catch(() => workspaceRoot);
+  const stat = await fsp.stat(realRoot).catch(() => null);
+  return stat?.isDirectory() ? realRoot : '';
+}
+
 async function readApprovedWorkspace() {
   try {
     const raw = await fsp.readFile(approvedWorkspacePath(), 'utf-8');
     const parsed = JSON.parse(raw);
-    const workspaceRoot = parsed?.workspaceRoot ? path.resolve(String(parsed.workspaceRoot)) : '';
-    const realRoot = workspaceRoot ? await fsp.realpath(workspaceRoot).catch(() => workspaceRoot) : '';
-    const stat = realRoot ? await fsp.stat(realRoot).catch(() => null) : null;
-    return stat?.isDirectory() ? realRoot : '';
+    return await existingWorkspaceRoot(parsed?.workspaceRoot);
   } catch {
     return '';
   }

@@ -1,5 +1,9 @@
 const { appendMachineEvent, projectRunStateFromEvents, readMachineEvents } = require('./events');
 const { shouldRequestPatchReview } = require('./patch-review-classifier');
+const {
+  workerResultIsPatchReviewEligible,
+  workerResultRequiresManualPatchReview,
+} = require('./patch-review-eligibility');
 const { repairRunStateFromEvents, readRunState } = require('./run-store');
 const { findQueueItem, projectQueueStateFromEvents, readQueueItems, writeQueueItem } = require('./queue-store');
 
@@ -10,6 +14,9 @@ const RUN_LIFECYCLE_STATES = new Set([
   'running',
   'waiting',
   'approval-required',
+  // 'paused' is a NON-terminal supervised-autonomy state: the autonomous driver
+  // suspended the run at a safe step boundary on human request and can resume.
+  'paused',
   'cancelling',
   'cancelled',
   'failed',
@@ -162,24 +169,9 @@ async function summarizeQueueInventory(runRoot) {
 
 function summaryStatusFromInventory(inventory) {
   if (inventory.activeCount > 0) return 'partial';
-  if (inventory.blockedCount > 0) return 'blocked';
+  if (inventory.blockedCount > 0) return 'partial';
   if (inventory.doneCount > 0 || inventory.terminalCount > 0) return 'done';
   return 'partial';
-}
-
-function workerResultIsPatchReviewEligible(payload = {}) {
-  const status = String(payload.status || '').trim().toLowerCase();
-  const toState = String(payload.toState || '').trim().toLowerCase();
-  if ((status === 'blocked' || toState === 'blocked') && payload.patchArtifact) return true;
-  if (status && status !== 'done') return false;
-  if (toState && toState !== 'done') return false;
-  return true;
-}
-
-function workerResultRequiresManualPatchReview(payload = {}) {
-  const status = String(payload.status || '').trim().toLowerCase();
-  const toState = String(payload.toState || '').trim().toLowerCase();
-  return Boolean(payload.patchArtifact) && (status === 'blocked' || toState === 'blocked');
 }
 
 function patchReviewResumeStateFromEvents(events = []) {
@@ -297,7 +289,7 @@ function hasBlockedPatchReviewNode(events = []) {
 
 function summaryStatusFromInventoryAndEvents(inventory, events = []) {
   const patchReview = patchReviewResumeStateFromEvents(events);
-  if (patchReview.required && !patchReview.resolved) return 'blocked';
+  if (patchReview.required && !patchReview.resolved) return 'partial';
   return summaryStatusFromInventory(inventory);
 }
 
@@ -384,19 +376,37 @@ async function resumeMachineRun(runRoot, options = {}) {
     emitNodeCancelledForInflight,
   } = options;
   if (!runId) throw new Error('runId is required.');
-  await assertRunLifecycleCanTransition(runRoot, 'waiting', 'lifecycle.resume');
+  const currentRunState = await assertRunLifecycleCanTransition(runRoot, 'waiting', 'lifecycle.resume');
   await assertNoPendingApprovalsForResume(runRoot);
   const queueRepair = await repairDerivedQueueFilesFromEvents(runRoot);
   const staleClaims = recoverStaleClaims
-    ? await recoverStaleClaims(runRoot, { runId, now })
+    ? await recoverStaleClaims(runRoot, {
+      runId,
+      now,
+      recoverOrphanedAdapters: true,
+      orphanedAdapterGraceMs: options.orphanedAdapterGraceMs,
+      orphanedAdapterFinishedGraceMs: options.orphanedAdapterFinishedGraceMs,
+    })
     : [];
+  const hasOrphanedAdapterRecovery = staleClaims.some(item => item?.orphanedAdapter);
   const cancelledNodes = staleClaims.length && typeof emitNodeCancelledForInflight === 'function'
-    ? await emitNodeCancelledForInflight(runRoot, runId, 'lifecycle.resume.stale-claim')
+    ? await emitNodeCancelledForInflight(
+      runRoot,
+      runId,
+      hasOrphanedAdapterRecovery ? 'lifecycle.resume.orphaned-adapter-claim' : 'lifecycle.resume.stale-claim',
+    )
     : [];
+  const changedAnything = staleClaims.length > 0
+    || cancelledNodes.length > 0
+    || (queueRepair.repaired || []).length > 0
+    || (queueRepair.missing || []).length > 0;
+  const lifecycleToState = currentRunState?.lifecycleStatus === 'running' && !changedAnything
+    ? 'running'
+    : 'waiting';
   await appendRunLifecycleStatus(runRoot, {
     runId,
-    toState: 'waiting',
-    reason: 'lifecycle.resume',
+    toState: lifecycleToState,
+    reason: lifecycleToState === 'running' ? 'lifecycle.resume.noop-running' : 'lifecycle.resume',
     payload: {
       queueRepair,
       staleClaimCount: staleClaims.length,

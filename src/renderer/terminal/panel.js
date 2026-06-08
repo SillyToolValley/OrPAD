@@ -3,6 +3,7 @@ import { t } from '../i18n.js';
 
 const SHELL_OPERATORS = new Set(['&&', '||', ';', '|', '>', '>>', '<', '&']);
 const MAX_RENDERED_CHARS = 240_000;
+const DEFAULT_MAX_COMMAND_BLOCKS = 120;
 const TERMINAL_LAYOUT_KEY = 'orpad-terminal-layout-state';
 const TERMINAL_LAYOUTS = ['bottom', 'left', 'right', 'floating'];
 const TERMINAL_DOCK_TARGETS = ['left', 'right', 'bottom', 'floating'];
@@ -99,6 +100,14 @@ function truncateForUi(text) {
   const raw = stripAnsi(text);
   if (raw.length <= MAX_RENDERED_CHARS) return raw;
   return `${raw.slice(0, MAX_RENDERED_CHARS)}\n\n${fmt('terminal.output.truncated', { count: MAX_RENDERED_CHARS })}`;
+}
+
+function commandBlockRetentionLimit() {
+  const testOverride = typeof window !== 'undefined'
+    ? Number(window.__ORPAD_TERMINAL_HISTORY_LIMIT__)
+    : NaN;
+  const limit = Number.isFinite(testOverride) ? testOverride : DEFAULT_MAX_COMMAND_BLOCKS;
+  return Math.max(1, Math.floor(limit));
 }
 
 function nowId() {
@@ -542,6 +551,33 @@ export function createTerminalPanel({ hooks, track }) {
     }));
   }
 
+  function disposeRunnerBlock(block) {
+    if (!block || block === activeBlock) return;
+    if (block.pre) block.pre.textContent = '';
+    block.output = '';
+    block.details?.remove();
+    block.details = null;
+    block.pre = null;
+    block.badge = null;
+  }
+
+  function pruneCompletedRunnerBlocks() {
+    const limit = commandBlockRetentionLimit();
+    let retained = 0;
+    for (let index = 0; index < blocks.length;) {
+      const block = blocks[index];
+      if (block.finishedAt) {
+        retained += 1;
+        if (retained > limit) {
+          blocks.splice(index, 1);
+          disposeRunnerBlock(block);
+          continue;
+        }
+      }
+      index += 1;
+    }
+  }
+
   function createBlock({ id, commandLine, command, args, cwd }) {
     const block = {
       id,
@@ -613,6 +649,7 @@ export function createTerminalPanel({ hooks, track }) {
     setRunning(false);
     loadHistory();
     dispatchRunnerOutput(block);
+    pruneCompletedRunnerBlocks();
     track?.('terminal_run', {
       command: block.command,
       exit_code: String(payload.code ?? ''),

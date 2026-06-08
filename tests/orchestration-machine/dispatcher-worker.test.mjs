@@ -26,6 +26,7 @@ const {
   readRunState,
   readWriteSetLock,
   recoverStaleClaims,
+  runWorkerLoopOnce,
   registerArtifact,
   runSerialWorkerLoop,
   transitionQueueItem,
@@ -642,6 +643,140 @@ test('worker result closes a claimed item only after proof is accepted', async (
   assert.deepEqual((await readJournal(run.runRoot)).map(entry => entry.action), ['ingest', 'triage', 'claim', 'close']);
 });
 
+test('worker blocked result is managed as queued retry instead of terminal blocked work', async () => {
+  const run = await makeRun('run_20260607_worker_blocked_managed_retry');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'managed-blocked-worker-item',
+    fingerprint: 'worker:managed-blocked-worker-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-managed-blocked-worker-item',
+    now: '2026-06-07T00:00:20.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+
+  const applied = await applyWorkerResult(run.runRoot, {
+    runId: run.runId,
+    claimId: claimed.claim.claimId,
+    itemId,
+    request: {
+      runId: run.runId,
+      nodePath: 'main/worker',
+      adapter: 'node-cli',
+      adapterCallId: 'managed-blocked-call',
+      attemptId: 'managed-blocked-attempt-1',
+      idempotencyKey: 'managed-blocked-call:attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+      inputArtifacts: [],
+      outputContract: 'orpad.workerResult.v1',
+      adapterResultPath: 'adapters/managed-blocked-call.result.json',
+    },
+    result: {
+      schemaVersion: 'orpad.workerResult.v1',
+      adapterCallId: 'managed-blocked-call',
+      attemptId: 'managed-blocked-attempt-1',
+      idempotencyKey: 'managed-blocked-call:attempt-1',
+      status: 'blocked',
+      summary: 'Worker could not complete this attempt, but the Machine can retry safely.',
+      changedFiles: [],
+      artifacts: [],
+      verification: [],
+    },
+    now: '2026-06-07T00:00:30.000Z',
+  });
+
+  assert.equal(applied.toState, 'queued');
+  assert.equal(applied.summaryStatus, 'partial');
+  const item = await findQueueItem(run.runRoot, itemId);
+  assert.equal(item.state, 'queued');
+  assert.equal(item.item.managedRetry, true);
+  assert.equal(item.item.managedRetryCount, 1);
+  const events = await readMachineEvents(run.runRoot);
+  assert.equal(events.some(event => event.eventType === 'managed-block.recovered'), true);
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
+});
+
+test('worker adapter invoke filesystem exceptions are managed instead of leaving claimed work', async () => {
+  const run = await makeRun('run_20260607_worker_invoke_enotdir_managed');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'managed-enotdir-worker-item',
+    fingerprint: 'worker:managed-enotdir-worker-item',
+  }));
+
+  const step = await runWorkerLoopOnce({
+    runRoot: run.runRoot,
+    runId: run.runId,
+    workspaceRoot: run.workspaceRoot,
+    adapter: {
+      adapter: 'worker-fixture',
+      invoke: async () => {
+        const err = new Error('ENOTDIR, not a directory');
+        err.code = 'ENOTDIR';
+        throw err;
+      },
+    },
+    now: '2026-06-07T00:00:30.000Z',
+  });
+
+  assert.equal(step.claimed, true);
+  assert.equal(step.item.id, itemId);
+  assert.equal(step.result.toState, 'queued');
+  assert.equal(step.result.event.payload.status, 'failed');
+  const item = await findQueueItem(run.runRoot, itemId);
+  assert.equal(item.state, 'queued');
+  assert.equal(item.item.managedRetry, true);
+  assert.equal(item.item.managedRetryCount, 1);
+  assert.equal((await readClaimLease(run.runRoot, step.claim.claimId)).state, 'released');
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+  const events = await readMachineEvents(run.runRoot);
+  assert.equal(events.some(event => event.eventType === 'worker.result' && event.payload?.status === 'failed'), true);
+  assert.equal(events.some(event => event.eventType === 'managed-block.recovered'), true);
+  assert.equal(events.some(event => event.eventType === 'node.failed'), false);
+});
+
+test('worker result application errors become managed worker results instead of node failures', async () => {
+  const run = await makeRun('run_20260607_worker_apply_error_recovers_claim');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'managed-apply-error-worker-item',
+    fingerprint: 'worker:managed-apply-error-worker-item',
+  }));
+
+  const step = await runWorkerLoopOnce({
+    runRoot: run.runRoot,
+    runId: run.runId,
+    workspaceRoot: run.workspaceRoot,
+    adapter: {
+      adapter: 'worker-fixture',
+      invoke: async request => ({
+        schemaVersion: 'orpad.workerResult.v1',
+        adapterCallId: request.adapterCallId,
+        attemptId: request.attemptId,
+        idempotencyKey: request.idempotencyKey,
+        status: 'done',
+        summary: 'Invalid done result without required proof.',
+        artifacts: [],
+        changedFiles: ['src/renderer/renderer.js'],
+        verification: [],
+      }),
+    },
+    now: '2026-06-07T00:00:30.000Z',
+  });
+
+  assert.equal(step.result.event.payload.status, 'failed');
+  assert.equal(step.result.event.payload.verification[0].phase, 'worker-result-application');
+  const item = await findQueueItem(run.runRoot, itemId);
+  assert.equal(item.state, 'queued');
+  assert.equal(item.item.managedRetry, true);
+  assert.equal(item.item.nextAction, 'managed-retry-worker-item');
+  assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+  const events = await readMachineEvents(run.runRoot);
+  assert.equal(events.some(event => event.eventType === 'managed-block.recovered'), true);
+  assert.equal(events.some(event => event.eventType === 'node.failed'), false);
+});
+
 test('worker done result must include required harness validation evidence', async () => {
   const run = await makeRun('run_20260521_worker_harness_validation_missing');
   const itemId = await queueProposal(run, proposal({
@@ -909,6 +1044,255 @@ test('expired claim rejects late worker result and stale recovery requeues the i
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
   assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'expired');
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+});
+
+test('orphaned worker adapter request recovers claimed item before lease expiry', async () => {
+  const run = await makeRun('run_20260430_worker_orphaned_adapter');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'orphaned-adapter-item',
+    fingerprint: 'dispatcher:orphaned-adapter-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-worker-orphaned-adapter',
+    leaseMs: 30 * 60 * 1000,
+    now: '2026-04-30T00:00:10.000Z',
+  });
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'main/worker',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    inputArtifacts: [`queue/claimed/${itemId}.json`],
+    adapterCallId: `${claimed.claim.claimId}-graph-cli`,
+    attemptId: `${claimed.claim.claimId}-graph-cli-attempt-1`,
+    idempotencyKey: `${claimed.claim.claimId}-graph-cli:attempt-1`,
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-04-30T00:00:12.000Z',
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: request.adapter,
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      taskKind: request.taskKind,
+      workspaceMode: request.workspaceMode,
+      inputArtifacts: request.inputArtifacts,
+      outputContract: request.outputContract,
+      adapterResultPath: request.adapterResultPath,
+    },
+  });
+
+  const recovered = await recoverStaleClaims(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:03:00.000Z',
+    recoverOrphanedAdapters: true,
+    orphanedAdapterGraceMs: 60_000,
+  });
+
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].orphanedAdapter.adapterCallId, request.adapterCallId);
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'cancelled');
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+  const transition = (await readMachineEvents(run.runRoot)).find(event => (
+    event.eventType === 'queue.transition'
+    && event.payload?.recovery === 'orphaned-adapter-request'
+  ));
+  assert.equal(Boolean(transition), true);
+  assert.equal(transition.reason, 'claim.orphaned-adapter-recovered');
+});
+
+test('orphaned worker adapter recovery does not cancel an in-flight worker node without process evidence', async () => {
+  const run = await makeRun('run_20260608_worker_orphaned_adapter_inflight_guard');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'inflight-orphan-guard-item',
+    fingerprint: 'dispatcher:inflight-orphan-guard-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-inflight-orphan-guard',
+    leaseMs: 30 * 60 * 1000,
+    now: '2026-06-08T00:00:10.000Z',
+  });
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'main/worker',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    inputArtifacts: [`queue/claimed/${itemId}.json`],
+    adapterCallId: `${claimed.claim.claimId}-graph-cli`,
+    attemptId: `${claimed.claim.claimId}-graph-cli-attempt-1`,
+    idempotencyKey: `${claimed.claim.claimId}-graph-cli:attempt-1`,
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-06-08T00:00:11.000Z',
+    actor: 'machine',
+    eventType: 'node.started',
+    nodePath: 'main/worker',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'started',
+      attempt: 1,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-06-08T00:00:12.000Z',
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: request.adapter,
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      taskKind: request.taskKind,
+      workspaceMode: request.workspaceMode,
+      inputArtifacts: request.inputArtifacts,
+      outputContract: request.outputContract,
+      adapterResultPath: request.adapterResultPath,
+    },
+  });
+
+  const recovered = await recoverStaleClaims(run.runRoot, {
+    runId: run.runId,
+    now: '2026-06-08T00:03:00.000Z',
+    recoverOrphanedAdapters: true,
+    orphanedAdapterGraceMs: 60_000,
+  });
+
+  assert.equal(recovered.length, 0);
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'active');
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 1);
+});
+
+test('orphaned worker adapter recovery honors durable active process pid marker', async () => {
+  const run = await makeRun('run_20260608_worker_orphaned_adapter_pid_guard');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'pid-guard-orphan-item',
+    fingerprint: 'dispatcher:pid-guard-orphan-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-pid-guard-orphan',
+    leaseMs: 30 * 60 * 1000,
+    now: '2026-06-08T00:00:10.000Z',
+  });
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'main/worker',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    inputArtifacts: [`queue/claimed/${itemId}.json`],
+    adapterCallId: `${claimed.claim.claimId}-graph-cli`,
+    attemptId: `${claimed.claim.claimId}-graph-cli-attempt-1`,
+    idempotencyKey: `${claimed.claim.claimId}-graph-cli:attempt-1`,
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-06-08T00:00:12.000Z',
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.requested',
+    payload: {
+      adapter: request.adapter,
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      taskKind: request.taskKind,
+      workspaceMode: request.workspaceMode,
+      inputArtifacts: request.inputArtifacts,
+      outputContract: request.outputContract,
+      adapterResultPath: request.adapterResultPath,
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-06-08T00:00:13.000Z',
+    actor: 'machine',
+    nodePath: 'main/worker',
+    eventType: 'adapter.process.started',
+    payload: {
+      adapter: request.adapter,
+      adapterCallId: request.adapterCallId,
+      attemptId: request.attemptId,
+      idempotencyKey: request.idempotencyKey,
+      taskKind: request.taskKind,
+      pid: process.pid,
+      processKey: request.adapterCallId,
+    },
+  });
+
+  const recovered = await recoverStaleClaims(run.runRoot, {
+    runId: run.runId,
+    now: '2026-06-08T00:03:00.000Z',
+    recoverOrphanedAdapters: true,
+    orphanedAdapterGraceMs: 60_000,
+  });
+
+  assert.equal(recovered.length, 0);
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'claimed');
+  assert.equal((await readClaimLease(run.runRoot, claimed.claim.claimId)).state, 'active');
+});
+
+test('late worker result after orphan recovery is ignored instead of failing the worker loop', async () => {
+  const run = await makeRun('run_20260608_worker_late_result_ignored');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'late-result-after-recovery-item',
+    fingerprint: 'worker:late-result-after-recovery-item',
+  }));
+  let recoveredDuringInvoke = [];
+
+  const step = await runWorkerLoopOnce({
+    runRoot: run.runRoot,
+    runId: run.runId,
+    workspaceRoot: run.workspaceRoot,
+    adapter: {
+      adapter: 'worker-fixture',
+      invoke: async request => {
+        recoveredDuringInvoke = await recoverStaleClaims(run.runRoot, {
+          runId: run.runId,
+          now: '2026-06-08T00:01:00.000Z',
+          force: true,
+          reason: 'test.claim-recovered-before-late-result',
+        });
+        const result = workerResult(request, {
+          summary: 'Late successful result should not crash the worker loop.',
+          artifacts: ['artifacts/work-items/late-result-after-recovery/proof.md'],
+          changedFiles: ['src/renderer/renderer.js'],
+          verification: [{ command: 'npm run build:renderer', status: 'passed' }],
+        });
+        await registerWorkerResultArtifacts(run, result);
+        return result;
+      },
+    },
+    now: '2026-06-08T00:00:30.000Z',
+  });
+
+  assert.equal(recoveredDuringInvoke.length, 1);
+  assert.equal(step.claimed, true);
+  assert.equal(step.item.id, itemId);
+  assert.equal(step.result.ignored, true);
+  assert.equal(step.result.event.eventType, 'worker.result.ignored');
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  assert.equal((await readClaimLease(run.runRoot, step.claim.claimId)).state, 'cancelled');
+  const events = await readMachineEvents(run.runRoot);
+  assert.equal(events.some(event => event.eventType === 'worker.result'), false);
+  assert.equal(events.some(event => event.eventType === 'worker.result.ignored'), true);
 });
 
 test('claim cancellation requeues a claimed item and leaves a resumable run state', async () => {

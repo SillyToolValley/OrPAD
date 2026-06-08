@@ -1,5 +1,26 @@
 // ==================== Built-in Themes ====================
+export const DEFAULT_THEME_ID = 'orpad-hero';
+
 export const builtinThemes = {
+  'orpad-hero': {
+    name: 'OrPAD Hero', type: 'dark',
+    colors: {
+      bgPrimary: '#050b1f', bgSecondary: '#0b1530', borderColor: '#2d60a9',
+      textPrimary: '#edf5ff', textSecondary: '#a9bee6', textTertiary: '#647ca9',
+      accentColor: '#38a3ff', linkColor: '#77c7ff',
+      hoverBg: 'rgba(56,163,255,0.16)', activeBg: 'rgba(56,163,255,0.22)',
+      codeBg: 'rgba(35,79,145,0.26)', preBg: '#071228',
+      tableBorder: '#2d60a9', tableHeaderBg: '#101d3b', tableRowBg: 'rgba(56,163,255,0.09)',
+      scrollbarThumb: 'rgba(119,199,255,0.22)', scrollbarThumbHover: 'rgba(119,199,255,0.42)',
+      editorBg: '#071228', editorGutterBg: '#08162f', editorGutterColor: '#3e69a7',
+      editorActiveLine: '#0d1c3c', editorSelection: 'rgba(56,163,255,0.36)', editorCursor: '#bfe9ff',
+      syntaxComment: '#5f78a8', syntaxKeyword: '#8fb7ff', syntaxString: '#73e6c2',
+      syntaxNumber: '#ffd27a', syntaxFunction: '#77c7ff', syntaxVariable: '#edf5ff',
+      syntaxTag: '#ff8ba7', syntaxAttribute: '#8ad8ff', syntaxOperator: '#9be7ff',
+      syntaxMeta: '#b8d8ff', syntaxAdded: '#73e6c2', syntaxDeleted: '#ff8ba7',
+      syntaxAddedBg: 'rgba(115,230,194,0.14)', syntaxDeletedBg: 'rgba(255,139,167,0.14)',
+    },
+  },
   'github-light': {
     name: 'GitHub Light', type: 'light',
     colors: {
@@ -285,7 +306,7 @@ const STORAGE_THEME_ID = 'orpad-theme';
 const STORAGE_CUSTOM_THEMES = 'orpad-custom-themes';
 
 export function getSavedThemeId() {
-  return localStorage.getItem(STORAGE_THEME_ID) || null;
+  return localStorage.getItem(STORAGE_THEME_ID) || DEFAULT_THEME_ID;
 }
 
 export function saveThemeId(id) {
@@ -306,7 +327,7 @@ function saveCustomThemes(themes) {
 }
 
 export function addCustomTheme(name, baseThemeId) {
-  const base = builtinThemes[baseThemeId] || builtinThemes['github-light'];
+  const base = builtinThemes[baseThemeId] || builtinThemes[DEFAULT_THEME_ID];
   const id = 'custom-' + Date.now();
   const themes = getCustomThemes();
   themes[id] = { name, type: base.type, colors: { ...base.colors } };

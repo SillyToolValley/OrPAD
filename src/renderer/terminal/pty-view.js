@@ -8,6 +8,7 @@ import xtermCss from '@xterm/xterm/css/xterm.css';
 import { t } from '../i18n.js';
 
 const MAX_BLOCK_CHARS = 240_000;
+const DEFAULT_MAX_COMMAND_BLOCKS = 120;
 const LAST_SHELL_KEY = 'orpad-terminal-last-shell';
 
 function el(tag, className, text) {
@@ -41,6 +42,14 @@ function truncateForUi(text) {
   const raw = stripAnsi(text);
   if (raw.length <= MAX_BLOCK_CHARS) return raw;
   return `${raw.slice(0, MAX_BLOCK_CHARS)}\n\n${fmt('terminal.output.truncated', { count: MAX_BLOCK_CHARS })}`;
+}
+
+function commandBlockRetentionLimit() {
+  const testOverride = typeof window !== 'undefined'
+    ? Number(window.__ORPAD_TERMINAL_HISTORY_LIMIT__)
+    : NaN;
+  const limit = Number.isFinite(testOverride) ? testOverride : DEFAULT_MAX_COMMAND_BLOCKS;
+  return Math.max(1, Math.floor(limit));
 }
 
 function normalizePath(value) {
@@ -157,6 +166,47 @@ function dispatchTerminalOutput(block) {
       finishedAt: block.finishedAt,
     },
   }));
+}
+
+function disposeCommandBlock(block) {
+  if (!block) return;
+  if (block.pre) block.pre.textContent = '';
+  block.output = '';
+  block.details?.remove();
+  block.details = null;
+  block.pre = null;
+  block.badge = null;
+  block.toolbar = null;
+}
+
+function pruneCompletedCommandBlocks(session) {
+  const limit = commandBlockRetentionLimit();
+  let retained = 0;
+  for (let index = 0; index < session.blocks.length;) {
+    const block = session.blocks[index];
+    if (block.finishedAt) {
+      retained += 1;
+      if (retained > limit) {
+        session.blocks.splice(index, 1);
+        disposeCommandBlock(block);
+        continue;
+      }
+    }
+    index += 1;
+  }
+}
+
+function latestFinishedBlock(sessions) {
+  let latest = null;
+  for (const session of sessions) {
+    for (const block of session.blocks) {
+      if (!block.finishedAt) continue;
+      if (!latest || String(block.finishedAt || '') > String(latest.finishedAt || '')) {
+        latest = block;
+      }
+    }
+  }
+  return latest;
 }
 
 async function writeClipboardText(text) {
@@ -278,8 +328,9 @@ function finishCommandBlock(session, exitCode) {
   }
 
   session.currentBlock = null;
-  session.renderBlockCount?.();
   dispatchTerminalOutput(block);
+  pruneCompletedCommandBlocks(session);
+  session.renderBlockCount?.();
 }
 
 function handleOsc633(session, code, param) {
@@ -1062,21 +1113,16 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     },
     refreshLocale,
     getLastOutput() {
-      for (const session of sessions) {
-        const block = session.blocks.find(item => item.finishedAt);
-        if (block) {
-          return {
-            runId: block.id,
-            source: 'terminal',
-            commandLine: block.commandLine,
-            cwd: block.cwd,
-            exitCode: block.exitCode,
-            output: stripAnsi(block.output || ''),
-            finishedAt: block.finishedAt,
-          };
-        }
-      }
-      return null;
+      const block = latestFinishedBlock(sessions);
+      return block ? {
+        runId: block.id,
+        source: 'terminal',
+        commandLine: block.commandLine,
+        cwd: block.cwd,
+        exitCode: block.exitCode,
+        output: stripAnsi(block.output || ''),
+        finishedAt: block.finishedAt,
+      } : null;
     },
     destroy() {
       document.removeEventListener('pointerdown', handleDocumentPointerDown, true);

@@ -1076,7 +1076,18 @@ function executableNameCandidates(command, env = process.env) {
     .split(';')
     .map(item => item.trim())
     .filter(Boolean);
-  return [raw, ...pathext.map(ext => `${raw}${ext.toLowerCase()}`), ...pathext.map(ext => `${raw}${ext.toUpperCase()}`)];
+  const candidates = [
+    ...pathext.map(ext => `${raw}${ext.toLowerCase()}`),
+    ...pathext.map(ext => `${raw}${ext.toUpperCase()}`),
+    raw,
+  ];
+  const seen = new Set();
+  return candidates.filter(candidate => {
+    const key = candidate.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function fileIsRunnable(filePath) {
@@ -1092,12 +1103,26 @@ async function findExecutableOnPath(command, env = process.env, workspaceRoot = 
   const raw = String(command || '').trim();
   if (!raw) return '';
   const hasPathSeparator = raw.includes('/') || raw.includes('\\');
-  if (path.isAbsolute(raw)) return await fileIsRunnable(raw) ? raw : '';
+  if (path.isAbsolute(raw)) {
+    for (const candidate of executableNameCandidates(raw, env)) {
+      if (await fileIsRunnable(candidate)) return candidate;
+    }
+    return '';
+  }
   if (hasPathSeparator && workspaceRoot) {
     const resolved = path.resolve(workspaceRoot, raw);
-    return await fileIsRunnable(resolved) ? resolved : '';
+    for (const candidate of executableNameCandidates(resolved, env)) {
+      if (await fileIsRunnable(candidate)) return candidate;
+    }
+    return '';
   }
-  if (hasPathSeparator) return await fileIsRunnable(path.resolve(raw)) ? path.resolve(raw) : '';
+  if (hasPathSeparator) {
+    const resolved = path.resolve(raw);
+    for (const candidate of executableNameCandidates(resolved, env)) {
+      if (await fileIsRunnable(candidate)) return candidate;
+    }
+    return '';
+  }
   for (const entry of pathEntriesFromEnv(env)) {
     for (const name of executableNameCandidates(raw, env)) {
       const candidate = path.join(entry, name);

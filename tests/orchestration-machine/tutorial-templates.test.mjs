@@ -11,7 +11,11 @@ const { validateRunbookFile } = require('../../src/main/runbooks/validator');
 const {
   createMachineRun,
   executeMachineRunStep,
+  findQueueItem,
+  readActiveClaimLeases,
+  readActiveWriteSetLocks,
   readMachineEvents,
+  readBudgetLedger,
 } = require('../../src/main/orchestration-machine');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,6 +40,21 @@ const PIPELINE_TEMPLATES = [
   {
     label: 'maintenance-quality-workstream',
     pipelinePath: 'nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline',
+    expectExecutable: false,
+  },
+  {
+    label: 'ralph-verify-fix-loop',
+    pipelinePath: 'nodes/orpad.workstream/examples/ralph-verify-fix-loop/pipeline.or-pipeline',
+    expectExecutable: false,
+  },
+  {
+    label: 'ultraqa-gate-cycle',
+    pipelinePath: 'nodes/orpad.workstream/examples/ultraqa-gate-cycle/pipeline.or-pipeline',
+    expectExecutable: false,
+  },
+  {
+    label: 'consensus-decision-gate',
+    pipelinePath: 'nodes/orpad.core/examples/consensus-decision-gate/pipeline.or-pipeline',
     expectExecutable: false,
   },
 ];
@@ -105,7 +124,7 @@ test('product build workstream template runs to completion against its harness f
   assert.ok(workerResult, 'product build run must produce a worker.result event');
   assert.equal(workerResult.payload.status, 'done');
   assert.deepEqual(workerResult.payload.changedFiles, ['product-plan.md']);
-  assert.equal(executed.finalization.summaryStatus, 'blocked');
+  assert.equal(executed.finalization.summaryStatus, 'partial');
   assert.equal(executed.finalization.supportBlocked.nodePath, 'main/patch-review');
 
   // Fork-Join Phase 2 dry-run diagnostic: when a support node
@@ -162,6 +181,118 @@ test('product build workstream template runs to completion against its harness f
     blockedEvents[0].sequence > lastWorkerCompleted.sequence,
     `patch-review blocked sequence (${blockedEvents[0].sequence}) must come after last worker completed (${lastWorkerCompleted.sequence})`,
   );
+
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
+// R4 integration: exercise the executeWorkerClaim budget wiring end to end on the
+// deterministic product-build harness fixture, with a budget injected onto the
+// pipeline's machineAdapter. The harness keeps the worker free of CLI cost while
+// hasLiveAdapter makes `adapter` (and thus liftedPipelineAdapter(adapter).budget)
+// non-null so the R4 block actually runs. This is the spec the QA review flagged
+// as missing: helper unit tests cannot prove the guard short-circuits the spawn,
+// emits the pre-worker warning, or records the estimated ledger entry.
+async function setupBudgetedProductBuild(repoRootDir, budget) {
+  const sourceDir = path.join(repoRootDir, 'nodes/orpad.workstream/examples/product-build-workstream');
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-r4-budget-'));
+  const pipelineDir = path.join(workspaceRoot, '.orpad/pipelines/product-build-workstream');
+  await fs.mkdir(path.join(pipelineDir, 'graphs'), { recursive: true });
+  const pipeline = JSON.parse(await fs.readFile(path.join(sourceDir, 'pipeline.or-pipeline'), 'utf8'));
+  // Inject a runnable CLI adapter carrying the budget. hasHarness still wins for
+  // execution routing (worker uses the nodeCliPatch fixture), but `adapter` is
+  // now non-null so the worker-path budget governance activates.
+  pipeline.run.machineAdapter = {
+    schemaVersion: 'orpad.machineAdapter.v2',
+    enabled: true,
+    default: {
+      family: 'cli', providerId: 'codex-cli', model: 'codex', qualityTier: 'standard',
+      sessionStrategy: 'none', toolPolicy: 'none', sandbox: null, approvalPolicy: 'never',
+      timeoutMs: 600000, ephemeral: true,
+    },
+    budget,
+  };
+  await fs.writeFile(path.join(pipelineDir, 'pipeline.or-pipeline'), JSON.stringify(pipeline, null, 2), 'utf8');
+  await fs.copyFile(
+    path.join(sourceDir, 'graphs/main.or-graph'),
+    path.join(pipelineDir, 'graphs/main.or-graph'),
+  );
+  await fs.writeFile(path.join(workspaceRoot, 'product-plan.md'), 'before product build run\n', 'utf8');
+  const pipelinePath = path.join(pipelineDir, 'pipeline.or-pipeline');
+  const run = await createMachineRun({ workspaceRoot, pipelinePath, runId: 'run_20260603_r4_budget' });
+  return { workspaceRoot, pipelineDir, pipelinePath, run };
+}
+
+test('R4: a hardStop token budget blocks the worker BEFORE it spawns and emits a pre-worker budget.warning', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await setupBudgetedProductBuild(
+    repoRoot,
+    { perRunTokens: 1, hardStop: true },
+  );
+  // The pre-spawn guard throws BUDGET_EXCEEDED inside the worker node; the run
+  // finalizes blocked/failed rather than crashing.
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  }).catch(() => {});
+
+  const events = await readMachineEvents(run.runRoot);
+  const warning = events.find(e => e.eventType === 'budget.warning' && e.payload?.phase === 'pre-worker');
+  assert.ok(warning, 'expected a pre-worker budget.warning');
+  assert.equal(warning.payload.hardStop, true);
+  assert.equal(warning.payload.usageSource, 'estimated');
+  assert.ok((warning.payload.violations || []).some(v => v.kind === 'per-run-tokens'), 'token ceiling breach');
+
+  const workerResult = events.find(e => e.eventType === 'worker.result');
+  assert.equal(workerResult, undefined, 'worker fixture must NOT run when the hardStop guard fires before spawn');
+  const recovery = events.find(e => e.eventType === 'queue.transition' && e.reason === 'budget.hard-stop');
+  assert.ok(recovery, 'budget hard stop must release the claimed queue item through a durable transition');
+  assert.equal(recovery.fromState, 'claimed');
+  assert.equal(recovery.toState, 'queued');
+  assert.equal((await findQueueItem(run.runRoot, recovery.itemId)).state, 'queued');
+  assert.equal((await readActiveClaimLeases(run.runRoot)).length, 0);
+  assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
+  // The estimate is NOT recorded on a hard stop (recording runs only after the
+  // worker loop, which never executes).
+  const ledger = await readBudgetLedger(run.runRoot);
+  assert.equal(ledger.entries.length, 0, 'no ledger entry on a pre-spawn hard stop');
+
+  await fs.rm(workspaceRoot, { recursive: true, force: true });
+});
+
+test('R4: a soft token budget warns, lets the worker run, and records an estimated ledger entry', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await setupBudgetedProductBuild(
+    repoRoot,
+    { perRunTokens: 1, hardStop: false },
+  );
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  const events = await readMachineEvents(run.runRoot);
+  const warning = events.find(e => e.eventType === 'budget.warning' && e.payload?.phase === 'pre-worker');
+  assert.ok(warning, 'expected a pre-worker budget.warning on the soft budget too');
+  assert.equal(warning.payload.hardStop, false);
+
+  const workerResult = events.find(e => e.eventType === 'worker.result');
+  assert.ok(workerResult, 'soft budget must let the worker fixture run');
+  assert.equal(workerResult.payload.status, 'done');
+
+  const ledger = await readBudgetLedger(run.runRoot);
+  const estimated = ledger.entries.filter(entry => entry.usageSource === 'estimated');
+  assert.equal(estimated.length, 1, 'exactly one estimated worker entry is recorded');
+  assert.equal(estimated[0].nodePath, 'main/worker');
+  assert.ok(estimated[0].totalTokens > 0, 'estimated entry carries token counts');
+  assert.ok(Number.isFinite(estimated[0].sourceEventSequence), 'estimate is bound to the worker.result event sequence');
 
   await fs.rm(workspaceRoot, { recursive: true, force: true });
 });

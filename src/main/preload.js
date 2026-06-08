@@ -139,8 +139,8 @@ contextBridge.exposeInMainWorld('orpad', {
   },
   orchestrationWindow: {
     open: (request = {}) => ipcRenderer.invoke('orchestration-window-open', request),
-    focus: () => ipcRenderer.invoke('orchestration-window-focus'),
-    status: () => ipcRenderer.invoke('orchestration-window-status'),
+    focus: (request = {}) => ipcRenderer.invoke('orchestration-window-focus', request),
+    status: (request = {}) => ipcRenderer.invoke('orchestration-window-status', request),
   },
   machine: {
     status: () => ipcRenderer.invoke('machine-status'),
@@ -151,6 +151,7 @@ contextBridge.exposeInMainWorld('orpad', {
     listRuns: (request) => ipcRenderer.invoke('machine-list-runs', request),
     executeRunStep: (request) => ipcRenderer.invoke('machine-execute-run-step', request),
     resumeRun: (request) => ipcRenderer.invoke('machine-resume-run', request),
+    pauseRun: (request) => ipcRenderer.invoke('machine-pause-run', request),
     cancelRun: (request) => ipcRenderer.invoke('machine-cancel-run', request),
     cancelClaim: (request) => ipcRenderer.invoke('machine-cancel-claim', request),
     decideApproval: (request) => ipcRenderer.invoke('machine-decide-approval', request),
@@ -165,6 +166,18 @@ contextBridge.exposeInMainWorld('orpad', {
     readBudgetLedger: (request) => ipcRenderer.invoke('machine-read-budget-ledger', request),
     skipNode: (request) => ipcRenderer.invoke('machine-skip-node', request),
     retryNode: (request) => ipcRenderer.invoke('machine-retry-node', request),
+    rejectItem: (request) => ipcRenderer.invoke('machine-reject-item', request),
+    reprioritizeItem: (request) => ipcRenderer.invoke('machine-reprioritize-item', request),
+    injectItem: (request) => ipcRenderer.invoke('machine-inject-item', request),
+    editItem: (request) => ipcRenderer.invoke('machine-edit-item', request),
+    // PUSH STREAM: subscribe to main->renderer per-step progress nudges during an
+    // autonomous drive. Returns an unsubscribe function. The payload is advisory
+    // (runId/stepIndex/sequence) — the renderer re-fetches the snapshot via getRun.
+    onRunProgress: (cb) => {
+      const listener = (_event, payload) => cb(payload);
+      ipcRenderer.on('machine-run-progress', listener);
+      return () => ipcRenderer.removeListener('machine-run-progress', listener);
+    },
   },
   userSnippets: {
     read: () => ipcRenderer.invoke('snippets-read'),

@@ -45,11 +45,13 @@ test('orpad generate writes an orchestration-focused pipeline package', async (t
   assert.deepEqual(pipeline.run.queueProtocol.states, ['candidate', 'queued', 'claimed', 'done', 'blocked', 'rejected']);
 
   const graph = JSON.parse(await fs.readFile(result.graphPath, 'utf-8'));
-  assert.deepEqual(graph.graph.nodes.map(node => node.type), [
+  const nodeTypes = graph.graph.nodes.map(node => node.type);
+  for (const requiredType of [
     'orpad.entry',
     'orpad.context',
     'orpad.selector',
     'orpad.probe',
+    'orpad.barrier',
     'orpad.workQueue',
     'orpad.triage',
     'orpad.dispatcher',
@@ -58,7 +60,12 @@ test('orpad generate writes an orchestration-focused pipeline package', async (t
     'orpad.gate',
     'orpad.artifactContract',
     'orpad.exit',
-  ]);
+  ]) {
+    assert.equal(nodeTypes.includes(requiredType), true, `${requiredType} should be present`);
+  }
+  assert.equal(graph.graph.nodes.filter(node => node.type === 'orpad.probe').length >= 2, true);
+  assert.ok(graph.graph.nodes.find(node => node.id === 'external-research-mode'));
+  assert.ok(graph.graph.nodes.find(node => node.id === 'join-research-evidence'));
   assert.deepEqual(
     graph.graph.nodes.find(node => node.type === 'orpad.workerLoop').config.targetFiles,
     [],

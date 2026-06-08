@@ -70,6 +70,7 @@ const {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
 const builtInDiskParityPackIds = ['orpad.core', 'orpad.workstream'];
+const frontendUxStarterPackId = 'orpad.starter.frontend-ux';
 
 function sortedList(values) {
   return (Array.isArray(values) ? values : [])
@@ -97,9 +98,86 @@ function normalizedBuiltInParityContract(pack) {
   };
 }
 
+function normalizedDependencyDeclarations(pack) {
+  return (Array.isArray(pack?.dependsOn) ? pack.dependsOn : [])
+    .map(dependency => ({
+      id: String(dependency?.id || '').trim(),
+      version: String(dependency?.version || '').trim(),
+    }))
+    .filter(dependency => dependency.id || dependency.version)
+    .sort((left, right) => (
+      left.id.localeCompare(right.id)
+      || left.version.localeCompare(right.version)
+    ));
+}
+
+function normalizedGraphDeclarations(pack) {
+  return (Array.isArray(pack?.graphs) ? pack.graphs : [])
+    .map(graph => ({
+      id: String(graph?.id || '').trim(),
+      path: String(graph?.path || '').trim(),
+      label: String(graph?.label || '').trim(),
+      role: String(graph?.role || '').trim(),
+      description: String(graph?.description || '').trim(),
+      inputs: sortedList(graph?.inputs),
+      outputs: sortedList(graph?.outputs),
+    }))
+    .sort((left, right) => (
+      left.id.localeCompare(right.id)
+      || left.path.localeCompare(right.path)
+    ));
+}
+
+function normalizedSkillDeclarations(pack) {
+  return (Array.isArray(pack?.skills) ? pack.skills : [])
+    .map(skill => ({
+      id: String(skill?.id || '').trim(),
+      path: String(skill?.path || '').trim(),
+      description: String(skill?.description || '').trim(),
+    }))
+    .sort((left, right) => (
+      left.id.localeCompare(right.id)
+      || left.path.localeCompare(right.path)
+    ));
+}
+
+function normalizedRuleDeclarations(pack) {
+  return (Array.isArray(pack?.rules) ? pack.rules : [])
+    .map(rule => ({
+      id: String(rule?.id || '').trim(),
+      path: String(rule?.path || '').trim(),
+      description: String(rule?.description || '').trim(),
+    }))
+    .sort((left, right) => (
+      left.id.localeCompare(right.id)
+      || left.path.localeCompare(right.path)
+    ));
+}
+
+function normalizedStarterRoutingContract(pack) {
+  return {
+    id: String(pack?.id || '').trim(),
+    compatibility: {
+      orpad: String(pack?.compatibility?.orpad || '').trim(),
+      pipelineSchema: String(pack?.compatibility?.pipelineSchema || '').trim(),
+      packFormat: String(pack?.compatibility?.packFormat || '').trim(),
+    },
+    dependsOn: normalizedDependencyDeclarations(pack),
+    graphs: normalizedGraphDeclarations(pack),
+    skills: normalizedSkillDeclarations(pack),
+    rules: normalizedRuleDeclarations(pack),
+  };
+}
+
 function builtInManifest(packId) {
   const manifest = BUILT_IN_NODE_PACK_MANIFESTS.find(pack => pack.id === packId);
   assert.ok(manifest, `missing built-in Package ${packId}`);
+  return manifest;
+}
+
+function starterManifest(packId) {
+  const manifest = STARTER_NODE_PACK_MANIFESTS.find(pack => pack.id === packId);
+  assert.ok(manifest, `missing starter Package ${packId}`);
   return manifest;
 }
 
@@ -401,6 +479,25 @@ test('starter situation Packages are portable metadata-only packs on disk', asyn
         const stat = await fs.stat(path.join(packRoot, asset.path));
         assert.equal(stat.isFile(), true, `${nodePack.id} declares missing ${collection} asset ${asset.path}`);
       }
+    }
+  }
+});
+
+test('frontend UX starter disk manifest matches catalog compatibility and routing assets', async () => {
+  const catalogManifest = starterManifest(frontendUxStarterPackId);
+  const packRoot = path.join(repoRoot, 'nodes', frontendUxStarterPackId);
+  const diskManifest = JSON.parse(await fs.readFile(path.join(packRoot, 'orpad.node-pack.json'), 'utf-8'));
+
+  assert.deepEqual(
+    normalizedStarterRoutingContract(diskManifest),
+    normalizedStarterRoutingContract(catalogManifest),
+    `${frontendUxStarterPackId} starter disk manifest drifted from catalog compatibility, dependencies, or routing asset declarations`,
+  );
+
+  for (const collection of ['graphs', 'skills', 'rules']) {
+    for (const asset of diskManifest[collection] || []) {
+      const stat = await fs.stat(path.join(packRoot, asset.path));
+      assert.equal(stat.isFile(), true, `${frontendUxStarterPackId} declares missing ${collection} asset ${asset.path}`);
     }
   }
 });

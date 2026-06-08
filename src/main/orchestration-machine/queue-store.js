@@ -5,8 +5,12 @@ const { appendMachineEvent, readMachineEvents } = require('./events');
 const { assertMachineStorageId } = require('./ids');
 const { atomicWriteFile, ensureDir, writeJsonAtomic } = require('./metadata-store');
 const { normalizeCandidateProposal } = require('./work-item-normalizer');
+const { createContractValidator } = require('./contracts');
 
 const fsp = fs.promises;
+// STEER edit: re-validate a human-patched work item against the schema before
+// persisting, so an edit can never write a malformed item.
+const workItemValidator = createContractValidator();
 
 const QUEUE_STATES = Object.freeze(['candidate', 'queued', 'claimed', 'done', 'blocked', 'rejected']);
 const TRANSITION_ACTIONS = Object.freeze({
@@ -18,9 +22,15 @@ const TRANSITION_ACTIONS = Object.freeze({
   'claimed->done': 'close',
   'claimed->blocked': 'close',
   'claimed->queued': 'close',
+  'claimed->rejected': 'close',
   'blocked->queued': 'retry',
   'blocked->rejected': 'triage',
   'done->queued': 'retry',
+  // STEER: a human can reject a still-queued item ("leave this out"). Routed
+  // through transitionQueueItem so it is a standard, replayable queue.transition
+  // (candidate->rejected and blocked->rejected already exist for triage-time
+  // rejection; this adds the queued case for in-run human steering).
+  'queued->rejected': 'reject',
 });
 const LEGACY_ACTORS = Object.freeze({
   ingest: 'orpad.workQueue',
@@ -28,6 +38,7 @@ const LEGACY_ACTORS = Object.freeze({
   claim: 'orpad.dispatcher',
   close: 'orpad.workerLoop',
   retry: 'orpad.workerLoop',
+  reject: 'orpad.triage',
 });
 
 function queueRoot(runRoot) {
@@ -308,7 +319,10 @@ async function transitionQueueItem(runRoot, options = {}) {
     err.expectedState = safeExpectedFromState;
     throw err;
   }
-  const action = transitionAction(current.state, safeToState);
+  let action = transitionAction(current.state, safeToState);
+  if (!action && options.allowRejectedRetry === true && current.state === 'rejected' && safeToState === 'queued') {
+    action = 'retry';
+  }
   if (!action) throw new Error(`Invalid queue transition: ${current.state} -> ${safeToState}`);
 
   const itemPatch = typeof options.itemPatch === 'function'
@@ -342,6 +356,73 @@ async function transitionQueueItem(runRoot, options = {}) {
   return { event, item: nextItem, journal };
 }
 
+// STEER "do this first": record a human reprioritization as a durable
+// `queue.reprioritized` event. It is NOT a state change (the item stays queued),
+// so it never touches projectQueueStateFromEvents — the dispatcher's claim order
+// reads it separately (see projectQueueSteerPriorityFromEvents). The event's
+// SEQUENCE is the priority (monotonic, replay-deterministic): later = claimed
+// sooner. No snapshot mutation and no new persisted item field, so it is fully
+// replayable from events with zero schema/migration concerns.
+async function reprioritizeQueueItem(runRoot, options = {}) {
+  const safeItemId = assertMachineStorageId(options.itemId, 'itemId');
+  if (!options.runId) throw new Error('runId is required.');
+  const event = await appendMachineEvent(runRoot, {
+    runId: options.runId,
+    actor: options.actor || 'machine',
+    eventType: 'queue.reprioritized',
+    itemId: safeItemId,
+    reason: options.reason || 'queue.reprioritized',
+    payload: { itemId: safeItemId, ...(options.payload || {}) },
+  });
+  return { event };
+}
+
+// STEER "fix this": edit a pending work item's content in place (NOT a state
+// change — it stays in its current state). Records a durable `queue.edited` event
+// carrying the patch (audit + replay-of-intent) and rewrites the snapshot. id and
+// state are never editable; the patched item is re-validated against the workItem
+// schema so a steer edit can never persist a malformed item. The repair path
+// (lifecycle.repairDerivedQueueFilesFromEvents) preserves snapshot content, so the
+// edit is as durable as the original ingested content.
+async function editQueueItem(runRoot, options = {}) {
+  const safeItemId = assertMachineStorageId(options.itemId, 'itemId');
+  if (!options.runId) throw new Error('runId is required.');
+  const patch = (options.patch && typeof options.patch === 'object' && !Array.isArray(options.patch))
+    ? options.patch
+    : {};
+  const current = await findQueueItem(runRoot, safeItemId, { canonicalOnly: false });
+  if (!current) {
+    throw queueStoreError('MACHINE_QUEUE_ITEM_NOT_FOUND', `Queue item not found: ${safeItemId}`);
+  }
+  const now = options.now instanceof Date ? options.now.toISOString() : (options.now || new Date().toISOString());
+  const nextItem = {
+    ...current.item,
+    ...patch,
+    id: safeItemId,
+    state: current.state,
+    updatedAt: now,
+  };
+  try {
+    workItemValidator.assertValid('workItem', nextItem);
+  } catch (validationErr) {
+    throw queueStoreError('MACHINE_QUEUE_ITEM_INVALID', `Edited work item failed schema validation: ${validationErr.message}`);
+  }
+  await writeQueueItem(runRoot, nextItem);
+  // An edit updates the snapshot in place (state is unchanged), so there is no new
+  // queue.transition. Record the same artifactRef the last transition used so the
+  // queue.edited event is self-documenting about which snapshot file holds the edit.
+  const event = await appendMachineEvent(runRoot, {
+    runId: options.runId,
+    actor: options.actor || 'machine',
+    eventType: 'queue.edited',
+    itemId: safeItemId,
+    reason: options.reason || 'queue.edited',
+    artifactRefs: [`queue/${current.state}/${safeItemId}.json`],
+    payload: { itemId: safeItemId, patch, state: current.state },
+  });
+  return { event, item: nextItem };
+}
+
 function projectQueueStateFromEvents(events) {
   const states = new Map();
   for (const event of events) {
@@ -351,18 +432,39 @@ function projectQueueStateFromEvents(events) {
   return states;
 }
 
+// STEER: fold `queue.reprioritized` events into itemId -> latest priority (the
+// event sequence; higher = more recently steered "do this first"). The dispatcher
+// sorts queued items by this BEFORE severity. An empty map (no reprioritizations)
+// leaves claim order identical to the default, so the feature is gated by data.
+function projectQueueSteerPriorityFromEvents(events = []) {
+  const priority = new Map();
+  let fallback = 0;
+  for (const event of events || []) {
+    if (event?.eventType !== 'queue.reprioritized') continue;
+    const itemId = String(event.itemId || event.payload?.itemId || '').trim();
+    if (!itemId) continue;
+    fallback += 1;
+    const seq = Number(event.sequence);
+    priority.set(itemId, Number.isFinite(seq) ? seq : fallback);
+  }
+  return priority;
+}
+
 module.exports = {
   QUEUE_STATES,
   TRANSITION_ACTIONS,
   assertQueueItemPathSafe,
   appendLegacyJournal,
   assertQueueJournalPathSafe,
+  editQueueItem,
   ensureQueueLayout,
   findQueueItem,
   ingestCandidateProposal,
   legacyJournalFromEvent,
   legacyJournalRecordsFromEvents,
   projectQueueStateFromEvents,
+  projectQueueSteerPriorityFromEvents,
+  reprioritizeQueueItem,
   assertQueueState,
   queueItemPath,
   queueJournalPath,

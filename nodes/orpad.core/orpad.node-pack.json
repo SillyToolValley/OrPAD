@@ -81,6 +81,12 @@
       "path": "examples/release-risk-routing/pipeline.or-pipeline",
       "label": "Release Risk Routing",
       "description": "Release readiness selector that routes evidence to ship, fix-forward, or hold decisions."
+    },
+    {
+      "id": "consensus-decision-gate",
+      "path": "examples/consensus-decision-gate/pipeline.or-pipeline",
+      "label": "Consensus Decision Gate",
+      "description": "Supervised consensus recipe: gather independent risk, user, and cost perspectives, then a consensus gate that loops back to re-gather them until they converge before recording the decision."
     }
   ]
 }

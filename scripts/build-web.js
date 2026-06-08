@@ -27,6 +27,16 @@ const ROOT = path.join(__dirname, '..');
 const OUT = path.join(ROOT, 'docs');
 const PACKAGE = require('../package.json');
 const WEB_TARGETS = ['chrome90', 'firefox90', 'safari14', 'edge90'];
+const REQUIRED_OUTPUT_FILES = [
+  'index.html',
+  'renderer.js',
+  'manifest.webmanifest',
+  'sw.js',
+  'orpad-mark.png',
+  'ui-scale.js',
+  'styles/base.css',
+  'styles/katex.min.css',
+];
 // The web manifest uses relative start_url/scope/action values so the same
 // artifact works on GitHub Pages, localhost, and a future root custom domain.
 
@@ -124,6 +134,32 @@ function copyPwaAssets() {
   fs.writeFileSync(path.join(OUT, 'sw.js'), sw, 'utf-8');
 }
 
+function verifyWebOutput() {
+  for (const rel of REQUIRED_OUTPUT_FILES) {
+    const file = path.join(OUT, rel);
+    if (!fs.existsSync(file)) {
+      throw new Error(`Web build missing required output: ${rel}`);
+    }
+    const stat = fs.statSync(file);
+    if (!stat.isFile() || stat.size === 0) {
+      throw new Error(`Web build produced an empty or invalid output: ${rel}`);
+    }
+  }
+
+  const indexHtml = fs.readFileSync(path.join(OUT, 'index.html'), 'utf-8');
+  if (!indexHtml.includes('renderer.js')) {
+    throw new Error('Web build index.html does not load renderer.js');
+  }
+  if (!indexHtml.includes('manifest.webmanifest')) {
+    throw new Error('Web build index.html does not link manifest.webmanifest');
+  }
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(OUT, 'manifest.webmanifest'), 'utf-8'));
+  if (manifest.start_url !== './' || manifest.scope !== './') {
+    throw new Error('Web build manifest must use relative start_url and scope for Pages/local parity');
+  }
+}
+
 async function main() {
   const minify = process.argv.includes('--minify');
 
@@ -207,6 +243,8 @@ async function main() {
 
   // GitHub Pages: don't run through Jekyll
   fs.writeFileSync(path.join(OUT, '.nojekyll'), '', 'utf-8');
+
+  verifyWebOutput();
 
   const sizeKb = (fs.statSync(path.join(OUT, 'renderer.js')).size / 1024).toFixed(0);
   console.log(`  renderer.js  ${sizeKb} KB${minify ? ' (minified)' : ''}`);

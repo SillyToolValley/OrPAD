@@ -1,0 +1,40 @@
+{
+  "kind": "orpad.pipeline",
+  "schemaVersion": "1.0",
+  "version": "1.0",
+  "id": "ultraqa-gate-cycle",
+  "title": "UltraQA Gate Cycle",
+  "description": "Supervised exhaustive-QA recipe (OMC/OMX 'UltraQA'): a worker's change passes through a chain of independent quality gates - correctness, security, and regression - and any gate that fails routes back to the worker to address that dimension before re-entering the chain. Only when every dimension passes does it reach patch review. You supervise the cycle live and can pause, cancel, or steer. Copy before running and tailor each gate's criteria to your project.",
+  "template": true,
+  "trustLevel": "local-authored",
+  "entryGraph": "graphs/main.or-graph",
+  "graphs": {
+    "main": {
+      "file": "graphs/main.or-graph",
+      "description": "entry -> probe -> queue -> triage -> dispatcher -> worker -> correctness gate -> security gate -> regression gate -> patch review -> exit; each gate's failure routes back to the worker."
+    }
+  },
+  "nodePacks": [
+    {
+      "id": "orpad.core",
+      "version": ">=1.0.0-beta.4"
+    },
+    {
+      "id": "orpad.workstream",
+      "version": ">=1.0.0-beta.4"
+    }
+  ],
+  "executionPolicy": {
+    "mode": "template-only",
+    "copyBeforeRun": true,
+    "description": "Built-in supervised UltraQA template. Copy this pipeline into a workspace before running, then adapt each quality gate's criteria and the worker's target files to your task."
+  },
+  "run": {
+    "artifactRoot": ".orpad/harness/generated/latest-run/artifacts",
+    "artifactRootResolution": "workspace-root",
+    "queueRoot": ".orpad/harness/generated/latest-run/queue",
+    "queueRootResolution": "workspace-root",
+    "summaryPath": ".orpad/harness/generated/latest-run/summary.md",
+    "summaryPathResolution": "workspace-root"
+  }
+}

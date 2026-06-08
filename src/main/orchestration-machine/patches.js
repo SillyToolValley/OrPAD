@@ -7,6 +7,14 @@ const { readMachineEvents } = require('./events');
 const { normalizeWriteSetPath, normalizeWriteSetPaths, pathsOverlap } = require('./write-sets');
 
 const fsp = fs.promises;
+let rawFsp = fsp;
+try {
+  // Electron's original-fs reads .asar archives as ordinary files without
+  // toggling process.noAsar, which is global and unsafe under concurrent work.
+  rawFsp = require('original-fs').promises || fsp;
+} catch {
+  rawFsp = fsp;
+}
 
 function sha256Text(value) {
   return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
@@ -38,6 +46,16 @@ function isPathAllowedByWriteSet(filePath, allowedFiles = []) {
   return allowed.some(allowedPath => pathsOverlap(normalized, allowedPath));
 }
 
+function isIgnoredOverlayGeneratedArtifactPath(filePath) {
+  const normalized = normalizeWriteSetPath(filePath).toLowerCase();
+  return /(^|\/)(test-results|playwright-report|blob-report|coverage|\.nyc_output)\//.test(normalized);
+}
+
+function fatalPatchWriteSetViolations(patch = {}) {
+  return (patch.violations || [])
+    .filter(violation => !isIgnoredOverlayGeneratedArtifactPath(violation?.path));
+}
+
 function resolveWorkspacePath(root, relativePath) {
   const normalized = normalizeWriteSetPath(relativePath);
   const resolvedRoot = path.resolve(root);
@@ -49,9 +67,27 @@ function resolveWorkspacePath(root, relativePath) {
   return target;
 }
 
+function asarArchivePath(relativePath) {
+  const normalized = normalizeWriteSetPath(relativePath);
+  const segments = normalized.split('/').filter(Boolean);
+  const archiveIndex = segments.findIndex(segment => /\.asar$/i.test(segment));
+  if (archiveIndex < 0) return '';
+  return segments.slice(0, archiveIndex + 1).join('/');
+}
+
+function pathIncludesAsarArchive(filePath) {
+  return String(filePath || '')
+    .split(/[\\/]+/)
+    .some(segment => /\.asar$/i.test(segment));
+}
+
+async function fsForPath(filePath, fn) {
+  return fn(pathIncludesAsarArchive(filePath) ? rawFsp : fsp);
+}
+
 async function readTextIfExists(filePath) {
   try {
-    return await fsp.readFile(filePath, 'utf8');
+    return await fsForPath(filePath, targetFs => targetFs.readFile(filePath, 'utf8'));
   } catch (err) {
     if (err?.code === 'ENOENT') return null;
     throw err;
@@ -60,7 +96,7 @@ async function readTextIfExists(filePath) {
 
 async function readFileSnapshotIfExists(filePath) {
   try {
-    const buffer = await fsp.readFile(filePath);
+    const buffer = await fsForPath(filePath, targetFs => targetFs.readFile(filePath));
     return snapshotFromBuffer(buffer);
   } catch (err) {
     if (err?.code === 'ENOENT') return null;
@@ -150,6 +186,10 @@ async function walkFiles(root) {
     for (const entry of entries) {
       if (entry.name === '.git' || entry.name === 'node_modules') continue;
       const entryPath = path.join(dir, entry.name);
+      if (/\.asar$/i.test(entry.name)) {
+        files.push(entryPath);
+        continue;
+      }
       if (entry.isDirectory()) await visit(entryPath);
       else if (entry.isFile()) files.push(entryPath);
     }
@@ -167,19 +207,23 @@ async function copyAllowedFilesToOverlay(options = {}) {
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
   if (!overlayRoot) throw new Error('overlayRoot is required.');
   const copied = [];
-  const overlaySeedFiles = normalizeWriteSetPaths([...allowedFiles, ...readOnlyFiles]);
+  const overlaySeedFiles = [...new Set(
+    normalizeWriteSetPaths([...allowedFiles, ...readOnlyFiles])
+      .map(seedFile => asarArchivePath(seedFile) || seedFile),
+  )];
   for (const seedFile of overlaySeedFiles) {
     await assertNoSymlinkInWorkspacePath(workspaceRoot, seedFile);
     const source = resolveWorkspacePath(workspaceRoot, seedFile);
-    const stat = await fsp.stat(source).catch(err => (err?.code === 'ENOENT' ? null : Promise.reject(err)));
+    const stat = await fsForPath(source, targetFs => targetFs.stat(source))
+      .catch(err => (err?.code === 'ENOENT' ? null : Promise.reject(err)));
     if (!stat) continue;
-    if (stat.isDirectory()) {
+    if (!pathIncludesAsarArchive(source) && stat.isDirectory()) {
       const sourceFiles = await walkFiles(source);
       for (const sourceFile of sourceFiles) {
         const rel = relativePortable(workspaceRoot, sourceFile);
         const target = path.join(path.resolve(overlayRoot), ...rel.split('/'));
         await fsp.mkdir(path.dirname(target), { recursive: true });
-        await fsp.copyFile(sourceFile, target);
+        await fsForPath(sourceFile, targetFs => targetFs.copyFile(sourceFile, target));
         copied.push(rel);
       }
       continue;
@@ -187,7 +231,7 @@ async function copyAllowedFilesToOverlay(options = {}) {
     if (!stat.isFile()) continue;
     const target = path.join(path.resolve(overlayRoot), ...seedFile.split('/'));
     await fsp.mkdir(path.dirname(target), { recursive: true });
-    await fsp.copyFile(source, target);
+    await fsForPath(source, targetFs => targetFs.copyFile(source, target));
     copied.push(seedFile);
   }
   return copied.sort();
@@ -208,6 +252,7 @@ async function collectOverlayPatch(options = {}) {
   const allowed = normalizeWriteSetPaths(allowedFiles);
   const changes = [];
   const violations = [];
+  const ignoredGeneratedFiles = [];
 
   for (const relPath of [...overlayRelPaths].sort()) {
     const allowedPath = isPathAllowedByWriteSet(relPath, allowed);
@@ -215,6 +260,13 @@ async function collectOverlayPatch(options = {}) {
     const after = await readFileSnapshotIfExists(resolveWorkspacePath(overlayRoot, relPath));
     if (!allowedPath) {
       if ((before?.sha256 || '') !== (after?.sha256 || '')) {
+        if (before === null && after !== null && isIgnoredOverlayGeneratedArtifactPath(relPath)) {
+          ignoredGeneratedFiles.push({
+            path: relPath,
+            reason: 'overlay-generated-validation-artifact',
+          });
+          continue;
+        }
         violations.push({
           path: relPath,
           reason: 'outside-write-set',
@@ -252,6 +304,7 @@ async function collectOverlayPatch(options = {}) {
     allowedFiles: allowed,
     changes: changes.sort((a, b) => a.path.localeCompare(b.path)),
     violations: violations.sort((a, b) => a.path.localeCompare(b.path)),
+    ignoredGeneratedFiles: ignoredGeneratedFiles.sort((a, b) => a.path.localeCompare(b.path)),
   };
 }
 
@@ -259,10 +312,11 @@ function assertPatchWithinWriteSet(patch, allowedFiles = patch?.allowedFiles || 
   if (!patch || patch.schemaVersion !== 'orpad.patchArtifact.v1') {
     throw new Error('Invalid OrPAD patch artifact.');
   }
-  if ((patch.violations || []).length) {
+  const fatalViolations = fatalPatchWriteSetViolations(patch);
+  if (fatalViolations.length) {
     const err = new Error('Patch contains out-of-write-set violations.');
     err.code = 'PATCH_WRITE_SET_VIOLATION';
-    err.violations = patch.violations;
+    err.violations = fatalViolations;
     throw err;
   }
   const violation = (patch.changes || []).find(change => !isPathAllowedByWriteSet(change.path, allowedFiles));
@@ -405,7 +459,9 @@ module.exports = {
   assertPatchWithinWriteSet,
   collectOverlayPatch,
   copyAllowedFilesToOverlay,
+  fatalPatchWriteSetViolations,
   inspectPatchBase,
+  isIgnoredOverlayGeneratedArtifactPath,
   isPathAllowedByWriteSet,
   loadRunPatchArtifact,
   readTextIfExists,

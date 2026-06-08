@@ -6,6 +6,14 @@ import { startStaticServer } from '../../helpers';
 const docsDir = path.resolve('docs');
 const sourceManifestPath = path.resolve('src/web/manifest.webmanifest');
 const INTENTIONAL_FILE_HANDLER_EXCLUSIONS = new Set<string>();
+const REQUIRED_DOCS_ARTIFACTS = [
+  'index.html',
+  'renderer.js',
+  'manifest.webmanifest',
+  'sw.js',
+  'styles/base.css',
+];
+const consoleErrorsByPage = new WeakMap<Page, string[]>();
 
 function extractSupportedExts(sourcePath: string): string[] {
   const source = fs.readFileSync(sourcePath, 'utf-8');
@@ -36,6 +44,35 @@ function extractManifestFileHandlerExts(sourcePath: string): string[] {
 function expectSameExtSet(actual: string[], expected: string[]): void {
   expect([...new Set(actual)].sort()).toEqual([...new Set(expected)].sort());
 }
+
+function expectWebBuildArtifacts(): void {
+  const missing = REQUIRED_DOCS_ARTIFACTS.filter(rel => !fs.existsSync(path.join(docsDir, rel)));
+  expect(
+    missing,
+    `Missing web release artifacts: ${missing.join(', ')}. Run npm run build:web:min before web smoke tests.`,
+  ).toEqual([]);
+}
+
+function isUnexpectedConsoleError(text: string): boolean {
+  return !text.toLowerCase().includes('favicon');
+}
+
+test.beforeAll(() => {
+  expectWebBuildArtifacts();
+});
+
+test.beforeEach(async ({ page }) => {
+  const consoleErrors: string[] = [];
+  consoleErrorsByPage.set(page, consoleErrors);
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') consoleErrors.push(msg.text());
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  const realErrors = (consoleErrorsByPage.get(page) || []).filter(isUnexpectedConsoleError);
+  expect(realErrors).toEqual([]);
+});
 
 async function installHangingAiMock(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -482,9 +519,7 @@ test('web build loads, new-file works, no console errors', async ({ page }) => {
   await expect(page.locator('.tab-item')).toBeVisible({ timeout: 5000 });
 
   // No unexpected console errors (ignore favicon 404s)
-  const realErrors = consoleErrors.filter(
-    (e) => !e.toLowerCase().includes('favicon'),
-  );
+  const realErrors = consoleErrors.filter(isUnexpectedConsoleError);
   expect(realErrors).toHaveLength(0);
 
   await close();

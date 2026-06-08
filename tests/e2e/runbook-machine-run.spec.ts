@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -29,6 +29,203 @@ function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
     version: 1,
     workspaceRoot,
   }));
+}
+
+async function expectToolbarRunbarTelemetryVisible(page: Page): Promise<void> {
+  const runbar = page.locator('#toolbar [data-pipeline-preview-runbar]');
+  await expect(runbar).toBeVisible();
+  await expect(runbar.locator('.pipeline-runbar-status[role="status"]')).toBeVisible();
+  const telemetry = runbar.locator([
+    '.pipeline-runbar-status:not([role="status"])',
+    '.pipeline-runbar-current',
+    '.pipeline-runbar-progress',
+    '.pipeline-runbar-elapsed',
+    '.pipe-budget-chip',
+  ].join(', '));
+  const telemetryCount = await telemetry.count();
+  expect(telemetryCount, 'Toolbar runbar should expose at least one secondary telemetry chip.').toBeGreaterThan(0);
+  for (let index = 0; index < telemetryCount; index += 1) {
+    await expect(telemetry.nth(index), `Toolbar runbar telemetry chip ${index + 1} should remain visible.`).toBeVisible();
+  }
+}
+
+async function expectToolbarRunbarActionsClear(page: Page): Promise<void> {
+  const runbar = page.locator('#toolbar [data-pipeline-preview-runbar]');
+  const meta = runbar.locator('.pipeline-runbar-meta');
+  const actions = runbar.locator('.pipeline-runbar-actions');
+  const primaryRun = runbar.locator('.pipeline-run-primary');
+  const runMenu = runbar.locator('[data-pipeline-run-menu]');
+  await expect(meta).toBeVisible();
+  await expect(actions).toBeVisible();
+  await expect(primaryRun).toBeVisible();
+  await expect(runMenu).toBeVisible();
+
+  const [metaBox, actionsBox] = await Promise.all([
+    meta.boundingBox(),
+    actions.boundingBox(),
+  ]);
+  if (!metaBox || !actionsBox) {
+    throw new Error('Toolbar runbar telemetry or action bounds were unavailable.');
+  }
+  expect(metaBox.x + metaBox.width).toBeLessThanOrEqual(actionsBox.x + 1);
+
+  const layout = await runbar.evaluate((root) => {
+    const rectOf = (element: Element | null) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+    const overlaps = (a: ReturnType<typeof rectOf>, b: ReturnType<typeof rectOf>, tolerance = 1) => !!a && !!b
+      && a.left < b.right - tolerance
+      && a.right > b.left + tolerance
+      && a.top < b.bottom - tolerance
+      && a.bottom > b.top + tolerance;
+    const actionRect = rectOf(root.querySelector('.pipeline-runbar-actions'));
+    const runbarRect = rectOf(root);
+    const metaElement = root.querySelector('.pipeline-runbar-meta');
+    const chipSelectors = [
+      ['primary status', '.pipeline-runbar-status[role="status"]'],
+      ['current node', '.pipeline-runbar-current'],
+      ['progress', '.pipeline-runbar-progress'],
+    ];
+    const criticalTelemetry = chipSelectors.flatMap(([label, selector]) =>
+      [...root.querySelectorAll(selector)].map((element) => {
+        const rect = rectOf(element);
+        return {
+          label,
+          width: rect?.width || 0,
+          height: rect?.height || 0,
+          overlapsActions: overlaps(rect, actionRect),
+          clippedByRunbar: !!rect && !!runbarRect && (
+            rect.left < runbarRect.left - 1
+            || rect.right > runbarRect.right + 1
+            || rect.top < runbarRect.top - 1
+            || rect.bottom > runbarRect.bottom + 1
+          ),
+        };
+      }));
+    const actionTargets = [...root.querySelectorAll('.pipeline-run-primary, .pipeline-run-control, [data-pipeline-run-menu]')]
+      .map((element) => {
+        const rect = rectOf(element);
+        return {
+          label: element.getAttribute('aria-label') || element.getAttribute('title') || element.className || element.tagName,
+          width: rect?.width || 0,
+          height: rect?.height || 0,
+        };
+      });
+    const metaStyle = metaElement ? getComputedStyle(metaElement) : null;
+    return {
+      metaFlexWrap: metaStyle?.flexWrap || '',
+      metaOverflow: metaStyle?.overflow || '',
+      criticalTelemetry,
+      actionTargets,
+    };
+  });
+  expect(layout.metaFlexWrap, 'Toolbar runbar telemetry rail should wrap instead of squeezing every chip into one row.').toBe('wrap');
+  expect(layout.metaOverflow, 'Toolbar runbar telemetry should not be clipped by its own rail.').not.toBe('hidden');
+  expect(layout.criticalTelemetry.length, 'Toolbar runbar should expose primary status and any live progress/current-node chips.').toBeGreaterThan(0);
+  for (const chip of layout.criticalTelemetry) {
+    expect(chip.width, `${chip.label} chip should keep a readable width.`).toBeGreaterThanOrEqual(20);
+    expect(chip.height, `${chip.label} chip should keep a readable height.`).toBeGreaterThanOrEqual(16);
+    expect(chip.overlapsActions, `${chip.label} chip should not overlap run actions.`).toBe(false);
+    expect(chip.clippedByRunbar, `${chip.label} chip should stay inside the runbar surface.`).toBe(false);
+  }
+  expect(layout.actionTargets.length, 'Toolbar runbar should expose fixed-size run action targets.').toBeGreaterThanOrEqual(2);
+  for (const target of layout.actionTargets) {
+    expect(target.width, `${target.label} should preserve its tap target width.`).toBeGreaterThanOrEqual(23);
+    expect(target.height, `${target.label} should preserve its tap target height.`).toBeGreaterThanOrEqual(23);
+  }
+}
+
+async function expectToolbarRunbarTelemetryAtWidth(page: Page, width: number): Promise<void> {
+  await page.setViewportSize({ width, height: 720 });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  await expectToolbarRunbarTelemetryVisible(page);
+  await expectToolbarRunbarActionsClear(page);
+}
+
+async function expectRuntimeHeroGraphChrome(page: Page, label: string): Promise<void> {
+  const audit = await page.locator('.orch-graph-frame').first().evaluate((frame) => {
+    const rectOf = (element: Element | null) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    };
+    const overlaps = (a: ReturnType<typeof rectOf>, b: ReturnType<typeof rectOf>, tolerance = 1) => !!a && !!b
+      && a.left < b.right - tolerance
+      && a.right > b.left + tolerance
+      && a.top < b.bottom - tolerance
+      && a.bottom > b.top + tolerance;
+    const frameStyle = getComputedStyle(frame);
+    const runningNode = frame.querySelector<HTMLElement>('.orch-graph-node.runtime-running');
+    const activeEdge = frame.querySelector<SVGPathElement>('.orch-transition[data-machine-edge-state="active"]');
+    const runControls = frame.querySelector<HTMLElement>('.orch-graph-run-controls');
+    const runningStyle = runningNode ? getComputedStyle(runningNode) : null;
+    const activeEdgeStyle = activeEdge ? getComputedStyle(activeEdge) : null;
+    const nodeRects = [...frame.querySelectorAll<HTMLElement>('.orch-graph-node')].map(rectOf);
+    const runControlRect = rectOf(runControls);
+    return {
+      frameBackgroundImage: frameStyle.backgroundImage,
+      frameBackgroundColor: frameStyle.backgroundColor,
+      frameBoxShadow: frameStyle.boxShadow,
+      runControlsVisible: !!runControlRect,
+      runControlsOverlapNodeCount: nodeRects.filter(node => overlaps(node, runControlRect)).length,
+      runningNodeBackgroundImage: runningStyle?.backgroundImage || '',
+      runningNodeBackgroundColor: runningStyle?.backgroundColor || '',
+      runningNodeBoxShadow: runningStyle?.boxShadow || '',
+      runningNodeAnimationName: runningStyle?.animationName || '',
+      activeEdgeStrokeWidth: Number.parseFloat(activeEdgeStyle?.strokeWidth || '0'),
+      activeEdgeStrokeDasharray: activeEdgeStyle?.strokeDasharray || '',
+      activeEdgeFilter: activeEdgeStyle?.filter || '',
+    };
+  });
+
+  const transparentColor = 'rgba(0, 0, 0, 0)';
+  expect(audit.frameBackgroundImage, `${label}: live graph frame should use a solid soft dashboard surface`).toBe('none');
+  expect(audit.frameBackgroundColor, `${label}: live graph frame should retain a visible surface color`).not.toBe(transparentColor);
+  expect(audit.frameBoxShadow, `${label}: live graph frame should have depth`).not.toBe('none');
+  expect(audit.runControlsVisible, `${label}: run controls should remain visible on the graph`).toBe(true);
+  expect(audit.runControlsOverlapNodeCount, `${label}: run controls should not cover active nodes`).toBe(0);
+  expect(audit.runningNodeBackgroundImage, `${label}: running node should avoid decorative gradients`).toBe('none');
+  expect(audit.runningNodeBackgroundColor, `${label}: running node should keep a visible state surface`).not.toBe(transparentColor);
+  expect(audit.runningNodeBoxShadow, `${label}: running node should have a glow/depth treatment`).not.toBe('none');
+  expect(audit.runningNodeAnimationName, `${label}: running node should pulse when motion is allowed`).toContain('orch-runtime-pulse');
+  expect(audit.activeEdgeStrokeWidth, `${label}: active path should scan by weight, not color alone`).toBeGreaterThanOrEqual(5);
+  expect(audit.activeEdgeStrokeDasharray, `${label}: active path should scan by dash pattern, not color alone`).not.toBe('none');
+  expect(audit.activeEdgeFilter, `${label}: active path should have a static glow fallback`).not.toBe('none');
+}
+
+async function expectReducedMotionHeroGraphFallback(page: Page, label: string): Promise<void> {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  const audit = await page.locator('.orch-graph-frame').first().evaluate((frame) => {
+    const activeEdge = frame.querySelector<SVGPathElement>('.orch-transition[data-machine-edge-state="active"]');
+    const flowArrow = frame.querySelector<SVGTextElement>('.orch-transition-flow-arrows');
+    const runningNode = frame.querySelector<HTMLElement>('.orch-graph-node.runtime-running');
+    const activeStyle = activeEdge ? getComputedStyle(activeEdge) : null;
+    const arrowStyle = flowArrow ? getComputedStyle(flowArrow) : null;
+    const nodeStyle = runningNode ? getComputedStyle(runningNode) : null;
+    return {
+      activeEdgeAnimationName: activeStyle?.animationName || '',
+      activeEdgeFilter: activeStyle?.filter || '',
+      flowArrowDisplay: arrowStyle?.display || '',
+      runningNodeAnimationName: nodeStyle?.animationName || '',
+    };
+  });
+  expect(audit.flowArrowDisplay, `${label}: reduced motion should hide moving edge glyphs`).toBe('none');
+  expect(audit.activeEdgeAnimationName, `${label}: reduced motion should stop active edge dash animation`).toBe('none');
+  expect(audit.activeEdgeFilter, `${label}: reduced motion should keep a static path glow`).not.toBe('none');
+  expect(audit.runningNodeAnimationName, `${label}: reduced motion should stop running node pulse`).toBe('none');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
 }
 
 function writeMachineWorkspace(): { workspace: string; pipelinePath: string; pipelineDir: string } {
@@ -216,6 +413,92 @@ function removeMachineHarness(pipelinePath: string): void {
   fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
 }
 
+function writeHarnessReadinessArtifacts(generatedDir: string, options: {
+  status?: string;
+  blockers?: string[];
+  warnings?: string[];
+} = {}): void {
+  const status = options.status || 'ready';
+  const blockers = options.blockers || [];
+  const warnings = options.warnings || [];
+  const degradedTools = status === 'blocked' || status === 'degraded' ? 1 : 0;
+  const missingTools = status === 'blocked' ? 1 : 0;
+  fs.writeFileSync(path.join(generatedDir, 'project-profile.json'), JSON.stringify({
+    schemaVersion: 'orpad.projectProfile.v1',
+    projectStacks: [{ id: 'node-frontend', confidence: 'high' }],
+    requiredTools: ['node', 'npm', 'playwright'],
+    validationCommands: ['npm run build:renderer', 'npx playwright test --project=electron tests/e2e/runbook-machine-run.spec.ts'],
+  }, null, 2));
+  fs.writeFileSync(path.join(generatedDir, 'tool-health.json'), JSON.stringify({
+    schemaVersion: 'orpad.harnessToolHealth.v1',
+    summary: { total: 5, ready: 5 - degradedTools - missingTools, degraded: degradedTools, missing: missingTools, unknown: 0 },
+  }, null, 2));
+  fs.writeFileSync(path.join(generatedDir, 'validation-preflight.json'), JSON.stringify({
+    schemaVersion: 'orpad.harnessValidationPreflight.v1',
+    summary: { total: 3, ready: status === 'blocked' ? 1 : 2, blocked: status === 'blocked' ? 1 : 0, unknown: status === 'blocked' ? 1 : 0 },
+  }, null, 2));
+  fs.writeFileSync(path.join(generatedDir, 'mcp-plan.json'), JSON.stringify({
+    schemaVersion: 'orpad.harnessMcpPlan.v1',
+    recommendedServers: [
+      { id: 'filesystem', status: status === 'blocked' ? 'configured-not-running' : 'ready' },
+      { id: 'git', status: 'ready' },
+    ],
+    orpadCapabilities: [
+      { id: 'terminal', status: 'available' },
+      { id: 'browser', status: 'available' },
+    ],
+  }, null, 2));
+  fs.writeFileSync(path.join(generatedDir, 'harness-provisioning.json'), JSON.stringify({
+    schemaVersion: 'orpad.harnessProvisioning.v1',
+    status,
+    enforcement: { runBlockers: blockers, warnings },
+  }, null, 2));
+  fs.writeFileSync(path.join(generatedDir, 'README.md'), [
+    '# Harness Implementation',
+    '',
+    `Provisioning: ${status}`,
+  ].join('\n'));
+}
+
+function attachHarnessArtifactRefs(pipeline: any, implementedAt = ''): void {
+  pipeline.harness = {
+    ...(pipeline.harness || {}),
+    path: 'harness/generated',
+    implementationState: 'harness/generated/implementation-state.json',
+    projectProfile: 'harness/generated/project-profile.json',
+    provisioning: 'harness/generated/harness-provisioning.json',
+    toolHealth: 'harness/generated/tool-health.json',
+    validationPreflight: 'harness/generated/validation-preflight.json',
+    mcpPlan: 'harness/generated/mcp-plan.json',
+    ...(implementedAt ? { implementedAt } : {}),
+  };
+}
+
+function seededHarnessProvisioning(status: string, blockers: string[] = [], warnings: string[] = []) {
+  const degradedTools = status === 'blocked' || status === 'degraded' ? 1 : 0;
+  const missingTools = status === 'blocked' ? 1 : 0;
+  return {
+    path: 'harness-provisioning.json',
+    toolHealthPath: 'tool-health.json',
+    validationPreflightPath: 'validation-preflight.json',
+    mcpPlanPath: 'mcp-plan.json',
+    agentReadinessPath: 'agent-readiness.json',
+    status,
+    blockers,
+    warnings,
+    toolHealthSummary: { total: 5, ready: 5 - degradedTools - missingTools, degraded: degradedTools, missing: missingTools, unknown: 0 },
+    validationPreflightSummary: { total: 3, ready: status === 'blocked' ? 1 : 2, blocked: status === 'blocked' ? 1 : 0, unknown: status === 'blocked' ? 1 : 0 },
+    mcpRecommendedServers: [
+      { id: 'filesystem', status: status === 'blocked' ? 'configured-not-running' : 'ready' },
+      { id: 'git', status: 'ready' },
+    ],
+    orpadCapabilities: [
+      { id: 'terminal', status: 'available' },
+      { id: 'browser', status: 'available' },
+    ],
+  };
+}
+
 function seedSucceededHarnessImplementation(pipelinePath: string): void {
   const pipelineDir = path.dirname(pipelinePath);
   const generatedDir = path.join(pipelineDir, 'harness', 'generated');
@@ -235,17 +518,25 @@ function seedSucceededHarnessImplementation(pipelinePath: string): void {
     updatedAt: implementedAt,
     implementedAt,
     message: 'Harness implementation completed.',
+    nodeCount: nodes.length,
+    projectProfile: {
+      path: 'project-profile.json',
+      stacks: ['node-frontend'],
+      requiredTools: ['node', 'npm', 'playwright'],
+      validationCommandCount: 2,
+    },
+    toolPlan: {
+      path: 'tool-plan.json',
+      mcpRecommendations: ['filesystem', 'git'],
+    },
+    provisioning: seededHarnessProvisioning('ready', [], ['MCP git server is optional for this fixture.']),
     nodes,
   };
   fs.writeFileSync(path.join(generatedDir, 'implementation-state.json'), JSON.stringify(state, null, 2));
+  writeHarnessReadinessArtifacts(generatedDir, { status: 'ready', warnings: ['MCP git server is optional for this fixture.'] });
 
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
-  pipeline.harness = {
-    ...(pipeline.harness || {}),
-    path: 'harness/generated',
-    implementationState: 'harness/generated/implementation-state.json',
-    implementedAt,
-  };
+  attachHarnessArtifactRefs(pipeline, implementedAt);
   pipeline.metadata = {
     ...(pipeline.metadata || {}),
     harnessImplementation: {
@@ -253,6 +544,7 @@ function seedSucceededHarnessImplementation(pipelinePath: string): void {
       status: 'succeeded',
       implementedAt,
       statePath: 'harness/generated/implementation-state.json',
+      projectProfilePath: 'harness/generated/project-profile.json',
       nodeCount: nodes.length,
     },
   };
@@ -271,6 +563,18 @@ function seedRunningHarnessImplementation(pipelinePath: string): void {
     startedAt: '2026-05-01T00:09:00.000Z',
     updatedAt: '2026-05-01T00:10:00.000Z',
     message: 'Writing harness contracts and operational artifacts.',
+    nodeCount: 3,
+    projectProfile: {
+      path: 'project-profile.json',
+      stacks: ['node-frontend'],
+      requiredTools: ['node', 'npm', 'playwright'],
+      validationCommandCount: 2,
+    },
+    toolPlan: {
+      path: 'tool-plan.json',
+      mcpRecommendations: ['filesystem', 'git'],
+    },
+    provisioning: seededHarnessProvisioning('degraded', [], ['Playwright browser cache was not verified.']),
     nodes: [
       {
         nodePath: 'main/context',
@@ -290,19 +594,67 @@ function seedRunningHarnessImplementation(pipelinePath: string): void {
     ],
   };
   fs.writeFileSync(path.join(generatedDir, 'implementation-state.json'), JSON.stringify(state, null, 2));
+  writeHarnessReadinessArtifacts(generatedDir, { status: 'degraded', warnings: ['Playwright browser cache was not verified.'] });
 
   const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
-  pipeline.harness = {
-    ...(pipeline.harness || {}),
-    path: 'harness/generated',
-    implementationState: 'harness/generated/implementation-state.json',
-  };
+  attachHarnessArtifactRefs(pipeline);
   pipeline.metadata = {
     ...(pipeline.metadata || {}),
     harnessImplementation: {
       ...(pipeline.metadata?.harnessImplementation || {}),
       status: 'running',
       statePath: 'harness/generated/implementation-state.json',
+      nodeCount: state.nodes.length,
+    },
+  };
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+}
+
+function seedBlockedHarnessImplementation(pipelinePath: string): void {
+  const pipelineDir = path.dirname(pipelinePath);
+  const generatedDir = path.join(pipelineDir, 'harness', 'generated');
+  fs.mkdirSync(path.join(generatedDir, 'nodes'), { recursive: true });
+  const blockers = ['Node executable missing from PATH'];
+  const warnings = ['MCP filesystem server configured but not running'];
+  const state = {
+    schemaVersion: 'orpad.harnessImplementation.v1',
+    status: 'blocked',
+    stage: 'blocked',
+    stageLabel: 'Provisioning blocked',
+    startedAt: '2026-05-01T00:09:00.000Z',
+    updatedAt: '2026-05-01T00:10:00.000Z',
+    message: 'Harness provisioning blocked: Node executable missing from PATH',
+    nodeCount: 3,
+    projectProfile: {
+      path: 'project-profile.json',
+      stacks: ['node-frontend'],
+      requiredTools: ['node', 'npm', 'playwright'],
+      validationCommandCount: 2,
+    },
+    toolPlan: {
+      path: 'tool-plan.json',
+      mcpRecommendations: ['filesystem', 'git'],
+    },
+    provisioning: seededHarnessProvisioning('blocked', blockers, warnings),
+    nodes: [
+      { nodePath: 'main/context', status: 'pending', artifact: 'nodes/main-context.json' },
+      { nodePath: 'main/probe', status: 'pending', artifact: 'nodes/main-probe.json' },
+      { nodePath: 'main/queue', status: 'pending', artifact: 'nodes/main-queue.json' },
+    ],
+  };
+  fs.writeFileSync(path.join(generatedDir, 'implementation-state.json'), JSON.stringify(state, null, 2));
+  writeHarnessReadinessArtifacts(generatedDir, { status: 'blocked', blockers, warnings });
+
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  attachHarnessArtifactRefs(pipeline);
+  pipeline.metadata = {
+    ...(pipeline.metadata || {}),
+    harnessImplementation: {
+      ...(pipeline.metadata?.harnessImplementation || {}),
+      status: 'blocked',
+      statePath: 'harness/generated/implementation-state.json',
+      projectProfilePath: 'harness/generated/project-profile.json',
+      provisioningPath: 'harness/generated/harness-provisioning.json',
       nodeCount: state.nodes.length,
     },
   };
@@ -340,7 +692,15 @@ async function seedActiveClaimRun(
     claimId: 'claim-machine-ui-smoke',
     workerId: 'machine-ui-e2e-worker',
     recoverStale: false,
-    leaseMs: options.leaseMs ?? 30 * 24 * 60 * 60 * 1000,
+    // The renderer's staleness check (machineStaleActiveClaims) compares the
+    // claim's expiresAt against the REAL wall clock (Date.now()), but this
+    // fixture pins the claim to 2026-05-01. A finite lease anchored to a fixed
+    // past date silently expires N ms after that date — the previous 30-day
+    // lease made every "active claim in progress" assertion go red exactly on
+    // 2026-05-31. A century-long lease keeps the fixture deterministically fresh
+    // whenever the suite runs. seedStaleClaimRun passes an explicit short lease
+    // when it wants the opposite.
+    leaseMs: options.leaseMs ?? 100 * 365 * 24 * 60 * 60 * 1000,
     now: '2026-05-01T00:00:03.000Z',
   });
   await appendMachineEvent(run.runRoot, {
@@ -623,6 +983,60 @@ test('Machine UI creates a durable run and executes a dispatcher worker adapter 
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Machine UI uses selected pipeline objective instead of stale draft task', async () => {
+  const { workspace, pipelinePath, pipelineDir } = writeMachineWorkspace();
+  const pipelineObjective = 'Fix UI pipeline pagination cleanup and simulation resource release.';
+  const staleDraftTask = 'Build Package RAG for installed OrPAD packages.';
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.metadata = {
+    ...(pipeline.metadata || {}),
+    orchestrationAuthoring: {
+      ...(pipeline.metadata?.orchestrationAuthoring || {}),
+      taskText: pipelineObjective,
+    },
+  };
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+  await win.evaluate((value) => localStorage.setItem('orpad-runbook-task', value), staleDraftTask);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+
+  await expect(win.locator('[data-runbook-task]')).toHaveValue(staleDraftTask);
+  await win.locator('.runbook-item').filter({ hasText: 'Machine Workstream' }).click();
+  await win.locator('[data-runbook-task]').focus();
+  await win.keyboard.press('Control+Enter');
+  await submitMachineCapabilityToken(win);
+  await confirmRunProviderSelection(win);
+
+  await expect(win.locator('#runbooks-content')).toContainText('Latest Run');
+  const objectiveLine = win.locator('#runbooks-content p.runbook-muted').filter({ hasText: 'Objective' }).first();
+  await expect(objectiveLine).toContainText(pipelineObjective);
+  await expect(objectiveLine).not.toContainText(staleDraftTask);
+
+  const runRoot = path.join(pipelineDir, 'runs');
+  await expect.poll(() => fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(1);
+  const runDirs = fs.readdirSync(runRoot);
+  const events = fs.readFileSync(path.join(runRoot, runDirs[0], 'events.jsonl'), 'utf-8');
+  expect(events).toContain(pipelineObjective);
+  expect(events).not.toContain(staleDraftTask);
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('Machine graph executes configured probe fanout in parallel', async () => {
   const { workspace, pipelinePath } = writeMachineWorkspace();
   addParallelProbeHarness(pipelinePath);
@@ -707,7 +1121,7 @@ test('Machine graph continues queued work after reviewable blocked patch', async
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('Machine UI shows running managed runs as busy and blocks duplicate Continue', async () => {
+test('Machine UI shows running managed runs as busy and blocks duplicate Continue', async (_fixtures, testInfo) => {
   const { workspace, pipelinePath } = writeMachineWorkspace();
   const run = await createMachineRun({
     workspaceRoot: workspace,
@@ -761,6 +1175,17 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(runningProbeNode).toHaveClass(/runtime-running/);
   await expect(win.locator('.orch-transition[data-machine-edge-state="active"]')).toHaveCount(1);
   await expect(win.locator('.orch-transition-flow-arrows')).toHaveCount(1);
+  await expectRuntimeHeroGraphChrome(win, 'machine run active graph');
+  const activeGraphScreenshot = testInfo.outputPath('machine-run-active-graph.png');
+  await win.locator('.orch-graph-frame').first().screenshot({
+    path: activeGraphScreenshot,
+    animations: 'disabled',
+  });
+  await testInfo.attach('machine-run-active-graph', {
+    path: activeGraphScreenshot,
+    contentType: 'image/png',
+  });
+  await expectReducedMotionHeroGraphFallback(win, 'machine run active graph');
   await expect(win.locator('button[data-orch-mode="readonly"]')).toHaveClass(/active/);
   await expect(win.locator('button[data-orch-mode="readwrite"]')).toBeDisabled();
   await win.locator('[data-pipeline-run-menu]').click();
@@ -773,6 +1198,8 @@ test('Machine UI shows running managed runs as busy and blocks duplicate Continu
   await expect(recoverButton).toBeDisabled();
   await expect(recoverButton).toHaveAttribute('title', /OrPAD is already working/);
   await expect(win.locator('#runbooks-content')).toContainText('Run started');
+  // Stopping an in-flight run now requires confirming the destructive action.
+  win.once('dialog', (dialog: any) => dialog.accept());
   await primaryRunButton.click();
   await submitMachineCapabilityToken(win);
   await expect(win.locator('.runbook-chip').filter({ hasText: /^Cancelled$/ })).toBeVisible();
@@ -955,9 +1382,10 @@ test('Orchestration window run refresh preserves scroll, details, and text selec
 
   await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
   await orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
-    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Machine Workstream$/ }) })
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Machine Workstream/ }) })
     .click();
   await expect(orchestrationWin.locator('#runbooks-content')).toContainText('Latest Run');
+  await expectToolbarRunbarTelemetryAtWidth(orchestrationWin, 900);
   await orchestrationWin.addStyleTag({ content: '.runbook-replay-events { max-height: 36px !important; }' });
 
   await orchestrationWin.locator('[data-runbook-run-details] summary').click();
@@ -1147,6 +1575,107 @@ test('Machine UI resets transient replay and history state when switching worksp
   await app.close();
   fs.rmSync(first.workspace, { recursive: true, force: true });
   fs.rmSync(second.workspace, { recursive: true, force: true });
+});
+
+test('Machine UI prunes per-run replay transient state without resetting active auto-scroll', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  const result = await win.evaluate(({ workspaceRoot, runbookPath }) => {
+    (window as any).__orpadReplayPruneArgs = { workspaceRoot, runbookPath };
+    return (window as any).eval(`(() => {
+      const { workspaceRoot, runbookPath } = window.__orpadReplayPruneArgs;
+      workspacePath = workspaceRoot;
+      selectedRunbookPath = runbookPath;
+      const activeRunId = 'run_machine_ui_replay_prune_active';
+      const staleRunId = 'run_machine_ui_replay_prune_stale';
+      const inspectedRunId = 'run_machine_ui_replay_prune_inspected';
+      const seedTransient = (runId, lastSeq = 4) => {
+        setReplayPosition(runbookPath, runId, 1);
+        setReplayStickEnabled(runbookPath, runId, false);
+        lastReplayRenderedSequence.set(machineRunTransientScopeKey(runbookPath, runId), lastSeq);
+      };
+      const snapshot = (runId) => {
+        const key = machineRunTransientScopeKey(runbookPath, runId);
+        return {
+          position: machineRunReplayPosition.has(key),
+          stickOff: machineRunReplayStickRunIds.has('off:' + key),
+          lastSeq: lastReplayRenderedSequence.get(key) || 0,
+        };
+      };
+
+      lastMachineRunRecord = {
+        runId: activeRunId,
+        runState: { runId: activeRunId, lifecycleStatus: 'running', summaryStatus: 'pending' },
+        events: [{ sequence: 1 }, { sequence: 2 }],
+      };
+      setRunbookCache(machineRunRecordCache, runbookPath, lastMachineRunRecord);
+      seedTransient(activeRunId);
+      seedTransient(staleRunId);
+      setRunbookCache(machineRunListCache, runbookPath, {
+        runs: [{ runId: activeRunId, lifecycleStatus: 'running', summaryStatus: 'pending' }],
+        loadedAt: new Date().toISOString(),
+      });
+      pruneMachineRunReplayTransientStateForCachedRunList(runbookPath);
+      const afterListPrune = {
+        active: snapshot(activeRunId),
+        stale: snapshot(staleRunId),
+      };
+
+      seedTransient(inspectedRunId, 9);
+      setHistoryInspectionRecord(runbookPath, {
+        runId: inspectedRunId,
+        runState: { runId: inspectedRunId, lifecycleStatus: 'completed', summaryStatus: 'done' },
+      });
+      clearHistoryInspection(runbookPath);
+      const afterHistoryClose = snapshot(inspectedRunId);
+
+      clearReplayPosition(runbookPath, activeRunId);
+      clearMachineRunReplayTransientStateIfUnreferenced(runbookPath, activeRunId);
+      const afterLive = snapshot(activeRunId);
+
+      setReplayPosition(runbookPath, activeRunId, 2);
+      const liveRecord = applyReplaySnapshot({
+        runId: activeRunId,
+        runState: { runId: activeRunId, lifecycleStatus: 'running', summaryStatus: 'pending' },
+        events: [{ sequence: 1 }, { sequence: 2 }],
+      }, runbookPath);
+      const afterMaxReplay = {
+        active: snapshot(activeRunId),
+        returnedLive: !liveRecord.__replay,
+      };
+
+      return { afterListPrune, afterHistoryClose, afterLive, afterMaxReplay };
+    })()`);
+  }, { workspaceRoot: workspace, runbookPath: pipelinePath });
+
+  expect(result).toEqual({
+    afterListPrune: {
+      active: { position: true, stickOff: true, lastSeq: 4 },
+      stale: { position: false, stickOff: false, lastSeq: 0 },
+    },
+    afterHistoryClose: { position: false, stickOff: false, lastSeq: 0 },
+    afterLive: { position: false, stickOff: true, lastSeq: 4 },
+    afterMaxReplay: {
+      active: { position: false, stickOff: true, lastSeq: 4 },
+      returnedLive: true,
+    },
+  });
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
 });
 
 test('Machine UI does not open a blocked decision modal for a normal waiting queue', async () => {
@@ -2144,10 +2673,10 @@ test('Machine UI implements node harness contracts for the selected pipeline', a
   await win.locator('[data-pipeline-run-menu]').click();
   await win.locator('button[data-pipeline-run-action="implement-harness"]').click();
   await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready');
-  await expect(win.locator('#content.view-orch-graph [data-harness-implementation-banner]')).toHaveCount(0);
+  await expect(win.locator('#content.view-orch-graph [data-vm-harness-dashboard]')).toContainText('VM Harness ready');
   await expect(win.locator('#content.view-orch-graph')).not.toContainText('Run cancelled');
   await expect(win.locator('#content.view-orch-graph')).not.toContainText('Failed adapter calls');
-  await expect(win.locator('#runbooks-content [data-harness-implementation-banner]')).toHaveCount(0);
+  await expect(win.locator('#runbooks-content [data-vm-harness-dashboard]')).toContainText('VM Harness ready');
   await expect(win.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
   await expect(win.locator('#runbooks-content')).toContainText('Cancelled');
   const probeNode = win.locator('.orch-graph-node[data-machine-node-path="main/probe"]');
@@ -2320,8 +2849,233 @@ test('Pipes Refresh reloads selected managed run evidence from disk', async () =
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
+test('Machine UI caches Latest Run event projections by run event sequence', async () => {
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => (window as any).eval('typeof machineLatestRunEventProjection') === 'function');
+
+  const result = await win.evaluate(() => (window as any).eval(`(() => {
+    const runId = 'run_machine_ui_projection_cache';
+    const events = [];
+    let sequence = 1;
+    const push = (event) => {
+      events.push({ timestamp: '2026-06-04T00:00:00.000Z', sequence: sequence++, ...event });
+    };
+    push({ eventType: 'run.created' });
+    push({ eventType: 'queue.transition', itemId: 'item-a', toState: 'queued' });
+    push({ eventType: 'queue.transition', itemId: 'item-a', toState: 'done' });
+    push({ eventType: 'queue.transition', itemId: 'item-b', toState: 'queued' });
+    push({ eventType: 'queue.transition', itemId: 'item-c', toState: 'candidate' });
+    push({ eventType: 'queue.transition', itemId: 'item-d', toState: 'blocked' });
+    push({
+      eventType: 'worker.result',
+      itemId: 'item-a',
+      artifactRefs: ['work-items/item-a/worker-evidence.json'],
+      payload: { status: 'done', verification: [{ command: 'one' }], changedFiles: ['src/a.js'] },
+    });
+    push({
+      eventType: 'worker.result',
+      itemId: 'item-b',
+      artifactRefs: ['work-items/item-b/worker-evidence.json', 'work-items/item-b/verification.md'],
+      payload: { status: 'blocked', verification: [{ command: 'two' }, { command: 'three' }], changedFiles: ['src/b.js', 'src/c.js'] },
+    });
+    for (let index = 0; index < 150; index += 1) {
+      push({ eventType: 'node.completed', nodePath: 'main/node-' + index, payload: { nodeType: 'orpad.probe' } });
+      push({ eventType: 'scheduler.edgeEvaluation', payload: { firedCount: 1, droppedCount: 0 } });
+    }
+
+    const record = {
+      runId,
+      runRoot: '/tmp/run-machine-ui-projection-cache',
+      runState: { runId, lifecycleStatus: 'waiting', summaryStatus: 'pending' },
+      events,
+    };
+    const first = machineLatestRunEventProjection(record);
+    const sameSequence = machineLatestRunEventProjection({ ...record, events: events.slice() });
+    const replayAtPrevious = machineLatestRunEventProjection({
+      ...record,
+      events: events.slice(0, events.length - 1),
+      __replay: { position: events.length - 1, total: events.length },
+    });
+    const replayAtEarlier = machineLatestRunEventProjection({
+      ...record,
+      events: events.slice(0, events.length - 2),
+      __replay: { position: events.length - 2, total: events.length },
+    });
+
+    return {
+      sameEventSequenceCached: first === sameSequence,
+      replayPositionInvalidates: replayAtPrevious !== replayAtEarlier,
+      queueCounts: first.queueInventory.counts,
+      rejectableCount: first.rejectableItems.length,
+      workerProofDetails: first.workerProofDetails,
+      nodeCompletionDetails: first.nodeCompletionDetails,
+      recentEventCount: first.recentEvents.length,
+    };
+  })()`));
+
+  expect(result).toEqual({
+    sameEventSequenceCached: true,
+    replayPositionInvalidates: true,
+    queueCounts: {
+      candidate: 1,
+      queued: 1,
+      claimed: 0,
+      done: 1,
+      blocked: 1,
+      rejected: 0,
+    },
+    rejectableCount: 3,
+    workerProofDetails: '2 work results; 3 evidence files; 3 checks; 3 changed files',
+    nodeCompletionDetails: '150 steps completed',
+    recentEventCount: 100,
+  });
+
+  await app.close();
+});
+
+test('Machine UI disposes throttled progress refresh state when polling stops', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  const stopped = await win.evaluate(async ({ runbookPath }) => {
+    (window as any).__orpadProgressTeardownRunbookPath = runbookPath;
+    return (window as any).eval(`(async () => {
+      const runbookPath = window.__orpadProgressTeardownRunbookPath;
+      const runId = 'run_machine_ui_progress_stop_teardown';
+      const key = machineRunActionKey(runbookPath, runId);
+      let fired = false;
+      selectedRunbookPath = runbookPath;
+      lastMachineRunRecord = {
+        runId,
+        runState: { runId, lifecycleStatus: 'running', summaryStatus: 'pending' },
+      };
+      machineRunProgressTimers.set(key, setInterval(() => { fired = true; }, 1000));
+      machineRunProgressRefreshState.set(key, {
+        last: Date.now(),
+        timer: setTimeout(() => { fired = true; }, 25),
+      });
+      stopMachineRunProgressPollingByKey(key);
+      await new Promise(resolve => setTimeout(resolve, 60));
+      return {
+        fired,
+        hasPollingTimer: machineRunProgressTimers.has(key),
+        hasRefreshState: machineRunProgressRefreshState.has(key),
+      };
+    })()`);
+  }, { runbookPath: pipelinePath });
+
+  expect(stopped).toEqual({
+    fired: false,
+    hasPollingTimer: false,
+    hasRefreshState: false,
+  });
+
+  const unselected = await win.evaluate(async ({ runbookPath }) => {
+    (window as any).__orpadProgressTeardownRunbookPath = runbookPath;
+    return (window as any).eval(`(async () => {
+      const runbookPath = window.__orpadProgressTeardownRunbookPath;
+      const runId = 'run_machine_ui_progress_unselected_teardown';
+      const key = machineRunActionKey(runbookPath, runId);
+      let fired = false;
+      selectedRunbookPath = runbookPath + '.other';
+      lastMachineRunRecord = {
+        runId,
+        runState: { runId, lifecycleStatus: 'running', summaryStatus: 'pending' },
+      };
+      machineRunProgressTimers.set(key, setInterval(() => { fired = true; }, 1000));
+      machineRunProgressRefreshState.set(key, {
+        last: Date.now(),
+        timer: setTimeout(() => { fired = true; }, 25),
+      });
+      stopMachineRunProgressPollingForUnselectedRunbooks(selectedRunbookPath);
+      await new Promise(resolve => setTimeout(resolve, 60));
+      return {
+        fired,
+        hasPollingTimer: machineRunProgressTimers.has(key),
+        hasRefreshState: machineRunProgressRefreshState.has(key),
+      };
+    })()`);
+  }, { runbookPath: pipelinePath });
+
+  expect(unselected).toEqual({
+    fired: false,
+    hasPollingTimer: false,
+    hasRefreshState: false,
+  });
+
+  const terminal = await win.evaluate(async ({ runbookPath }) => {
+    (window as any).__orpadProgressTeardownRunbookPath = runbookPath;
+    return (window as any).eval(`(async () => {
+      const runbookPath = window.__orpadProgressTeardownRunbookPath;
+      const runId = 'run_machine_ui_progress_terminal_teardown';
+      const key = machineRunActionKey(runbookPath, runId);
+      let fired = false;
+      selectedRunbookPath = runbookPath;
+      lastMachineRunRecord = {
+        runId,
+        runState: { runId, lifecycleStatus: 'running', summaryStatus: 'pending' },
+      };
+      machineRunProgressTimers.set(key, setInterval(() => { fired = true; }, 1000));
+      machineRunProgressRefreshState.set(key, {
+        last: Date.now(),
+        timer: setTimeout(() => { fired = true; }, 25),
+      });
+      machineUpdateRunRecord(runbookPath, {
+        runId,
+        runState: { runId, lifecycleStatus: 'completed', summaryStatus: 'done' },
+      });
+      await new Promise(resolve => setTimeout(resolve, 60));
+      return {
+        fired,
+        hasPollingTimer: machineRunProgressTimers.has(key),
+        hasRefreshState: machineRunProgressRefreshState.has(key),
+      };
+    })()`);
+  }, { runbookPath: pipelinePath });
+
+  expect(terminal).toEqual({
+    fired: false,
+    hasPollingTimer: false,
+    hasRefreshState: false,
+  });
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
 test('Orchestration window keeps Latest Run visible when selected pipeline has ready harness', async () => {
   const { workspace, pipelinePath } = writeMachineWorkspace();
+  const pipeline = JSON.parse(fs.readFileSync(pipelinePath, 'utf-8'));
+  pipeline.title = 'Machine Workstream With A Deliberately Long Cockpit Telemetry Name For Responsive Runbar';
+  pipeline.run.machineAdapter = {
+    ...(pipeline.run.machineAdapter || {}),
+    command: 'codex',
+    budget: { perRunUsd: 1.25, perCallUsd: 0.10, hardStop: true },
+  };
+  pipeline.metadata = {
+    ...(pipeline.metadata || {}),
+    externalResearch: {
+      limitation: 'Local-only generated run: external competitor claims require approved evidence.',
+    },
+  };
+  fs.writeFileSync(pipelinePath, JSON.stringify(pipeline, null, 2));
   seedSucceededHarnessImplementation(pipelinePath);
 
   const app = await launchElectron([], {
@@ -2348,20 +3102,38 @@ test('Orchestration window keeps Latest Run visible when selected pipeline has r
   await orchestrationWin.locator('#toolbar [data-pipeline-run-menu]').click();
   await orchestrationWin.locator('#toolbar button[data-pipeline-run-action="check"]').click();
   await expect(orchestrationWin.locator('[data-pipeline-preview-runbar]')).toContainText('Harness ready');
+  await expect(orchestrationWin.locator('#toolbar .pipeline-runbar-status[role="status"]')).toContainText('Harness ready');
+  await expect(orchestrationWin.locator('#toolbar .pipeline-runbar-status.done').filter({ hasText: 'Harness ready' })).toBeVisible();
+  await expect(orchestrationWin.locator('#toolbar .pipeline-runbar-status.warn').filter({ hasText: 'External research needs approval' })).toBeVisible();
+  await expect(orchestrationWin.locator('#toolbar .pipe-budget-chip')).toContainText('Budget');
+  await expectToolbarRunbarTelemetryAtWidth(orchestrationWin, 900);
+  await expectToolbarRunbarTelemetryAtWidth(orchestrationWin, 1200);
+  await expectToolbarRunbarTelemetryAtWidth(orchestrationWin, 1440);
   await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
-  await expect(orchestrationWin.locator('#runbooks-content [data-harness-implementation-banner]')).toHaveCount(0);
+  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'VM Harness' })).toHaveCount(1);
+  const sidebarHarness = orchestrationWin.locator('#runbooks-content [data-vm-harness-dashboard]');
+  await expect(sidebarHarness).toContainText('VM Harness ready');
+  await expect(sidebarHarness).toContainText('Tool health');
+  await expect(sidebarHarness).toContainText('Validation');
+  await expect(sidebarHarness).toContainText('MCP capability');
+  await expect(sidebarHarness.locator('.vm-harness-stage-rail li')).toHaveCount(5);
+  await expect(sidebarHarness.locator('.vm-harness-metric')).toHaveCount(5);
+  await expect(sidebarHarness.locator('button[data-probe-action="open-artifact"]')).toHaveCount(6);
   const latestRunSection = orchestrationWin.locator('#runbooks-content .runbook-panel-section', {
     has: orchestrationWin.locator('h3').filter({ hasText: /^Latest Run$/ }),
   });
   await expect(latestRunSection).not.toContainText('Harness ready');
-  await expect(orchestrationWin.locator('#content.view-orch-graph [data-harness-implementation-banner]')).toHaveCount(0);
+  const graphHarness = orchestrationWin.locator('#content.view-orch-graph [data-vm-harness-dashboard]');
+  await expect(graphHarness).toContainText('VM Harness ready');
+  await expect(graphHarness).toContainText('5 ready / 5 total');
+  await expect(graphHarness.locator('button').filter({ hasText: 'project-profile.json' })).toHaveAttribute('data-artifact-path', /project-profile\.json$/);
 
   await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
   await orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
-    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Machine Workstream$/ }) })
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Machine Workstream/ }) })
     .click();
   await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
-  await expect(orchestrationWin.locator('#runbooks-content [data-harness-implementation-banner]')).toHaveCount(0);
+  await expect(orchestrationWin.locator('#runbooks-content [data-vm-harness-dashboard]')).toContainText('VM Harness ready');
   await expect(latestRunSection).not.toContainText('Harness ready');
 
   await app.close();
@@ -2395,20 +3167,86 @@ test('Orchestration window keeps Latest Run above active harness status', async 
   await orchestrationWin.locator('#toolbar [data-pipeline-run-menu]').click();
   await orchestrationWin.locator('#toolbar button[data-pipeline-run-action="check"]').click();
   await expect(orchestrationWin.locator('[data-pipeline-preview-runbar]')).toContainText('Implementing harness');
+  const toolbarRunbar = orchestrationWin.locator('#toolbar [data-pipeline-preview-runbar]');
+  await expect(toolbarRunbar.locator('.pipeline-runbar-status[role="status"]')).toContainText('Implementing harness');
+  await expect(toolbarRunbar.locator('.pipeline-runbar-status.warn:not([role="status"])').filter({ hasText: 'Implementing harness' })).toBeVisible();
+  await expectToolbarRunbarTelemetryAtWidth(orchestrationWin, 1200);
   await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
-  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Harness Implementation' })).toHaveCount(1);
+  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'VM Harness' })).toHaveCount(1);
   const latestRunSection = orchestrationWin.locator('#runbooks-content .runbook-panel-section', {
     has: orchestrationWin.locator('h3').filter({ hasText: /^Latest Run$/ }),
   });
   await expect(latestRunSection).not.toContainText('Implementing harness');
   await expect(latestRunSection).not.toContainText('Harness ready');
+  const sidebarHarness = orchestrationWin.locator('#runbooks-content [data-vm-harness-dashboard]');
+  await expect(sidebarHarness).toContainText('Node contracts');
+  await expect(sidebarHarness).toContainText('1/3 ready');
+  await expect(sidebarHarness).toContainText('Degraded');
+  await expect(sidebarHarness).toContainText('Playwright browser cache was not verified');
+  await expect(sidebarHarness.locator('.vm-harness-stage-rail li.current')).toContainText('Contracts');
+  await expect(orchestrationWin.locator('#content.view-orch-graph [data-vm-harness-dashboard]')).toContainText('Validation');
 
   const sectionOrder = await orchestrationWin.locator('#runbooks-content h3').evaluateAll((headers) =>
     headers.map((header) => header.textContent?.trim() || ''),
   );
   expect(sectionOrder.indexOf('Latest Run')).toBeGreaterThanOrEqual(0);
-  expect(sectionOrder.indexOf('Harness Implementation')).toBeGreaterThanOrEqual(0);
-  expect(sectionOrder.indexOf('Latest Run')).toBeLessThan(sectionOrder.indexOf('Harness Implementation'));
+  expect(sectionOrder.indexOf('VM Harness')).toBeGreaterThanOrEqual(0);
+  expect(sectionOrder.indexOf('Latest Run')).toBeLessThan(sectionOrder.indexOf('VM Harness'));
+
+  await app.close();
+  fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Orchestration window renders blocked VM Harness readiness with artifact links', async () => {
+  const { workspace, pipelinePath } = writeMachineWorkspace();
+  seedBlockedHarnessImplementation(pipelinePath);
+
+  const app = await launchElectron([], {
+    ORPAD_MACHINE_IPC: '1',
+    ORPAD_MACHINE_IPC_TOKEN: 'test-token',
+    ORPAD_MACHINE_NODE_EXEC_PATH: process.execPath,
+  });
+  const win = await app.firstWindow();
+  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+  writeApprovedWorkspace(userData, workspace);
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  const orchestrationWindowPromise = app.waitForEvent('window');
+  await win.locator('#btn-orchestration').click();
+  const orchestrationWin = await orchestrationWindowPromise;
+  await orchestrationWin.waitForLoadState('domcontentloaded');
+  await orchestrationWin.waitForSelector('body.orchestration-window');
+  await orchestrationWin.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await orchestrationWin.locator('#toolbar [data-pipeline-run-menu]').click();
+  await orchestrationWin.locator('#toolbar button[data-pipeline-run-action="check"]').click();
+  await expect(orchestrationWin.locator('[data-pipeline-preview-runbar]')).toContainText('Harness blocked');
+  await expect(orchestrationWin.locator('#runbooks-content h3').filter({ hasText: 'Latest Run' })).toHaveCount(1);
+  const sidebarHarness = orchestrationWin.locator('#runbooks-content [data-vm-harness-dashboard]');
+  await expect(sidebarHarness).toContainText('VM Harness blocked');
+  await expect(sidebarHarness).toContainText('Node executable missing from PATH');
+  await expect(sidebarHarness).toContainText('Tool health');
+  await expect(sidebarHarness).toContainText('Validation');
+  await expect(sidebarHarness).toContainText('1 blocked');
+  await expect(sidebarHarness.locator('.vm-harness-state-chip--danger')).toContainText('Blocked');
+  await expect(sidebarHarness.locator('.vm-harness-stage-rail li.danger')).toContainText('Provision');
+
+  const graphHarness = orchestrationWin.locator('#content.view-orch-graph [data-vm-harness-dashboard]');
+  await expect(graphHarness).toContainText('Resolve: Node executable missing from PATH');
+  for (const artifactName of [
+    'implementation-state.json',
+    'project-profile.json',
+    'tool-health.json',
+    'validation-preflight.json',
+    'mcp-plan.json',
+    'README.md',
+  ]) {
+    await expect(graphHarness.locator('button[data-probe-action="open-artifact"]').filter({ hasText: artifactName }))
+      .toHaveAttribute('data-artifact-path', new RegExp(artifactName.replace('.', '\\.') + '$'));
+  }
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
@@ -2776,6 +3614,8 @@ test('Machine UI cancels work in progress and releases visible locks', async () 
   await expect(primaryRunButton).toHaveAttribute('data-pipeline-run-action', 'machine-cancel-run');
   await expect(primaryRunButton).toHaveAttribute('aria-label', 'Stop Run');
 
+  // Stopping an in-flight run now requires confirming the destructive action.
+  win.once('dialog', (dialog: any) => dialog.accept());
   await primaryRunButton.click();
   await submitMachineCapabilityToken(win);
   await expect(win.locator('#runbooks-content')).toContainText('Stopped: machine-ui-smoke; work reservation released');

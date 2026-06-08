@@ -410,6 +410,53 @@ test('harness provisioning treats conditional native build tools and placeholder
   assert.equal(report.enforcement.runBlockers.length, 0);
 });
 
+test('harness provisioning resolves Windows npm and npx to cmd shims before extensionless files', { skip: process.platform !== 'win32' }, async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-harness-node-shims-'));
+  const shimRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-node-shim-'));
+  for (const command of ['npm', 'npx']) {
+    await fs.writeFile(path.join(shimRoot, command), 'extensionless shim placeholder\n', 'utf8');
+    await fs.writeFile(path.join(shimRoot, `${command}.cmd`), `@echo off\r\necho ${command}-fake-version\r\n`, 'utf8');
+  }
+
+  const previousPath = process.env.PATH;
+  const previousPathext = process.env.PATHEXT;
+  process.env.PATH = `${shimRoot}${path.delimiter}${previousPath || ''}`;
+  process.env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  try {
+    for (const command of ['npm', 'npx']) {
+      const preflight = await preflightValidationCommand(`${command} --version`, workspaceRoot);
+      assert.equal(preflight.status, 'ready');
+      assert.equal(
+        preflight.tool.resolvedPath.toLowerCase(),
+        path.join(shimRoot, `${command}.cmd`).toLowerCase(),
+      );
+    }
+
+    const report = await buildHarnessProvisioningReport({
+      app: { getPath: () => workspaceRoot },
+      workspaceRoot,
+      projectProfile: { requiredTools: ['npm', 'npx'] },
+      toolPlan: {},
+      harnessSpec: {},
+      generatedAt: '2026-05-20T03:08:00.000Z',
+    });
+
+    for (const command of ['npm', 'npx']) {
+      const tool = report.toolHealth.tools.find(item => item.input === command);
+      assert.equal(tool?.status, 'ready');
+      assert.equal(tool?.selectedCommand, command);
+      assert.equal(tool?.resolvedPath.toLowerCase(), path.join(shimRoot, `${command}.cmd`).toLowerCase());
+      assert.equal(tool?.versionCheck?.status, 'passed');
+      assert.match(tool?.versionCheck?.output || '', new RegExp(`${command}-fake-version`));
+    }
+  } finally {
+    if (previousPath == null) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousPathext == null) delete process.env.PATHEXT;
+    else process.env.PATHEXT = previousPathext;
+  }
+});
+
 test('harness provisioning checks Windows Codex npm shims through the provider invocation', { skip: process.platform !== 'win32' }, async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-harness-codex-health-'));
   const shimRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-codex-shim-'));

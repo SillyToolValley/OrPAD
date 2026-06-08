@@ -3,25 +3,25 @@
    (set at runtime by themes.js)
    ============================================= */
 
-/* Default values (Tokyo Night) to prevent flash before JS loads */
+/* Default values (OrPAD Hero) to prevent flash before JS loads */
 :root {
   --ui-scale: 1;
   --us: var(--ui-scale);
   --terminal-frame-top: 105px; --terminal-frame-bottom: 24px; --terminal-docked-side-size: 480px;
-  --bg-primary: #1a1b26; --bg-secondary: #16161e; --border-color: #3b4261;
-  --text-primary: #a9b1d6; --text-secondary: #787c99; --text-tertiary: #565f89;
-  --accent-color: #7aa2f7; --link-color: #7aa2f7;
-  --hover-bg: rgba(59,66,97,0.4); --active-bg: rgba(122,162,247,0.12);
-  --code-bg: rgba(59,66,97,0.3); --pre-bg: #16161e;
-  --table-border: #3b4261; --table-header-bg: #16161e; --table-row-bg: rgba(59,66,97,0.15);
-  --scrollbar-thumb: rgba(255,255,255,0.1); --scrollbar-thumb-hover: rgba(255,255,255,0.2);
-  --editor-bg: #1a1b26; --editor-gutter-bg: #1a1b26; --editor-gutter-color: #3b4261;
-  --editor-active-line: #1e202e; --editor-selection: rgba(122,162,247,0.40); --editor-cursor: #c0caf5;
-  --syntax-comment: #565f89; --syntax-keyword: #bb9af7; --syntax-string: #9ece6a;
-  --syntax-number: #ff9e64; --syntax-function: #7aa2f7; --syntax-variable: #c0caf5;
-  --syntax-tag: #f7768e; --syntax-attribute: #7dcfff; --syntax-operator: #89ddff;
-  --syntax-meta: #e0af68; --syntax-added: #9ece6a; --syntax-deleted: #f7768e;
-  --syntax-added-bg: rgba(158,206,106,0.15); --syntax-deleted-bg: rgba(247,118,142,0.15);
+  --bg-primary: #050b1f; --bg-secondary: #0b1530; --border-color: #2d60a9;
+  --text-primary: #edf5ff; --text-secondary: #a9bee6; --text-tertiary: #647ca9;
+  --accent-color: #38a3ff; --link-color: #77c7ff;
+  --hover-bg: rgba(56,163,255,0.16); --active-bg: rgba(56,163,255,0.22);
+  --code-bg: rgba(35,79,145,0.26); --pre-bg: #071228;
+  --table-border: #2d60a9; --table-header-bg: #101d3b; --table-row-bg: rgba(56,163,255,0.09);
+  --scrollbar-thumb: rgba(119,199,255,0.22); --scrollbar-thumb-hover: rgba(119,199,255,0.42);
+  --editor-bg: #071228; --editor-gutter-bg: #08162f; --editor-gutter-color: #3e69a7;
+  --editor-active-line: #0d1c3c; --editor-selection: rgba(56,163,255,0.36); --editor-cursor: #bfe9ff;
+  --syntax-comment: #5f78a8; --syntax-keyword: #8fb7ff; --syntax-string: #73e6c2;
+  --syntax-number: #ffd27a; --syntax-function: #77c7ff; --syntax-variable: #edf5ff;
+  --syntax-tag: #ff8ba7; --syntax-attribute: #8ad8ff; --syntax-operator: #9be7ff;
+  --syntax-meta: #b8d8ff; --syntax-added: #73e6c2; --syntax-deleted: #ff8ba7;
+  --syntax-added-bg: rgba(115,230,194,0.14); --syntax-deleted-bg: rgba(255,139,167,0.14);
 }
 
 @supports not (background: color-mix(in srgb, red 50%, blue)) {
@@ -33,6 +33,16 @@
   .ai-message-bubble {
     border-color: var(--border-color);
     background: var(--bg-secondary);
+  }
+  .vm-harness-dashboard,
+  .vm-harness-metric,
+  .vm-harness-stage-rail li,
+  .vm-harness-state-chip,
+  .vm-harness-chip,
+  .vm-harness-dashboard-action {
+    border-color: var(--border-color);
+    background: var(--bg-secondary);
+    background-image: none;
   }
   .template-status-chip.warning { border-color: var(--syntax-meta); }
   .git-badge-m { background: var(--active-bg); }
@@ -146,9 +156,9 @@ body.orchestration-window #orchestration-runbar-slot {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  min-width: calc(250px * var(--us));
-  max-width: min(calc(420px * var(--us)), 46vw);
+  width: min(calc(760px * var(--us)), calc(100vw - calc(320px * var(--us))));
+  min-width: calc(300px * var(--us));
+  max-width: min(calc(760px * var(--us)), calc(100vw - calc(320px * var(--us))));
   transform: translate(-50%, -50%);
   -webkit-app-region: no-drag;
 }
@@ -233,12 +243,16 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar {
   position: relative;
   top: auto;
   z-index: 1;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   width: 100%;
   max-width: 100%;
-  min-width: calc(250px * var(--us));
+  min-width: 0;
   min-height: calc(28px * var(--us));
   margin: 0;
-  gap: calc(8px * var(--us));
+  gap: calc(6px * var(--us));
   padding: calc(3px * var(--us)) calc(6px * var(--us)) calc(3px * var(--us)) calc(9px * var(--us));
   border-radius: calc(7px * var(--us));
   background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
@@ -248,20 +262,30 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar {
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: calc(8px * var(--us));
+  align-content: center;
+  gap: calc(5px * var(--us));
   flex: 1 1 auto;
   min-width: 0;
   max-width: none;
+  overflow: visible;
+  row-gap: calc(4px * var(--us));
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-meta strong {
   flex: 1 1 auto;
+  min-width: 0;
   max-width: none;
   font-size: calc(12px * var(--us));
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap {
   position: relative;
-  flex: 1 1 auto;
+  order: 0;
+  flex: 1 1 calc(170px * var(--us));
+  min-width: calc(86px * var(--us));
+  max-width: min(calc(260px * var(--us)), 42%);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger {
   min-width: 0;
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap[open],
@@ -371,12 +395,87 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current,
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-progress,
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-elapsed,
 body.orchestration-window #orchestration-runbar-slot .pipe-budget-chip {
-  display: none !important;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: calc(44px * var(--us));
+  max-width: calc(128px * var(--us));
+  height: calc(20px * var(--us));
+  padding: 0 calc(7px * var(--us));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 30%, transparent);
+  border-radius: calc(999px * var(--us));
+  background: color-mix(in srgb, var(--accent-color) 9%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
+    0 0 calc(18px * var(--us)) color-mix(in srgb, var(--accent-color) 8%, transparent);
+  font-size: calc(10.5px * var(--us));
+  line-height: 1;
 }
-body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-actions {
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status[role="status"] {
+  order: 1;
+  min-width: calc(76px * var(--us));
+  max-width: calc(152px * var(--us));
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-path {
+  order: 5;
+  min-width: calc(64px * var(--us));
+  max-width: calc(112px * var(--us));
+  color: var(--text-tertiary);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current {
+  order: 2;
+  min-width: calc(76px * var(--us));
+  max-width: calc(132px * var(--us));
+  color: var(--accent-color, #6cb6ff);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current::before {
   flex: 0 0 auto;
 }
-body.orchestration-window #orchestration-runbar-slot .pipeline-run-primary {
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-progress {
+  order: 3;
+  min-width: calc(68px * var(--us));
+  max-width: calc(92px * var(--us));
+  gap: calc(4px * var(--us));
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-elapsed {
+  order: 6;
+  max-width: calc(74px * var(--us));
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status:not([role="status"]) {
+  order: 4;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.pipe-budget-chip {
+  order: 7;
+  min-width: calc(78px * var(--us));
+  max-width: calc(126px * var(--us));
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.good,
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.done {
+  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 42%, transparent);
+  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 11%, transparent);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.warn {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 42%, transparent);
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 10%, transparent);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.danger {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 48%, transparent);
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 11%, transparent);
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-actions {
+  align-self: center;
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+body.orchestration-window #orchestration-runbar-slot .pipeline-run-primary,
+body.orchestration-window #orchestration-runbar-slot .pipeline-run-control,
+body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-trigger {
+  flex: 0 0 calc(32px * var(--us));
+  min-width: calc(32px * var(--us));
   width: calc(32px * var(--us));
   height: calc(24px * var(--us));
 }
@@ -406,6 +505,56 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu button {
 body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap:not([open]) .pipeline-select-menu,
 body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap:not([open]) .pipeline-run-menu {
   display: none !important;
+}
+
+@media (max-width: 1100px) {
+  body.orchestration-window #orchestration-runbar-slot {
+    width: min(calc(640px * var(--us)), calc(100vw - calc(260px * var(--us))));
+    max-width: min(calc(640px * var(--us)), calc(100vw - calc(260px * var(--us))));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar {
+    gap: calc(5px * var(--us));
+    padding-inline: calc(6px * var(--us));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-meta {
+    column-gap: calc(4px * var(--us));
+    row-gap: calc(3px * var(--us));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap {
+    flex-basis: calc(140px * var(--us));
+    max-width: min(calc(220px * var(--us)), 36%);
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status[role="status"] {
+    max-width: calc(132px * var(--us));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current {
+    max-width: calc(116px * var(--us));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-progress {
+    max-width: calc(86px * var(--us));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-path,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-elapsed,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.pipe-budget-chip {
+    max-width: calc(96px * var(--us));
+  }
+}
+
+@media (max-width: 760px) {
+  body.orchestration-window #orchestration-runbar-slot {
+    width: min(calc(440px * var(--us)), calc(100vw - calc(210px * var(--us))));
+    min-width: calc(280px * var(--us));
+    max-width: min(calc(440px * var(--us)), calc(100vw - calc(210px * var(--us))));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap {
+    flex-basis: calc(112px * var(--us));
+    min-width: calc(72px * var(--us));
+    max-width: 44%;
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-path,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-elapsed {
+    max-width: calc(72px * var(--us));
+  }
 }
 
 /* ===================== Toolbar ===================== */
@@ -1771,6 +1920,99 @@ body.json-diff-mode #preview-pane {
 .runbook-section-heading .runbook-chip {
   flex: 0 0 auto;
 }
+/* HUD/VIZ: live cumulative-cost meter (createBudgetMeter) mounted in the Latest
+   Run panel. The host is a thin wrapper; the meter builds its own DOM inside. */
+.runbook-budget-meter-host {
+  margin: calc(6px * var(--us)) 0 calc(2px * var(--us));
+}
+.orpad-budget-meter {
+  display: grid;
+  gap: calc(3px * var(--us));
+  padding: calc(6px * var(--us)) calc(8px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(7px * var(--us));
+  background: color-mix(in srgb, var(--accent-color) 6%, var(--bg-primary));
+}
+.orpad-budget-meter__label {
+  font-size: calc(11px * var(--us));
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.orpad-budget-meter__label[data-kind="over"] { color: var(--danger-color, #ff7676); }
+.orpad-budget-meter__label[data-kind="error"] { color: var(--text-tertiary); }
+.orpad-budget-meter__bar {
+  height: calc(6px * var(--us));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-tertiary) 24%, transparent);
+  overflow: hidden;
+}
+.orpad-budget-meter__bar-inner {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent-color);
+  transition: width 0.3s ease;
+}
+.orpad-budget-meter__label[data-kind="over"] ~ .orpad-budget-meter__bar .orpad-budget-meter__bar-inner {
+  background: var(--danger-color, #ff7676);
+}
+.orpad-budget-meter__detail {
+  font-size: calc(10px * var(--us));
+  color: var(--text-tertiary);
+}
+/* STEER: per-item queue steering list (Reject = "leave this out"). */
+.runbook-steer-queue {
+  display: grid;
+  gap: calc(4px * var(--us));
+  margin: calc(6px * var(--us)) 0 calc(2px * var(--us));
+  padding: calc(6px * var(--us)) calc(8px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: calc(7px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-primary));
+}
+.runbook-steer-queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(6px * var(--us));
+  font-size: calc(11px * var(--us));
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.runbook-steer-queue-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6px * var(--us));
+}
+.runbook-inject-label {
+  display: grid;
+  gap: calc(3px * var(--us));
+  margin-top: calc(8px * var(--us));
+  font-size: calc(11px * var(--us));
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.runbook-inject-label .runbook-muted {
+  font-weight: 400;
+}
+.runbook-steer-item {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--us));
+}
+.runbook-steer-item-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono-font, monospace);
+  font-size: calc(10px * var(--us));
+  color: var(--text-secondary);
+}
+.runbook-steer-item button {
+  flex: 0 0 auto;
+}
 .runbook-panel-section p { margin: 0; line-height: 1.45; }
 .runbook-muted {
   min-width: 0;
@@ -1816,6 +2058,15 @@ body.json-diff-mode #preview-pane {
   outline: none;
   border-color: color-mix(in srgb, var(--accent-color) 64%, var(--border-color));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 16%, transparent);
+}
+/* Single-line fields in the work-item form (title, target files) are normal
+   height; only the acceptance-criteria textarea is multi-line. */
+.runbook-inject-label input.runbook-task-input {
+  min-height: auto;
+  resize: none;
+}
+.runbook-task-textarea {
+  min-height: calc(72px * var(--us));
 }
 .runbook-kpi-grid {
   display: grid;
@@ -2757,7 +3008,7 @@ body.json-diff-mode #preview-pane {
   font-size: calc(11.5px * var(--us));
   font-style: italic;
   opacity: 0.85;
-  border-left: 2px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 50%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--syntax-meta, var(--text-secondary)) 50%, transparent);
   padding-left: calc(7px * var(--us));
 }
 .pipe-lifecycle-banner {
@@ -2772,16 +3023,16 @@ body.json-diff-mode #preview-pane {
   color: var(--text-primary);
 }
 .pipe-lifecycle-banner--success {
-  border-color: color-mix(in srgb, #22c55e 50%, transparent);
-  background: color-mix(in srgb, #22c55e 12%, transparent);
+  border-color: color-mix(in srgb, var(--syntax-added, var(--accent-color)) 50%, transparent);
+  background: color-mix(in srgb, var(--syntax-added, var(--accent-color)) 12%, transparent);
 }
 .pipe-lifecycle-banner--warn {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 60%, transparent);
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 14%, transparent);
+  border-color: color-mix(in srgb, var(--syntax-meta, var(--text-secondary)) 60%, transparent);
+  background: color-mix(in srgb, var(--syntax-meta, var(--text-secondary)) 14%, transparent);
 }
 .pipe-lifecycle-banner--error {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 60%, transparent);
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 12%, transparent);
+  border-color: color-mix(in srgb, var(--syntax-deleted, var(--accent-color)) 60%, transparent);
+  background: color-mix(in srgb, var(--syntax-deleted, var(--accent-color)) 12%, transparent);
 }
 .pipe-lifecycle-banner--neutral {
   border-color: color-mix(in srgb, var(--border-color) 70%, transparent);
@@ -2789,6 +3040,220 @@ body.json-diff-mode #preview-pane {
 }
 .pipe-lifecycle-banner--event {
   margin-top: 0;
+}
+.vm-harness-dashboard {
+  --vm-harness-accent: var(--accent-color);
+  --vm-harness-good: var(--syntax-string, var(--syntax-added, var(--accent-color)));
+  --vm-harness-warn: var(--syntax-meta, var(--text-secondary));
+  --vm-harness-danger: var(--danger-color, var(--syntax-deleted, var(--accent-color)));
+  --vm-harness-surface: color-mix(in srgb, var(--bg-secondary) 86%, var(--bg-primary));
+  --vm-harness-surface-raised: color-mix(in srgb, var(--bg-secondary) 94%, var(--bg-primary));
+  --vm-harness-border: color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
+  --vm-harness-quiet-border: color-mix(in srgb, var(--border-color) 74%, var(--bg-secondary));
+  --vm-harness-highlight: color-mix(in srgb, var(--text-primary) 13%, var(--bg-secondary));
+  --vm-harness-lowlight: color-mix(in srgb, var(--bg-primary) 78%, var(--border-color));
+  --vm-harness-depth: color-mix(in srgb, var(--border-color) 20%, var(--bg-primary));
+  position: relative;
+  overflow: hidden;
+  padding: calc(12px * var(--us));
+  border-color: var(--vm-harness-border);
+  background: var(--vm-harness-surface);
+  background-image: none;
+  box-shadow:
+    inset calc(1px * var(--us)) calc(1px * var(--us)) 0 var(--vm-harness-highlight),
+    inset calc(-1px * var(--us)) calc(-1px * var(--us)) 0 color-mix(in srgb, var(--vm-harness-lowlight) 34%, var(--vm-harness-surface)),
+    0 calc(14px * var(--us)) calc(30px * var(--us)) color-mix(in srgb, var(--vm-harness-depth) 46%, transparent);
+}
+.vm-harness-dashboard::before {
+  content: "";
+  position: absolute;
+  inset: calc(8px * var(--us)) calc(10px * var(--us)) auto;
+  height: calc(1px * var(--us));
+  border-radius: calc(999px * var(--us));
+  pointer-events: none;
+  opacity: 0.62;
+  background: color-mix(in srgb, var(--text-primary) 16%, var(--vm-harness-surface));
+}
+.vm-harness-dashboard--success { --vm-harness-accent: var(--vm-harness-good); }
+.vm-harness-dashboard--error { --vm-harness-accent: var(--vm-harness-danger); }
+.vm-harness-dashboard-head,
+.vm-harness-stage-rail,
+.vm-harness-metric-grid,
+.vm-harness-next-action,
+.vm-harness-chip-row,
+.vm-harness-dashboard .pipe-lifecycle-banner-actions {
+  position: relative;
+  z-index: 1;
+}
+.vm-harness-dashboard-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: calc(10px * var(--us));
+}
+.vm-harness-dashboard-head > div {
+  min-width: 0;
+}
+.vm-harness-state-chip {
+  flex: 0 0 auto;
+  max-width: calc(132px * var(--us));
+  padding: calc(4px * var(--us)) calc(8px * var(--us));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, currentColor 38%, transparent);
+  border-radius: calc(999px * var(--us));
+  background: color-mix(in srgb, var(--vm-harness-accent) 10%, var(--bg-secondary));
+  background-image: none;
+  color: var(--vm-harness-accent);
+  box-shadow: inset 0 1px 0 var(--vm-harness-highlight);
+  font-size: calc(10.5px * var(--us));
+  font-weight: 700;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vm-harness-state-chip--good {
+  color: var(--vm-harness-good);
+  background: color-mix(in srgb, var(--vm-harness-good) 10%, var(--bg-secondary));
+}
+.vm-harness-state-chip--warn {
+  color: var(--vm-harness-warn);
+  background: color-mix(in srgb, var(--vm-harness-warn) 10%, var(--bg-secondary));
+}
+.vm-harness-state-chip--danger {
+  color: var(--vm-harness-danger);
+  background: color-mix(in srgb, var(--vm-harness-danger) 10%, var(--bg-secondary));
+}
+.vm-harness-stage-rail {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: calc(6px * var(--us));
+  padding: 0;
+  margin: calc(2px * var(--us)) 0;
+  list-style: none;
+}
+.vm-harness-stage-rail li {
+  min-width: 0;
+  height: calc(24px * var(--us));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 calc(4px * var(--us));
+  border: 1px solid var(--vm-harness-quiet-border);
+  border-radius: calc(6px * var(--us));
+  background: color-mix(in srgb, var(--vm-harness-surface-raised) 92%, var(--bg-primary));
+  background-image: none;
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+  font-weight: 650;
+  line-height: 1;
+  box-shadow:
+    inset 0 1px 0 var(--vm-harness-highlight),
+    0 calc(3px * var(--us)) calc(10px * var(--us)) color-mix(in srgb, var(--vm-harness-depth) 36%, transparent);
+}
+.vm-harness-stage-rail li span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vm-harness-stage-rail li.done {
+  border-color: color-mix(in srgb, var(--vm-harness-good) 42%, transparent);
+  color: var(--vm-harness-good);
+  background: color-mix(in srgb, var(--vm-harness-good) 12%, var(--vm-harness-surface-raised));
+}
+.vm-harness-stage-rail li.current {
+  border-color: color-mix(in srgb, var(--vm-harness-accent) 58%, transparent);
+  color: var(--vm-harness-accent);
+  background: color-mix(in srgb, var(--vm-harness-accent) 14%, var(--vm-harness-surface-raised));
+  box-shadow:
+    inset 0 1px 0 var(--vm-harness-highlight),
+    0 calc(4px * var(--us)) calc(14px * var(--us)) color-mix(in srgb, var(--vm-harness-accent) 16%, transparent);
+}
+.vm-harness-stage-rail li.danger {
+  border-color: color-mix(in srgb, var(--vm-harness-danger) 56%, transparent);
+  color: var(--vm-harness-danger);
+  background: color-mix(in srgb, var(--vm-harness-danger) 13%, var(--vm-harness-surface-raised));
+}
+.vm-harness-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(124px * var(--us)), 1fr));
+  gap: calc(7px * var(--us));
+}
+.vm-harness-metric {
+  min-width: 0;
+  min-height: calc(64px * var(--us));
+  display: grid;
+  align-content: start;
+  gap: calc(3px * var(--us));
+  padding: calc(8px * var(--us));
+  border: 1px solid var(--vm-harness-quiet-border);
+  border-radius: calc(7px * var(--us));
+  background: color-mix(in srgb, var(--vm-harness-surface-raised) 94%, var(--bg-primary));
+  background-image: none;
+  box-shadow:
+    inset calc(1px * var(--us)) calc(1px * var(--us)) 0 var(--vm-harness-highlight),
+    0 calc(4px * var(--us)) calc(12px * var(--us)) color-mix(in srgb, var(--vm-harness-depth) 38%, transparent);
+}
+.vm-harness-metric span,
+.vm-harness-metric em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vm-harness-metric span {
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+  font-weight: 650;
+  text-transform: uppercase;
+}
+.vm-harness-metric strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: calc(12.5px * var(--us));
+  line-height: 1.18;
+}
+.vm-harness-metric em {
+  color: var(--text-tertiary);
+  font-size: calc(10.5px * var(--us));
+  font-style: normal;
+}
+.vm-harness-metric--good { border-color: color-mix(in srgb, var(--vm-harness-good) 42%, transparent); }
+.vm-harness-metric--warn { border-color: color-mix(in srgb, var(--vm-harness-warn) 46%, transparent); }
+.vm-harness-metric--danger { border-color: color-mix(in srgb, var(--vm-harness-danger) 48%, transparent); }
+.vm-harness-next-action {
+  border-top-color: color-mix(in srgb, var(--vm-harness-accent) 28%, transparent);
+  color: color-mix(in srgb, var(--text-primary) 90%, var(--vm-harness-accent));
+}
+.vm-harness-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6px * var(--us));
+}
+.vm-harness-chip {
+  max-width: 100%;
+  padding: calc(3px * var(--us)) calc(7px * var(--us));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, currentColor 36%, transparent);
+  border-radius: calc(999px * var(--us));
+  background: color-mix(in srgb, var(--vm-harness-warn) 11%, var(--vm-harness-surface));
+  background-image: none;
+  color: var(--vm-harness-warn);
+  font-size: calc(10.5px * var(--us));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vm-harness-chip--danger {
+  color: var(--vm-harness-danger);
+  background: color-mix(in srgb, var(--vm-harness-danger) 11%, var(--vm-harness-surface));
+}
+.vm-harness-dashboard-action {
+  border-color: color-mix(in srgb, var(--vm-harness-accent) 38%, transparent);
+  background: color-mix(in srgb, var(--vm-harness-accent) 10%, var(--vm-harness-surface-raised));
+  background-image: none;
+  color: color-mix(in srgb, var(--text-primary) 92%, var(--vm-harness-accent));
+  box-shadow: inset 0 1px 0 var(--vm-harness-highlight);
 }
 .pipe-lifecycle-banner-title {
   font-weight: 600;
@@ -2829,6 +3294,19 @@ body.json-diff-mode #preview-pane {
 }
 .pipe-lifecycle-banner-link--cta:hover {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 28%, transparent);
+}
+.vm-harness-dashboard .vm-harness-dashboard-action {
+  border-color: color-mix(in srgb, var(--vm-harness-accent) 38%, var(--border-color));
+  background-color: var(--vm-harness-surface-raised);
+  background: color-mix(in srgb, var(--vm-harness-accent) 10%, var(--vm-harness-surface-raised));
+  background-image: none;
+  color: color-mix(in srgb, var(--text-primary) 92%, var(--vm-harness-accent));
+  box-shadow: inset 0 1px 0 var(--vm-harness-highlight);
+}
+.vm-harness-dashboard .vm-harness-dashboard-action:hover {
+  background-color: var(--vm-harness-surface-raised);
+  background: color-mix(in srgb, var(--vm-harness-accent) 18%, var(--vm-harness-surface-raised));
+  background-image: none;
 }
 .pipe-patch-outcome {
   display: grid;
@@ -2999,6 +3477,7 @@ body.json-diff-mode #preview-pane {
   gap: calc(4px * var(--us));
 }
 .pipeline-run-primary,
+.pipeline-run-control,
 .pipeline-run-menu-trigger {
   display: inline-grid;
   place-items: center;
@@ -3021,6 +3500,7 @@ body.json-diff-mode #preview-pane {
   color: var(--danger-color, #ff7676);
 }
 .pipeline-run-primary:hover,
+.pipeline-run-control:hover,
 .pipeline-run-menu-trigger:hover {
   background: var(--hover-bg);
   color: var(--text-primary);
@@ -3033,9 +3513,28 @@ body.json-diff-mode #preview-pane {
   color: var(--danger-color, #ff7676);
 }
 .pipeline-run-primary:disabled,
+.pipeline-run-control:disabled,
 .pipeline-run-menu button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+/* Resume is the "continue this run" CTA while paused — give it accent weight so
+   it reads as the obvious next action (and is never mistaken for the neutral
+   Pause or the destructive Cancel). */
+.pipeline-run-control--resume {
+  border-color: color-mix(in srgb, var(--accent-color) 66%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+  color: var(--accent-color);
+}
+.pipeline-run-control--resume:hover {
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--hover-bg));
+  color: var(--accent-color);
+}
+/* Optimistic-ack ("Pausing…"/"Resuming…") busy cue. The button is also disabled
+   while pending, so this layers a progress affordance over the dimmed state. */
+.pipeline-run-control.is-pending {
+  cursor: progress;
+  opacity: 0.7;
 }
 .pipeline-run-menu-wrap {
   position: relative;
@@ -3080,22 +3579,36 @@ body.json-diff-mode #preview-pane {
   display: inline-grid;
   place-items: center;
   padding: calc(5px * var(--us)) calc(8px * var(--us));
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 24%, var(--border-color));
   border-radius: calc(6px * var(--us));
-  background: transparent;
-  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-secondary));
+  background-image: none;
+  color: color-mix(in srgb, var(--text-secondary) 86%, var(--accent-color));
   font: inherit;
   font-size: calc(11px * var(--us));
   cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
+    0 4px 12px color-mix(in srgb, #000 18%, transparent);
 }
 .orch-tool-btn:hover {
-  background: var(--hover-bg);
+  border-color: color-mix(in srgb, var(--accent-color) 60%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
+  background-image: none;
   color: var(--text-primary);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
+    0 0 18px color-mix(in srgb, var(--accent-color) 13%, transparent),
+    0 5px 14px color-mix(in srgb, #000 22%, transparent);
 }
 .orch-tool-btn.active {
   border-color: color-mix(in srgb, var(--accent-color) 70%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-secondary));
+  background-image: none;
   color: var(--accent-color);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 20%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent-color) 18%, transparent);
 }
 .ogi {
   display: block;
@@ -3121,9 +3634,16 @@ body.json-diff-mode #preview-pane {
   display: flex;
   gap: calc(4px * var(--us));
   padding: calc(4px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 34%, var(--border-color));
   border-radius: calc(8px * var(--us));
-  background: color-mix(in srgb, var(--bg-primary) 92%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary));
+  background-image: none;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent-color) 11%, transparent),
+    0 14px 32px color-mix(in srgb, #000 28%, transparent);
+  backdrop-filter: blur(14px) saturate(130%);
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
 }
 .orch-graph-tools .orch-tool-btn {
   width: calc(30px * var(--us));
@@ -3189,15 +3709,40 @@ body.json-diff-mode #preview-pane {
   height: clamp(430px, 58vh, 680px);
   min-height: 430px;
   overflow: hidden;
-  border: 1px solid var(--border-color);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
   border-radius: 8px;
-  background:
-    linear-gradient(color-mix(in srgb, var(--border-color) 20%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--border-color) 20%, transparent) 1px, transparent 1px),
-    var(--bg-secondary);
-  background-size: 28px 28px;
+  background-color: color-mix(in srgb, var(--bg-secondary) 74%, #060a12);
+  background-image: none;
   cursor: default;
   touch-action: none;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, #000 28%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent-color) 6%, transparent),
+    0 22px 54px color-mix(in srgb, #000 30%, transparent);
+  isolation: isolate;
+}
+.orch-graph-frame::before,
+.orch-graph-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.orch-graph-frame::before {
+  inset: 10px;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent);
+  border-radius: 6px;
+  background-image: none;
+  opacity: 0.72;
+}
+.orch-graph-frame::after {
+  inset: 1px;
+  border-radius: 7px;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 5%, transparent),
+    inset 0 0 84px color-mix(in srgb, #000 24%, transparent);
 }
 #content.view-orch-tree .orch-graph-frame,
 #content.view-orch-graph .orch-graph-frame {
@@ -3223,7 +3768,7 @@ body.orchestration-window #content.view-orch-graph .orch-run-status-stack {
   display: grid;
   gap: calc(10px * var(--us));
   flex: 0 0 auto;
-  max-height: min(calc(320px * var(--us)), 36vh);
+  max-height: min(calc(440px * var(--us)), 46vh);
   margin-top: calc(12px * var(--us));
   padding-right: calc(4px * var(--us));
   overflow-y: auto;
@@ -3266,6 +3811,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   position: absolute;
   top: 0;
   left: 0;
+  z-index: 2;
   transform-origin: 0 0;
   will-change: transform;
 }
@@ -3284,28 +3830,43 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .orch-graph-edges path {
   fill: none;
   stroke: color-mix(in srgb, var(--accent-color) 46%, var(--border-color));
-  stroke-width: 3;
+  stroke-width: 3.2;
   stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent-color) 28%, transparent));
   cursor: pointer;
 }
 .orch-transition-hit {
   fill: none;
   stroke: transparent;
   stroke-width: 18;
+  filter: none;
   pointer-events: stroke;
   cursor: pointer;
 }
 .orch-graph-edges .orch-transition:hover,
 .orch-graph-edges .orch-transition.selected {
   stroke: var(--accent-color);
-  stroke-width: 4;
+  stroke-width: 4.8;
+  filter:
+    drop-shadow(0 0 6px color-mix(in srgb, var(--accent-color) 64%, transparent))
+    drop-shadow(0 0 18px color-mix(in srgb, var(--accent-color) 34%, transparent));
 }
 .orch-graph-edges .orch-transition.runtime-completed {
   stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 64%, var(--border-color));
+  stroke-width: 3.8;
+  filter:
+    drop-shadow(0 0 5px color-mix(in srgb, var(--syntax-string, #9ece6a) 42%, transparent))
+    drop-shadow(0 0 16px color-mix(in srgb, var(--syntax-string, #9ece6a) 20%, transparent));
 }
 .orch-graph-edges .orch-transition.runtime-active {
   stroke: var(--accent-color);
-  stroke-width: 4;
+  stroke-width: 5.4;
+  stroke-dasharray: 12 5;
+  animation: orch-edge-dash 1.5s linear infinite;
+  filter:
+    drop-shadow(0 0 7px color-mix(in srgb, var(--accent-color) 72%, transparent))
+    drop-shadow(0 0 24px color-mix(in srgb, var(--accent-color) 46%, transparent));
 }
 .orch-transition-flow-arrows {
   fill: var(--accent-color);
@@ -3328,20 +3889,37 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
     display: none;
   }
   .orch-graph-edges .orch-transition.runtime-active {
-    stroke-width: 4;
-    filter: drop-shadow(0 0 4px currentColor);
+    animation: none;
+    stroke-width: 5.4;
+    filter:
+      drop-shadow(0 0 7px color-mix(in srgb, var(--accent-color) 64%, transparent))
+      drop-shadow(0 0 20px color-mix(in srgb, var(--accent-color) 36%, transparent));
   }
+  .orch-graph-node.runtime-running,
+  .orch-graph-node-breakpoint,
+  .orch-node-progress-badge.active .orch-node-progress-spinner,
+  .orch-node-progress-step.state-running {
+    animation: none !important;
+  }
+}
+@keyframes orch-edge-dash {
+  to { stroke-dashoffset: -17; }
 }
 .orch-transition-flow-arrows.secondary {
   opacity: 0.62;
 }
 .orch-graph-edges .orch-transition.runtime-blocked {
   stroke: color-mix(in srgb, var(--syntax-meta, #e0af68) 72%, var(--border-color));
-  stroke-width: 4;
+  stroke-width: 4.8;
+  stroke-dasharray: 3 7;
+  filter:
+    drop-shadow(0 0 6px color-mix(in srgb, var(--syntax-meta, #e0af68) 56%, transparent))
+    drop-shadow(0 0 18px color-mix(in srgb, var(--syntax-meta, #e0af68) 28%, transparent));
 }
 .orch-graph-edges .orch-transition.runtime-muted {
   stroke: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
-  opacity: 0.55;
+  opacity: 0.42;
+  filter: none;
 }
 /* Phase 2.6: traversed-but-not-finalized — source completed and
  * target is still running/queued. Distinct from `active` (which
@@ -3349,8 +3927,11 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
  * the in-progress branch even when the run is paused. */
 .orch-graph-edges .orch-transition.runtime-traversed {
   stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 50%, var(--accent-color, #6cb6ff));
-  stroke-width: 3.5;
-  stroke-dasharray: 6 3;
+  stroke-width: 4.3;
+  stroke-dasharray: 8 3 2 3;
+  filter:
+    drop-shadow(0 0 5px color-mix(in srgb, var(--syntax-string, #9ece6a) 48%, transparent))
+    drop-shadow(0 0 18px color-mix(in srgb, var(--accent-color) 24%, transparent));
 }
 /* Phase 2.6: untraversed — a downstream branch the dispatcher did
  * NOT pick (selector / conditional). Dimmed and dashed so the
@@ -3366,23 +3947,24 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   stroke-width: 2;
   cursor: move;
   pointer-events: all;
+  filter:
+    drop-shadow(0 0 8px color-mix(in srgb, var(--accent-color) 62%, transparent))
+    drop-shadow(0 4px 10px color-mix(in srgb, #000 32%, transparent));
 }
-/* Edge palette — Okabe-Ito colourblind-safe colors so the graph reads
- * by colour alone even without distinguishing red/green. Categories were
- * merged (accept+pass into one "pass", loop-back+loop-revise into
- * "loop-revise") so the legend stays short. Override in a theme by
- * redefining the --orch-edge-* tokens. */
+/* Edge palette - theme-aware colors so the graph reads from the active
+ * theme while keeping connector categories visually distinct. Override in a
+ * theme by redefining the --orch-edge-* tokens. */
 :root {
-  --orch-edge-forward: #0072b2;       /* Okabe-Ito blue */
-  --orch-edge-branch: #cc79a7;        /* Okabe-Ito reddish purple */
-  --orch-edge-accept: #009e73;        /* Okabe-Ito bluish green (pass / accepted) */
-  --orch-edge-reject: #d55e00;        /* Okabe-Ito vermillion (reject / stop) */
-  --orch-edge-queue-empty: #56b4e9;   /* Okabe-Ito sky blue */
-  --orch-edge-queue-loop: #e69f00;    /* Okabe-Ito orange */
-  --orch-edge-loopback: #e69f00;
-  --orch-edge-loop-revise: #e69f00;
-  --orch-edge-loop-reject: #d55e00;
-  --orch-edge-loop-fail: #d55e00;
+  --orch-edge-forward: color-mix(in srgb, var(--accent-color) 78%, var(--text-primary));
+  --orch-edge-branch: color-mix(in srgb, var(--syntax-keyword) 72%, var(--accent-color));
+  --orch-edge-accept: color-mix(in srgb, var(--syntax-string) 84%, var(--text-primary));
+  --orch-edge-reject: color-mix(in srgb, var(--syntax-deleted) 84%, var(--text-primary));
+  --orch-edge-queue-empty: color-mix(in srgb, var(--link-color, var(--accent-color)) 64%, var(--text-secondary));
+  --orch-edge-queue-loop: color-mix(in srgb, var(--syntax-meta) 84%, var(--accent-color));
+  --orch-edge-loopback: color-mix(in srgb, var(--syntax-number) 82%, var(--accent-color));
+  --orch-edge-loop-revise: color-mix(in srgb, var(--syntax-meta) 76%, var(--syntax-number));
+  --orch-edge-loop-reject: color-mix(in srgb, var(--syntax-deleted) 82%, var(--syntax-meta));
+  --orch-edge-loop-fail: color-mix(in srgb, var(--syntax-deleted) 68%, var(--accent-color));
 }
 
 /* Default — all forward edges. */
@@ -3423,6 +4005,22 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   stroke-dasharray: 8 4;
 }
 
+.orch-graph-edges .orch-transition.runtime-completed {
+  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 64%, var(--border-color));
+}
+.orch-graph-edges .orch-transition.runtime-active {
+  stroke: var(--accent-color);
+}
+.orch-graph-edges .orch-transition.runtime-blocked {
+  stroke: color-mix(in srgb, var(--syntax-meta, #e0af68) 72%, var(--border-color));
+}
+.orch-graph-edges .orch-transition.runtime-traversed {
+  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 50%, var(--accent-color, #6cb6ff));
+}
+.orch-graph-edges .orch-transition.runtime-untraversed {
+  stroke: color-mix(in srgb, var(--text-tertiary) 30%, transparent);
+}
+
 /* Label rendered as a small rounded chip with a solid background so it never
  * fights the path or the moving-arrow animation. Positioned next to the edge
  * control point, not on top of it. */
@@ -3430,10 +4028,11 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   pointer-events: none;
 }
 .orch-transition-label-bg {
-  fill: color-mix(in srgb, var(--bg-primary, #1d1f23) 92%, var(--bg-secondary, #2a2d33));
-  stroke: color-mix(in srgb, var(--border-color, #3a3d42) 80%, transparent);
+  fill: color-mix(in srgb, var(--bg-primary, #1d1f23) 82%, transparent);
+  stroke: color-mix(in srgb, var(--accent-color, #38a3ff) 38%, var(--border-color, #3a3d42));
   stroke-width: 1;
-  opacity: 0.95;
+  opacity: 0.96;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent-color, #38a3ff) 14%, transparent));
 }
 .orch-transition-label-group.loop-back .orch-transition-label-bg {
   stroke: color-mix(in srgb, var(--orch-edge-loopback) 70%, transparent);
@@ -3466,10 +4065,17 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   gap: 4px;
   max-width: 220px;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--border-color, #3a3d42) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-color, #38a3ff) 34%, var(--border-color, #3a3d42));
   border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-primary, #1d1f23) 90%, transparent);
-  backdrop-filter: blur(4px);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 6%, transparent), transparent),
+    color-mix(in srgb, var(--bg-primary, #1d1f23) 84%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 12%, transparent),
+    0 12px 28px color-mix(in srgb, #000 28%, transparent),
+    0 0 20px color-mix(in srgb, var(--accent-color, #38a3ff) 8%, transparent);
+  backdrop-filter: blur(12px) saturate(128%);
+  -webkit-backdrop-filter: blur(12px) saturate(128%);
   font-size: calc(11px * var(--us));
   line-height: 1.35;
   color: var(--text-secondary, #c0c4cc);
@@ -3528,35 +4134,62 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   width: 236px;
   min-height: 78px;
   padding: 9px;
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 22%, var(--border-color));
   border-top: 3px solid var(--accent-color);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-primary) 92%, var(--bg-secondary));
+  background-color: color-mix(in srgb, var(--bg-secondary) 82%, #050914);
+  background-image: none;
   color: var(--text-secondary);
-  box-shadow: 0 8px 22px color-mix(in srgb, #000 24%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 12%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, #000 24%, transparent),
+    0 11px 22px color-mix(in srgb, #000 24%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent-color) 5%, transparent);
   cursor: pointer;
   user-select: none;
+  transform: translateZ(0);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease, transform 0.14s ease, background 0.14s ease;
 }
 .orch-graph-node:hover,
 .orch-graph-node:focus-visible {
   border-color: color-mix(in srgb, var(--accent-color) 64%, var(--border-color));
   outline: none;
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
+    0 14px 28px color-mix(in srgb, #000 32%, transparent),
+    0 0 28px color-mix(in srgb, var(--accent-color) 14%, transparent);
 }
 .orch-graph-node.selected {
   border-color: color-mix(in srgb, var(--accent-color) 76%, var(--border-color));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 16%, transparent), 0 10px 24px color-mix(in srgb, #000 28%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--accent-color) 18%, transparent),
+    0 0 30px color-mix(in srgb, var(--accent-color) 20%, transparent),
+    0 13px 28px color-mix(in srgb, #000 32%, transparent);
 }
 .orch-graph-node.primary {
   border-color: var(--accent-color);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 22%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent-color) 22%, transparent),
+    0 0 34px color-mix(in srgb, var(--accent-color) 22%, transparent),
+    0 15px 32px color-mix(in srgb, #000 34%, transparent);
 }
 .orch-graph-node.runtime-running {
   border-color: color-mix(in srgb, var(--accent-color) 76%, var(--border-color));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-color) 20%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+  background-color: color-mix(in srgb, var(--bg-secondary) 80%, var(--accent-color) 8%);
+  background-image: none;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent-color) 20%, transparent),
+    0 0 36px color-mix(in srgb, var(--accent-color) 22%, transparent),
+    0 14px 30px color-mix(in srgb, #000 34%, transparent);
   animation: orch-runtime-pulse 1.5s ease-in-out infinite;
 }
 .orch-graph-node.runtime-queued {
   border-color: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
+  opacity: 0.88;
 }
 /* Phase 3.7: breakpoint marker on graph nodes. Renderer-only —
  * Continue confirmation is enforced separately in the dispatch path.
@@ -3593,14 +4226,137 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .orch-graph-node.runtime-completed {
   border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 54%, var(--border-color));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
+    0 12px 26px color-mix(in srgb, #000 28%, transparent),
+    0 0 24px color-mix(in srgb, var(--syntax-string, #9ece6a) 10%, transparent);
 }
 .orch-graph-node.runtime-blocked,
 .orch-graph-node.runtime-skipped {
   border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
+    0 12px 26px color-mix(in srgb, #000 30%, transparent),
+    0 0 26px color-mix(in srgb, var(--syntax-meta, #e0af68) 14%, transparent);
 }
 .orch-graph-node.runtime-failed,
 .orch-graph-node.runtime-cancelled {
   border-color: color-mix(in srgb, var(--danger-color, #ff7676) 62%, var(--border-color));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
+    0 12px 26px color-mix(in srgb, #000 30%, transparent),
+    0 0 28px color-mix(in srgb, var(--danger-color, #ff7676) 15%, transparent);
+}
+/* Supervised-autonomy run states on the live graph. */
+.orch-graph-node.runtime-paused {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+  border-style: dashed;
+}
+.orch-graph-node.runtime-paused .orch-runtime-status {
+  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 52%, var(--border-color));
+  color: var(--syntax-meta, #e0af68);
+}
+.orch-graph-node.runtime-cancelling {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
+  border-style: dashed;
+}
+/* When the displayed run is PAUSED, freeze every animation inside the graph so
+   the surface visibly stops moving — the pulse, the in-node progress spinner,
+   the running blink, and the active-edge dash flow all halt. Without this a
+   suspended run keeps churning visually and the motion lies about what the
+   machine is doing. Scoped to the paused frame, so live runs are unaffected. */
+.orch-graph-frame.is-run-paused * {
+  animation-play-state: paused !important;
+}
+.orch-graph-frame.is-run-paused .orch-graph-node.runtime-running,
+.orch-graph-frame.is-run-paused .orch-graph-node.runtime-paused {
+  opacity: 0.82;
+}
+.orch-graph-run-banner {
+  position: absolute;
+  top: calc(8px * var(--us));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  padding: calc(3px * var(--us)) calc(11px * var(--us));
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 14%, var(--bg-primary));
+  color: var(--syntax-meta, #e0af68);
+  font-size: calc(11px * var(--us));
+  font-weight: 600;
+  pointer-events: none;
+  box-shadow: 0 6px 16px color-mix(in srgb, #000 22%, transparent);
+}
+.orch-graph-run-banner.is-cancelling {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 13%, var(--bg-primary));
+  color: var(--danger-color, #ff7676);
+}
+/* Steer-from-the-graph run controls: a compact cluster on the canvas so the user
+   can Pause/Resume/Cancel without leaving the live graph. Anchored top-right
+   (the tools sit top-left). Excluded from the pan/marquee handlers by class. */
+.orch-graph-run-controls {
+  position: absolute;
+  top: calc(8px * var(--us));
+  right: calc(8px * var(--us));
+  z-index: 9;
+  display: inline-flex;
+  gap: calc(4px * var(--us));
+  padding: calc(3px * var(--us));
+  border-radius: calc(9px * var(--us));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 7%, transparent), transparent),
+    color-mix(in srgb, var(--bg-primary) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 34%, var(--border-color));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 13%, transparent),
+    0 0 22px color-mix(in srgb, var(--accent-color) 10%, transparent),
+    0 12px 28px color-mix(in srgb, #000 28%, transparent);
+  backdrop-filter: blur(12px) saturate(126%);
+  -webkit-backdrop-filter: blur(12px) saturate(126%);
+}
+.orch-graph-run-btn {
+  display: inline-grid;
+  place-items: center;
+  width: calc(26px * var(--us));
+  height: calc(26px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
+  border-radius: calc(6px * var(--us));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 7%, transparent), transparent),
+    color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  color: var(--text-secondary);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+.orch-graph-run-btn:hover {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 10%, transparent), transparent),
+    var(--hover-bg);
+  color: var(--text-primary);
+}
+.orch-graph-run-btn.resume {
+  border-color: color-mix(in srgb, var(--accent-color) 66%, var(--border-color));
+  color: var(--accent-color);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent-color) 14%, transparent);
+}
+.orch-graph-run-btn.cancel {
+  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 60%, var(--border-color));
+  color: var(--danger-color, #ff7676);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
+    0 0 16px color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
+}
+.orch-graph-run-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.orch-graph-run-btn .ogi {
+  width: calc(14px * var(--us));
+  height: calc(14px * var(--us));
 }
 .orch-graph-node.bypassed {
   opacity: 0.72;
@@ -3722,10 +4478,18 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 @keyframes orch-runtime-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 12%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
+      0 0 0 2px color-mix(in srgb, var(--accent-color) 13%, transparent),
+      0 0 26px color-mix(in srgb, var(--accent-color) 16%, transparent),
+      0 14px 30px color-mix(in srgb, #000 34%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-color) 26%, transparent), 0 12px 28px color-mix(in srgb, #000 30%, transparent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
+      0 0 0 5px color-mix(in srgb, var(--accent-color) 26%, transparent),
+      0 0 42px color-mix(in srgb, var(--accent-color) 28%, transparent),
+      0 14px 30px color-mix(in srgb, #000 34%, transparent);
   }
 }
 .orch-node-progress-badge {
@@ -4173,50 +4937,84 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .node-pack-manager-list {
   display: flex;
   flex-direction: column;
-  gap: calc(6px * var(--us));
-  padding-right: calc(8px * var(--us));
+  gap: calc(8px * var(--us));
+  padding: calc(2px * var(--us)) calc(8px * var(--us)) calc(8px * var(--us)) calc(2px * var(--us));
   scrollbar-gutter: stable;
 }
 .node-pack-manager-pack {
+  --node-pack-manager-pack-bg: color-mix(in srgb, var(--bg-primary) 96%, var(--bg-secondary));
+  --node-pack-manager-pack-border: color-mix(in srgb, var(--border-color) 82%, var(--bg-secondary));
+  --node-pack-manager-pack-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
+    0 calc(7px * var(--us)) calc(18px * var(--us)) color-mix(in srgb, #000 18%, transparent),
+    0 1px calc(3px * var(--us)) color-mix(in srgb, #000 12%, transparent);
+  position: relative;
   display: grid;
   gap: calc(5px * var(--us));
   width: 100%;
   min-width: 0;
   padding: calc(8px * var(--us)) calc(10px * var(--us));
-  border: 1px solid var(--border-color);
-  border-radius: calc(6px * var(--us));
-  background: color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary));
+  border: 1px solid var(--node-pack-manager-pack-border);
+  border-radius: calc(8px * var(--us));
+  background: var(--node-pack-manager-pack-bg);
+  background-image: none;
+  box-shadow: var(--node-pack-manager-pack-shadow);
   color: var(--text-secondary);
   font: inherit;
   text-align: left;
   cursor: default;
+  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, color 120ms ease;
 }
 .node-pack-manager-pack:hover,
 .node-pack-manager-pack:focus-visible,
 .node-pack-manager-pack.active {
   outline: none;
   border-color: color-mix(in srgb, var(--accent-color) 56%, var(--border-color));
-  background: color-mix(in srgb, var(--accent-color) 9%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 7%, var(--bg-primary));
+  background-image: none;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 13%, transparent),
+    0 calc(9px * var(--us)) calc(22px * var(--us)) color-mix(in srgb, #000 22%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent-color) 13%, transparent);
   color: var(--text-primary);
 }
 .node-pack-manager-pack.has-conflict {
   border-color: color-mix(in srgb, var(--danger-color, #ff7676) 62%, var(--border-color));
-  box-shadow: inset calc(3px * var(--us)) 0 0 var(--danger-color, #ff7676);
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 6%, var(--bg-primary));
+  background-image: none;
+  box-shadow:
+    inset calc(3px * var(--us)) 0 0 var(--danger-color, #ff7676),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
+    0 calc(8px * var(--us)) calc(20px * var(--us)) color-mix(in srgb, #000 20%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
 }
 .node-pack-manager-pack.node-pack-manager-pack-danger:not(.has-conflict) {
   border-color: color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
-  box-shadow: inset calc(3px * var(--us)) 0 0 var(--danger-color, #ff7676);
+  background: color-mix(in srgb, var(--danger-color, #ff7676) 6%, var(--bg-primary));
+  background-image: none;
+  box-shadow:
+    inset calc(3px * var(--us)) 0 0 var(--danger-color, #ff7676),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
+    0 calc(8px * var(--us)) calc(20px * var(--us)) color-mix(in srgb, #000 20%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
 }
 .node-pack-manager-pack.node-pack-manager-pack-warn:not(.has-conflict) {
   border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
-  box-shadow: inset calc(3px * var(--us)) 0 0 var(--syntax-meta, #e0af68);
+  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 6%, var(--bg-primary));
+  background-image: none;
+  box-shadow:
+    inset calc(3px * var(--us)) 0 0 var(--syntax-meta, #e0af68),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
+    0 calc(8px * var(--us)) calc(20px * var(--us)) color-mix(in srgb, #000 20%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--syntax-meta, #e0af68) 13%, transparent);
 }
 .node-pack-manager-package-row {
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(calc(170px * var(--us)), 1fr) minmax(calc(220px * var(--us)), 0.9fr) auto;
   align-items: center;
   min-height: calc(46px * var(--us));
 }
 .node-pack-manager-package-row-main {
+  grid-column: 1;
   display: grid;
   gap: calc(2px * var(--us));
   min-width: 0;
@@ -4237,7 +5035,45 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   color: var(--text-tertiary);
   font-size: calc(10px * var(--us));
 }
+.node-pack-manager-package-row-trust {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: calc(4px * var(--us));
+  min-width: 0;
+}
+.node-pack-manager-trust-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: calc(118px * var(--us));
+  min-height: calc(18px * var(--us));
+  padding: calc(2px * var(--us)) calc(6px * var(--us));
+  border: 1px solid color-mix(in srgb, currentColor 36%, var(--border-color));
+  border-radius: calc(999px * var(--us));
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(9.5px * var(--us));
+  line-height: 1.2;
+}
+.node-pack-manager-trust-chip.good {
+  color: var(--syntax-string, #9ece6a);
+}
+.node-pack-manager-trust-chip.warn {
+  color: var(--syntax-meta, #e0af68);
+}
+.node-pack-manager-trust-chip.danger {
+  color: var(--danger-color, #ff7676);
+}
+.node-pack-manager-trust-chip.info {
+  color: var(--accent-color, #6cb6ff);
+}
 .node-pack-manager-package-row-actions {
+  grid-column: 3;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -4910,6 +5746,14 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   .node-pack-manager-package-row {
     grid-template-columns: 1fr;
   }
+  .node-pack-manager-package-row-main,
+  .node-pack-manager-package-row-trust,
+  .node-pack-manager-package-row-actions {
+    grid-column: auto;
+  }
+  .node-pack-manager-package-row-trust {
+    justify-content: flex-start;
+  }
   .node-pack-manager-package-row-actions {
     justify-content: flex-start;
   }
@@ -4998,9 +5842,11 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   flex: none;
   padding: 1px 5px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-color) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-color) 28%, transparent);
+  background: color-mix(in srgb, var(--accent-color) 11%, var(--bg-primary));
   color: var(--accent-color);
   font-size: calc(9.5px * var(--us));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-color) 8%, transparent);
 }
 .orch-graph-node-meta {
   display: flex;
@@ -5403,6 +6249,46 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   align-items: center;
   justify-content: flex-end;
   min-width: max-content;
+}
+.pipeline-node-pack-risk {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(6px * var(--us));
+  align-items: stretch;
+  min-width: 0;
+  padding-top: calc(2px * var(--us));
+}
+.pipeline-node-pack-risk-item {
+  display: grid;
+  gap: calc(2px * var(--us));
+  min-width: min(calc(150px * var(--us)), 100%);
+  padding: calc(6px * var(--us)) calc(8px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  border-radius: calc(7px * var(--us));
+  background: color-mix(in srgb, var(--bg-primary) 58%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+}
+.pipeline-node-pack-risk-item.has-high-risk {
+  border-color: color-mix(in srgb, var(--warning-color, #f6c177) 48%, var(--border-color));
+  background: color-mix(in srgb, var(--warning-color, #f6c177) 10%, var(--bg-primary));
+}
+.pipeline-node-pack-risk-item span {
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+}
+.pipeline-node-pack-risk-item strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: calc(11px * var(--us));
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pipeline-node-pack-risk-item small {
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
 }
 .pipeline-node-pack-diagnostics {
   grid-column: 1 / -1;
@@ -7227,16 +8113,10 @@ body.drag-over::after {
   position: fixed;
   border: 2px solid color-mix(in srgb, var(--accent-color) 72%, var(--border-color));
   border-radius: 14px;
-  background:
-    repeating-linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--accent-color) 19%, transparent) 0 10px,
-      color-mix(in srgb, var(--accent-color) 6%, transparent) 10px 20px
-    ),
-    color-mix(in srgb, var(--accent-color) 10%, transparent);
+  background-color: color-mix(in srgb, var(--accent-color) 12%, var(--bg-primary));
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--bg-primary) 48%, transparent),
-    0 20px 70px color-mix(in srgb, #000 24%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--bg-primary) 58%, transparent),
+    0 18px 52px color-mix(in srgb, #000 22%, transparent);
 }
 .terminal-dock-guide {
   position: fixed;
@@ -7250,10 +8130,10 @@ body.drag-over::after {
   transform: translate(-50%, -50%);
   border: 1px solid color-mix(in srgb, var(--border-color) 74%, transparent);
   border-radius: 18px;
-  background:
-    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-color) 18%, transparent), transparent 74%),
-    color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
-  box-shadow: 0 22px 70px color-mix(in srgb, #000 34%, transparent);
+  background-color: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent),
+    0 20px 56px color-mix(in srgb, #000 28%, transparent);
 }
 .terminal-dock-target {
   display: grid;
@@ -7695,10 +8575,10 @@ body.drag-over::after {
   overflow: auto;
   border: 1px solid color-mix(in srgb, var(--border-color) 82%, transparent);
   border-radius: 12px;
-  box-shadow: 0 18px 45px color-mix(in srgb, #000 24%, transparent);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent-color) 9%, transparent), transparent 44%),
-    color-mix(in srgb, var(--bg-secondary) 94%, var(--bg-primary));
+  box-shadow:
+    0 18px 38px color-mix(in srgb, #000 22%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent);
+  background: color-mix(in srgb, var(--bg-secondary) 94%, var(--bg-primary));
 }
 .terminal-new-popover.hidden { display: none; }
 .terminal-new-popover-head {
@@ -7735,6 +8615,7 @@ body.drag-over::after {
   color: var(--text-primary);
   font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   outline: none;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 .terminal-shell-list {
   display: grid;
@@ -7764,25 +8645,42 @@ body.drag-over::after {
   color: var(--text-secondary);
   text-align: left;
   cursor: pointer;
+  box-shadow:
+    0 8px 18px color-mix(in srgb, #000 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
 }
 .terminal-shell-card:hover,
 .terminal-shell-card.preferred {
   border-color: color-mix(in srgb, var(--accent-color) 48%, var(--border-color));
   background: color-mix(in srgb, var(--accent-color) 8%, var(--bg-primary));
   color: var(--text-primary);
+  box-shadow:
+    0 10px 22px color-mix(in srgb, #000 12%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--accent-color) 16%, transparent);
 }
 .terminal-shell-card.ai-cli {
   border-color: color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 6%, var(--bg-primary));
 }
 .terminal-shell-card.ai-cli .terminal-shell-icon {
   background: color-mix(in srgb, var(--accent-color) 18%, transparent);
 }
 .terminal-shell-card.unavailable {
   border-style: dashed;
-  opacity: 0.72;
+  background: color-mix(in srgb, var(--bg-secondary) 76%, var(--bg-primary));
+  color: var(--text-tertiary);
+}
+.terminal-shell-card.unavailable .terminal-shell-icon {
+  border-color: color-mix(in srgb, var(--border-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-secondary) 80%, var(--bg-primary));
+  color: var(--text-tertiary);
+}
+.terminal-shell-card.unavailable .terminal-shell-copy strong {
+  color: var(--text-secondary);
 }
 .terminal-shell-card:disabled {
-  opacity: 0.55;
+  opacity: 1;
   cursor: not-allowed;
 }
 .terminal-shell-icon {
@@ -7792,9 +8690,11 @@ body.drag-over::after {
   width: 34px;
   height: 28px;
   border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 22%, transparent);
   background: color-mix(in srgb, var(--accent-color) 13%, transparent);
   color: var(--accent-color);
   font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 .terminal-shell-copy {
   display: grid;
@@ -7817,15 +8717,18 @@ body.drag-over::after {
 }
 .terminal-shell-badge {
   padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 22%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent-color) 13%, transparent);
   color: var(--accent-color);
   font-size: 10px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 .terminal-shell-badge.ai {
   background: color-mix(in srgb, var(--accent-color) 11%, transparent);
 }
 .terminal-shell-badge.missing {
+  border-color: color-mix(in srgb, var(--warning-color, #d97706) 24%, var(--border-color));
   background: color-mix(in srgb, var(--warning-color, #d97706) 13%, transparent);
   color: color-mix(in srgb, var(--warning-color, #d97706) 90%, var(--text-primary));
 }
@@ -7833,8 +8736,10 @@ body.drag-over::after {
   padding: 9px;
   border: 1px dashed color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-primary) 70%, var(--bg-secondary));
   color: var(--text-tertiary);
   font-size: 11px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 .terminal-shell-loading {
   display: flex;
@@ -7846,6 +8751,7 @@ body.drag-over::after {
   background: color-mix(in srgb, var(--accent-color) 7%, transparent);
   color: var(--text-secondary);
   font-size: 11px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent);
 }
 .terminal-draft {
   display: grid;
@@ -7920,9 +8826,10 @@ body.drag-over::after {
   border: 1px dashed color-mix(in srgb, var(--border-color) 72%, transparent);
   border-radius: 8px;
   color: var(--text-tertiary);
-  background:
-    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent-color) 9%, transparent), transparent 44%),
-    var(--editor-bg);
+  background: color-mix(in srgb, var(--editor-bg) 92%, var(--bg-secondary));
+  box-shadow:
+    0 12px 26px color-mix(in srgb, #000 10%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 .terminal-pty-empty strong {
   color: var(--text-secondary);
@@ -7940,6 +8847,7 @@ body.drag-over::after {
   color: var(--accent-color);
   font-family: inherit;
   cursor: pointer;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 .terminal-block-drawer {
   flex: 0 0 auto;
@@ -9222,4 +10130,146 @@ body.orchestration-window .ai-sidebar-resize { display: none !important; }
   }
   .ai-sidebar-resize { display: none; }
   .ai-history { width: 96px; flex-basis: 96px; }
+}
+
+/* ===================== OrPAD Hero Surfaces ===================== */
+body {
+  --orpad-soft-highlight: color-mix(in srgb, var(--text-primary) 15%, transparent);
+  --orpad-soft-shell-shadow:
+    inset 0 1px 0 var(--orpad-soft-highlight),
+    inset 0 -1px 0 color-mix(in srgb, #000 16%, transparent),
+    0 14px 32px color-mix(in srgb, #000 18%, transparent);
+  --orpad-soft-panel-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 16%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, #000 20%, transparent),
+    0 18px 40px color-mix(in srgb, #000 28%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 94%, #000);
+}
+
+#toolbar,
+#format-bar,
+#tab-bar,
+#statusbar,
+.jedit-toolbar,
+.terminal-head,
+.terminal-pty-topbar,
+.terminal-window-head {
+  border-color: color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
+  background: color-mix(in srgb, var(--bg-secondary) 90%, var(--bg-primary));
+  box-shadow: var(--orpad-soft-shell-shadow);
+}
+
+#workspace,
+body.orchestration-window #workspace,
+body.zen-mode #workspace {
+  background: color-mix(in srgb, var(--bg-primary) 97%, var(--bg-secondary));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+#editor-pane,
+#preview-pane,
+#sidebar,
+#theme-panel,
+.cmdk-shell,
+.quick-open-preview,
+.json-diff-panel,
+.runbook-panel-section,
+.runbook-steer-queue,
+.runbook-kpi,
+.runbook-item,
+.runbook-guide,
+.runbook-diagnostic,
+.runbook-event,
+.runbook-latest-run-summary,
+.runbook-run-details,
+.pipeline-runbar,
+.pipe-failed-probe,
+.orpad-budget-meter,
+.terminal-panel,
+.terminal-window-shell,
+.terminal-window-modal,
+.terminal-new-popover {
+  border-color: color-mix(in srgb, var(--accent-color) 32%, var(--border-color));
+  background: color-mix(in srgb, var(--bg-secondary) 88%, var(--bg-primary));
+  box-shadow: var(--orpad-soft-panel-shadow);
+  backdrop-filter: blur(8px) saturate(112%);
+  -webkit-backdrop-filter: blur(8px) saturate(112%);
+}
+
+.cmdk-shell,
+.terminal-panel.terminal-layout-floating,
+.terminal-window-modal,
+.terminal-new-popover {
+  border-radius: 8px;
+}
+
+.cmdk-overlay {
+  background: color-mix(in srgb, #000 62%, transparent);
+}
+
+.cmdk-input,
+.quick-open-preview,
+.quick-open-preview pre,
+.jedit-scroll,
+.terminal-pty-root,
+.terminal-pty-stage,
+.terminal-pty-container,
+.terminal-window-stage,
+.terminal-output {
+  background: color-mix(in srgb, var(--editor-bg) 94%, var(--bg-primary));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, #000 14%, transparent);
+}
+
+.cmdk-item:hover,
+.cmdk-item.selected,
+.tab-item:hover,
+.terminal-tab.active,
+.terminal-dock-target.active,
+.pipeline-editor-tabs button.active,
+.jedit-seg-btn.active {
+  border-color: color-mix(in srgb, var(--accent-color) 66%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-secondary));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 18%, transparent),
+    0 0 22px color-mix(in srgb, var(--accent-color) 14%, transparent);
+}
+
+.tab-item.active {
+  background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-primary));
+}
+
+.tab-item.active::after,
+.orpad-budget-meter__bar-inner,
+.pipeline-runbar-current::before {
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent-color) 70%, transparent);
+}
+
+.jedit-tree {
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent-color) 9%, transparent);
+}
+
+.jedit-children {
+  border-left-color: color-mix(in srgb, var(--accent-color) 34%, transparent);
+}
+
+.jedit-row:hover,
+.jedit-value.editable:hover,
+.jedit-tree:not(.read-only) .jedit-key-name:hover {
+  background: color-mix(in srgb, var(--accent-color) 12%, transparent);
+}
+
+.terminal-panel.terminal-layout-left {
+  border-radius: 0 8px 8px 0;
+}
+
+.terminal-panel.terminal-layout-right {
+  border-radius: 8px 0 0 8px;
+}
+
+.terminal-panel.terminal-layout-bottom {
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 15%, transparent),
+    0 -20px 48px color-mix(in srgb, #000 32%, transparent);
 }

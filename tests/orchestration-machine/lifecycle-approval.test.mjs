@@ -95,7 +95,7 @@ test('approval-required pause creates Machine approval artifact and approved dec
   assert.equal(paused.stopReason, 'approval-required');
   assert.equal(paused.approval.request.itemId, itemId);
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'approval-required');
-  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
   assert.equal((await readMachineEvents(run.runRoot)).some(event => event.eventType === 'approval.requested'), true);
   await fs.stat(path.join(run.runRoot, paused.approval.artifact.file.path));
 
@@ -306,7 +306,7 @@ test('resume cannot bypass a pending approval request', async () => {
 
   assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'approval-required');
-  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
   assert.equal((await readMachineEvents(run.runRoot)).length, eventCount);
 });
 
@@ -466,9 +466,9 @@ test('finalize keeps run blocked when review-required patch has not emitted node
   const finalized = await finalizeRunFromInventory(run.runRoot, { runId: run.runId });
 
   assert.equal(finalized.patchReview.required, true);
-  assert.equal(finalized.summaryStatus, 'blocked');
+  assert.equal(finalized.summaryStatus, 'partial');
   assert.equal(finalized.runState.lifecycleStatus, 'waiting');
-  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
 });
 
 test('finalize honors patch.review_required emitted before node.blocked', async () => {
@@ -523,9 +523,9 @@ test('finalize honors patch.review_required emitted before node.blocked', async 
   const finalized = await finalizeRunFromInventory(run.runRoot, { runId: run.runId });
 
   assert.equal(finalized.patchReview.required, true);
-  assert.equal(finalized.summaryStatus, 'blocked');
+  assert.equal(finalized.summaryStatus, 'partial');
   assert.equal(finalized.runState.lifecycleStatus, 'waiting');
-  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
 });
 
 test('resume cannot reopen a terminal run even when run-state is missing', async () => {
@@ -628,6 +628,92 @@ test('resume closes in-flight node executions when recovering stale claims', asy
   assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'waiting');
 });
 
+test('resume closes in-flight node executions when recovering orphaned adapter claims', async () => {
+  const run = await makeRun('run_20260430_resume_orphaned_adapter_node');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'resume-orphaned-adapter-item',
+    fingerprint: 'lifecycle:resume-orphaned-adapter-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-resume-orphaned-adapter-node',
+    leaseMs: 30 * 60 * 1000,
+    now: '2026-04-30T00:00:10.000Z',
+  });
+  assert.equal(claimed.claimed, true);
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'machine',
+    eventType: 'node.started',
+    nodePath: 'main/worker',
+    payload: {
+      nodeExecutionId: `${run.runId}:main/worker:attempt-1`,
+      nodeType: 'orpad.workerLoop',
+      status: 'started',
+      attempt: 1,
+      itemId,
+      claimId: 'claim-resume-orphaned-adapter-node',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-04-30T00:00:12.000Z',
+    actor: 'machine',
+    eventType: 'adapter.requested',
+    nodePath: 'main/worker',
+    payload: {
+      adapter: 'cli-agent-overlay',
+      adapterCallId: 'claim-resume-orphaned-adapter-node-graph-cli',
+      attemptId: 'claim-resume-orphaned-adapter-node-graph-cli-attempt-1',
+      idempotencyKey: 'claim-resume-orphaned-adapter-node-graph-cli:attempt-1',
+      taskKind: 'workerLoop',
+      workspaceMode: 'read-only-plus-overlay',
+      inputArtifacts: [`queue/claimed/${itemId}.json`],
+      outputContract: 'orpad.workerResult.v1',
+      adapterResultPath: 'adapters/claim-resume-orphaned-adapter-node-graph-cli.result.json',
+    },
+  });
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    timestamp: '2026-04-30T00:00:13.000Z',
+    actor: 'machine',
+    eventType: 'adapter.process.finished',
+    nodePath: 'main/worker',
+    payload: {
+      adapter: 'cli-agent-overlay',
+      adapterCallId: 'claim-resume-orphaned-adapter-node-graph-cli',
+      attemptId: 'claim-resume-orphaned-adapter-node-graph-cli-attempt-1',
+      idempotencyKey: 'claim-resume-orphaned-adapter-node-graph-cli:attempt-1',
+      taskKind: 'workerLoop',
+      pid: 999999,
+      processKey: 'claim-resume-orphaned-adapter-node-graph-cli',
+      code: 0,
+      timedOut: false,
+      cancelled: false,
+      startedAt: '2026-04-30T00:00:12.000Z',
+      finishedAt: '2026-04-30T00:00:13.000Z',
+    },
+  });
+
+  const resumed = await resumeMachineRun(run.runRoot, {
+    runId: run.runId,
+    now: '2026-04-30T00:03:00.000Z',
+    recoverStaleClaims,
+    emitNodeCancelledForInflight,
+    orphanedAdapterGraceMs: 60_000,
+  });
+
+  assert.equal(resumed.staleClaims.length, 1);
+  assert.equal(Boolean(resumed.staleClaims[0].orphanedAdapter), true);
+  assert.equal(resumed.cancelledNodes.length, 1);
+  assert.equal((await findQueueItem(run.runRoot, itemId)).state, 'queued');
+  const events = await readMachineEvents(run.runRoot);
+  const cancelled = events.find(event => event.eventType === 'node.cancelled' && event.nodePath === 'main/worker');
+  assert.equal(Boolean(cancelled), true);
+  assert.equal(cancelled.payload?.reason, 'lifecycle.resume.orphaned-adapter-claim');
+  assert.equal((await readRunState(run.runRoot)).lifecycleStatus, 'waiting');
+});
+
 test('resume keeps run blocked while approved patch review is not applied', async () => {
   const run = await makeRun('run_20260430_resume_patch_review_blocked');
   const itemId = await queueProposal(run);
@@ -692,8 +778,8 @@ test('resume keeps run blocked while approved patch review is not applied', asyn
   assert.equal(resumed.patchReview.required, true);
   assert.equal(resumed.patchReview.resolved, false);
   assert.equal(resumed.runState.lifecycleStatus, 'waiting');
-  assert.equal(resumed.runState.summaryStatus, 'blocked');
-  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal(resumed.runState.summaryStatus, 'partial');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
 });
 
 test('resume keeps run blocked when review-required patch predates patchReview node blocking', async () => {
@@ -736,6 +822,6 @@ test('resume keeps run blocked when review-required patch predates patchReview n
   assert.equal(resumed.inventory.activeCount, 0);
   assert.equal(resumed.patchReview.required, true);
   assert.equal(resumed.runState.lifecycleStatus, 'waiting');
-  assert.equal(resumed.runState.summaryStatus, 'blocked');
-  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'blocked');
+  assert.equal(resumed.runState.summaryStatus, 'partial');
+  assert.equal((await readRunState(run.runRoot)).summaryStatus, 'partial');
 });
