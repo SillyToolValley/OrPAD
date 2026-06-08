@@ -421,6 +421,13 @@ function summaryForCliAgentResult({ status, approvalRequired, parsedSummary, pro
   return 'CLI adapter did not produce a valid worker result contract; inspect the transcript and retry or narrow the work item.';
 }
 
+function parsedWorkerVerificationEntries(parsedWorkerResult = {}) {
+  if (!Array.isArray(parsedWorkerResult?.verification)) return [];
+  return parsedWorkerResult.verification
+    .filter(entry => entry && typeof entry === 'object' && !Array.isArray(entry))
+    .map(entry => ({ ...entry, source: entry.source || 'worker-result' }));
+}
+
 function nonEmptyString(value) {
   const text = String(value || '').trim();
   return text || '';
@@ -621,6 +628,29 @@ function createCliAgentAdapter(options = {}) {
           processResult,
           patch,
         });
+        const processVerification = {
+          command: commandSpec.command,
+          args: processResult.args || [],
+          status,
+          phase: 'cli-process',
+          cwdKind: 'overlay',
+          containment,
+          exitCode: processResult.code,
+          spawnErrorCode: processResult.spawnError?.code || '',
+          spawnErrorMessage: processResult.spawnError?.message || '',
+          timedOut: processResult.timedOut,
+          stdoutTruncated: processResult.stdoutTruncated,
+          stderrTruncated: processResult.stderrTruncated,
+          redactedArgCount: processResult.redactedArgCount || 0,
+          writeSetViolationCount: fatalPatchWriteSetViolations(patch).length,
+          ignoredGeneratedFileCount: (patch.ignoredGeneratedFiles || []).length,
+          expectedChangedFiles,
+          missingExpectedChanges,
+          parsedWorkerStatus: parsedWorkerResult?.status || '',
+          parsedWorkerResultStatus: status,
+          parsedWorkerResultDetected: Boolean(parsedWorkerResult),
+          parsedWorkerResultSummary: parsedSummary,
+        };
         return {
           schemaVersion: 'orpad.workerResult.v1',
           adapterCallId: request.adapterCallId,
@@ -655,27 +685,10 @@ function createCliAgentAdapter(options = {}) {
               },
             },
           } : {}),
-          verification: [{
-            command: commandSpec.command,
-            args: processResult.args || [],
-            cwdKind: 'overlay',
-            containment,
-            exitCode: processResult.code,
-            spawnErrorCode: processResult.spawnError?.code || '',
-            spawnErrorMessage: processResult.spawnError?.message || '',
-            timedOut: processResult.timedOut,
-            stdoutTruncated: processResult.stdoutTruncated,
-            stderrTruncated: processResult.stderrTruncated,
-            redactedArgCount: processResult.redactedArgCount || 0,
-            writeSetViolationCount: fatalPatchWriteSetViolations(patch).length,
-            ignoredGeneratedFileCount: (patch.ignoredGeneratedFiles || []).length,
-            expectedChangedFiles,
-            missingExpectedChanges,
-            parsedWorkerStatus: parsedWorkerResult?.status || '',
-            parsedWorkerResultStatus: status,
-            parsedWorkerResultDetected: Boolean(parsedWorkerResult),
-            parsedWorkerResultSummary: parsedSummary,
-          }],
+          verification: [
+            ...parsedWorkerVerificationEntries(parsedWorkerResult),
+            processVerification,
+          ],
         };
       } finally {
         if (cleanupSystemOverlay) {

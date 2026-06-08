@@ -633,6 +633,37 @@ async function writeFakeReadOnlySourceCodexCliScript(dir) {
   return scriptPath;
 }
 
+async function writeFakeFailingProposalCodexCliScript(dir) {
+  const scriptPath = path.join(dir, 'fake-failing-proposal-codex-cli.mjs');
+  await fs.writeFile(scriptPath, [
+    'import fs from "node:fs";',
+    'import path from "node:path";',
+    'const args = process.argv.slice(2);',
+    'const outputIndex = args.indexOf("--output-last-message");',
+    'const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : "";',
+    'const prompt = args.at(-1) === "-" ? fs.readFileSync(0, "utf8") : (args.at(-1) || "");',
+    'function field(name) {',
+    '  const match = prompt.match(new RegExp(`${name}:\\\\s*([^\\\\n]+)`));',
+    '  return match ? match[1].trim() : "";',
+    '}',
+    'const result = {',
+    '  schemaVersion: "orpad.workerResult.v1",',
+    '  adapterCallId: field("adapterCallId"),',
+    '  attemptId: field("attemptId"),',
+    '  idempotencyKey: field("idempotencyKey"),',
+    '  status: "failed",',
+    '  summary: "Fake proposal adapter failed before producing candidates.",',
+    '  deferredReason: "fake-proposal-failure",',
+    '  artifacts: []',
+    '};',
+    'if (outputPath) {',
+    '  fs.mkdirSync(path.dirname(outputPath), { recursive: true });',
+    '  fs.writeFileSync(outputPath, `${JSON.stringify(result)}\\n`, "utf8");',
+    '}',
+  ].join('\n'), 'utf8');
+  return scriptPath;
+}
+
 async function writeFakeParallelCodexCliScript(dir) {
   const scriptPath = path.join(dir, 'fake-parallel-codex-cli.mjs');
   await fs.writeFile(scriptPath, [
@@ -715,7 +746,7 @@ async function writeFakeParallelCodexCliScript(dir) {
   return scriptPath;
 }
 
-test('live proposal prompt gives collect-all-visible probes the managed safe candidate cap', () => {
+test('live proposal prompt honors generated candidate limit for collect-all-visible probes', () => {
   const request = {
     adapterCallId: 'proposal-call',
     attemptId: 'proposal-call-attempt-1',
@@ -737,7 +768,7 @@ test('live proposal prompt gives collect-all-visible probes the managed safe can
     },
   };
 
-  assert.equal(effectiveProbeCandidateLimit({ adapter, node, pipeline }), 5);
+  assert.equal(effectiveProbeCandidateLimit({ adapter, node, pipeline }), 1);
 
   const prompt = liveProbePrompt({
     request,
@@ -745,12 +776,42 @@ test('live proposal prompt gives collect-all-visible probes the managed safe can
     node,
     pipeline,
     pipelinePath: '.orpad/pipelines/maintenance/pipeline.or-pipeline',
+    taskText: 'Use assets/reference/orpad-hero.png as the OrPAD Hero visual reference and update the Built-in theme palette and glass surfaces.',
   });
 
-  assert.equal(prompt.includes('Return at most 5 candidateProposals.'), true);
-  assert.equal(prompt.includes('Return at most 1 candidateProposals.'), false);
+  assert.equal(prompt.includes('Return at most 1 candidateProposals.'), true);
+  assert.equal(prompt.includes('Return at most 5 candidateProposals.'), false);
+  assert.equal(prompt.includes('The first candidate must be the closest direct match to the user task'), true);
+  assert.equal(prompt.includes('Do not rank incidental reference subcomponents'), true);
   assert.equal(prompt.includes('Do not propose whole-surface overhauls'), true);
   assert.equal(prompt.includes('at most two implementation files plus one focused test file'), true);
+});
+
+test('live worker prompt requires concrete visual-reference evidence or blockers', () => {
+  const prompt = buildLiveWorkerPrompt({
+    request: {
+      adapterCallId: 'worker-call',
+      attemptId: 'worker-attempt-1',
+      idempotencyKey: 'worker-call:attempt-1',
+      allowedFiles: ['src/renderer/themes.js', 'src/renderer/styles/base.css', 'tests/e2e/visual.spec.js'],
+      readOnlyFiles: ['assets/reference/orpad-hero.png'],
+    },
+    claim: {
+      claim: { claimId: 'claim-hero-reference' },
+      item: {
+        id: 'hero-reference-theme',
+        title: 'Apply OrPAD Hero reference palette to the Built-in theme',
+        acceptanceCriteria: ['reference palette and before/after visual evidence are recorded'],
+      },
+    },
+    candidate: {},
+    workerNode: { nodePath: 'main/worker', config: {} },
+    taskText: 'Use assets/reference/orpad-hero.png as the OrPAD Hero visual reference and update the Built-in theme palette and glass surfaces.',
+  });
+
+  assert.equal(prompt.includes('Reference/UI alignment rules:'), true);
+  assert.equal(prompt.includes('before/after screenshot artifact paths'), true);
+  assert.equal(prompt.includes('If screenshots cannot be produced in the overlay, record the exact blocked reason'), true);
 });
 
 test('failed worker patch artifacts are not eligible for patch review auto-apply', () => {
@@ -1810,6 +1871,43 @@ test('graph-driven execute step runs a live Codex CLI adapter declaration throug
   assert.equal(workerVerification.missingExpectedChanges.length, 0);
   const leaseCreated = executed.events.find(event => event.eventType === 'claim.lease-created');
   assert.equal(leaseCreated.payload.leaseMs, 123_456);
+});
+
+test('graph-driven execute step stops before queue work when live proposal adapter fails', async () => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260609_live_probe_failure_stops');
+  const fakeCodexDir = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-fake-failing-proposal-codex-cli-'));
+  const fakeCodexScript = await writeFakeFailingProposalCodexCliScript(fakeCodexDir);
+  const pipeline = JSON.parse(await fs.readFile(pipelinePath, 'utf8'));
+  delete pipeline.run.machineHarness;
+  pipeline.run.machineAdapter = {
+    type: 'codex-cli',
+    enabled: true,
+    command: process.execPath,
+    commandPrefixArgs: [fakeCodexScript],
+    proposalSandbox: 'read-only',
+    workerSandbox: 'workspace-write',
+    approvalPolicy: 'never',
+    probeNodePaths: ['main/probe'],
+    candidateLimit: 1,
+    proposalTimeoutMs: 30_000,
+    workerTimeoutMs: 30_000,
+  };
+  await fs.writeFile(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`, 'utf8');
+
+  const executed = await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+  });
+
+  assert.equal(executed.finalization.summaryStatus, 'partial');
+  assert.equal(executed.finalization.completionBlocked.kind, 'adapter-results');
+  assert.equal(executed.finalization.completionBlocked.failedAdapterCount, 1);
+  assert.equal(executed.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/queue'), false);
+  assert.equal(executed.events.some(event => event.eventType === 'node.completed' && event.nodePath === 'main/verification-gate'), false);
+  assert.equal(executed.events.some(event => event.eventType === 'worker.result'), false);
 });
 
 test('graph-driven live worker receives sourceOfTruthTargets as read-only overlay context', async () => {

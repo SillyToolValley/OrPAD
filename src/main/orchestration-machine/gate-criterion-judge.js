@@ -47,6 +47,8 @@ function normalizeVerificationEntry(entry = {}) {
   const command = clampText(entry.command || '', 200);
   const args = Array.isArray(entry.args) ? entry.args.map(arg => clampText(arg, 80)).slice(0, 12) : [];
   const out = { command };
+  if (entry.status) out.status = clampText(entry.status, 40);
+  if (entry.summary) out.summary = clampText(entry.summary, 400);
   if (args.length) out.args = args;
   if (Number.isFinite(Number(entry.exitCode))) out.exitCode = Number(entry.exitCode);
   if (entry.timedOut === true) out.timedOut = true;
@@ -72,11 +74,16 @@ function buildGateJudgeEvidence(input = {}) {
     const artifactRefs = (Array.isArray(event.artifactRefs) ? event.artifactRefs : [])
       .map(normalizeLockPath)
       .filter(Boolean);
+    const declaredArtifacts = (Array.isArray(payload.artifacts) ? payload.artifacts : [])
+      .map(item => (typeof item === 'string' ? item : (item?.path || item?.file || item?.ref || '')))
+      .map(normalizeLockPath)
+      .filter(Boolean);
     const verification = (Array.isArray(payload.verification) ? payload.verification : [])
       .slice(0, MAX_VERIFICATION_PER_WORKER)
       .map(normalizeVerificationEntry);
     changedFiles.forEach(file => knownRefs.add(file));
     artifactRefs.forEach(ref => knownRefs.add(ref));
+    declaredArtifacts.forEach(ref => knownRefs.add(ref));
     if (payload.patchArtifact) knownRefs.add(normalizeLockPath(payload.patchArtifact));
     workers.push({
       itemId: clampText(event.itemId || payload.itemId || '', 120),
@@ -84,6 +91,7 @@ function buildGateJudgeEvidence(input = {}) {
       changedFiles: changedFiles.slice(0, MAX_CHANGED_FILES_PER_WORKER),
       patchArtifact: payload.patchArtifact ? normalizeLockPath(payload.patchArtifact) : '',
       artifactRefs,
+      artifacts: declaredArtifacts,
       verification,
     });
   }

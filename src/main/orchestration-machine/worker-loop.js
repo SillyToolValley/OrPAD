@@ -23,10 +23,11 @@ const {
   transitionQueueItem,
 } = require('./queue-store');
 const { normalizeLockPath } = require('./file-lock-manager');
-const { normalizeWriteSetPath, releaseWriteSetLock } = require('./write-sets');
+const { releaseWriteSetLock } = require('./write-sets');
 // RC-2: cooperative-cancel helpers. run-control.js depends only on
 // events/lifecycle/run-store, so importing it here is acyclic.
 const { normalizeRunCancellationError, throwIfRunSignalAborted } = require('./run-control');
+const { readOnlyFilesForClaim } = require('./worker-readonly-context');
 
 const validator = createContractValidator();
 
@@ -46,15 +47,6 @@ function targetQueueStateForWorkerResult(result, queueItem = {}) {
     return (Number(queueItem.managedRetryCount) || 0) > 0 ? 'rejected' : 'queued';
   }
   return 'queued';
-}
-
-function readOnlyFilesForClaim(claim = {}) {
-  const allowed = new Set((claim.writeSet?.paths || [])
-    .map(normalizeWriteSetPath)
-    .filter(Boolean));
-  return [...new Set((claim.item?.sourceOfTruthTargets || [])
-    .map(normalizeWriteSetPath)
-    .filter(file => file && !allowed.has(file)))].sort();
 }
 
 function summaryStatusForWorkerResult(result) {
@@ -500,6 +492,7 @@ async function applyWorkerResult(runRoot, options = {}) {
       status: result.status,
       toState,
       summary: result.summary || '',
+      artifacts: result.artifacts || [],
       patchArtifact: result.patchArtifact || '',
       changedFiles: normalizeLockFileList(result.changedFiles || []),
       declaredTargetFiles: normalizeLockFileList(declaredTargetFiles),

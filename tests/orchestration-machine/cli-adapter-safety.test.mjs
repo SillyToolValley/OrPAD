@@ -31,6 +31,9 @@ const {
   sha256Text,
   transitionQueueItem,
 } = require('../../src/main/orchestration-machine');
+const {
+  readOnlyFilesForClaim,
+} = require('../../src/main/orchestration-machine/worker-readonly-context');
 
 const fixedNow = new Date('2026-04-30T00:00:00.000Z');
 
@@ -615,6 +618,11 @@ test('CLI overlay adapter extracts stdout evidence into canonical worker result 
     failingSymptom: 'The allowed target still contained stale text.',
     rootCause: 'The worker result parser ignored structured stdout evidence.',
     verificationCommands: ['node --test tests/orchestration-machine/cli-adapter-safety.test.mjs'],
+    verification: [{
+      command: 'node --test tests/orchestration-machine/cli-adapter-safety.test.mjs',
+      status: 'passed',
+      summary: 'Worker stdout evidence reached the adapter result.',
+    }],
     residualRisk: 'Only the focused adapter path is covered here.',
     artifacts: [],
   };
@@ -645,6 +653,11 @@ test('CLI overlay adapter extracts stdout evidence into canonical worker result 
   assert.equal(result.rootCause, stdoutResult.rootCause);
   assert.deepEqual(result.filesChanged, ['src/allowed.txt']);
   assert.deepEqual(result.verificationCommands, stdoutResult.verificationCommands);
+  assert.deepEqual(result.verification[0], {
+    ...stdoutResult.verification[0],
+    source: 'worker-result',
+  });
+  assert.equal(result.verification.at(-1).phase, 'cli-process');
 
   await applyWorkerResult(run.runRoot, {
     runId: run.runId,
@@ -658,6 +671,28 @@ test('CLI overlay adapter extracts stdout evidence into canonical worker result 
   assert.equal(workerEvent.payload.rootCause, stdoutResult.rootCause);
   assert.deepEqual(workerEvent.payload.filesChanged, ['src/allowed.txt']);
   assert.deepEqual(workerEvent.payload.verificationCommands, stdoutResult.verificationCommands);
+  assert.deepEqual(workerEvent.payload.verification[0], {
+    ...stdoutResult.verification[0],
+    source: 'worker-result',
+  });
+  assert.equal(workerEvent.payload.verification.at(-1).phase, 'cli-process');
+});
+
+test('worker read-only context includes package metadata for project validation plans', () => {
+  const readOnlyFiles = readOnlyFilesForClaim({
+    writeSet: { paths: ['src/renderer/themes.js'] },
+    item: {
+      sourceOfTruthTargets: ['assets/reference/orpad-hero.png', 'src/renderer/themes.js'],
+      targetFiles: ['src/renderer/themes.js'],
+      verificationPlan: 'Run npm run test:visual and capture before/after screenshot evidence.',
+    },
+  });
+
+  assert.equal(readOnlyFiles.includes('assets/reference/orpad-hero.png'), true);
+  assert.equal(readOnlyFiles.includes('src/renderer/themes.js'), false);
+  assert.equal(readOnlyFiles.includes('package.json'), true);
+  assert.equal(readOnlyFiles.includes('playwright.config.js'), true);
+  assert.equal(readOnlyFiles.includes('scripts'), true);
 });
 
 test('CLI overlay adapter extracts worker result JSON nested inside provider result text', async () => {

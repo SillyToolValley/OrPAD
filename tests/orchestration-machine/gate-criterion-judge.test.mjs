@@ -21,7 +21,14 @@ const SAMPLE_EVENTS = [
       summary: 'Implemented MSW transform anchor normalization.',
       patchArtifact: 'artifacts/patches/item-1.patch',
       changedFiles: ['src/transform/anchor.ts'],
-      verification: [{ command: 'npm', args: ['run', 'typecheck'], exitCode: 0 }],
+      verification: [{
+        command: 'npm',
+        args: ['run', 'typecheck'],
+        status: 'passed',
+        summary: 'Typecheck passed for the changed transform anchor.',
+        exitCode: 0,
+      }],
+      artifacts: [{ path: 'artifacts/visual/before-after.json' }],
     },
   },
   {
@@ -42,10 +49,14 @@ test('buildGateJudgeEvidence collects only done worker results and their evidenc
   assert.equal(evidence.workers.length, 1);
   assert.equal(evidence.workers[0].itemId, 'item-1');
   assert.equal(evidence.workers[0].verification[0].exitCode, 0);
+  assert.equal(evidence.workers[0].verification[0].status, 'passed');
+  assert.match(evidence.workers[0].verification[0].summary, /Typecheck passed/);
+  assert.ok(evidence.workers[0].artifacts.includes('artifacts/visual/before-after.json'));
   assert.equal(evidence.activeQueueCount, 0);
   assert.ok(evidence.knownEvidenceRefs.includes('src/transform/anchor.ts'));
   assert.ok(evidence.knownEvidenceRefs.includes('artifacts/workers/item-1.json'));
   assert.ok(evidence.knownEvidenceRefs.includes('artifacts/patches/item-1.patch'));
+  assert.ok(evidence.knownEvidenceRefs.includes('artifacts/visual/before-after.json'));
   assert.equal(evidence.taskText, 'MSW editing pipeline');
 });
 

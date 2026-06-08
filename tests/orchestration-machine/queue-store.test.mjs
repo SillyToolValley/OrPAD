@@ -142,6 +142,31 @@ test('candidate proposal explicit targetFiles pass through normalized and dedupe
   ]);
 });
 
+test('candidate proposal keeps evidence files as source context without expanding explicit targetFiles', async () => {
+  const run = await makeRun();
+  const result = await ingestCandidateProposal(run.runRoot, proposal({
+    proposalId: 'proposal-reference-context-target-files',
+    suggestedWorkItemId: 'reference-context-target-files',
+    fingerprint: 'ux:reference-context-target-files',
+    evidence: [
+      { id: 'reference', file: 'assets/reference/orpad-hero.png' },
+      { id: 'theme', file: 'src/renderer/themes.js' },
+    ],
+    sourceOfTruthTargets: ['src/renderer/themes.js'],
+    targetFiles: ['src/renderer/themes.js'],
+  }), {
+    runId: run.runId,
+    now: '2026-04-30T00:00:01.000Z',
+    transitionId: 'ingest:reference-context-target-files',
+  });
+
+  assert.deepEqual(result.item.sourceOfTruthTargets, [
+    'assets/reference/orpad-hero.png',
+    'src/renderer/themes.js',
+  ]);
+  assert.deepEqual(result.item.targetFiles, ['src/renderer/themes.js']);
+});
+
 test('candidate proposal expectedChangedFiles are explicit and separate from targetFiles', async () => {
   const run = await makeRun();
   const result = await ingestCandidateProposal(run.runRoot, proposal({

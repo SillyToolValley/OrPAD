@@ -48,12 +48,20 @@ function normalizeCandidateProposal(proposal, options = {}) {
   const coverageEvidenceIds = proposal.coverageEvidenceIds?.length
     ? proposal.coverageEvidenceIds
     : evidenceIds(proposal.evidence);
-  const sourceOfTruthTargets = proposal.sourceOfTruthTargets?.length
-    ? proposal.sourceOfTruthTargets
-    : evidenceFiles(proposal.evidence);
+  const explicitSourceOfTruthTargets = proposal.sourceOfTruthTargets?.length
+    ? normalizeTargetFiles(proposal.sourceOfTruthTargets)
+    : [];
+  const evidenceSourceOfTruthTargets = normalizeTargetFiles(evidenceFiles(proposal.evidence));
+  const sourceOfTruthTargets = [...new Set([
+    ...explicitSourceOfTruthTargets,
+    ...evidenceSourceOfTruthTargets,
+  ])].sort();
+  const fallbackTargetFiles = explicitSourceOfTruthTargets.length
+    ? explicitSourceOfTruthTargets
+    : sourceOfTruthTargets;
   const targetFiles = Object.prototype.hasOwnProperty.call(proposal, 'targetFiles')
     ? normalizeTargetFiles(proposal.targetFiles)
-    : normalizeTargetFiles(sourceOfTruthTargets);
+    : normalizeTargetFiles(fallbackTargetFiles);
   const expectedChangedFiles = normalizeTargetFiles(proposal.expectedChangedFiles || []);
 
   const workItem = {

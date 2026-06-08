@@ -63,6 +63,7 @@ const { normalizeWriteSetPath, releaseWriteSetLock } = require('./write-sets');
 const { markClaimLeaseReleased } = require('./claims');
 const contentEditorialEvaluator = require('./content-editorial-evaluator');
 const { judgeUnsupportedGateCriteria } = require('./gate-criterion-judge');
+const { readOnlyFilesForClaim: workerReadOnlyFilesForClaim } = require('./worker-readonly-context');
 const { classifyNonRunnableWork } = require('./non-runnable-work');
 
 const fsp = fs.promises;
@@ -464,15 +465,6 @@ function adapterProbeNodePaths(adapter) {
     ? adapter.probeNodePaths
     : (adapter.probeNodePath ? [adapter.probeNodePath] : []);
   return configured.filter(Boolean);
-}
-
-function workerReadOnlyFilesForClaim(claim = {}) {
-  const allowed = new Set((claim.writeSet?.paths || [])
-    .map(normalizeWriteSetPath)
-    .filter(Boolean));
-  return [...new Set((claim.item?.sourceOfTruthTargets || [])
-    .map(normalizeWriteSetPath)
-    .filter(file => file && !allowed.has(file)))].sort();
 }
 
 function configuredProbeConcurrency(config = {}, probeCount = 1) {
@@ -1082,9 +1074,21 @@ function effectiveProbeCandidateLimit(input = {}) {
     && runSelection.queueAllActionableCandidates === true
   );
   if (collectAllVisiblePolicy && queueAllBacklog) {
-    return Math.max(configuredLimit, MANAGED_PROPOSAL_CANDIDATE_SAFE_CAP);
+    return configuredLimit;
   }
   return configuredLimit;
+}
+
+function visualReferenceTaskPromptLines(taskText = '') {
+  const text = String(taskText || '').toLowerCase();
+  const isReferenceVisual = /\b(hero|reference image|visual reference|palette|theme|surface|glass|typography|material|built[-\s]?in)\b/.test(text);
+  if (!isReferenceVisual) return [];
+  return [
+    'Reference/UI alignment rules:',
+    '- Rank candidates by direct overlap with the user-requested nouns and files. The top candidate must target the requested hero/theme/palette/surface system when those words appear in the user task.',
+    '- Do not rank incidental reference subcomponents such as terminal/editor/card details above the requested hero/theme/palette/surface work unless the user explicitly named that subcomponent.',
+    '- For visual-reference work, candidate evidence and acceptanceCriteria must mention the reference path plus palette, surface hierarchy, typography/material cues, and before/after visual evidence or a concrete blocker.',
+  ];
 }
 
 function liveProbePrompt(input = {}) {
@@ -1115,6 +1119,7 @@ function liveProbePrompt(input = {}) {
       'Use this request as the primary prioritization context when ranking candidate proposals.',
       'If the request needs external competitor research and this adapter has no approved browsing capability, do not invent external claims; propose only evidence-backed local work or report the research gap.',
     ] : []),
+    ...visualReferenceTaskPromptLines(taskText),
     ...externalResearchPromptLines(externalResearch),
     ...harnessRuntimePromptLines(harnessRuntimeContext, node.nodePath, 'probe'),
     '',
@@ -1158,6 +1163,7 @@ function liveProbePrompt(input = {}) {
     '',
     `Return at most ${candidateLimit} candidateProposals.`,
     'Use current, concrete evidence only. Prefer a small user-visible, source-of-truth fix.',
+    'The first candidate must be the closest direct match to the user task, not merely a related issue found during inspection.',
     'Every candidate must be small enough for one worker to finish and emit its JSON contract within the worker timeout. Do not propose whole-surface overhauls, full redesigns, or multi-area rewrites.',
     'Keep each candidate to a bounded slice: at most two implementation files plus one focused test file. If renderer.js or base.css is involved, scope the title and criteria to one component/selector/state, not an entire surface.',
     'Keep acceptanceCriteria focused: no more than three concrete criteria unless the item is only a read-only/test item.',
@@ -1196,6 +1202,7 @@ function buildLiveWorkerPrompt(input = {}) {
       '</user-task>',
       'Use this request to preserve product intent while implementing the claimed work item. Do not expand beyond the Machine-approved write set.',
     ] : []),
+    ...visualReferenceTaskPromptLines(taskText),
     ...externalResearchPromptLines(externalResearch),
     ...harnessRuntimePromptLines(harnessRuntimeContext, workerNode.nodePath, 'worker'),
     '',
@@ -1230,6 +1237,7 @@ function buildLiveWorkerPrompt(input = {}) {
     'Use status "done" only if you changed allowedFiles in the overlay toward the acceptance criteria.',
     'Use status "blocked" if the allowed files are insufficient or the change is unsafe.',
     'Always include verification evidence. If a recommended validation command is impractical in the overlay, record status "blocked" or "failed" for that check with the concrete reason.',
+    'For visual-reference or theme work, verification summaries must record the reference path, extracted palette/surface/typography cues, changed representative screen or theme files, and before/after screenshot artifact paths. If screenshots cannot be produced in the overlay, record the exact blocked reason instead of claiming the screenshot criterion passed.',
     'Work to a hard timebox: make the smallest acceptance-criteria slice that fits the allowedFiles, then stop and emit the JSON result. The JSON result is mandatory and has priority over additional polish.',
     'Do not attempt broad visual overhauls or full-surface rewrites inside one worker claim. If the claim is too broad to complete safely in one pass, implement the smallest coherent slice or return status "blocked" with the precise smaller follow-up split.',
     'For docs, slides, tutorials, or other content work, OrPAD will independently evaluate the diff after patch review; leave concrete removals, merges, rewrites, and focused validation evidence instead of only claiming editorial quality in the summary.',
@@ -6381,6 +6389,12 @@ async function executeMachineRunStep(options = {}) {
           if (!probe && probeResults[0]) probe = probeResults[0].result;
         }
         probeFanoutExecuted = true;
+        const blockingProbeFailures = latestAdapterResultFailures(await latestEventsForScheduler())
+          .filter(failure => probeNodePaths.has(failure.nodePath));
+        if (blockingProbeFailures.length) {
+          stopScheduler = true;
+          break;
+        }
       }
     } else if (node.nodePath === triageNode.nodePath) {
       // The probe fanout filter excludes probes that were already
