@@ -2601,6 +2601,28 @@ test('external research selector records local-only mode without failing the gra
   assert.equal(selected.source, 'user-prelaunch-choice');
 });
 
+test('fanOut selector records all configured routes for all-lanes default', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_fanout_selector_all_lanes');
+  const result = await validateSelectorNode(run.runRoot, {
+    selector: 'uxOverhaulLane',
+    mode: 'fanOut',
+    default: 'all-lanes',
+    options: [
+      'visual-style-reference',
+      'pipeline-builder-run-monitor',
+      'editor-terminal-vm',
+    ],
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.selectedRoute, 'all-lanes');
+  assert.deepEqual(result.selectedRoutes, [
+    'visual-style-reference',
+    'pipeline-builder-run-monitor',
+    'editor-terminal-vm',
+  ]);
+});
+
 test('Barrier fail policy rejects when declared dependencies have not completed', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_barrier_wait_fail');
   await updateMainNodeConfig(pipelineDir, 'barrier', {

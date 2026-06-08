@@ -67,6 +67,40 @@ test('selector edges fire only when condition matches selected route', () => {
   assert.equal(none[0].reason, 'selector-no-selection');
 });
 
+test('fanOut selector all-lanes fires every configured route edge', () => {
+  const node = {
+    nodeType: 'orpad.selector',
+    config: {
+      mode: 'fanOut',
+      options: ['visual-style-reference', 'pipeline-builder-run-monitor', 'editor-terminal-vm'],
+    },
+  };
+  const edges = [
+    { from: 'select', to: 'visual', condition: 'visual-style-reference' },
+    { from: 'select', to: 'pipeline', condition: 'pipeline-builder-run-monitor' },
+    { from: 'select', to: 'editor', condition: 'editor-terminal-vm' },
+  ];
+  const result = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { selectedRoute: 'all-lanes' }));
+  assert.equal(result.every(edge => edge.fired), true);
+  assert.equal(result.every(edge => edge.reason === 'selector-fanout-all'), true);
+});
+
+test('fanOut selector selectedRoutes fires only the declared route set', () => {
+  const node = { nodeType: 'orpad.selector' };
+  const edges = [
+    { from: 'select', to: 'visual', condition: 'visual-style-reference' },
+    { from: 'select', to: 'pipeline', condition: 'pipeline-builder-run-monitor' },
+    { from: 'select', to: 'editor', condition: 'editor-terminal-vm' },
+  ];
+  const result = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, {
+    selectedRoute: 'custom-subset',
+    selectedRoutes: ['visual-style-reference', 'editor-terminal-vm'],
+  }));
+  assert.equal(result.find(edge => edge.to === 'visual').fired, true);
+  assert.equal(result.find(edge => edge.to === 'pipeline').fired, false);
+  assert.equal(result.find(edge => edge.to === 'editor').fired, true);
+});
+
 test('gate pass family fires only when valid=true; revise family fires only for blocking failures', () => {
   const node = { nodeType: 'orpad.gate' };
   const edges = [

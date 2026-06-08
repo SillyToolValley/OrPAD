@@ -47,6 +47,31 @@ function normalizeCondition(value) {
     .replace(/[_\s]+/g, '-');
 }
 
+const SELECTOR_FANOUT_MODES = new Set(['fanout', 'fan-out']);
+const SELECTOR_ALL_ROUTE_SENTINELS = new Set(['all', 'all-lanes', 'all-routes', '*']);
+
+function normalizedConditionArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(item => normalizeCondition(item)).filter(Boolean);
+}
+
+function selectorFanOutMode(sourceNode, sourceResult) {
+  const mode = normalizeCondition(
+    sourceResult?.selectorMode
+    || sourceResult?.mode
+    || sourceNode?.config?.selectorMode
+    || sourceNode?.config?.mode
+    || '',
+  );
+  return SELECTOR_FANOUT_MODES.has(mode);
+}
+
+function selectorConfiguredOptions(sourceNode, sourceResult) {
+  return normalizedConditionArray(
+    sourceResult?.options?.length ? sourceResult.options : sourceNode?.config?.options,
+  );
+}
+
 function hasDeclaredFailureRouting(value) {
   if (value == null || value === false) return false;
   if (typeof value === 'string') return Boolean(value.trim());
@@ -55,10 +80,23 @@ function hasDeclaredFailureRouting(value) {
   return Boolean(value);
 }
 
-function decideEdgeForSelector(condition, sourceResult) {
+function decideEdgeForSelector(condition, sourceNode, sourceResult) {
   const selected = normalizeCondition(sourceResult?.selected || sourceResult?.selectedRoute || '');
+  const selectedRoutes = normalizedConditionArray(sourceResult?.selectedRoutes);
+  if (selectedRoutes.length) {
+    return selectedRoutes.includes(condition)
+      ? { fired: true, reason: 'selector-fanout-match', selectedRoute: selected, selectedRoutes }
+      : { fired: false, reason: 'selector-fanout-mismatch', selectedRoute: selected, selectedRoutes };
+  }
   if (!selected) {
     return { fired: false, reason: 'selector-no-selection' };
+  }
+  if (selectorFanOutMode(sourceNode, sourceResult) && SELECTOR_ALL_ROUTE_SENTINELS.has(selected)) {
+    const configuredOptions = selectorConfiguredOptions(sourceNode, sourceResult);
+    if (!configuredOptions.length || configuredOptions.includes(condition)) {
+      return { fired: true, reason: 'selector-fanout-all', selectedRoute: selected, selectedRoutes: configuredOptions };
+    }
+    return { fired: false, reason: 'selector-fanout-option-mismatch', selectedRoute: selected, selectedRoutes: configuredOptions };
   }
   if (condition === selected) {
     return { fired: true, reason: 'selector-match', selectedRoute: selected };
@@ -183,7 +221,7 @@ function evaluateOutgoingEdges(sourceNode, edges, sourceResult) {
     let decision;
     switch (sourceNodeType) {
       case 'orpad.selector':
-        decision = decideEdgeForSelector(condition, sourceResult);
+        decision = decideEdgeForSelector(condition, sourceNode, sourceResult);
         break;
       case 'orpad.gate':
         decision = decideEdgeForGate(condition, sourceResult);

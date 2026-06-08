@@ -4519,6 +4519,15 @@ function selectExternalResearchMode(input = {}) {
   };
 }
 
+const SELECTOR_FANOUT_ALL_SENTINELS = new Set(['all', 'all-lanes', 'all-routes', '*']);
+
+function normalizeSelectorRoute(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+}
+
 async function validateSelectorNode(runRoot, config = {}, options = {}) {
   const selectorKind = config.selector || config.selectorKind || config.modeSource || '';
   if (selectorKind === 'externalResearchMode') {
@@ -4530,8 +4539,23 @@ async function validateSelectorNode(runRoot, config = {}, options = {}) {
   }
   const configuredOptions = Array.isArray(config.options) ? config.options.map(item => String(item || '').trim()).filter(Boolean) : [];
   const selected = String(config.selected || config.default || configuredOptions[0] || '').trim();
+  const selectorMode = String(config.mode || config.selectorMode || '').trim();
+  const normalizedMode = normalizeSelectorRoute(selectorMode);
+  if ((normalizedMode === 'fanout' || normalizedMode === 'fan-out') && SELECTOR_FANOUT_ALL_SENTINELS.has(normalizeSelectorRoute(selected))) {
+    return {
+      selectorKind: selectorKind || 'static',
+      selectorMode: selectorMode || 'fanOut',
+      options: configuredOptions,
+      selected,
+      selectedRoute: selected,
+      selectedRoutes: configuredOptions,
+      source: selected ? 'config' : 'none',
+      valid: configuredOptions.length > 0,
+    };
+  }
   return {
     selectorKind: selectorKind || 'static',
+    ...(selectorMode ? { selectorMode } : {}),
     options: configuredOptions,
     selected,
     selectedRoute: selected,
