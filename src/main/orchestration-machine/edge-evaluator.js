@@ -66,6 +66,12 @@ function selectorFanOutMode(sourceNode, sourceResult) {
   return SELECTOR_FANOUT_MODES.has(mode);
 }
 
+function selectorFanOutAll(sourceNode, sourceResult, selected) {
+  const fanout = normalizeCondition(sourceResult?.fanout || sourceNode?.config?.fanout || '');
+  return SELECTOR_ALL_ROUTE_SENTINELS.has(fanout)
+    || (selectorFanOutMode(sourceNode, sourceResult) && SELECTOR_ALL_ROUTE_SENTINELS.has(selected));
+}
+
 function selectorConfiguredOptions(sourceNode, sourceResult) {
   return normalizedConditionArray(
     sourceResult?.options?.length ? sourceResult.options : sourceNode?.config?.options,
@@ -91,7 +97,7 @@ function decideEdgeForSelector(condition, sourceNode, sourceResult) {
   if (!selected) {
     return { fired: false, reason: 'selector-no-selection' };
   }
-  if (selectorFanOutMode(sourceNode, sourceResult) && SELECTOR_ALL_ROUTE_SENTINELS.has(selected)) {
+  if (selectorFanOutAll(sourceNode, sourceResult, selected)) {
     const configuredOptions = selectorConfiguredOptions(sourceNode, sourceResult);
     if (!configuredOptions.length || configuredOptions.includes(condition)) {
       return { fired: true, reason: 'selector-fanout-all', selectedRoute: selected, selectedRoutes: configuredOptions };

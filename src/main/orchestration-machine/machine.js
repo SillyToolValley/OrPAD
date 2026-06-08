@@ -4540,11 +4540,15 @@ async function validateSelectorNode(runRoot, config = {}, options = {}) {
   const configuredOptions = Array.isArray(config.options) ? config.options.map(item => String(item || '').trim()).filter(Boolean) : [];
   const selected = String(config.selected || config.default || configuredOptions[0] || '').trim();
   const selectorMode = String(config.mode || config.selectorMode || '').trim();
+  const fanout = String(config.fanout || '').trim();
   const normalizedMode = normalizeSelectorRoute(selectorMode);
-  if ((normalizedMode === 'fanout' || normalizedMode === 'fan-out') && SELECTOR_FANOUT_ALL_SENTINELS.has(normalizeSelectorRoute(selected))) {
+  const fanoutAll = SELECTOR_FANOUT_ALL_SENTINELS.has(normalizeSelectorRoute(fanout))
+    || ((normalizedMode === 'fanout' || normalizedMode === 'fan-out') && SELECTOR_FANOUT_ALL_SENTINELS.has(normalizeSelectorRoute(selected)));
+  if (fanoutAll) {
     return {
       selectorKind: selectorKind || 'static',
       selectorMode: selectorMode || 'fanOut',
+      ...(fanout ? { fanout } : {}),
       options: configuredOptions,
       selected,
       selectedRoute: selected,
@@ -4556,6 +4560,7 @@ async function validateSelectorNode(runRoot, config = {}, options = {}) {
   return {
     selectorKind: selectorKind || 'static',
     ...(selectorMode ? { selectorMode } : {}),
+    ...(fanout ? { fanout } : {}),
     options: configuredOptions,
     selected,
     selectedRoute: selected,

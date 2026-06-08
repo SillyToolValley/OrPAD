@@ -2623,6 +2623,28 @@ test('fanOut selector records all configured routes for all-lanes default', asyn
   ]);
 });
 
+test('selector fanout=all records every configured route even with a single default', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260430_selector_fanout_all_default_route');
+  const result = await validateSelectorNode(run.runRoot, {
+    selector: 'orpad-ux-overhaul-lens-router',
+    fanout: 'all',
+    default: 'frontend-ux',
+    options: [
+      'frontend-ux',
+      'node-pack-authority',
+      'build-smoke',
+    ],
+  });
+
+  assert.equal(result.valid, true);
+  assert.equal(result.selectedRoute, 'frontend-ux');
+  assert.deepEqual(result.selectedRoutes, [
+    'frontend-ux',
+    'node-pack-authority',
+    'build-smoke',
+  ]);
+});
+
 test('Barrier fail policy rejects when declared dependencies have not completed', async () => {
   const { workspaceRoot, pipelineDir, pipelinePath, run } = await makeGraphHarnessWorkspace('run_20260430_barrier_wait_fail');
   await updateMainNodeConfig(pipelineDir, 'barrier', {

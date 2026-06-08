@@ -101,6 +101,24 @@ test('fanOut selector selectedRoutes fires only the declared route set', () => {
   assert.equal(result.find(edge => edge.to === 'editor').fired, true);
 });
 
+test('selector fanout=all fires all option routes even when default names one route', () => {
+  const node = {
+    nodeType: 'orpad.selector',
+    config: {
+      fanout: 'all',
+      options: ['frontend-ux', 'node-pack-authority', 'build-smoke'],
+    },
+  };
+  const edges = [
+    { from: 'route', to: 'frontend', condition: 'frontend-ux' },
+    { from: 'route', to: 'packages', condition: 'node-pack-authority' },
+    { from: 'route', to: 'build', condition: 'build-smoke' },
+  ];
+  const result = summarizeEdgeEvaluation(evaluateOutgoingEdges(node, edges, { selectedRoute: 'frontend-ux' }));
+  assert.equal(result.every(edge => edge.fired), true);
+  assert.equal(result.every(edge => edge.reason === 'selector-fanout-all'), true);
+});
+
 test('gate pass family fires only when valid=true; revise family fires only for blocking failures', () => {
   const node = { nodeType: 'orpad.gate' };
   const edges = [
