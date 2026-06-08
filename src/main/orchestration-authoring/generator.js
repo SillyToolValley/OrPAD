@@ -789,6 +789,25 @@ function selectorRouteOptions(routes) {
   return [];
 }
 
+const SELECTOR_ALL_ROUTE_SENTINELS = new Set(['all', 'all-lanes', 'all-routes', '*']);
+
+function normalizeSelectorRoute(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+}
+
+function selectorFanoutAll(config = {}) {
+  return SELECTOR_ALL_ROUTE_SENTINELS.has(normalizeSelectorRoute(config.fanout));
+}
+
+function normalizeSelectorFanoutConfig(config = {}) {
+  if (!selectorFanoutAll(config)) return;
+  config.selectorMode ||= 'fanOut';
+  config.fanout = 'all';
+}
+
 const NODE_PACK_SKILL_REF_PATTERN = /^[a-z0-9_.-]+:[a-z0-9_.-]+(?:#.*)?$/i;
 
 function normalizeSkillAliasConfig(config, raw = {}) {
@@ -851,6 +870,7 @@ function sanitizeNode(raw, seen) {
   }
   if (type === 'orpad.skill') normalizeSkillAliasConfig(config, raw);
   if (type === 'orpad.selector') {
+    normalizeSelectorFanoutConfig(config);
     if (!Array.isArray(config.options) || !config.options.length) {
       const routeOptions = selectorRouteOptions(config.routes);
       if (routeOptions.length) config.options = [...new Set(routeOptions)];
@@ -1180,6 +1200,7 @@ function analyzeGraphComplexity(nodes, transitions) {
   // fork) or just collapsing it to a single edge.
   const selectorsConvergingImmediately = nodes
     .filter(node => node.type === 'orpad.selector')
+    .filter(node => !selectorFanoutAll(node.config))
     .filter(node => {
       const out = outgoingByNode.get(node.id) || [];
       if (out.length < 2) return false;
@@ -1857,6 +1878,7 @@ function finalizeNodeConfigsFromTransitions(nodes, transitions) {
       }
     }
     if (node.type === 'orpad.selector') {
+      normalizeSelectorFanoutConfig(node.config);
       const outgoingConditions = transitions
         .filter(transition => transition.from === node.id)
         .map(transition => transitionCondition(transition))

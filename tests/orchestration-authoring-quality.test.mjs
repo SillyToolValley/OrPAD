@@ -1692,6 +1692,92 @@ test('generator normalizes LLM-authored skill config.ref aliases before validati
   await assertGeneratedPackageQuality(result);
 });
 
+test('generator normalizes selector fanout=all before quality audit and persistence', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-selector-fanout-all-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Selector fanout all fixture');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Overhaul OrPAD UX across frontend, package authority, and build smoke lanes.',
+    timestamp: '2026-06-08T07:05:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: {
+      title: 'Selector fanout all fixture',
+      description: 'LLM-authored selector uses fanout all while naming a single default route.',
+      graph: {
+        id: 'selector-fanout-all',
+        label: 'Selector fanout all',
+        start: 'entry',
+        nodes: [
+          { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+          { id: 'context', type: 'orpad.context', label: 'Map UX scope' },
+          {
+            id: 'route-overhaul-lenses',
+            type: 'orpad.selector',
+            label: 'Route overhaul lenses',
+            config: {
+              selector: 'orpad-ux-overhaul-lens-router',
+              options: ['frontend-ux', 'node-pack-authority', 'build-smoke'],
+              default: 'frontend-ux',
+              fanout: 'all',
+            },
+          },
+          { id: 'frontend-ux', type: 'orpad.context', label: 'Frontend UX lens' },
+          { id: 'node-pack-authority', type: 'orpad.context', label: 'Package authority lens' },
+          { id: 'build-smoke', type: 'orpad.context', label: 'Build smoke lens' },
+          { id: 'join-discovery-lenses', type: 'orpad.barrier', label: 'Join discovery lenses', config: { waitFor: ['frontend-ux', 'node-pack-authority', 'build-smoke'] } },
+          { id: 'probe', type: 'orpad.probe', label: 'Probe UX work' },
+          { id: 'queue', type: 'orpad.workQueue', label: 'Queue UX work' },
+          { id: 'triage', type: 'orpad.triage', label: 'Prioritize UX work' },
+          { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch UX work' },
+          { id: 'worker', type: 'orpad.workerLoop', label: 'Implement UX item', config: { targetFiles: ['README.md', 'package.json'] } },
+          { id: 'review', type: 'orpad.patchReview', label: 'Review UX patch' },
+          { id: 'gate', type: 'orpad.gate', label: 'Verify UX result', config: { criteria: ['selector fanout all fixture routes every required lane'], onFail: 'warn' } },
+          { id: 'artifact', type: 'orpad.artifactContract', label: 'Record UX evidence' },
+          { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+        ],
+        transitions: [
+          { from: 'entry', to: 'context' },
+          { from: 'context', to: 'route-overhaul-lenses' },
+          { from: 'route-overhaul-lenses', to: 'frontend-ux', condition: 'frontend-ux' },
+          { from: 'route-overhaul-lenses', to: 'node-pack-authority', condition: 'node-pack-authority' },
+          { from: 'route-overhaul-lenses', to: 'build-smoke', condition: 'build-smoke' },
+          { from: 'frontend-ux', to: 'join-discovery-lenses' },
+          { from: 'node-pack-authority', to: 'join-discovery-lenses' },
+          { from: 'build-smoke', to: 'join-discovery-lenses' },
+          { from: 'join-discovery-lenses', to: 'probe', condition: 'pass' },
+          { from: 'probe', to: 'queue' },
+          { from: 'queue', to: 'triage' },
+          { from: 'triage', to: 'dispatch' },
+          { from: 'dispatch', to: 'worker' },
+          { from: 'worker', to: 'review' },
+          { from: 'review', to: 'gate', condition: 'accepted' },
+          { from: 'review', to: 'worker', condition: 'rejected' },
+          { from: 'gate', to: 'dispatch', condition: 'queue-not-empty' },
+          { from: 'gate', to: 'artifact', condition: 'queue-empty' },
+          { from: 'artifact', to: 'exit' },
+        ],
+      },
+    },
+  });
+
+  assert.equal(result.qualityAudit.ok, true, JSON.stringify(result.qualityAudit.diagnostics, null, 2));
+  const graph = await readJson(result.graphPath);
+  const selector = graph.graph.nodes.find(node => node.id === 'route-overhaul-lenses');
+  assert.ok(selector, 'expected authored selector to be persisted');
+  assert.equal(selector.config.fanout, 'all');
+  assert.equal(selector.config.selectorMode, 'fanOut');
+  assert.deepEqual(selector.config.options, ['frontend-ux', 'node-pack-authority', 'build-smoke']);
+  const pipeline = await readJson(result.pipelinePath);
+  const warningText = [
+    ...(result.graphComplexity?.warnings || []),
+    ...(result.qualityAudit?.graphComplexity?.warnings || []),
+    ...(pipeline.metadata?.graphComplexity?.warnings || []),
+  ].join('\n');
+  assert.doesNotMatch(warningText, /decorative selector|converge into the same downstream/i);
+});
+
 test('quality auditor fails when inline sub-graph probes are omitted from machine adapter fanout', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-subgraph-probe-audit-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));

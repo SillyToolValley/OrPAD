@@ -89,6 +89,13 @@ function hasDeclaredFailureRouting(value) {
 function decideEdgeForSelector(condition, sourceNode, sourceResult) {
   const selected = normalizeCondition(sourceResult?.selected || sourceResult?.selectedRoute || '');
   const selectedRoutes = normalizedConditionArray(sourceResult?.selectedRoutes);
+  if (selectorFanOutAll(sourceNode, sourceResult, selected)) {
+    const configuredOptions = selectorConfiguredOptions(sourceNode, sourceResult);
+    if (!configuredOptions.length || configuredOptions.includes(condition)) {
+      return { fired: true, reason: 'selector-fanout-all', selectedRoute: selected, selectedRoutes: configuredOptions };
+    }
+    return { fired: false, reason: 'selector-fanout-option-mismatch', selectedRoute: selected, selectedRoutes: configuredOptions };
+  }
   if (selectedRoutes.length) {
     return selectedRoutes.includes(condition)
       ? { fired: true, reason: 'selector-fanout-match', selectedRoute: selected, selectedRoutes }
@@ -96,13 +103,6 @@ function decideEdgeForSelector(condition, sourceNode, sourceResult) {
   }
   if (!selected) {
     return { fired: false, reason: 'selector-no-selection' };
-  }
-  if (selectorFanOutAll(sourceNode, sourceResult, selected)) {
-    const configuredOptions = selectorConfiguredOptions(sourceNode, sourceResult);
-    if (!configuredOptions.length || configuredOptions.includes(condition)) {
-      return { fired: true, reason: 'selector-fanout-all', selectedRoute: selected, selectedRoutes: configuredOptions };
-    }
-    return { fired: false, reason: 'selector-fanout-option-mismatch', selectedRoute: selected, selectedRoutes: configuredOptions };
   }
   if (condition === selected) {
     return { fired: true, reason: 'selector-match', selectedRoute: selected };

@@ -157,6 +157,82 @@ test('Step 3.A: selector prunes unselected branch — only the matching downstre
   assert.equal(thorough.fired, false);
 });
 
+test('Step 3.A: selector fanout=all opens every configured route and satisfies the join barrier', async (t) => {
+  const { workspaceRoot, pipelineDir, pipelinePath, run } = await writePipeline(t, 'selector-fanout-all', {
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'selector-fanout-all-main',
+      nodes: [
+        { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+        {
+          id: 'route',
+          type: 'orpad.selector',
+          label: 'Route all lenses',
+          config: {
+            selector: 'ux-lens-router',
+            options: ['frontend-ux', 'node-pack-authority', 'build-smoke'],
+            default: 'frontend-ux',
+            fanout: 'all',
+          },
+        },
+        { id: 'frontend-ux', type: 'orpad.context', label: 'Frontend UX lens' },
+        { id: 'node-pack-authority', type: 'orpad.context', label: 'Package authority lens' },
+        { id: 'build-smoke', type: 'orpad.context', label: 'Build smoke lens' },
+        { id: 'join', type: 'orpad.barrier', label: 'Join all lenses', config: { waitFor: ['frontend-ux', 'node-pack-authority', 'build-smoke'] } },
+        { id: 'probe', type: 'orpad.probe', label: 'Probe' },
+        { id: 'queue', type: 'orpad.workQueue', label: 'Queue', config: { queueRoot: 'harness/generated/latest-run/queue', schema: 'orpad.workItem.v1' } },
+        { id: 'triage', type: 'orpad.triage', label: 'Triage', config: { queueRef: 'queue' } },
+        { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch', config: { queueRef: 'queue', workerLoopRef: 'worker' } },
+        { id: 'worker', type: 'orpad.workerLoop', label: 'Worker', config: { queueRef: 'queue' } },
+        { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+      ],
+      transitions: [
+        { from: 'entry', to: 'route' },
+        { from: 'route', to: 'frontend-ux', condition: 'frontend-ux' },
+        { from: 'route', to: 'node-pack-authority', condition: 'node-pack-authority' },
+        { from: 'route', to: 'build-smoke', condition: 'build-smoke' },
+        { from: 'frontend-ux', to: 'join' },
+        { from: 'node-pack-authority', to: 'join' },
+        { from: 'build-smoke', to: 'join' },
+        { from: 'join', to: 'probe' },
+        { from: 'probe', to: 'queue' },
+        { from: 'queue', to: 'triage' },
+        { from: 'triage', to: 'dispatch' },
+        { from: 'dispatch', to: 'worker' },
+        { from: 'worker', to: 'exit' },
+      ],
+    },
+  });
+  await executeMachineRunStep({
+    workspaceRoot,
+    pipelinePath,
+    pipelineDir,
+    runRoot: run.runRoot,
+    runId: run.runId,
+    exportLatestRunAfterStep: false,
+    nodeExecutable: process.execPath,
+  });
+
+  const events = await readMachineEvents(run.runRoot);
+  const completed = new Set(events
+    .filter(event => event.eventType === 'node.completed')
+    .map(event => event.nodePath));
+  assert.equal(completed.has('main/frontend-ux'), true);
+  assert.equal(completed.has('main/node-pack-authority'), true);
+  assert.equal(completed.has('main/build-smoke'), true);
+  assert.equal(completed.has('main/join'), true);
+  assert.equal(completed.has('main/worker'), true);
+
+  const edgeEval = events.find(event => (
+    event.eventType === 'scheduler.edgeEvaluation' && event.nodePath === 'main/route'
+  ));
+  assert.ok(edgeEval, 'selector should emit a scheduler.edgeEvaluation diagnostic');
+  assert.equal(edgeEval.payload.firedCount, 3);
+  assert.equal(edgeEval.payload.droppedCount, 0);
+  assert.equal(edgeEval.payload.decisions.every(decision => decision.reason === 'selector-fanout-all'), true);
+});
+
 // Step 3.B: a barrier with config.waitFor must NOT dispatch until
 // every waitFor entry is visited, even when the default
 // onPartialFailure='continue-with-warning' would let validateBarrier

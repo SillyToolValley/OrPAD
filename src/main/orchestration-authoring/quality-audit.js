@@ -88,6 +88,19 @@ function nodeType(node) {
   return String(node?.type || '').trim();
 }
 
+const SELECTOR_ALL_ROUTE_SENTINELS = new Set(['all', 'all-lanes', 'all-routes', '*']);
+
+function normalizeSelectorRoute(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+}
+
+function selectorFanoutAll(config = {}) {
+  return SELECTOR_ALL_ROUTE_SENTINELS.has(normalizeSelectorRoute(config.fanout));
+}
+
 function nodeId(node) {
   return String(node?.id || '').trim();
 }
@@ -673,6 +686,7 @@ function analyzeGraphComplexity(nodes, transitions) {
 
   const selectorsConvergingImmediately = graphNodes
     .filter(node => nodeType(node) === 'orpad.selector')
+    .filter(node => !selectorFanoutAll(node.config))
     .filter(node => {
       const out = outgoingByNode.get(nodeId(node)) || [];
       if (out.length < 2) return false;
