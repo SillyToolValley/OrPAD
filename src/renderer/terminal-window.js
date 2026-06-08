@@ -1,5 +1,17 @@
 import { createPtyTerminalGroup } from './terminal/pty-view.js';
 import { setLocale, t } from './i18n.js';
+import {
+  DEFAULT_THEME_ID,
+  applyThemeColors,
+  builtinThemes,
+  deriveFullColors,
+  getCustomThemes,
+  getSavedThemeId,
+} from './themes.js';
+
+const STORAGE_THEME_ID = 'orpad-theme';
+const STORAGE_CUSTOM_THEMES = 'orpad-custom-themes';
+let activeThemeSignature = '';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -14,6 +26,54 @@ function messageFromError(value) {
   return value.message || String(value);
 }
 
+function readSavedTheme() {
+  const requestedThemeId = getSavedThemeId();
+  const customThemes = getCustomThemes();
+  const builtinTheme = builtinThemes[requestedThemeId];
+  const customTheme = customThemes[requestedThemeId];
+  const theme = builtinTheme || customTheme || builtinThemes[DEFAULT_THEME_ID];
+  const id = builtinTheme || customTheme ? requestedThemeId : DEFAULT_THEME_ID;
+  return { id, theme, isCustom: !builtinTheme && Boolean(customTheme) };
+}
+
+function applySavedTerminalTheme() {
+  try {
+    const { id, theme, isCustom } = readSavedTheme();
+    const type = theme.type || 'dark';
+    const signature = `${id}:${type}:${JSON.stringify(theme.colors || {})}`;
+    if (signature === activeThemeSignature) return;
+    const colors = isCustom || !theme.colors ? deriveFullColors(theme.colors || {}, type !== 'light') : theme.colors;
+    applyThemeColors(colors);
+    document.documentElement.dataset.theme = id;
+    document.documentElement.dataset.themeType = type;
+    document.documentElement.style.colorScheme = type === 'light' ? 'light' : 'dark';
+    activeThemeSignature = signature;
+  } catch {
+    activeThemeSignature = '';
+  }
+}
+
+function startTerminalThemeSync() {
+  const onStorage = (event) => {
+    if (event.key === null || event.key === STORAGE_THEME_ID || event.key === STORAGE_CUSTOM_THEMES) {
+      applySavedTerminalTheme();
+    }
+  };
+  const onVisibility = () => {
+    if (document.visibilityState !== 'hidden') applySavedTerminalTheme();
+  };
+  window.addEventListener('storage', onStorage);
+  window.addEventListener('focus', applySavedTerminalTheme);
+  document.addEventListener('visibilitychange', onVisibility);
+  const interval = window.setInterval(applySavedTerminalTheme, 1000);
+  return () => {
+    window.removeEventListener('storage', onStorage);
+    window.removeEventListener('focus', applySavedTerminalTheme);
+    document.removeEventListener('visibilitychange', onVisibility);
+    window.clearInterval(interval);
+  };
+}
+
 async function applyInitialLocale() {
   try {
     const { code } = await window.orpad?.getLocale?.();
@@ -22,6 +82,8 @@ async function applyInitialLocale() {
 }
 
 async function createTerminalWindowApp() {
+  applySavedTerminalTheme();
+  const stopThemeSync = startTerminalThemeSync();
   await applyInitialLocale();
   const root = document.getElementById('terminal-window-root');
   root.className = 'terminal-window-shell';
@@ -187,6 +249,7 @@ async function createTerminalWindowApp() {
     refreshLocale();
   });
   window.addEventListener('beforeunload', () => {
+    stopThemeSync();
     closeModal();
     group?.destroy?.();
   });

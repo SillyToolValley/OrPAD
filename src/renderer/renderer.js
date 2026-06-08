@@ -1159,6 +1159,7 @@ function switchTheme(id) {
   editingCustomId = null;
   const theme = getThemeById(id);
   applyThemeColors(theme.colors);
+  refreshVisibleMermaidTheme();
   renderThemePanel();
 }
 
@@ -1318,6 +1319,7 @@ function onCustomColorChange(key, value) {
   const full = deriveFullColors(updated, isDark);
   updateCustomThemeColors(editingCustomId, full);
   applyThemeColors(full);
+  refreshVisibleMermaidTheme();
 }
 
 // ==================== Wiki-link autocomplete ====================
@@ -2742,7 +2744,7 @@ let currentDiffPanel = null; // { el, recompute } - valid while diff panel is mo
 // Set when the left diff textarea echoes into CodeMirror - the debounced renderPreview
 // would otherwise trigger a second recompute for the same keystroke.
 let suppressNextDiffRecompute = false;
-let mmdTheme = localStorage.getItem('orpad-mmd-theme') || 'dark';
+const LEGACY_MMD_THEME_STORAGE_KEY = 'orpad-mmd-theme';
 
 function updateFormatBar(viewType) {
   const bar = document.getElementById('format-bar');
@@ -5514,43 +5516,75 @@ function pipelineNodePackNeedsManager(status = {}) {
   return status.tone === 'danger' || ['missing', 'disabled', 'incompatible', 'version incompatible', 'origin mismatch'].includes(status.label);
 }
 
-function renderPipelineNodePackValue(label, value, options = {}) {
-  const text = pipelineValueText(value).trim();
+function pipelineNodePackShortStatus(value = '', fallback = 'not declared') {
+  const text = pipelineValueText(value).trim() || fallback;
+  if (typeof nodePackManagerRegistryRowShortStatus === 'function') {
+    return nodePackManagerRegistryRowShortStatus(text, fallback);
+  }
+  return text.length > 18 ? `${text.slice(0, 17)}...` : text;
+}
+
+function pipelineNodePackTrustTone(trustLevel = '') {
+  const trust = pipelineValueText(trustLevel).toLowerCase();
+  if (!trust) return 'info';
+  if (nodePackManagerStatusHasAny(trust, ['blocked', 'denied', 'invalid', 'rejected', 'untrusted'])) return 'danger';
+  if (nodePackManagerStatusHasAny(trust, ['official', 'local-authored', 'built-in'])) return 'good';
+  if (nodePackManagerStatusHasAny(trust, ['community', 'third-party', 'user', 'signed'])) return 'warn';
+  return 'info';
+}
+
+function renderPipelineNodePackAuthorityChip({ kind, label, value, tone, title }) {
+  const chipTone = ['good', 'warn', 'danger', 'info'].includes(tone) ? tone : 'info';
+  const text = `${label} ${value}`.trim();
+  const chipTitle = title || text;
   return `
-    <div class="pipeline-node-pack-cell">
-      <span>${escapeHtml(label)}</span>
-      ${options.code ? `<code>${escapeHtml(text || 'not declared')}</code>` : `<strong>${escapeHtml(text || 'not declared')}</strong>`}
-    </div>
+    <span class="node-pack-manager-trust-chip ${escapeHtml(chipTone)}" data-pipeline-node-pack-authority-chip="${escapeHtml(kind)}" data-node-pack-manager-row-trust-tone="${escapeHtml(chipTone)}" title="${escapeHtml(chipTitle)}" aria-label="${escapeHtml(chipTitle)}">${escapeHtml(text)}</span>
   `;
 }
 
-function renderPipelineNodePackDeclaredRisk(entry, validation) {
+function renderPipelineNodePackAuthority(entry, validation, status) {
   const record = pipelineNodePackRecordForEntry(validation, entry);
   const trustLevel = pipelineNodePackDeclaredTrust(entry, record);
   const risk = pipelineNodePackDeclaredCapabilityRisk(entry, record);
-  if (!trustLevel && !risk.summary && !risk.highRiskCount) return '';
-  const highRiskLabel = risk.highRiskCount
-    ? machineCountLabel(risk.highRiskCount, 'high-risk capability', 'high-risk capabilities')
-    : '';
-  const riskLabel = risk.summary || highRiskLabel;
-  const highRiskTitle = risk.highRiskCapabilities.length
-    ? ` title="${escapeHtml(`High-risk capabilities: ${risk.highRiskCapabilities.join(', ')}`)}"`
-    : '';
+  const chips = [
+    {
+      kind: 'validation',
+      label: 'state',
+      value: pipelineNodePackShortStatus(status.label, 'not checked'),
+      tone: status.tone || 'info',
+      title: `Validation state: ${status.label || 'not checked'}`,
+    },
+  ];
+  if (trustLevel) {
+    chips.push({
+      kind: 'trust',
+      label: 'trust',
+      value: pipelineNodePackShortStatus(trustLevel, 'unknown'),
+      tone: pipelineNodePackTrustTone(trustLevel),
+      title: `Trust level: ${trustLevel}`,
+    });
+  }
+  if (risk.summary) {
+    chips.push({
+      kind: 'risk',
+      label: 'risk',
+      value: risk.summary,
+      tone: risk.highRiskCount ? 'warn' : 'info',
+      title: `Capability risk: ${risk.summary}`,
+    });
+  }
+  if (risk.highRiskCount) {
+    chips.push({
+      kind: 'high-risk',
+      label: String(risk.highRiskCount),
+      value: 'high-risk',
+      tone: status.tone === 'danger' ? 'danger' : 'warn',
+      title: `High-risk capabilities: ${risk.highRiskCapabilities.join(', ')}`,
+    });
+  }
   return `
-    <div class="pipeline-node-pack-risk" aria-label="Declared package trust and capability risk">
-      ${trustLevel ? `
-        <span class="pipeline-node-pack-risk-item">
-          <span>Trust</span>
-          <strong>${escapeHtml(trustLevel)}</strong>
-        </span>
-      ` : ''}
-      ${riskLabel ? `
-        <span class="pipeline-node-pack-risk-item ${risk.highRiskCount ? 'has-high-risk' : ''}"${highRiskTitle}>
-          <span>Capability risk</span>
-          <strong>${escapeHtml(riskLabel)}</strong>
-          ${risk.summary && highRiskLabel ? `<small>${escapeHtml(highRiskLabel)}</small>` : ''}
-        </span>
-      ` : ''}
+    <div class="pipeline-node-pack-authority pipeline-node-pack-risk" data-pipeline-node-pack-authority aria-label="Declared package authority and capability risk">
+      ${chips.map(renderPipelineNodePackAuthorityChip).join('')}
     </div>
   `;
 }
@@ -5568,15 +5602,15 @@ function renderPipelineNodePackSummary(doc, validation, diagnostics = []) {
       : '';
     return `
       <div class="pipeline-node-pack-row ${status.issues.length ? 'has-inline-diagnostic' : ''}" data-pipeline-node-pack-id="${escapeHtml(pipelineNodePackEntryId(entry))}">
-        ${renderPipelineNodePackValue('Package id', pipelineNodePackEntryId(entry), { code: true })}
-        ${renderPipelineNodePackValue('Requested version', entry.requestedVersion || 'any')}
-        ${renderPipelineNodePackValue('Origin', entry.origin || 'any')}
-        <div class="pipeline-node-pack-state">
-          <span>Validation</span>
-          <span class="runbook-chip ${escapeHtml(status.tone)}">${escapeHtml(status.label)}</span>
+        <div class="pipeline-node-pack-main">
+          <code>${escapeHtml(pipelineNodePackEntryId(entry) || 'not declared')}</code>
+          <span class="pipeline-node-pack-meta">
+            <span>version ${escapeHtml(entry.requestedVersion || 'any')}</span>
+            <span>origin ${escapeHtml(entry.origin || 'any')}</span>
+          </span>
         </div>
+        ${renderPipelineNodePackAuthority(entry, validation, status)}
         ${action ? `<div class="pipeline-node-pack-actions">${action}</div>` : ''}
-        ${renderPipelineNodePackDeclaredRisk(entry, validation)}
         ${status.issues.length ? `<div class="pipeline-node-pack-diagnostics">${status.issues.map(renderPipelineInlineDiagnostic).join('')}</div>` : ''}
       </div>
     `;
@@ -8664,11 +8698,45 @@ function nodePackManagerRegistrySourceOptions(registryState = {}) {
   return options;
 }
 
+function nodePackManagerRegistrySourceShortLabel(source) {
+  const sourceText = nodePackManagerString(source, '');
+  if (!sourceText) return '';
+  const maxLength = 40;
+  let compact = sourceText.replace(/^https?:\/\//i, '');
+  try {
+    const parsed = new URL(sourceText);
+    const pathLeaf = parsed.pathname.split('/').filter(Boolean).pop();
+    compact = pathLeaf ? `${parsed.hostname}/${pathLeaf}` : parsed.hostname;
+  } catch {
+    compact = compact.replace(/\/+$/, '');
+  }
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, 18)}...${compact.slice(-18)}`;
+}
+
+function nodePackManagerRegistrySourceOptionText(option = {}) {
+  const label = nodePackManagerString(option.label, 'Registry source');
+  const sourceLabel = nodePackManagerRegistrySourceShortLabel(option.value);
+  return sourceLabel ? `${label} (${sourceLabel})` : label;
+}
+
 function renderNodePackManagerRegistrySourceOptions(registryState = {}) {
   const selectedSource = nodePackManagerString(registryState.source, '');
   return nodePackManagerRegistrySourceOptions(registryState).map(option => `
-    <option value="${escapeHtml(option.value)}" ${option.value === selectedSource ? 'selected' : ''}>${escapeHtml(option.label)} - ${escapeHtml(option.value)}</option>
+    <option value="${escapeHtml(option.value)}" title="${escapeHtml(option.value)}" ${option.value === selectedSource ? 'selected' : ''}>${escapeHtml(nodePackManagerRegistrySourceOptionText(option))}</option>
   `).join('');
+}
+
+function renderNodePackManagerRegistrySourceControlSummary(registryState = {}) {
+  const source = nodePackManagerString(registryState.source, '');
+  const kindLabel = nodePackManagerRegistrySourceKindLabel(source, registryState);
+  const health = nodePackManagerRegistrySourceHealth(registryState);
+  const sourceLabel = source || 'No source selected';
+  return `
+    <span class="runbook-chip">${escapeHtml(kindLabel)}</span>
+    <span class="runbook-chip ${escapeHtml(health.tone)}">${escapeHtml(health.label)}</span>
+    <code title="${escapeHtml(sourceLabel)}">${escapeHtml(sourceLabel)}</code>
+  `;
 }
 
 function nodePackManagerRegistrySignatureSummary(registryState = {}) {
@@ -10437,10 +10505,22 @@ function openOrchNodePackManager(resolutionContext = null) {
       <button type="button" data-node-pack-manager-workspace-refresh>Refresh Lock</button>
     </div>
     <div class="node-pack-manager-registry-controls" data-node-pack-manager-registry-controls hidden>
-      <select data-node-pack-manager-registry-source-select aria-label="Registry source"></select>
-      <input type="url" data-node-pack-manager-registry-source aria-label="Custom Registry source" placeholder="https://example.com/orpad-package-registry.json" />
-      <input type="search" data-node-pack-manager-registry-query aria-label="Search packages" placeholder="Search packages" />
-      <button type="button" data-node-pack-manager-registry-load>Browse</button>
+      <div class="node-pack-manager-registry-source-control">
+        <label class="node-pack-manager-field-label" for="node-pack-manager-registry-source-select">Source</label>
+        <select id="node-pack-manager-registry-source-select" data-node-pack-manager-registry-source-select aria-label="Registry source"></select>
+        <div class="node-pack-manager-registry-source-summary" data-node-pack-manager-registry-source-summary aria-live="polite"></div>
+      </div>
+      <label class="node-pack-manager-registry-custom-source">
+        <span class="node-pack-manager-field-label">Custom URL</span>
+        <input type="url" data-node-pack-manager-registry-source aria-label="Custom Registry source" placeholder="https://example.com/orpad-package-registry.json" />
+      </label>
+      <div class="node-pack-manager-registry-search-control">
+        <label class="node-pack-manager-registry-query-field">
+          <span class="node-pack-manager-field-label">Search</span>
+          <input type="search" data-node-pack-manager-registry-query aria-label="Search packages" placeholder="Search packages" />
+        </label>
+        <button type="button" data-node-pack-manager-registry-load>Browse</button>
+      </div>
     </div>
     <div class="node-pack-manager-registry-source-panel-slot" data-node-pack-manager-registry-source-panel-slot hidden></div>
     <div class="node-pack-manager-workspace-lock-panel-slot" data-node-pack-manager-workspace-lock-panel-slot></div>
@@ -10463,6 +10543,7 @@ function openOrchNodePackManager(resolutionContext = null) {
   const registrySourceInput = body.querySelector('[data-node-pack-manager-registry-source]');
   const registryQueryInput = body.querySelector('[data-node-pack-manager-registry-query]');
   const registryLoadButton = body.querySelector('[data-node-pack-manager-registry-load]');
+  const registrySourceSummary = body.querySelector('[data-node-pack-manager-registry-source-summary]');
   const registrySourcePanelEl = body.querySelector('[data-node-pack-manager-registry-source-panel-slot]');
   const workspaceLockPanelEl = body.querySelector('[data-node-pack-manager-workspace-lock-panel-slot]');
   const statusEl = body.querySelector('[data-node-pack-manager-status]');
@@ -10746,6 +10827,7 @@ function openOrchNodePackManager(resolutionContext = null) {
       registrySourceSelect.innerHTML = renderNodePackManagerRegistrySourceOptions(state.registry);
       registrySourceSelect.value = state.registry.source || state.registry.defaultSource || '';
     }
+    if (registrySourceSummary) registrySourceSummary.innerHTML = renderNodePackManagerRegistrySourceControlSummary(state.registry);
     if (registrySourceInput) registrySourceInput.value = state.registry.source;
     if (registryQueryInput) registryQueryInput.value = state.registry.query;
 
@@ -29124,9 +29206,9 @@ document.addEventListener('click', () => mmdThemeMenu.classList.add('hidden'));
 mmdThemeMenu.querySelectorAll('button').forEach(btn => {
   btn.addEventListener('click', () => {
     mmdThemeMenu.classList.add('hidden');
-    mmdTheme = btn.dataset.theme;
-    localStorage.setItem('orpad-mmd-theme', mmdTheme);
+    localStorage.removeItem(LEGACY_MMD_THEME_STORAGE_KEY);
     invalidateRenderCache();
+    refreshVisibleMermaidTheme();
     if (getActiveTab()?.viewType === 'mermaid') renderPreview(editor.state.doc.toString());
   });
 });
@@ -29155,10 +29237,112 @@ document.getElementById('editor').addEventListener('paste', async (e) => {
 });
 
 // ==================== Mermaid Rendering ====================
-let mmdLastAppliedTheme = null;
+let mermaidLastThemeSignature = null;
 // Per-block debounce timers and SVG cache, keyed by data-mermaid-hash.
 const mermaidTimers = new Map();
 const mermaidSvgCache = new Map();
+
+function readThemeCssValue(styles, names, fallback = '') {
+  for (const name of names) {
+    const value = styles.getPropertyValue(name).trim();
+    if (value) return value;
+  }
+  return fallback;
+}
+
+function buildMermaidThemeState() {
+  const rootStyles = getComputedStyle(document.documentElement);
+  const bodyStyles = getComputedStyle(document.body);
+  const bgPrimary = readThemeCssValue(rootStyles, ['--bg-primary'], bodyStyles.backgroundColor);
+  const bgSecondary = readThemeCssValue(rootStyles, ['--bg-secondary', '--bg-primary'], bgPrimary);
+  const bgTertiary = readThemeCssValue(rootStyles, ['--bg-tertiary', '--bg-secondary', '--bg-primary'], bgSecondary);
+  const textPrimary = readThemeCssValue(rootStyles, ['--text-primary'], bodyStyles.color);
+  const textSecondary = readThemeCssValue(rootStyles, ['--text-secondary', '--text-primary'], textPrimary);
+  const borderColor = readThemeCssValue(rootStyles, ['--border-color', '--text-secondary', '--text-primary'], textSecondary);
+  const accentColor = readThemeCssValue(rootStyles, ['--accent-color', '--syntax-keyword', '--text-primary'], textPrimary);
+  const accentSoft = readThemeCssValue(rootStyles, ['--syntax-string', '--accent-color', '--text-secondary'], accentColor);
+  const theme = getThemeById(currentThemeId);
+  const themeVariables = {
+    darkMode: theme?.type === 'dark',
+    background: bgPrimary,
+    mainBkg: bgSecondary,
+    primaryColor: bgSecondary,
+    primaryTextColor: textPrimary,
+    primaryBorderColor: borderColor,
+    lineColor: accentColor,
+    secondaryColor: bgTertiary,
+    secondaryTextColor: textPrimary,
+    secondaryBorderColor: borderColor,
+    tertiaryColor: bgPrimary,
+    tertiaryTextColor: textPrimary,
+    tertiaryBorderColor: borderColor,
+    textColor: textPrimary,
+    edgeLabelBackground: bgPrimary,
+    clusterBkg: bgSecondary,
+    clusterBorder: borderColor,
+    titleColor: textPrimary,
+    noteBkgColor: bgSecondary,
+    noteTextColor: textPrimary,
+    noteBorderColor: borderColor,
+    actorBkg: bgSecondary,
+    actorBorder: borderColor,
+    actorTextColor: textPrimary,
+    actorLineColor: accentColor,
+    signalColor: accentColor,
+    signalTextColor: textPrimary,
+    labelBoxBkgColor: bgSecondary,
+    labelBoxBorderColor: borderColor,
+    labelTextColor: textPrimary,
+    loopTextColor: textPrimary,
+    activationBkgColor: bgTertiary,
+    activationBorderColor: accentColor,
+    sequenceNumberColor: bgPrimary,
+    sectionBkgColor: bgSecondary,
+    altSectionBkgColor: bgTertiary,
+    gridColor: borderColor,
+    c0: bgSecondary,
+    c1: bgTertiary,
+    c2: accentSoft,
+    c3: accentColor,
+    cText: textPrimary,
+    cText0: textPrimary,
+    cText1: textPrimary,
+    cText2: textPrimary,
+    cText3: textPrimary,
+    stateLabelColor: textPrimary,
+    stateBkg: bgSecondary,
+    stateBorder: borderColor,
+    compositeBackground: bgSecondary,
+    fontFamily: bodyStyles.fontFamily,
+  };
+  const normalizedVariables = Object.fromEntries(
+    Object.entries(themeVariables).filter(([, value]) => typeof value === 'boolean' || String(value || '').trim())
+  );
+  return {
+    signature: JSON.stringify(normalizedVariables),
+    config: {
+      startOnLoad: false,
+      theme: 'base',
+      securityLevel: 'strict',
+      logLevel: 'fatal',
+      themeVariables: normalizedVariables,
+    },
+  };
+}
+
+function invalidateMermaidRenderCache() {
+  for (const timer of mermaidTimers.values()) clearTimeout(timer);
+  mermaidTimers.clear();
+  mermaidSvgCache.clear();
+}
+
+function refreshVisibleMermaidTheme() {
+  invalidateMermaidRenderCache();
+  mermaidLastThemeSignature = null;
+  if (contentEl?.querySelector?.('.mermaid-block')) {
+    void renderMermaidBlocks();
+  }
+}
 
 async function _renderMermaidBlock(block, code, cacheKey) {
   let valid = true;
@@ -29182,18 +29366,19 @@ async function _renderMermaidBlock(block, code, cacheKey) {
 async function renderMermaidBlocks() {
   const blocks = contentEl.querySelectorAll('.mermaid-block');
   if (blocks.length === 0) return;
+  const themeState = buildMermaidThemeState();
   if (!mermaidModule) {
     try {
       mermaidModule = (await import('mermaid')).default;
-      mermaidModule.initialize({ startOnLoad: false, theme: mmdTheme, securityLevel: 'strict', logLevel: 'fatal' });
-      mmdLastAppliedTheme = mmdTheme;
+      mermaidModule.initialize(themeState.config);
+      mermaidLastThemeSignature = themeState.signature;
       mermaidReady = true;
     } catch { return; }
-  } else if (mmdLastAppliedTheme !== mmdTheme) {
-    try { mermaidModule.initialize({ startOnLoad: false, theme: mmdTheme, securityLevel: 'strict', logLevel: 'fatal' }); }
+  } else if (mermaidLastThemeSignature !== themeState.signature) {
+    try { mermaidModule.initialize(themeState.config); }
     catch {}
-    mmdLastAppliedTheme = mmdTheme;
-    mermaidSvgCache.clear();
+    mermaidLastThemeSignature = themeState.signature;
+    invalidateMermaidRenderCache();
   }
   for (const block of blocks) {
     const code = block.getAttribute('data-mermaid');

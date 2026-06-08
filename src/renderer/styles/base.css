@@ -21,6 +21,8 @@
   --syntax-number: #ffd27a; --syntax-function: #77c7ff; --syntax-variable: #edf5ff;
   --syntax-tag: #ff8ba7; --syntax-attribute: #8ad8ff; --syntax-operator: #9be7ff;
   --syntax-meta: #b8d8ff; --syntax-added: #73e6c2; --syntax-deleted: #ff8ba7;
+  --success-color: #73e6c2; --warning-color: #b8d8ff; --danger-color: #ff8ba7; --breakpoint-color: #ff8ba7;
+  --run-monitor-success-color: var(--success-color);
   --syntax-added-bg: rgba(115,230,194,0.14); --syntax-deleted-bg: rgba(255,139,167,0.14);
 }
 
@@ -44,7 +46,71 @@
     background: var(--bg-secondary);
     background-image: none;
   }
-  .template-status-chip.warning { border-color: var(--syntax-meta); }
+  .pipeline-runbar,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar {
+    border-color: var(--border-color);
+    background: var(--bg-secondary);
+    background-image: none;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .pipe-budget-chip,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-path,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-progress,
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-elapsed,
+  body.orchestration-window #orchestration-runbar-slot .pipe-budget-chip {
+    border-color: var(--border-color);
+    background: var(--bg-primary);
+    background-image: none;
+    box-shadow: none;
+  }
+  .orch-graph-legend,
+  .orch-graph-run-controls,
+  .orch-graph-run-btn {
+    border-color: var(--border-color);
+    background: var(--bg-primary);
+    background-image: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .orch-graph-run-btn:hover {
+    border-color: var(--accent-color);
+    background: var(--bg-secondary);
+    background-image: none;
+    color: var(--text-primary);
+  }
+  .orch-graph-run-btn:active,
+  .orch-graph-run-btn.active,
+  .orch-graph-run-btn.resume {
+    border-color: var(--accent-color);
+    background: var(--bg-secondary);
+    background-image: none;
+    color: var(--accent-color);
+  }
+  .orch-graph-run-btn:active:hover,
+  .orch-graph-run-btn.active:hover,
+  .orch-graph-run-btn.resume:hover {
+    border-color: var(--link-color);
+    background: var(--bg-primary);
+    background-image: none;
+    color: var(--link-color);
+  }
+  .orch-graph-run-btn.cancel {
+    border-color: var(--danger-color);
+    background: var(--bg-primary);
+    background-image: none;
+    color: var(--danger-color);
+  }
+  .orch-graph-run-btn.cancel:hover {
+    border-color: var(--text-primary);
+    background: var(--bg-secondary);
+    background-image: none;
+    color: var(--danger-color);
+  }
+  .template-status-chip.warning { border-color: var(--warning-color); }
   .git-badge-m { background: var(--active-bg); }
   .git-badge-u { background: var(--active-bg); }
   .cm-activeLine { background: var(--editor-active-line) !important; }
@@ -254,11 +320,13 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar {
   margin: 0;
   gap: calc(6px * var(--us));
   padding: calc(3px * var(--us)) calc(6px * var(--us)) calc(3px * var(--us)) calc(9px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, var(--bg-secondary));
   border-radius: calc(7px * var(--us));
-  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
-  box-shadow: 0 calc(4px * var(--us)) calc(18px * var(--us)) rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: var(--bg-secondary);
+  background-image: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-meta {
   display: flex;
@@ -406,12 +474,11 @@ body.orchestration-window #orchestration-runbar-slot .pipe-budget-chip {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border: 1px solid color-mix(in srgb, var(--accent-color) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 82%, var(--accent-color));
   border-radius: calc(999px * var(--us));
-  background: color-mix(in srgb, var(--accent-color) 9%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
-    0 0 calc(18px * var(--us)) color-mix(in srgb, var(--accent-color) 8%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 94%, var(--accent-color));
+  background-image: none;
+  box-shadow: none;
   font-size: calc(10.5px * var(--us));
   line-height: 1;
 }
@@ -428,9 +495,10 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-path {
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current {
   order: 2;
-  min-width: calc(76px * var(--us));
-  max-width: calc(132px * var(--us));
-  color: var(--accent-color, #6cb6ff);
+  flex: 2 1 calc(230px * var(--us));
+  min-width: calc(116px * var(--us));
+  max-width: min(calc(320px * var(--us)), 56%);
+  color: var(--accent-color);
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current::before {
   flex: 0 0 auto;
@@ -455,16 +523,19 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.pip
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.good,
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.done {
-  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 42%, transparent);
-  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 11%, transparent);
+  border-color: color-mix(in srgb, var(--success-color) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--success-color));
+  background-image: none;
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.warn {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 42%, transparent);
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 10%, transparent);
+  border-color: color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--warning-color));
+  background-image: none;
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-status.danger {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 48%, transparent);
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 11%, transparent);
+  border-color: color-mix(in srgb, var(--danger-color) 64%, var(--border-color));
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--danger-color));
+  background-image: none;
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-actions {
   align-self: center;
@@ -528,7 +599,9 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap:not
     max-width: calc(132px * var(--us));
   }
   body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current {
-    max-width: calc(116px * var(--us));
+    flex-basis: calc(200px * var(--us));
+    min-width: calc(104px * var(--us));
+    max-width: min(calc(240px * var(--us)), 58%);
   }
   body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-progress {
     max-width: calc(86px * var(--us));
@@ -554,6 +627,11 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap:not
   body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-path,
   body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-elapsed {
     max-width: calc(72px * var(--us));
+  }
+  body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-current {
+    flex-basis: calc(160px * var(--us));
+    min-width: calc(92px * var(--us));
+    max-width: min(calc(190px * var(--us)), 100%);
   }
 }
 
@@ -622,8 +700,8 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap:not
   cursor: pointer;
 }
 .template-status-chip.warning {
-  border-color: color-mix(in srgb, var(--syntax-meta) 58%, var(--border-color));
-  color: var(--syntax-meta);
+  border-color: color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
+  color: var(--warning-color);
 }
 
 /* View mode buttons */
@@ -1124,7 +1202,7 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap:not
   font-size: 28px;
   line-height: 1;
   flex-shrink: 0;
-  color: var(--syntax-meta, #e0af68);
+  color: var(--warning-color);
   width: 36px;
   height: 36px;
   display: flex;
@@ -1938,7 +2016,7 @@ body.json-diff-mode #preview-pane {
   font-weight: 600;
   color: var(--text-secondary);
 }
-.orpad-budget-meter__label[data-kind="over"] { color: var(--danger-color, #ff7676); }
+.orpad-budget-meter__label[data-kind="over"] { color: var(--danger-color); }
 .orpad-budget-meter__label[data-kind="error"] { color: var(--text-tertiary); }
 .orpad-budget-meter__bar {
   height: calc(6px * var(--us));
@@ -1954,7 +2032,7 @@ body.json-diff-mode #preview-pane {
   transition: width 0.3s ease;
 }
 .orpad-budget-meter__label[data-kind="over"] ~ .orpad-budget-meter__bar .orpad-budget-meter__bar-inner {
-  background: var(--danger-color, #ff7676);
+  background: var(--danger-color);
 }
 .orpad-budget-meter__detail {
   font-size: calc(10px * var(--us));
@@ -2113,16 +2191,16 @@ body.json-diff-mode #preview-pane {
   overflow-wrap: anywhere;
 }
 .runbook-chip.good {
-  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 44%, var(--border-color));
-  color: var(--syntax-string, #9ece6a);
+  border-color: color-mix(in srgb, var(--run-monitor-success-color) 44%, var(--border-color));
+  color: var(--run-monitor-success-color);
 }
 .runbook-chip.warn {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 52%, var(--border-color));
-  color: var(--syntax-meta, #e0af68);
+  border-color: color-mix(in srgb, var(--warning-color) 52%, var(--border-color));
+  color: var(--warning-color);
 }
 .runbook-chip.danger {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 52%, var(--border-color));
-  color: var(--danger-color, #ff7676);
+  border-color: color-mix(in srgb, var(--danger-color) 52%, var(--border-color));
+  color: var(--danger-color);
 }
 .runbook-list { min-width: 0; display: grid; gap: calc(7px * var(--us)); }
 .runbook-item {
@@ -2211,9 +2289,9 @@ body.json-diff-mode #preview-pane {
   color: var(--text-secondary);
 }
 .runbook-generate-status.running { border-left-color: var(--accent-color, #6cb6ff); }
-.runbook-generate-status.good { border-left-color: var(--syntax-string, #9ece6a); }
-.runbook-generate-status.warn { border-left-color: var(--syntax-meta, #e0af68); }
-.runbook-generate-status.danger { border-left-color: var(--danger-color, #ff7676); }
+.runbook-generate-status.good { border-left-color: var(--run-monitor-success-color); }
+.runbook-generate-status.warn { border-left-color: var(--warning-color); }
+.runbook-generate-status.danger { border-left-color: var(--danger-color); }
 .runbook-generate-status-head {
   display: flex;
   align-items: center;
@@ -2255,19 +2333,19 @@ body.json-diff-mode #preview-pane {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Continue button greens out when execute step is actionable. The user's
- * mental model: green = "ready, click me." Falls back to the default
- * runbook button styling when the criteria aren't met. */
+/* Continue button uses the theme success token when execute step is actionable.
+ * The user's mental model: success accent = "ready, click me." Falls back to
+ * the default runbook button styling when the criteria aren't met. */
 .runbook-action-row button.cta-ready,
 .runbook-panel-section button.cta-ready {
-  border-color: color-mix(in srgb, #4ec97d 70%, var(--border-color));
-  color: #4ec97d;
-  background: color-mix(in srgb, #4ec97d 14%, transparent);
+  border-color: color-mix(in srgb, var(--run-monitor-success-color) 70%, var(--border-color));
+  color: var(--run-monitor-success-color);
+  background: color-mix(in srgb, var(--run-monitor-success-color) 14%, transparent);
   font-weight: 600;
 }
 .runbook-action-row button.cta-ready:hover,
 .runbook-panel-section button.cta-ready:hover {
-  background: color-mix(in srgb, #4ec97d 28%, transparent);
+  background: color-mix(in srgb, var(--run-monitor-success-color) 28%, transparent);
 }
 .runbook-action-row button.history-inspected {
   border-color: color-mix(in srgb, var(--accent-color) 35%, var(--border-color));
@@ -2329,23 +2407,28 @@ body.json-diff-mode #preview-pane {
   cursor: pointer;
 }
 .runbook-replay-stick-toggle.active {
-  border-color: color-mix(in srgb, #4ec97d 60%, transparent);
-  color: #4ec97d;
-  background: color-mix(in srgb, #4ec97d 12%, transparent);
+  border-color: color-mix(in srgb, var(--run-monitor-success-color) 60%, transparent);
+  color: var(--run-monitor-success-color);
+  background: color-mix(in srgb, var(--run-monitor-success-color) 12%, transparent);
 }
 .runbook-replay-stick-toggle.active::before {
-  content: '●';
-  color: #4ec97d;
+  content: '';
+  flex: 0 0 calc(6px * var(--us));
+  width: calc(6px * var(--us));
+  height: calc(6px * var(--us));
+  border-radius: 999px;
+  background: currentColor;
+  color: var(--run-monitor-success-color);
   animation: orpad-pulse 1.4s ease-in-out infinite;
 }
 .runbook-replay-events .runbook-event-fresh {
   /* Subtle highlight for events appended in the most recent poll cycle */
-  border-left-color: color-mix(in srgb, #4ec97d 60%, var(--border-color));
-  background: color-mix(in srgb, #4ec97d 7%, var(--bg-secondary) 74%);
+  border-left-color: color-mix(in srgb, var(--run-monitor-success-color) 60%, var(--border-color));
+  background: color-mix(in srgb, var(--run-monitor-success-color) 7%, var(--bg-secondary) 74%);
   animation: orpad-fade-fresh 2.5s ease-out forwards;
 }
 @keyframes orpad-fade-fresh {
-  0% { background: color-mix(in srgb, #4ec97d 22%, var(--bg-secondary) 74%); }
+  0% { background: color-mix(in srgb, var(--run-monitor-success-color) 22%, var(--bg-secondary) 74%); }
   100% { background: color-mix(in srgb, var(--bg-secondary) 74%, transparent); }
 }
 .runbook-machine-history {
@@ -2446,15 +2529,15 @@ body.json-diff-mode #preview-pane {
 .runbook-replay-timeline-live {
   padding: calc(2px * var(--us)) calc(7px * var(--us));
   font-size: calc(10.5px * var(--us));
-  border: 1px solid color-mix(in srgb, #4ec97d 60%, transparent);
-  background: color-mix(in srgb, #4ec97d 14%, transparent);
-  color: #4ec97d;
+  border: 1px solid color-mix(in srgb, var(--run-monitor-success-color) 60%, transparent);
+  background: color-mix(in srgb, var(--run-monitor-success-color) 14%, transparent);
+  color: var(--run-monitor-success-color);
   font-weight: 600;
   border-radius: calc(4px * var(--us));
   cursor: pointer;
 }
 .runbook-replay-timeline-live:hover {
-  background: color-mix(in srgb, #4ec97d 26%, transparent);
+  background: color-mix(in srgb, var(--run-monitor-success-color) 26%, transparent);
 }
 .runbook-replay-timeline-slider {
   width: 100%;
@@ -2462,7 +2545,7 @@ body.json-diff-mode #preview-pane {
 }
 .runbook-replay-timeline-warning {
   font-size: calc(10.5px * var(--us));
-  color: var(--syntax-meta, #e0af68);
+  color: var(--warning-color);
   font-style: italic;
 }
 .runbook-latest-run-summary {
@@ -2474,9 +2557,9 @@ body.json-diff-mode #preview-pane {
   border-radius: calc(7px * var(--us));
   background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
 }
-.runbook-latest-run-summary.good { border-left-color: var(--syntax-string, #9ece6a); }
-.runbook-latest-run-summary.warn { border-left-color: var(--syntax-meta, #e0af68); }
-.runbook-latest-run-summary.danger { border-left-color: var(--danger-color, #ff7676); }
+.runbook-latest-run-summary.good { border-left-color: var(--run-monitor-success-color); }
+.runbook-latest-run-summary.warn { border-left-color: var(--warning-color); }
+.runbook-latest-run-summary.danger { border-left-color: var(--danger-color); }
 .runbook-latest-run-main {
   min-width: 0;
   display: flex;
@@ -2577,9 +2660,9 @@ body.json-diff-mode #preview-pane {
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.runbook-guide.good { border-left-color: var(--syntax-string, #9ece6a); }
-.runbook-guide.warn { border-left-color: var(--syntax-meta, #e0af68); }
-.runbook-guide.danger { border-left-color: var(--danger-color, #ff7676); }
+.runbook-guide.good { border-left-color: var(--run-monitor-success-color); }
+.runbook-guide.warn { border-left-color: var(--warning-color); }
+.runbook-guide.danger { border-left-color: var(--danger-color); }
 .runbook-diagnostic,
 .runbook-event {
   padding: calc(6px * var(--us)) calc(7px * var(--us));
@@ -2589,9 +2672,9 @@ body.json-diff-mode #preview-pane {
   color: var(--text-secondary);
   line-height: 1.4;
 }
-.runbook-diagnostic.error { border-left-color: var(--danger-color, #ff7676); }
-.runbook-diagnostic.warning { border-left-color: var(--syntax-meta, #e0af68); }
-.runbook-diagnostic.good { border-left-color: #22c55e; }
+.runbook-diagnostic.error { border-left-color: var(--danger-color); }
+.runbook-diagnostic.warning { border-left-color: var(--warning-color); }
+.runbook-diagnostic.good { border-left-color: var(--run-monitor-success-color); }
 .runbook-attention-actions {
   margin-top: calc(6px * var(--us));
 }
@@ -2852,9 +2935,11 @@ body.json-diff-mode #preview-pane {
   gap: calc(12px * var(--us));
   margin: 0 0 calc(12px * var(--us));
   padding: calc(8px * var(--us)) calc(10px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, var(--bg-secondary));
   border-radius: calc(8px * var(--us));
-  background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
+  background: var(--bg-secondary);
+  background-image: none;
+  box-shadow: none;
   /* Sticky pin so the run controls stay visible as the user scrolls
    * down through the gate banner / failed adapter cards / lifecycle
    * banner / latest run sections. The pipe preview area scrolls
@@ -2863,8 +2948,8 @@ body.json-diff-mode #preview-pane {
   position: sticky;
   top: 0;
   z-index: 80;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .pipeline-runbar-progress {
   display: inline-flex;
@@ -2907,9 +2992,9 @@ body.json-diff-mode #preview-pane {
 .pipe-failed-probes {
   margin: calc(-6px * var(--us)) 0 calc(12px * var(--us));
   padding: calc(8px * var(--us)) calc(10px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ff7676) 50%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger-color) 50%, transparent);
   border-radius: calc(8px * var(--us));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 12%, transparent);
+  background: color-mix(in srgb, var(--danger-color) 12%, transparent);
   display: grid;
   gap: calc(8px * var(--us));
   font-size: calc(12px * var(--us));
@@ -2918,7 +3003,7 @@ body.json-diff-mode #preview-pane {
 .pipe-failed-probes-title {
   font-weight: 600;
   font-size: calc(12px * var(--us));
-  color: var(--danger-color, #ff7676);
+  color: var(--danger-color);
 }
 .pipe-failed-probe {
   display: grid;
@@ -2940,17 +3025,17 @@ body.json-diff-mode #preview-pane {
 .pipe-failed-probe-status {
   padding: calc(1px * var(--us)) calc(6px * var(--us));
   border-radius: calc(10px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ff7676) 60%, transparent);
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 18%, transparent);
-  color: var(--danger-color, #ff7676);
+  border: 1px solid color-mix(in srgb, var(--danger-color) 60%, transparent);
+  background: color-mix(in srgb, var(--danger-color) 18%, transparent);
+  color: var(--danger-color);
   font-size: calc(10.5px * var(--us));
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .pipe-failed-probe-status.status-blocked {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 60%, transparent);
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 18%, transparent);
-  color: var(--syntax-meta, #e0af68);
+  border-color: color-mix(in srgb, var(--warning-color) 60%, transparent);
+  background: color-mix(in srgb, var(--warning-color) 18%, transparent);
+  color: var(--warning-color);
 }
 .pipe-failed-probe-adapter {
   font-size: calc(10.5px * var(--us));
@@ -2970,7 +3055,7 @@ body.json-diff-mode #preview-pane {
   padding: calc(3px * var(--us)) calc(8px * var(--us));
   border-radius: calc(4px * var(--us));
   border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
-  background: color-mix(in srgb, var(--bg-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 70%, transparent);
   color: var(--text-primary);
   cursor: pointer;
 }
@@ -2978,27 +3063,27 @@ body.json-diff-mode #preview-pane {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 18%, transparent);
 }
 .pipe-failed-probe-skip {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 60%, transparent);
-  color: var(--syntax-meta, #e0af68);
+  border-color: color-mix(in srgb, var(--warning-color) 60%, transparent);
+  color: var(--warning-color);
 }
 .pipe-failed-probe-skip:hover {
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 18%, transparent);
+  background: color-mix(in srgb, var(--warning-color) 18%, transparent);
 }
 .pipe-failed-probe-skip:disabled {
   opacity: 0.5;
   cursor: progress;
 }
-/* Retry probe — the AI-driven remedy for a failed adapter call. Green
+/* Retry probe: the AI-driven remedy for a failed adapter call. Success
  * styling emphasizes that this is the recommended fix path before
  * resorting to Skip. */
 .pipe-failed-probe-retry {
-  border-color: color-mix(in srgb, #4ec97d 70%, transparent);
-  color: #4ec97d;
-  background: color-mix(in srgb, #4ec97d 12%, transparent);
+  border-color: color-mix(in srgb, var(--run-monitor-success-color) 70%, transparent);
+  color: var(--run-monitor-success-color);
+  background: color-mix(in srgb, var(--run-monitor-success-color) 12%, transparent);
   font-weight: 600;
 }
 .pipe-failed-probe-retry:hover {
-  background: color-mix(in srgb, #4ec97d 26%, transparent);
+  background: color-mix(in srgb, var(--run-monitor-success-color) 26%, transparent);
 }
 .pipe-failed-probe-retry:disabled {
   opacity: 0.55;
@@ -3008,7 +3093,7 @@ body.json-diff-mode #preview-pane {
   font-size: calc(11.5px * var(--us));
   font-style: italic;
   opacity: 0.85;
-  border-left: 2px solid color-mix(in srgb, var(--syntax-meta, var(--text-secondary)) 50%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--warning-color) 50%, transparent);
   padding-left: calc(7px * var(--us));
 }
 .pipe-lifecycle-banner {
@@ -3027,8 +3112,8 @@ body.json-diff-mode #preview-pane {
   background: color-mix(in srgb, var(--syntax-added, var(--accent-color)) 12%, transparent);
 }
 .pipe-lifecycle-banner--warn {
-  border-color: color-mix(in srgb, var(--syntax-meta, var(--text-secondary)) 60%, transparent);
-  background: color-mix(in srgb, var(--syntax-meta, var(--text-secondary)) 14%, transparent);
+  border-color: color-mix(in srgb, var(--warning-color) 60%, transparent);
+  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
 }
 .pipe-lifecycle-banner--error {
   border-color: color-mix(in srgb, var(--syntax-deleted, var(--accent-color)) 60%, transparent);
@@ -3044,8 +3129,8 @@ body.json-diff-mode #preview-pane {
 .vm-harness-dashboard {
   --vm-harness-accent: var(--accent-color);
   --vm-harness-good: var(--syntax-string, var(--syntax-added, var(--accent-color)));
-  --vm-harness-warn: var(--syntax-meta, var(--text-secondary));
-  --vm-harness-danger: var(--danger-color, var(--syntax-deleted, var(--accent-color)));
+  --vm-harness-warn: var(--warning-color);
+  --vm-harness-danger: var(--danger-color);
   --vm-harness-surface: color-mix(in srgb, var(--bg-secondary) 86%, var(--bg-primary));
   --vm-harness-surface-raised: color-mix(in srgb, var(--bg-secondary) 94%, var(--bg-primary));
   --vm-harness-border: color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
@@ -3280,7 +3365,7 @@ body.json-diff-mode #preview-pane {
   padding: calc(3px * var(--us)) calc(8px * var(--us));
   border-radius: calc(4px * var(--us));
   border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
-  background: color-mix(in srgb, var(--bg-color) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 70%, transparent);
   color: var(--text-primary);
   cursor: pointer;
 }
@@ -3314,7 +3399,7 @@ body.json-diff-mode #preview-pane {
   padding: calc(7px * var(--us)) calc(8px * var(--us));
   border: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
   border-radius: calc(6px * var(--us));
-  background: color-mix(in srgb, var(--bg-color) 54%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 54%, transparent);
 }
 .pipe-patch-outcome-counts {
   display: flex;
@@ -3338,7 +3423,7 @@ body.json-diff-mode #preview-pane {
   opacity: 0.72;
 }
 .pipe-patch-outcome-row--empty strong {
-  color: var(--syntax-meta, #e0af68);
+  color: var(--warning-color);
 }
 .pipe-patch-outcome-files {
   display: flex;
@@ -3410,8 +3495,10 @@ body.json-diff-mode #preview-pane {
   font-style: italic;
 }
 .pipe-budget-chip {
-  border: 1px solid color-mix(in srgb, var(--accent-color, #6cb6ff) 50%, transparent);
-  background: color-mix(in srgb, var(--accent-color, #6cb6ff) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 78%, var(--accent-color, #6cb6ff));
+  background: color-mix(in srgb, var(--bg-primary) 92%, var(--accent-color, #6cb6ff));
+  background-image: none;
+  box-shadow: none;
   padding: calc(1px * var(--us)) calc(6px * var(--us));
   border-radius: calc(10px * var(--us));
   font-size: calc(10.5px * var(--us));
@@ -3444,30 +3531,30 @@ body.json-diff-mode #preview-pane {
 }
 .pipeline-runbar-status.good,
 .pipeline-runbar-status.done {
-  color: var(--syntax-string, #9ece6a);
+  color: var(--success-color);
 }
 .pipeline-runbar-status.warn {
-  color: var(--syntax-meta, #e0af68);
+  color: var(--warning-color);
 }
 .pipeline-runbar-status.danger {
-  color: var(--danger-color, #ff7676);
+  color: var(--danger-color);
 }
 .pipeline-inline-diagnostic {
   display: block;
   margin-top: calc(4px * var(--us));
   padding: calc(5px * var(--us)) calc(6px * var(--us));
-  border-left: 2px solid var(--danger-color, #ff7676);
+  border-left: 2px solid var(--danger-color);
   border-radius: calc(4px * var(--us));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 10%, transparent);
-  color: var(--danger-color, #ff7676);
+  background: color-mix(in srgb, var(--danger-color) 10%, transparent);
+  color: var(--danger-color);
   font-size: calc(10px * var(--us));
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
 .pipeline-inline-diagnostic.warning {
-  border-left-color: var(--syntax-meta, #e0af68);
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 10%, transparent);
-  color: var(--syntax-meta, #e0af68);
+  border-left-color: var(--warning-color);
+  background: color-mix(in srgb, var(--warning-color) 10%, transparent);
+  color: var(--warning-color);
 }
 .pipeline-runbar-actions {
   position: relative;
@@ -3495,9 +3582,9 @@ body.json-diff-mode #preview-pane {
   color: var(--accent-color);
 }
 .pipeline-run-primary.danger {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 68%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
-  color: var(--danger-color, #ff7676);
+  border-color: color-mix(in srgb, var(--danger-color) 68%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 13%, transparent);
+  color: var(--danger-color);
 }
 .pipeline-run-primary:hover,
 .pipeline-run-control:hover,
@@ -3509,8 +3596,8 @@ body.json-diff-mode #preview-pane {
   color: var(--accent-color);
 }
 .pipeline-run-primary.danger:hover {
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 18%, var(--hover-bg));
-  color: var(--danger-color, #ff7676);
+  background: color-mix(in srgb, var(--danger-color) 18%, var(--hover-bg));
+  color: var(--danger-color);
 }
 .pipeline-run-primary:disabled,
 .pipeline-run-control:disabled,
@@ -3853,11 +3940,11 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
     drop-shadow(0 0 18px color-mix(in srgb, var(--accent-color) 34%, transparent));
 }
 .orch-graph-edges .orch-transition.runtime-completed {
-  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 64%, var(--border-color));
+  stroke: color-mix(in srgb, var(--success-color) 64%, var(--border-color));
   stroke-width: 3.8;
   filter:
-    drop-shadow(0 0 5px color-mix(in srgb, var(--syntax-string, #9ece6a) 42%, transparent))
-    drop-shadow(0 0 16px color-mix(in srgb, var(--syntax-string, #9ece6a) 20%, transparent));
+    drop-shadow(0 0 5px color-mix(in srgb, var(--success-color) 42%, transparent))
+    drop-shadow(0 0 16px color-mix(in srgb, var(--success-color) 20%, transparent));
 }
 .orch-graph-edges .orch-transition.runtime-active {
   stroke: var(--accent-color);
@@ -3909,12 +3996,12 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   opacity: 0.62;
 }
 .orch-graph-edges .orch-transition.runtime-blocked {
-  stroke: color-mix(in srgb, var(--syntax-meta, #e0af68) 72%, var(--border-color));
+  stroke: color-mix(in srgb, var(--warning-color) 72%, var(--border-color));
   stroke-width: 4.8;
   stroke-dasharray: 3 7;
   filter:
-    drop-shadow(0 0 6px color-mix(in srgb, var(--syntax-meta, #e0af68) 56%, transparent))
-    drop-shadow(0 0 18px color-mix(in srgb, var(--syntax-meta, #e0af68) 28%, transparent));
+    drop-shadow(0 0 6px color-mix(in srgb, var(--warning-color) 56%, transparent))
+    drop-shadow(0 0 18px color-mix(in srgb, var(--warning-color) 28%, transparent));
 }
 .orch-graph-edges .orch-transition.runtime-muted {
   stroke: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
@@ -3926,11 +4013,11 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
  * applies while the run itself is in flight) so the user can see
  * the in-progress branch even when the run is paused. */
 .orch-graph-edges .orch-transition.runtime-traversed {
-  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 50%, var(--accent-color, #6cb6ff));
+  stroke: color-mix(in srgb, var(--success-color) 50%, var(--accent-color, #6cb6ff));
   stroke-width: 4.3;
   stroke-dasharray: 8 3 2 3;
   filter:
-    drop-shadow(0 0 5px color-mix(in srgb, var(--syntax-string, #9ece6a) 48%, transparent))
+    drop-shadow(0 0 5px color-mix(in srgb, var(--success-color) 48%, transparent))
     drop-shadow(0 0 18px color-mix(in srgb, var(--accent-color) 24%, transparent));
 }
 /* Phase 2.6: untraversed — a downstream branch the dispatcher did
@@ -4006,16 +4093,16 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 
 .orch-graph-edges .orch-transition.runtime-completed {
-  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 64%, var(--border-color));
+  stroke: color-mix(in srgb, var(--success-color) 64%, var(--border-color));
 }
 .orch-graph-edges .orch-transition.runtime-active {
   stroke: var(--accent-color);
 }
 .orch-graph-edges .orch-transition.runtime-blocked {
-  stroke: color-mix(in srgb, var(--syntax-meta, #e0af68) 72%, var(--border-color));
+  stroke: color-mix(in srgb, var(--warning-color) 72%, var(--border-color));
 }
 .orch-graph-edges .orch-transition.runtime-traversed {
-  stroke: color-mix(in srgb, var(--syntax-string, #9ece6a) 50%, var(--accent-color, #6cb6ff));
+  stroke: color-mix(in srgb, var(--success-color) 50%, var(--accent-color, #6cb6ff));
 }
 .orch-graph-edges .orch-transition.runtime-untraversed {
   stroke: color-mix(in srgb, var(--text-tertiary) 30%, transparent);
@@ -4049,8 +4136,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   fill: color-mix(in srgb, var(--orch-edge-loopback) 70%, var(--text-primary, #ffffff));
 }
 
-/* Legend box pinned to the bottom-right of the graph frame. Small, semi-
- * transparent, sized so it stays out of the canvas content. */
+/* Legend box pinned to the bottom-left of the graph frame. Compact and solid so
+ * it stays readable without decorative glass over the canvas content. */
 .orch-graph-legend {
   position: absolute;
   /* User report 2026-05-15: right/bottom collided with the runtime
@@ -4067,15 +4154,14 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   padding: 8px 10px;
   border: 1px solid color-mix(in srgb, var(--accent-color, #38a3ff) 34%, var(--border-color, #3a3d42));
   border-radius: 8px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 6%, transparent), transparent),
-    color-mix(in srgb, var(--bg-primary, #1d1f23) 84%, transparent);
+  background-color: color-mix(in srgb, var(--bg-primary, #1d1f23) 88%, var(--bg-secondary, #252831));
+  background-image: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 12%, transparent),
     0 12px 28px color-mix(in srgb, #000 28%, transparent),
     0 0 20px color-mix(in srgb, var(--accent-color, #38a3ff) 8%, transparent);
-  backdrop-filter: blur(12px) saturate(128%);
-  -webkit-backdrop-filter: blur(12px) saturate(128%);
   font-size: calc(11px * var(--us));
   line-height: 1.35;
   color: var(--text-secondary, #c0c4cc);
@@ -4201,8 +4287,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   width: calc(14px * var(--us));
   height: calc(14px * var(--us));
   border-radius: 50%;
-  background: #d77c7c;
-  color: #fff;
+  background: var(--breakpoint-color);
+  color: var(--bg-primary);
   font-size: calc(10px * var(--us));
   font-weight: 700;
   display: inline-flex;
@@ -4212,52 +4298,52 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   animation: orpad-pulse 1.6s ease-in-out infinite;
 }
 .orch-graph-node.has-breakpoint {
-  outline: 1px dashed color-mix(in srgb, #d77c7c 60%, transparent);
+  outline: 1px dashed color-mix(in srgb, var(--breakpoint-color) 60%, transparent);
   outline-offset: calc(2px * var(--us));
 }
 .pipe-breakpoint-active {
-  border-color: color-mix(in srgb, #d77c7c 60%, transparent) !important;
-  background: color-mix(in srgb, #d77c7c 14%, transparent) !important;
-  color: #d77c7c !important;
+  border-color: color-mix(in srgb, var(--breakpoint-color) 60%, transparent) !important;
+  background: color-mix(in srgb, var(--breakpoint-color) 14%, transparent) !important;
+  color: var(--breakpoint-color) !important;
   font-weight: 600;
 }
 .pipe-breakpoint-inactive {
   /* Inactive: standard pipe-failed-probe-link styling, no overrides */
 }
 .orch-graph-node.runtime-completed {
-  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 54%, var(--border-color));
+  border-color: color-mix(in srgb, var(--success-color) 54%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
     0 12px 26px color-mix(in srgb, #000 28%, transparent),
-    0 0 24px color-mix(in srgb, var(--syntax-string, #9ece6a) 10%, transparent);
+    0 0 24px color-mix(in srgb, var(--success-color) 10%, transparent);
 }
 .orch-graph-node.runtime-blocked,
 .orch-graph-node.runtime-skipped {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+  border-color: color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
     0 12px 26px color-mix(in srgb, #000 30%, transparent),
-    0 0 26px color-mix(in srgb, var(--syntax-meta, #e0af68) 14%, transparent);
+    0 0 26px color-mix(in srgb, var(--warning-color) 14%, transparent);
 }
 .orch-graph-node.runtime-failed,
 .orch-graph-node.runtime-cancelled {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 62%, var(--border-color));
+  border-color: color-mix(in srgb, var(--danger-color) 62%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
     0 12px 26px color-mix(in srgb, #000 30%, transparent),
-    0 0 28px color-mix(in srgb, var(--danger-color, #ff7676) 15%, transparent);
+    0 0 28px color-mix(in srgb, var(--danger-color) 15%, transparent);
 }
 /* Supervised-autonomy run states on the live graph. */
 .orch-graph-node.runtime-paused {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+  border-color: color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
   border-style: dashed;
 }
 .orch-graph-node.runtime-paused .orch-runtime-status {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 52%, var(--border-color));
-  color: var(--syntax-meta, #e0af68);
+  border-color: color-mix(in srgb, var(--warning-color) 52%, var(--border-color));
+  color: var(--warning-color);
 }
 .orch-graph-node.runtime-cancelling {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
+  border-color: color-mix(in srgb, var(--danger-color) 58%, var(--border-color));
   border-style: dashed;
 }
 /* When the displayed run is PAUSED, freeze every animation inside the graph so
@@ -4280,18 +4366,18 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   z-index: 8;
   padding: calc(3px * var(--us)) calc(11px * var(--us));
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 14%, var(--bg-primary));
-  color: var(--syntax-meta, #e0af68);
+  border: 1px solid color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--warning-color) 14%, var(--bg-primary));
+  color: var(--warning-color);
   font-size: calc(11px * var(--us));
   font-weight: 600;
   pointer-events: none;
   box-shadow: 0 6px 16px color-mix(in srgb, #000 22%, transparent);
 }
 .orch-graph-run-banner.is-cancelling {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 13%, var(--bg-primary));
-  color: var(--danger-color, #ff7676);
+  border-color: color-mix(in srgb, var(--danger-color) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 13%, var(--bg-primary));
+  color: var(--danger-color);
 }
 /* Steer-from-the-graph run controls: a compact cluster on the canvas so the user
    can Pause/Resume/Cancel without leaving the live graph. Anchored top-right
@@ -4305,16 +4391,14 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   gap: calc(4px * var(--us));
   padding: calc(3px * var(--us));
   border-radius: calc(9px * var(--us));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 7%, transparent), transparent),
-    color-mix(in srgb, var(--bg-primary) 84%, transparent);
+  background-color: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-secondary));
+  background-image: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   border: 1px solid color-mix(in srgb, var(--accent-color) 34%, var(--border-color));
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 13%, transparent),
-    0 0 22px color-mix(in srgb, var(--accent-color) 10%, transparent),
-    0 12px 28px color-mix(in srgb, #000 28%, transparent);
-  backdrop-filter: blur(12px) saturate(126%);
-  -webkit-backdrop-filter: blur(12px) saturate(126%);
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
+    0 10px 24px color-mix(in srgb, var(--bg-primary) 58%, transparent);
 }
 .orch-graph-run-btn {
   display: inline-grid;
@@ -4323,36 +4407,60 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   height: calc(26px * var(--us));
   border: 1px solid color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
   border-radius: calc(6px * var(--us));
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 7%, transparent), transparent),
-    color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  background-color: color-mix(in srgb, var(--bg-secondary) 76%, var(--bg-primary));
+  background-image: none;
   color: var(--text-secondary);
   cursor: pointer;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent);
+  transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 .orch-graph-run-btn:hover {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--text-primary) 10%, transparent), transparent),
-    var(--hover-bg);
+  border-color: color-mix(in srgb, var(--accent-color) 52%, var(--border-color));
+  background-color: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary));
+  background-image: none;
   color: var(--text-primary);
 }
+.orch-graph-run-btn:active,
+.orch-graph-run-btn.active,
 .orch-graph-run-btn.resume {
   border-color: color-mix(in srgb, var(--accent-color) 66%, var(--border-color));
+  background-color: color-mix(in srgb, var(--accent-color) 13%, var(--bg-primary));
+  background-image: none;
   color: var(--accent-color);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
     0 0 16px color-mix(in srgb, var(--accent-color) 14%, transparent);
 }
+.orch-graph-run-btn:active:hover,
+.orch-graph-run-btn.active:hover,
+.orch-graph-run-btn.resume:hover {
+  border-color: color-mix(in srgb, var(--accent-color) 78%, var(--border-color));
+  background-color: color-mix(in srgb, var(--accent-color) 18%, var(--bg-primary));
+  background-image: none;
+  color: color-mix(in srgb, var(--accent-color) 88%, var(--text-primary));
+}
 .orch-graph-run-btn.cancel {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 60%, var(--border-color));
-  color: var(--danger-color, #ff7676);
+  border-color: color-mix(in srgb, var(--danger-color) 60%, var(--border-color));
+  background-color: color-mix(in srgb, var(--danger-color) 12%, var(--bg-primary));
+  background-image: none;
+  color: var(--danger-color);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
-    0 0 16px color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
+    0 0 16px color-mix(in srgb, var(--danger-color) 13%, transparent);
+}
+.orch-graph-run-btn.cancel:hover {
+  border-color: color-mix(in srgb, var(--danger-color) 72%, var(--border-color));
+  background-color: color-mix(in srgb, var(--danger-color) 16%, var(--bg-primary));
+  background-image: none;
+  color: color-mix(in srgb, var(--danger-color) 90%, var(--text-primary));
 }
 .orch-graph-run-btn:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+  border-color: color-mix(in srgb, var(--text-tertiary) 24%, var(--border-color));
+  background-color: color-mix(in srgb, var(--bg-secondary) 58%, var(--bg-primary));
+  background-image: none;
+  color: var(--text-tertiary);
 }
 .orch-graph-run-btn .ogi {
   width: calc(14px * var(--us));
@@ -4368,10 +4476,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   top: calc(-10px * var(--us));
   left: calc(8px * var(--us));
   padding: calc(2px * var(--us)) calc(6px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-primary) 96%, var(--syntax-meta, #e0af68) 8%);
-  color: var(--syntax-meta, #e0af68);
+  background: color-mix(in srgb, var(--bg-primary) 96%, var(--warning-color) 8%);
+  color: var(--warning-color);
   font-size: calc(9px * var(--us));
   font-weight: 700;
   letter-spacing: 0;
@@ -4402,18 +4510,18 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   color: var(--text-tertiary);
 }
 .orch-graph-node.runtime-completed .orch-runtime-status {
-  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 48%, var(--border-color));
-  color: var(--syntax-string, #9ece6a);
+  border-color: color-mix(in srgb, var(--success-color) 48%, var(--border-color));
+  color: var(--success-color);
 }
 .orch-graph-node.runtime-blocked .orch-runtime-status,
 .orch-graph-node.runtime-skipped .orch-runtime-status {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 52%, var(--border-color));
-  color: var(--syntax-meta, #e0af68);
+  border-color: color-mix(in srgb, var(--warning-color) 52%, var(--border-color));
+  color: var(--warning-color);
 }
 .orch-graph-node.runtime-failed .orch-runtime-status,
 .orch-graph-node.runtime-cancelled .orch-runtime-status {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 52%, var(--border-color));
-  color: var(--danger-color, #ff7676);
+  border-color: color-mix(in srgb, var(--danger-color) 52%, var(--border-color));
+  color: var(--danger-color);
 }
 /* Codex 2026-05-15 cross-review (Top 5 fix #5): always-visible action
  * row on blocked/failed graph nodes. Buttons mirror the right-click
@@ -4451,18 +4559,18 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   font-weight: 600;
 }
 .orch-graph-node-action.retry {
-  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 60%, var(--border-color));
-  color: var(--syntax-string, #9ece6a);
+  border-color: color-mix(in srgb, var(--success-color) 60%, var(--border-color));
+  color: var(--success-color);
 }
 .orch-graph-node-action.retry:hover {
-  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 18%, transparent);
+  background: color-mix(in srgb, var(--success-color) 18%, transparent);
 }
 .orch-graph-node-action.skip {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 56%, var(--border-color));
-  color: var(--syntax-meta, #e0af68);
+  border-color: color-mix(in srgb, var(--warning-color) 56%, var(--border-color));
+  color: var(--warning-color);
 }
 .orch-graph-node-action.skip:hover {
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 18%, transparent);
+  background: color-mix(in srgb, var(--warning-color) 18%, transparent);
 }
 .orch-graph-node-action:disabled {
   opacity: 0.55;
@@ -4471,10 +4579,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 /* Tighter top-border tint for failed cards so the action row reads as
  * "what to do about this failure" rather than appearing detached. */
 .orch-graph-node.runtime-failed .orch-graph-node-actions {
-  border-top-color: color-mix(in srgb, var(--danger-color, #ff7676) 44%, transparent);
+  border-top-color: color-mix(in srgb, var(--danger-color) 44%, transparent);
 }
 .orch-graph-node.runtime-blocked .orch-graph-node-actions {
-  border-top-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 50%, transparent);
+  border-top-color: color-mix(in srgb, var(--warning-color) 50%, transparent);
 }
 @keyframes orch-runtime-pulse {
   0%, 100% {
@@ -4538,14 +4646,14 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   background: color-mix(in srgb, var(--text-muted, #888) 28%, transparent);
 }
 .orch-node-progress-step.state-completed {
-  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 78%, transparent);
+  background: color-mix(in srgb, var(--success-color) 78%, transparent);
 }
 .orch-node-progress-step.state-running {
   background: var(--accent-color);
   animation: orch-progress-blink 1s ease-in-out infinite;
 }
 .orch-node-progress-step.state-failed {
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 80%, transparent);
+  background: color-mix(in srgb, var(--danger-color) 80%, transparent);
 }
 @keyframes orch-progress-spin {
   to { transform: rotate(360deg); }
@@ -4620,11 +4728,17 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .node-pack-manager-tabs,
 .node-pack-manager-installed-controls,
 .node-pack-manager-workspace-apply-controls,
-.node-pack-manager-registry-controls,
 .node-pack-manager-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+  gap: calc(8px * var(--us));
+  min-width: 0;
+}
+.node-pack-manager-registry-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(calc(240px * var(--us)), 100%), 1fr));
+  align-items: end;
   gap: calc(8px * var(--us));
   min-width: 0;
 }
@@ -4717,8 +4831,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   color: var(--accent-color);
 }
 .node-pack-manager-actions button.danger {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 54%, var(--border-color));
-  color: var(--danger-color, #ff7676);
+  border-color: color-mix(in srgb, var(--danger-color) 54%, var(--border-color));
+  color: var(--danger-color);
 }
 .node-pack-manager-action-reason {
   color: var(--text-tertiary);
@@ -4738,10 +4852,50 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .node-pack-manager-registry-controls[hidden] {
   display: none;
 }
+.node-pack-manager-registry-source-control,
+.node-pack-manager-registry-custom-source,
+.node-pack-manager-registry-query-field {
+  display: grid;
+  gap: calc(4px * var(--us));
+  min-width: 0;
+}
+.node-pack-manager-field-label {
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+  font-weight: 700;
+  line-height: 1.2;
+}
+.node-pack-manager-registry-search-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: calc(8px * var(--us));
+  min-width: 0;
+}
+.node-pack-manager-registry-source-summary {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: calc(4px * var(--us));
+  min-width: 0;
+  min-height: calc(24px * var(--us));
+}
+.node-pack-manager-registry-source-summary code {
+  min-width: 0;
+  overflow: hidden;
+  padding: calc(3px * var(--us)) calc(6px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: calc(5px * var(--us));
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--bg-secondary) 58%, transparent);
+  font-size: calc(10px * var(--us));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .node-pack-manager-registry-controls select,
 .node-pack-manager-registry-controls input {
-  min-width: min(calc(220px * var(--us)), 100%);
-  flex: 1 1 calc(220px * var(--us));
+  width: 100%;
+  min-width: 0;
   padding: calc(7px * var(--us)) calc(9px * var(--us));
   border: 1px solid var(--border-color);
   border-radius: calc(6px * var(--us));
@@ -4750,11 +4904,13 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   font: inherit;
   font-size: calc(11px * var(--us));
 }
-.node-pack-manager-registry-controls select {
-  flex: 0 1 calc(280px * var(--us));
-}
 .node-pack-manager-registry-controls input[type="url"] {
-  flex: 1 1 calc(320px * var(--us));
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--bg-secondary) 64%, var(--bg-primary));
+}
+.node-pack-manager-registry-controls button {
+  min-height: calc(32px * var(--us));
+  white-space: nowrap;
 }
 .node-pack-manager-registry-controls select:focus,
 .node-pack-manager-registry-controls input:focus {
@@ -4784,15 +4940,15 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .node-pack-manager-workspace-lock-panel.good,
 .node-pack-manager-workspace-lock-section.good {
-  border-left-color: var(--syntax-added, #9ece6a);
+  border-left-color: var(--success-color);
 }
 .node-pack-manager-workspace-lock-panel.warn,
 .node-pack-manager-workspace-lock-section.warn {
-  border-left-color: var(--syntax-meta, #e0af68);
+  border-left-color: var(--warning-color);
 }
 .node-pack-manager-workspace-lock-panel.danger,
 .node-pack-manager-workspace-lock-section.danger {
-  border-left-color: var(--danger-color, #ff7676);
+  border-left-color: var(--danger-color);
 }
 .node-pack-manager-registry-source-head {
   display: flex;
@@ -4872,13 +5028,13 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   background: color-mix(in srgb, var(--bg-secondary) 58%, transparent);
 }
 .node-pack-manager-action-notice.good {
-  border-left-color: var(--syntax-added, #9ece6a);
+  border-left-color: var(--success-color);
 }
 .node-pack-manager-action-notice.warn {
-  border-left-color: var(--syntax-meta, #e0af68);
+  border-left-color: var(--warning-color);
 }
 .node-pack-manager-action-notice.danger {
-  border-left-color: var(--danger-color, #ff7676);
+  border-left-color: var(--danger-color);
 }
 .node-pack-manager-action-notice-head {
   display: flex;
@@ -4942,28 +5098,34 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   scrollbar-gutter: stable;
 }
 .node-pack-manager-pack {
-  --node-pack-manager-pack-bg: color-mix(in srgb, var(--bg-primary) 96%, var(--bg-secondary));
-  --node-pack-manager-pack-border: color-mix(in srgb, var(--border-color) 82%, var(--bg-secondary));
-  --node-pack-manager-pack-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
-    0 calc(7px * var(--us)) calc(18px * var(--us)) color-mix(in srgb, #000 18%, transparent),
-    0 1px calc(3px * var(--us)) color-mix(in srgb, #000 12%, transparent);
+  --node-pack-manager-pack-bg: color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary));
+  --node-pack-manager-pack-border: color-mix(in srgb, var(--border-color) 86%, var(--bg-secondary));
+  --node-pack-manager-pack-rail: color-mix(in srgb, var(--accent-color) 42%, var(--border-color));
   position: relative;
   display: grid;
   gap: calc(5px * var(--us));
   width: 100%;
   min-width: 0;
-  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  padding: calc(8px * var(--us)) calc(10px * var(--us)) calc(8px * var(--us)) calc(13px * var(--us));
   border: 1px solid var(--node-pack-manager-pack-border);
   border-radius: calc(8px * var(--us));
   background: var(--node-pack-manager-pack-bg);
   background-image: none;
-  box-shadow: var(--node-pack-manager-pack-shadow);
+  box-shadow: none;
   color: var(--text-secondary);
   font: inherit;
   text-align: left;
   cursor: default;
-  transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease, color 120ms ease;
+  overflow: hidden;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+.node-pack-manager-pack::before {
+  content: "";
+  position: absolute;
+  inset: calc(7px * var(--us)) auto calc(7px * var(--us)) 0;
+  width: calc(3px * var(--us));
+  border-radius: 0 calc(3px * var(--us)) calc(3px * var(--us)) 0;
+  background: var(--node-pack-manager-pack-rail);
 }
 .node-pack-manager-pack:hover,
 .node-pack-manager-pack:focus-visible,
@@ -4972,41 +5134,34 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   border-color: color-mix(in srgb, var(--accent-color) 56%, var(--border-color));
   background: color-mix(in srgb, var(--accent-color) 7%, var(--bg-primary));
   background-image: none;
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 13%, transparent),
-    0 calc(9px * var(--us)) calc(22px * var(--us)) color-mix(in srgb, #000 22%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--accent-color) 13%, transparent);
+  box-shadow: none;
   color: var(--text-primary);
+  --node-pack-manager-pack-rail: var(--accent-color);
+}
+.node-pack-manager-pack:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent-color) 72%, var(--border-color));
+  outline-offset: calc(1px * var(--us));
 }
 .node-pack-manager-pack.has-conflict {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 62%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 6%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--danger-color) 62%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 6%, var(--bg-primary));
   background-image: none;
-  box-shadow:
-    inset calc(3px * var(--us)) 0 0 var(--danger-color, #ff7676),
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
-    0 calc(8px * var(--us)) calc(20px * var(--us)) color-mix(in srgb, #000 20%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
+  box-shadow: none;
+  --node-pack-manager-pack-rail: var(--danger-color);
 }
 .node-pack-manager-pack.node-pack-manager-pack-danger:not(.has-conflict) {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 6%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--danger-color) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 6%, var(--bg-primary));
   background-image: none;
-  box-shadow:
-    inset calc(3px * var(--us)) 0 0 var(--danger-color, #ff7676),
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
-    0 calc(8px * var(--us)) calc(20px * var(--us)) color-mix(in srgb, #000 20%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--danger-color, #ff7676) 13%, transparent);
+  box-shadow: none;
+  --node-pack-manager-pack-rail: var(--danger-color);
 }
 .node-pack-manager-pack.node-pack-manager-pack-warn:not(.has-conflict) {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 58%, var(--border-color));
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 6%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--warning-color) 6%, var(--bg-primary));
   background-image: none;
-  box-shadow:
-    inset calc(3px * var(--us)) 0 0 var(--syntax-meta, #e0af68),
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
-    0 calc(8px * var(--us)) calc(20px * var(--us)) color-mix(in srgb, #000 20%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--syntax-meta, #e0af68) 13%, transparent);
+  box-shadow: none;
+  --node-pack-manager-pack-rail: var(--warning-color);
 }
 .node-pack-manager-package-row {
   grid-template-columns: minmax(calc(170px * var(--us)), 1fr) minmax(calc(220px * var(--us)), 0.9fr) auto;
@@ -5047,7 +5202,9 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .node-pack-manager-trust-chip {
   display: inline-flex;
   align-items: center;
-  max-width: calc(118px * var(--us));
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
   min-height: calc(18px * var(--us));
   padding: calc(2px * var(--us)) calc(6px * var(--us));
   border: 1px solid color-mix(in srgb, currentColor 36%, var(--border-color));
@@ -5055,19 +5212,20 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   background: color-mix(in srgb, currentColor 8%, transparent);
   color: var(--text-tertiary);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
   font-size: calc(9.5px * var(--us));
   line-height: 1.2;
 }
 .node-pack-manager-trust-chip.good {
-  color: var(--syntax-string, #9ece6a);
+  color: var(--success-color);
 }
 .node-pack-manager-trust-chip.warn {
-  color: var(--syntax-meta, #e0af68);
+  color: var(--warning-color);
 }
 .node-pack-manager-trust-chip.danger {
-  color: var(--danger-color, #ff7676);
+  color: var(--danger-color);
 }
 .node-pack-manager-trust-chip.info {
   color: var(--accent-color, #6cb6ff);
@@ -5139,7 +5297,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .node-pack-manager-detail-header.has-conflict {
   padding-left: calc(8px * var(--us));
-  border-left: calc(3px * var(--us)) solid var(--danger-color, #ff7676);
+  border-left: calc(3px * var(--us)) solid var(--danger-color);
 }
 .node-pack-manager-detail-modal-backdrop {
   position: fixed;
@@ -5226,13 +5384,13 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   border-left-width: calc(3px * var(--us));
 }
 .node-pack-manager-risk-review.good {
-  border-left-color: var(--syntax-added, #9ece6a);
+  border-left-color: var(--success-color);
 }
 .node-pack-manager-risk-review.warn {
-  border-left-color: var(--syntax-meta, #e0af68);
+  border-left-color: var(--warning-color);
 }
 .node-pack-manager-risk-review.danger {
-  border-left-color: var(--danger-color, #ff7676);
+  border-left-color: var(--danger-color);
 }
 .node-pack-manager-risk-review-head {
   display: flex;
@@ -5262,10 +5420,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   font-size: calc(10px * var(--us));
 }
 .node-pack-manager-risk-list li.warn {
-  border-left-color: var(--syntax-meta, #e0af68);
+  border-left-color: var(--warning-color);
 }
 .node-pack-manager-risk-list li.danger {
-  border-left-color: var(--danger-color, #ff7676);
+  border-left-color: var(--danger-color);
 }
 .node-pack-manager-risk-list code {
   min-width: 0;
@@ -5376,10 +5534,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   background: color-mix(in srgb, var(--bg-primary) 74%, transparent);
 }
 .node-pack-manager-issue-card.warn {
-  border-left-color: var(--syntax-meta, #e0af68);
+  border-left-color: var(--warning-color);
 }
 .node-pack-manager-issue-card.danger {
-  border-left-color: var(--danger-color, #ff7676);
+  border-left-color: var(--danger-color);
 }
 .node-pack-manager-issue-head {
   display: flex;
@@ -5402,10 +5560,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .node-pack-manager-conflict-note {
   padding: calc(8px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ff7676) 48%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--danger-color) 48%, var(--border-color));
   border-radius: calc(6px * var(--us));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 9%, transparent);
-  color: var(--danger-color, #ff7676);
+  background: color-mix(in srgb, var(--danger-color) 9%, transparent);
+  color: var(--danger-color);
 }
 .node-pack-manager-issue-details {
   display: grid;
@@ -5442,10 +5600,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .node-pack-manager-error {
   padding: calc(10px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--danger-color) 58%, var(--border-color));
   border-radius: calc(7px * var(--us));
-  color: var(--danger-color, #ff7676);
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 8%, transparent);
+  color: var(--danger-color);
+  background: color-mix(in srgb, var(--danger-color) 8%, transparent);
 }
 .orch-node-browser {
   display: grid;
@@ -5466,9 +5624,9 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   gap: calc(12px * var(--us));
   min-width: 0;
   padding: calc(10px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 54%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--warning-color) 54%, var(--border-color));
   border-radius: calc(7px * var(--us));
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 9%, transparent);
+  background: color-mix(in srgb, var(--warning-color) 9%, transparent);
   color: var(--text-secondary);
 }
 .orch-node-browser-alert[hidden] {
@@ -5480,7 +5638,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   min-width: 0;
 }
 .orch-node-browser-alert-copy strong {
-  color: var(--syntax-meta, #e0af68);
+  color: var(--warning-color);
   font-size: calc(12px * var(--us));
 }
 .orch-node-browser-alert-copy span,
@@ -5501,7 +5659,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .orch-node-browser-alert-actions button {
   padding: calc(5px * var(--us)) calc(8px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 45%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--warning-color) 45%, var(--border-color));
   border-radius: calc(6px * var(--us));
   background: color-mix(in srgb, var(--bg-primary) 80%, transparent);
   color: var(--text-primary);
@@ -5512,8 +5670,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .orch-node-browser-alert-actions button:hover,
 .orch-node-browser-alert-actions button:focus-visible {
   outline: none;
-  border-color: var(--syntax-meta, #e0af68);
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 14%, transparent);
+  border-color: var(--warning-color);
+  background: color-mix(in srgb, var(--warning-color) 14%, transparent);
 }
 .orch-node-browser-search input {
   width: 100%;
@@ -5590,13 +5748,13 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   font-weight: 700;
 }
 .orch-node-browser-tab-status.warn {
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 12%, transparent);
-  color: var(--syntax-meta, #e0af68);
+  background: color-mix(in srgb, var(--warning-color) 12%, transparent);
+  color: var(--warning-color);
 }
 .orch-node-browser-tab-status.danger,
 .orch-node-browser-tab.has-blocked .orch-node-browser-tab-status {
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 12%, transparent);
-  color: var(--danger-color, #ff7676);
+  background: color-mix(in srgb, var(--danger-color) 12%, transparent);
+  color: var(--danger-color);
 }
 .orch-node-browser-tab.active,
 .orch-node-browser-tab:hover,
@@ -5608,10 +5766,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .orch-node-browser-tab.is-danger,
 .orch-node-browser-tab.has-blocked {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 46%, var(--border-color));
+  border-color: color-mix(in srgb, var(--danger-color) 46%, var(--border-color));
 }
 .orch-node-browser-tab.is-warn:not(.is-danger):not(.has-blocked) {
-  border-color: color-mix(in srgb, var(--syntax-meta, #e0af68) 44%, var(--border-color));
+  border-color: color-mix(in srgb, var(--warning-color) 44%, var(--border-color));
 }
 .orch-node-browser-list {
   grid-column: 2;
@@ -5645,14 +5803,14 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   color: var(--text-primary);
 }
 .orch-node-browser-item.is-disabled {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 48%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 6%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--danger-color) 48%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 6%, var(--bg-primary));
   cursor: not-allowed;
 }
 .orch-node-browser-item.is-disabled:hover,
 .orch-node-browser-item.is-disabled:focus-visible {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 54%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 8%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--danger-color) 54%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 8%, var(--bg-primary));
 }
 .orch-node-browser-item.is-disabled .orch-node-browser-item-main strong {
   color: var(--text-secondary);
@@ -5693,14 +5851,14 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   flex: none;
   padding: calc(1px * var(--us)) calc(5px * var(--us));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 12%, transparent);
-  color: var(--syntax-meta, #e0af68);
+  background: color-mix(in srgb, var(--warning-color) 12%, transparent);
+  color: var(--warning-color);
   font-size: calc(9px * var(--us));
   font-weight: 700;
 }
 .orch-node-browser-item-status.danger > span {
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 12%, transparent);
-  color: var(--danger-color, #ff7676);
+  background: color-mix(in srgb, var(--danger-color) 12%, transparent);
+  color: var(--danger-color);
 }
 .orch-node-browser-item-meta {
   align-items: flex-end;
@@ -5823,7 +5981,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .orch-graph-node.type-decorator { border-top-color: var(--syntax-keyword, #bb9af7); }
 .orch-graph-node.type-catch,
 .orch-graph-node.type-timeout,
-.orch-graph-node.type-retry { border-top-color: var(--danger-color, #ff7676); }
+.orch-graph-node.type-retry { border-top-color: var(--danger-color); }
 .orch-graph-node-top {
   display: flex;
   gap: calc(8px * var(--us));
@@ -6035,23 +6193,21 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   gap: calc(4px * var(--us));
 }
 .orch-inspector-runtime-step {
+  --orch-runtime-step-color: var(--text-secondary);
   font-size: calc(10px * var(--us));
   padding: calc(1px * var(--us)) calc(6px * var(--us));
   border-radius: calc(8px * var(--us));
-  background: color-mix(in srgb, var(--border-color) 30%, transparent);
-  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--orch-runtime-step-color) 20%, transparent);
+  color: var(--orch-runtime-step-color);
 }
 .orch-inspector-runtime-step.state-completed {
-  background: color-mix(in srgb, #4ec97d 20%, transparent);
-  color: #4ec97d;
+  --orch-runtime-step-color: var(--syntax-string);
 }
 .orch-inspector-runtime-step.state-failed {
-  background: color-mix(in srgb, #d77c7c 20%, transparent);
-  color: #d77c7c;
+  --orch-runtime-step-color: var(--syntax-deleted);
 }
 .orch-inspector-runtime-step.state-blocked {
-  background: color-mix(in srgb, #e0af68 20%, transparent);
-  color: #e0af68;
+  --orch-runtime-step-color: var(--syntax-meta);
 }
 .orch-inspector-runtime-step.state-diagnostic {
   background: color-mix(in srgb, var(--accent-color, #6cb6ff) 14%, transparent);
@@ -6072,8 +6228,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   gap: calc(3px * var(--us));
   font-size: calc(10.5px * var(--us));
   padding: calc(5px * var(--us));
-  border-left: 2px solid #d77c7c;
-  background: color-mix(in srgb, #d77c7c 10%, transparent);
+  border-left: 2px solid var(--danger-color);
+  background: color-mix(in srgb, var(--danger-color) 10%, transparent);
 }
 .orch-inspector-runtime-links {
   display: flex;
@@ -6139,8 +6295,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .pipeline-field.has-inline-diagnostic code,
 .pipeline-ref-row.has-inline-diagnostic input[aria-invalid="true"],
 .orch-inspector label.has-inline-diagnostic input {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 72%, var(--border-color));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger-color, #ff7676) 32%, transparent);
+  border-color: color-mix(in srgb, var(--danger-color) 72%, var(--border-color));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger-color) 32%, transparent);
 }
 .pipeline-field textarea {
   resize: vertical;
@@ -6208,9 +6364,9 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .pipeline-node-pack-row {
   display: grid;
-  grid-template-columns: minmax(calc(130px * var(--us)), 1.2fr) minmax(calc(110px * var(--us)), 0.9fr) minmax(calc(100px * var(--us)), 0.8fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr) minmax(0, auto);
   gap: calc(7px * var(--us));
-  align-items: end;
+  align-items: center;
   min-width: 0;
   padding: calc(8px * var(--us));
   border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
@@ -6218,77 +6374,60 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   background: color-mix(in srgb, var(--bg-secondary) 64%, transparent);
 }
 .pipeline-node-pack-row.has-inline-diagnostic {
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 54%, var(--border-color));
+  border-color: color-mix(in srgb, var(--danger-color) 54%, var(--border-color));
 }
-.pipeline-node-pack-cell,
-.pipeline-node-pack-state {
+.pipeline-node-pack-main {
   display: grid;
-  gap: calc(4px * var(--us));
+  gap: calc(3px * var(--us));
   min-width: 0;
 }
-.pipeline-node-pack-cell span,
-.pipeline-node-pack-state > span:first-child {
-  color: var(--text-tertiary);
-  font-size: calc(10px * var(--us));
-}
-.pipeline-node-pack-cell strong,
-.pipeline-node-pack-cell code {
+.pipeline-node-pack-main code {
   display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-primary);
+  color: var(--syntax-string, #9ece6a);
   font-size: calc(11px * var(--us));
 }
-.pipeline-node-pack-cell code {
-  color: var(--syntax-string, #9ece6a);
+.pipeline-node-pack-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(3px * var(--us)) calc(7px * var(--us));
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: calc(10px * var(--us));
+  line-height: 1.3;
+}
+.pipeline-node-pack-meta span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .pipeline-node-pack-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  min-width: max-content;
+  min-width: 0;
 }
-.pipeline-node-pack-risk {
-  grid-column: 1 / -1;
+.pipeline-node-pack-actions button {
+  max-width: calc(148px * var(--us));
+  white-space: normal;
+  line-height: 1.2;
+}
+.pipeline-node-pack-authority {
   display: flex;
   flex-wrap: wrap;
-  gap: calc(6px * var(--us));
-  align-items: stretch;
+  gap: calc(4px * var(--us));
+  align-items: center;
+  justify-content: flex-end;
   min-width: 0;
-  padding-top: calc(2px * var(--us));
 }
-.pipeline-node-pack-risk-item {
-  display: grid;
-  gap: calc(2px * var(--us));
-  min-width: min(calc(150px * var(--us)), 100%);
-  padding: calc(6px * var(--us)) calc(8px * var(--us));
-  border: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
-  border-radius: calc(7px * var(--us));
-  background: color-mix(in srgb, var(--bg-primary) 58%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
-}
-.pipeline-node-pack-risk-item.has-high-risk {
-  border-color: color-mix(in srgb, var(--warning-color, #f6c177) 48%, var(--border-color));
-  background: color-mix(in srgb, var(--warning-color, #f6c177) 10%, var(--bg-primary));
-}
-.pipeline-node-pack-risk-item span {
-  color: var(--text-tertiary);
-  font-size: calc(10px * var(--us));
-}
-.pipeline-node-pack-risk-item strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: calc(11px * var(--us));
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pipeline-node-pack-risk-item small {
-  color: var(--text-tertiary);
-  font-size: calc(10px * var(--us));
+.pipeline-node-pack-authority .node-pack-manager-trust-chip {
+  max-width: min(calc(190px * var(--us)), 100%);
+  flex: 0 1 auto;
 }
 .pipeline-node-pack-diagnostics {
   grid-column: 1 / -1;
@@ -6393,6 +6532,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   .pipeline-node-pack-row,
   .pipeline-ref-row {
     grid-template-columns: 1fr;
+  }
+  .pipeline-node-pack-authority,
+  .pipeline-node-pack-actions {
+    justify-content: flex-start;
   }
 }
 .git-slow-banner {
@@ -7364,9 +7507,9 @@ body.drag-over::after {
 }
 .share-warning {
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--syntax-meta, #e0af68) 60%, var(--border-color));
+  border: 1px solid color-mix(in srgb, var(--warning-color) 60%, var(--border-color));
   border-radius: 8px;
-  background: color-mix(in srgb, var(--syntax-meta, #e0af68) 9%, transparent);
+  background: color-mix(in srgb, var(--warning-color) 9%, transparent);
   color: var(--text-primary);
   font-size: 12px;
 }
@@ -8637,7 +8780,8 @@ body.drag-over::after {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
   gap: 8px;
-  align-items: center;
+  align-items: start;
+  min-height: calc(54px * var(--us));
   padding: 9px;
   border: 1px solid color-mix(in srgb, var(--border-color) 78%, transparent);
   border-radius: 10px;
@@ -8687,6 +8831,8 @@ body.drag-over::after {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: start;
+  flex: 0 0 auto;
   width: 34px;
   height: 28px;
   border-radius: 8px;
@@ -8699,38 +8845,59 @@ body.drag-over::after {
 .terminal-shell-copy {
   display: grid;
   gap: 2px;
+  align-self: start;
   min-width: 0;
 }
 .terminal-shell-copy strong {
+  display: -webkit-box;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--text-primary);
   font-size: 12px;
+  line-height: 1.25;
 }
 .terminal-shell-copy small {
+  display: -webkit-box;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--text-tertiary);
   font-size: 10px;
+  line-height: 1.3;
 }
 .terminal-shell-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  align-self: start;
+  max-width: calc(84px * var(--us));
+  min-height: calc(18px * var(--us));
   padding: 2px 6px;
   border: 1px solid color-mix(in srgb, var(--accent-color) 22%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent-color) 13%, transparent);
   color: var(--accent-color);
   font-size: 10px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 .terminal-shell-badge.ai {
   background: color-mix(in srgb, var(--accent-color) 11%, transparent);
 }
 .terminal-shell-badge.missing {
-  border-color: color-mix(in srgb, var(--warning-color, #d97706) 24%, var(--border-color));
-  background: color-mix(in srgb, var(--warning-color, #d97706) 13%, transparent);
-  color: color-mix(in srgb, var(--warning-color, #d97706) 90%, var(--text-primary));
+  border-color: color-mix(in srgb, var(--warning-color) 24%, var(--border-color));
+  background: color-mix(in srgb, var(--warning-color) 13%, transparent);
+  color: color-mix(in srgb, var(--warning-color) 90%, var(--text-primary));
 }
 .terminal-shell-empty {
   padding: 9px;
@@ -9358,9 +9525,9 @@ body.orchestration-window .ai-sidebar-resize { display: none !important; }
   pointer-events: auto;
 }
 .ai-history-delete:hover {
-  color: var(--danger-color, #ff7676);
-  border-color: color-mix(in srgb, var(--danger-color, #ff7676) 58%, var(--border-color));
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 11%, transparent);
+  color: var(--danger-color);
+  border-color: color-mix(in srgb, var(--danger-color) 58%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color) 11%, transparent);
 }
 .ai-history-item.loading .ai-history-open {
   cursor: wait;
@@ -9669,16 +9836,16 @@ body.orchestration-window .ai-sidebar-resize { display: none !important; }
   background: color-mix(in srgb, var(--accent-color) 13%, transparent);
 }
 .ai-action-badge.local {
-  color: var(--syntax-string, #9ece6a);
-  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 13%, transparent);
+  color: var(--success-color);
+  background: color-mix(in srgb, var(--success-color) 13%, transparent);
 }
 .ai-action-scope {
   color: var(--text-tertiary);
   background: color-mix(in srgb, var(--border-color) 42%, transparent);
 }
 .ai-action-warning {
-  color: var(--danger-color, #ff7676);
-  background: color-mix(in srgb, var(--danger-color, #ff7676) 12%, transparent);
+  color: var(--danger-color);
+  background: color-mix(in srgb, var(--danger-color) 12%, transparent);
 }
 .ai-mcp-card {
   display: grid;
@@ -9690,8 +9857,8 @@ body.orchestration-window .ai-sidebar-resize { display: none !important; }
   background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
 }
 .ai-mcp-card.running {
-  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 28%, var(--border-color));
-  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--syntax-string, #9ece6a) 88%, transparent);
+  border-color: color-mix(in srgb, var(--success-color) 28%, var(--border-color));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--success-color) 88%, transparent);
 }
 .ai-mcp-card.expanded {
   border-color: color-mix(in srgb, var(--accent-color) 48%, var(--border-color));
@@ -9746,9 +9913,9 @@ body.orchestration-window .ai-sidebar-resize { display: none !important; }
   text-transform: uppercase;
 }
 .ai-mcp-state.running {
-  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 38%, var(--border-color));
-  background: color-mix(in srgb, var(--syntax-string, #9ece6a) 13%, transparent);
-  color: var(--syntax-string, #9ece6a);
+  border-color: color-mix(in srgb, var(--success-color) 38%, var(--border-color));
+  background: color-mix(in srgb, var(--success-color) 13%, transparent);
+  color: var(--success-color);
 }
 .ai-mcp-meta {
   display: flex;
@@ -9923,7 +10090,7 @@ body.orchestration-window .ai-sidebar-resize { display: none !important; }
   white-space: pre-wrap;
 }
 .ai-mcp-error {
-  color: var(--danger-color, #ff7676);
+  color: var(--danger-color);
 }
 .ai-mcp-log {
   display: grid;
@@ -10182,7 +10349,6 @@ body.zen-mode #workspace {
 .runbook-event,
 .runbook-latest-run-summary,
 .runbook-run-details,
-.pipeline-runbar,
 .pipe-failed-probe,
 .orpad-budget-meter,
 .terminal-panel,
@@ -10241,8 +10407,7 @@ body.zen-mode #workspace {
 }
 
 .tab-item.active::after,
-.orpad-budget-meter__bar-inner,
-.pipeline-runbar-current::before {
+.orpad-budget-meter__bar-inner {
   box-shadow: 0 0 16px color-mix(in srgb, var(--accent-color) 70%, transparent);
 }
 

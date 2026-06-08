@@ -1356,6 +1356,28 @@ function transitionCondition(transition) {
   return String(transition?.condition || '').trim();
 }
 
+function gateIdentityText(node = {}) {
+  const config = node.config || {};
+  return [
+    node.id,
+    node.label,
+    config.summary,
+    config.kind,
+    config.gateKind,
+    config.evaluationMode,
+    ...(Array.isArray(config.criteria) ? config.criteria : []),
+    ...(Array.isArray(config.expectedArtifacts) ? config.expectedArtifacts : []),
+    ...(Array.isArray(config.expectedEvaluationArtifacts) ? config.expectedEvaluationArtifacts : []),
+  ].map(value => String(value || '')).join('\n');
+}
+
+function gateRunsAfterWorker(node, nodes = []) {
+  const gateIndex = nodes.indexOf(node);
+  if (gateIndex < 0) return false;
+  const firstWorkerIndex = firstIndexMatching(nodes, candidate => candidate.type === 'orpad.workerLoop');
+  return firstWorkerIndex >= 0 && gateIndex > firstWorkerIndex;
+}
+
 function normalizedConditionText(condition) {
   return String(condition || '')
     .trim()
@@ -1382,6 +1404,51 @@ function canonicalGateCondition(condition) {
     return 'revise';
   }
   return '';
+}
+
+function gateOutgoingConditions(gate, transitions = []) {
+  return transitions
+    .filter(transition => transition.from === gate.id)
+    .map(transition => canonicalGateCondition(transitionCondition(transition)) || normalizedConditionText(transitionCondition(transition)))
+    .filter(Boolean);
+}
+
+function gateLooksLikeCompletionQuality(node) {
+  if (!node || node.type !== 'orpad.gate') return false;
+  return /\b(ui[-\s]?copy|editorial|visual[-\s]?polish|visual[-\s]?quality|theme[-\s]?matrix|theme[-\s]?token|workflow[-\s]?regression|regression[-\s]?gate|package[-\s]?release|release[-\s]?gate|queue[-\s]?drain|verification[-\s]?gate|quality[-\s]?gate|done[-\s]?gate)\b/i
+    .test(gateIdentityText(node));
+}
+
+function hardenGateAsRequiredQuality(gate, reason) {
+  const config = gate.config = gate.config || {};
+  if (config.advisory === true || config.auditOnly === true) return false;
+  config.requiredForCompletion = true;
+  config.blocksCompletion = true;
+  config.qualityGate = true;
+  if (!config.gateKind) config.gateKind = reason;
+  if (!config.onFail) config.onFail = 'warn';
+  const onFail = String(config.onFail || '').trim().toLowerCase();
+  if (['warn', 'continue', 'continue-with-warning'].includes(onFail)) {
+    config.warningDoesNotPass = true;
+    if (config.failureRouting === undefined) config.failureRouting = 'strict-revise';
+  }
+  config.qualityGateHardened = true;
+  return true;
+}
+
+function hardenPostWorkerQualityGates(nodes, transitions, context = {}) {
+  const artifactIndex = context.artifact ? nodes.indexOf(context.artifact) : nodes.length;
+  for (const gate of nodes.filter(node => node.type === 'orpad.gate')) {
+    const gateIndex = nodes.indexOf(gate);
+    if (!gateRunsAfterWorker(gate, nodes)) continue;
+    if (gateIndex >= artifactIndex) continue;
+    const outgoingConditions = new Set(gateOutgoingConditions(gate, transitions));
+    const hasFailureOrDrainRoute = outgoingConditions.has('revise')
+      || outgoingConditions.has('queue-empty')
+      || outgoingConditions.has('queue-not-empty');
+    if (!hasFailureOrDrainRoute && !gateLooksLikeCompletionQuality(gate)) continue;
+    hardenGateAsRequiredQuality(gate, 'post-worker-quality-gate');
+  }
 }
 
 function canonicalPatchReviewCondition(condition) {
@@ -1723,6 +1790,8 @@ function enforceTransitionContracts(rawTransitions, nodes) {
       }
     }
   }
+
+  hardenPostWorkerQualityGates(nodes, transitions, { artifact, lastGateBeforeArtifact });
 
   if (artifact && exit) ensureTransition(transitions, seenIds, artifact.id, exit.id);
   return dedupeDecisionConditionTargets(dedupeRawTransitions(transitions), nodes, {

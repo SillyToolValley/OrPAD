@@ -19,7 +19,7 @@
         "config": {
           "ruleRef": "frontend-ux-scope",
           "skillRef": "frontend-ux-audit",
-          "summary": "Collect renderer, web UI, style, interaction-state, graph editor, and e2e evidence before proposing UI changes."
+          "summary": "Collect renderer, web UI, style, interaction-state, graph editor, e2e, and any requested reference-image palette or surface evidence before proposing UI changes."
         }
       },
       {
@@ -27,7 +27,7 @@
         "type": "orpad.probe",
         "label": "Probe frontend UX candidates",
         "config": {
-          "lens": "frontend-ux",
+          "lens": "frontend-ux-reference-visual-system",
           "skillRef": "frontend-ux-audit",
           "maxCandidates": 9,
           "candidateLimitPolicy": "collect-all-visible"
@@ -41,9 +41,15 @@
           "criteria": [
             "The affected UI workflow exposes the requested control states and actions",
             "Layout, text, menus, and inspector controls do not overlap across relevant viewports",
-            "Focused e2e, browser, or screenshot evidence is recorded for user-visible behavior"
+            "Focused e2e, browser, or screenshot evidence is recorded for user-visible behavior",
+            "When a visual reference is requested, evidence records reference palette, surface hierarchy, typography or material cues, and before/after screenshots for representative screens"
           ],
-          "onFail": "warn"
+          "onFail": "warn",
+          "requiredForCompletion": true,
+          "blocksCompletion": true,
+          "qualityGate": true,
+          "warningDoesNotPass": true,
+          "failureRouting": "strict-revise"
         }
       },
       {

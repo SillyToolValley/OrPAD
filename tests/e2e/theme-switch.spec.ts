@@ -5,7 +5,18 @@ const HERO_VARS = {
   bgPrimary: '#050b1f',
   bgSecondary: '#0b1530',
   accentColor: '#38a3ff',
+  successColor: '#73e6c2',
+  warningColor: '#b8d8ff',
+  dangerColor: '#ff8ba7',
+  breakpointColor: '#ff8ba7',
 };
+
+const RUNTIME_STEP_STATES = ['completed', 'failed', 'blocked'] as const;
+const RUNTIME_STEP_TOKEN_BY_STATE = {
+  completed: '--syntax-string',
+  failed: '--syntax-deleted',
+  blocked: '--syntax-meta',
+} as const;
 
 async function rootVars(win: Page, names: string[]) {
   return win.evaluate((varNames: string[]) => {
@@ -13,6 +24,23 @@ async function rootVars(win: Page, names: string[]) {
     return Object.fromEntries(
       varNames.map(name => [name, styles.getPropertyValue(name).trim()]),
     );
+  }, names);
+}
+
+async function resolvedRootColors(win: Page, names: string[]) {
+  return win.evaluate((varNames: string[]) => {
+    const styles = getComputedStyle(document.documentElement);
+    const probe = document.createElement('span');
+    probe.style.position = 'absolute';
+    probe.style.visibility = 'hidden';
+    document.body.appendChild(probe);
+    const entries = varNames.map(name => {
+      probe.style.color = '';
+      probe.style.color = styles.getPropertyValue(name).trim();
+      return [name, getComputedStyle(probe).color];
+    });
+    probe.remove();
+    return Object.fromEntries(entries);
   }, names);
 }
 
@@ -201,6 +229,57 @@ function expectVisibleEdgeStrokes(strokes: Record<string, string>) {
   expect(new Set(Object.values(strokes)).size).toBeGreaterThan(3);
 }
 
+async function installRuntimeStepFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-runtime-step-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-runtime-step-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '24px';
+    fixture.style.top = '24px';
+    fixture.style.zIndex = '2147483000';
+    fixture.innerHTML = `
+      <div class="orch-inspector-runtime-steps">
+        <span class="orch-inspector-runtime-step state-completed" data-runtime-step-state="completed">completed</span>
+        <span class="orch-inspector-runtime-step state-failed" data-runtime-step-state="failed">failed</span>
+        <span class="orch-inspector-runtime-step state-blocked" data-runtime-step-state="blocked">blocked</span>
+      </div>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const fixture = win.locator('[data-runtime-step-theme-fixture]');
+  await expect(fixture).toBeVisible({ timeout: 3000 });
+  return fixture;
+}
+
+async function runtimeStepChrome(fixture: Locator) {
+  const entries = await Promise.all(RUNTIME_STEP_STATES.map(async state => [
+    state,
+    await fixture.locator(`[data-runtime-step-state="${state}"]`).evaluate((el: Element) => {
+      const styles = getComputedStyle(el);
+      return {
+        backgroundColor: styles.backgroundColor,
+        color: styles.color,
+      };
+    }),
+  ]));
+  return Object.fromEntries(entries) as Record<typeof RUNTIME_STEP_STATES[number], { backgroundColor: string; color: string }>;
+}
+
+function expectRuntimeStepChrome(
+  chrome: Awaited<ReturnType<typeof runtimeStepChrome>>,
+  tokens: Record<string, string>,
+) {
+  for (const state of RUNTIME_STEP_STATES) {
+    expect(chrome[state].backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(chrome[state].backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(chrome[state].color).toBe(tokens[RUNTIME_STEP_TOKEN_BY_STATE[state]]);
+  }
+  expect(new Set(RUNTIME_STEP_STATES.map(state => chrome[state].color)).size).toBe(RUNTIME_STEP_STATES.length);
+  expect(new Set(RUNTIME_STEP_STATES.map(state => chrome[state].backgroundColor)).size).toBe(RUNTIME_STEP_STATES.length);
+}
+
 async function installTerminalChromeFixture(win: Page) {
   await win.evaluate(() => {
     document.querySelector('[data-terminal-theme-fixture]')?.remove();
@@ -235,6 +314,11 @@ async function installTerminalChromeFixture(win: Page) {
             <span class="terminal-shell-copy"><strong>Codex CLI</strong><small>AI coding terminal</small></span>
             <span class="terminal-shell-badge ai">AI CLI</span>
           </button>
+          <button type="button" class="terminal-shell-card ai-cli" data-terminal-long-profile data-profile-kind="ai-cli" data-available="true">
+            <span class="terminal-shell-icon">AI</span>
+            <span class="terminal-shell-copy"><strong>Codex CLI Enterprise Workspace Orchestration Profile With Extended Context</strong><small>Runs LongNestedWorkspaceProfileForTerminalPickerReadabilityValidation sessions</small></span>
+            <span class="terminal-shell-badge ai">AI CLI</span>
+          </button>
           <button type="button" class="terminal-shell-card unavailable" data-profile-kind="shell" data-available="false" disabled>
             <span class="terminal-shell-icon">WSL</span>
             <span class="terminal-shell-copy"><strong>WSL</strong><small>Executable not found</small></span>
@@ -265,16 +349,65 @@ async function terminalFixtureChrome(fixture: Locator) {
     popover: await surfaceChrome(fixture.locator('.terminal-new-popover')),
     cwdInput: await surfaceChrome(fixture.locator('.terminal-new-cwd input')),
     preferredCard: await surfaceChrome(fixture.locator('.terminal-shell-card.preferred')),
-    aiCard: await surfaceChrome(fixture.locator('.terminal-shell-card.ai-cli')),
+    aiCard: await surfaceChrome(fixture.locator('.terminal-shell-card.ai-cli').first()),
     unavailableCard: await surfaceChrome(fixture.locator('.terminal-shell-card.unavailable')),
     defaultBadge: await surfaceChrome(fixture.locator('.terminal-shell-badge').first()),
-    aiBadge: await surfaceChrome(fixture.locator('.terminal-shell-badge.ai')),
+    aiBadge: await surfaceChrome(fixture.locator('.terminal-shell-badge.ai').first()),
     missingBadge: await surfaceChrome(fixture.locator('.terminal-shell-badge.missing')),
     loading: await surfaceChrome(fixture.locator('.terminal-shell-loading')),
     shellEmpty: await surfaceChrome(fixture.locator('.terminal-shell-empty')),
     ptyEmpty: await surfaceChrome(fixture.locator('.terminal-pty-empty')),
     emptyButton: await surfaceChrome(fixture.locator('.terminal-pty-empty button')),
   };
+}
+
+async function terminalLongProfileLayout(fixture: Locator) {
+  return fixture.locator('[data-terminal-long-profile]').evaluate((card: Element) => {
+    const strong = card.querySelector('.terminal-shell-copy strong') as HTMLElement;
+    const small = card.querySelector('.terminal-shell-copy small') as HTMLElement;
+    const icon = card.querySelector('.terminal-shell-icon') as HTMLElement;
+    const badge = card.querySelector('.terminal-shell-badge') as HTMLElement;
+    const cardRect = card.getBoundingClientRect();
+    const strongRect = strong.getBoundingClientRect();
+    const smallRect = small.getBoundingClientRect();
+    const iconRect = icon.getBoundingClientRect();
+    const badgeRect = badge.getBoundingClientRect();
+    const strongStyles = getComputedStyle(strong);
+    const smallStyles = getComputedStyle(small);
+    const iconStyles = getComputedStyle(icon);
+    const badgeStyles = getComputedStyle(badge);
+    const lineHeight = (el: HTMLElement, styles: CSSStyleDeclaration) => {
+      const parsed = parseFloat(styles.lineHeight);
+      return Number.isFinite(parsed) ? parsed : parseFloat(styles.fontSize);
+    };
+    const insideCard = (rect: DOMRect) => (
+      rect.left >= cardRect.left - 0.5
+      && rect.right <= cardRect.right + 0.5
+      && rect.top >= cardRect.top - 0.5
+      && rect.bottom <= cardRect.bottom + 0.5
+    );
+
+    return {
+      strongInsideCard: insideCard(strongRect),
+      smallInsideCard: insideCard(smallRect),
+      strongDoesNotRunUnderBadge: strongRect.right <= badgeRect.left - 4,
+      smallDoesNotRunUnderBadge: smallRect.right <= badgeRect.left - 4,
+      strongWhiteSpace: strongStyles.whiteSpace,
+      smallWhiteSpace: smallStyles.whiteSpace,
+      strongLineClamp: strongStyles.getPropertyValue('-webkit-line-clamp'),
+      smallLineClamp: smallStyles.getPropertyValue('-webkit-line-clamp'),
+      strongLineCount: strongRect.height / lineHeight(strong, strongStyles),
+      smallLineCount: smallRect.height / lineHeight(small, smallStyles),
+      iconWidth: iconRect.width,
+      iconHeight: iconRect.height,
+      iconCssWidth: parseFloat(iconStyles.width),
+      iconCssHeight: parseFloat(iconStyles.height),
+      badgeWhiteSpace: badgeStyles.whiteSpace,
+      badgeWidth: badgeRect.width,
+      badgeHeight: badgeRect.height,
+      badgeMaxWidth: parseFloat(badgeStyles.maxWidth),
+    };
+  });
 }
 
 function expectTerminalChromeClean(chrome: Awaited<ReturnType<typeof terminalFixtureChrome>>) {
@@ -296,6 +429,451 @@ function expectTerminalChromeClean(chrome: Awaited<ReturnType<typeof terminalFix
   }
 }
 
+function expectTerminalLongProfileLayout(layout: Awaited<ReturnType<typeof terminalLongProfileLayout>>) {
+  expect(layout.strongInsideCard).toBe(true);
+  expect(layout.smallInsideCard).toBe(true);
+  expect(layout.strongDoesNotRunUnderBadge).toBe(true);
+  expect(layout.smallDoesNotRunUnderBadge).toBe(true);
+  expect(layout.strongWhiteSpace).not.toBe('nowrap');
+  expect(layout.smallWhiteSpace).not.toBe('nowrap');
+  expect(layout.strongLineClamp).toBe('2');
+  expect(layout.smallLineClamp).toBe('2');
+  expect(layout.strongLineCount).toBeGreaterThan(1.5);
+  expect(layout.strongLineCount).toBeLessThanOrEqual(2.2);
+  expect(layout.smallLineCount).toBeGreaterThan(1.5);
+  expect(layout.smallLineCount).toBeLessThanOrEqual(2.2);
+  expect(layout.iconWidth).toBeCloseTo(layout.iconCssWidth, 1);
+  expect(layout.iconHeight).toBeCloseTo(layout.iconCssHeight, 1);
+  expect(layout.badgeWhiteSpace).toBe('nowrap');
+  expect(layout.badgeWidth).toBeLessThanOrEqual(layout.badgeMaxWidth + 1);
+  expect(layout.badgeHeight).toBeLessThanOrEqual(layout.iconHeight);
+}
+
+async function installPackageManagerThemeFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-package-manager-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-package-manager-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '18px';
+    fixture.style.top = '18px';
+    fixture.style.zIndex = '2147483000';
+    fixture.style.width = '760px';
+    fixture.innerHTML = `
+      <div class="node-pack-manager-list" style="max-height: none; overflow: visible;">
+        <div class="node-pack-manager-pack node-pack-manager-package-row" data-package-row-state="normal">
+          <div class="node-pack-manager-package-row-main">
+            <div class="node-pack-manager-pack-title"><strong>Built-in worker pack</strong></div>
+            <span class="node-pack-manager-package-maker">orpad.core</span>
+          </div>
+          <div class="node-pack-manager-package-row-trust">
+            <span class="node-pack-manager-trust-chip good">Built-in</span>
+          </div>
+          <div class="node-pack-manager-package-row-actions"><button type="button">Details</button></div>
+        </div>
+        <div class="node-pack-manager-pack active node-pack-manager-package-row" data-package-row-state="active">
+          <div class="node-pack-manager-package-row-main">
+            <div class="node-pack-manager-pack-title"><strong>Selected pack</strong></div>
+            <span class="node-pack-manager-package-maker">orpad.selected</span>
+          </div>
+          <div class="node-pack-manager-package-row-trust">
+            <span class="node-pack-manager-trust-chip info">Active</span>
+          </div>
+          <div class="node-pack-manager-package-row-actions"><button type="button">Open</button></div>
+        </div>
+        <div class="node-pack-manager-pack node-pack-manager-pack-warn node-pack-manager-package-row" data-package-row-state="warn">
+          <div class="node-pack-manager-package-row-main">
+            <div class="node-pack-manager-pack-title"><strong>Needs review</strong></div>
+            <span class="node-pack-manager-package-maker">community.warning</span>
+          </div>
+          <div class="node-pack-manager-package-row-trust">
+            <span class="node-pack-manager-trust-chip warn">Warning</span>
+          </div>
+          <div class="node-pack-manager-package-row-actions"><button type="button">Review</button></div>
+        </div>
+        <div class="node-pack-manager-pack node-pack-manager-pack-danger node-pack-manager-package-row" data-package-row-state="danger">
+          <div class="node-pack-manager-package-row-main">
+            <div class="node-pack-manager-pack-title"><strong>Blocked risk pack</strong></div>
+            <span class="node-pack-manager-package-maker">community.danger</span>
+          </div>
+          <div class="node-pack-manager-package-row-trust">
+            <span class="node-pack-manager-trust-chip danger">Danger</span>
+          </div>
+          <div class="node-pack-manager-package-row-actions"><button type="button">Inspect</button></div>
+        </div>
+        <div class="node-pack-manager-pack has-conflict node-pack-manager-package-row" data-package-row-state="conflict">
+          <div class="node-pack-manager-package-row-main">
+            <div class="node-pack-manager-pack-title"><strong>Conflicting pack</strong></div>
+            <span class="node-pack-manager-package-maker">workspace.conflict</span>
+          </div>
+          <div class="node-pack-manager-package-row-trust">
+            <span class="node-pack-manager-trust-chip danger">Conflict</span>
+          </div>
+          <div class="node-pack-manager-package-row-actions"><button type="button">Resolve</button></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const fixture = win.locator('[data-package-manager-theme-fixture]');
+  await expect(fixture).toBeVisible({ timeout: 3000 });
+  return fixture;
+}
+
+async function packageManagerFixtureChrome(fixture: Locator) {
+  return fixture.evaluate((root: Element) => {
+    const rows = Array.from(root.querySelectorAll('[data-package-row-state]'));
+    return Object.fromEntries(rows.map(row => {
+      const styles = getComputedStyle(row);
+      const rail = getComputedStyle(row, '::before');
+      return [
+        row.getAttribute('data-package-row-state') || '',
+        {
+          backgroundImage: styles.backgroundImage,
+          backgroundColor: styles.backgroundColor,
+          borderColor: styles.borderColor,
+          borderStyle: styles.borderStyle,
+          borderWidth: styles.borderWidth,
+          boxShadow: styles.boxShadow,
+          color: styles.color,
+          railColor: rail.backgroundColor,
+          railWidth: rail.width,
+          clientWidth: row.clientWidth,
+          scrollWidth: row.scrollWidth,
+        },
+      ];
+    }));
+  });
+}
+
+function expectPackageManagerRowsClean(chrome: Awaited<ReturnType<typeof packageManagerFixtureChrome>>) {
+  for (const state of ['normal', 'active', 'warn', 'danger', 'conflict']) {
+    const row = chrome[state];
+    expect(row.backgroundImage).not.toMatch(/(?:radial|linear)-gradient/);
+    expect(row.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(row.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(row.borderColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(row.borderStyle).not.toBe('none');
+    expect(parseFloat(row.borderWidth)).toBeGreaterThan(0);
+    expect(row.boxShadow).toBe('none');
+    expect(row.color).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(row.railColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(row.railColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(parseFloat(row.railWidth)).toBeGreaterThan(0);
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+  }
+}
+
+async function installDangerThemeFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-danger-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-danger-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '20px';
+    fixture.style.bottom = '20px';
+    fixture.style.zIndex = '2147483000';
+    fixture.style.width = '280px';
+    fixture.style.pointerEvents = 'none';
+    fixture.innerHTML = `
+      <div class="pipeline-inline-diagnostic" role="status">
+        Danger token fixture
+      </div>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const diagnostic = win.locator('[data-danger-theme-fixture] .pipeline-inline-diagnostic');
+  await expect(diagnostic).toBeVisible({ timeout: 3000 });
+  return diagnostic;
+}
+
+async function installWarningStatusFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-warning-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-warning-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '20px';
+    fixture.style.bottom = '76px';
+    fixture.style.zIndex = '2147483000';
+    fixture.style.pointerEvents = 'none';
+    fixture.innerHTML = `
+      <button class="template-status-chip warning" type="button">
+        Warning token fixture
+      </button>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const chip = win.locator('[data-warning-theme-fixture] .template-status-chip.warning');
+  await expect(chip).toBeVisible({ timeout: 3000 });
+  return chip;
+}
+
+async function installBreakpointThemeFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-breakpoint-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-breakpoint-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '20px';
+    fixture.style.bottom = '132px';
+    fixture.style.zIndex = '2147483000';
+    fixture.style.pointerEvents = 'none';
+    fixture.innerHTML = `
+      <div class="orch-graph-node has-breakpoint" style="position: relative; width: 96px; height: 56px;">
+        <span class="orch-graph-node-breakpoint">!</span>
+      </div>
+      <button class="pipe-breakpoint-active" type="button">Breakpoint</button>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const fixture = win.locator('[data-breakpoint-theme-fixture]');
+  await expect(fixture).toBeVisible({ timeout: 3000 });
+  return fixture;
+}
+
+async function warningChipChrome(locator: Locator) {
+  return locator.evaluate((el: Element) => {
+    const styles = getComputedStyle(el);
+    return {
+      backgroundColor: styles.backgroundColor,
+      borderColor: styles.borderColor,
+      borderStyle: styles.borderStyle,
+      borderWidth: styles.borderWidth,
+      color: styles.color,
+    };
+  });
+}
+
+function expectWarningChipChrome(chrome: Awaited<ReturnType<typeof warningChipChrome>>) {
+  expect(chrome.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+  expect(chrome.borderColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.borderStyle).not.toBe('none');
+  expect(parseFloat(chrome.borderWidth)).toBeGreaterThan(0);
+  expect(chrome.color).toMatch(/^(?:rgb|rgba|color\()/);
+}
+
+async function breakpointChrome(fixture: Locator) {
+  return fixture.evaluate((root: Element) => {
+    const marker = root.querySelector('.orch-graph-node-breakpoint');
+    const node = root.querySelector('.orch-graph-node.has-breakpoint');
+    const active = root.querySelector('.pipe-breakpoint-active');
+    if (!marker || !node || !active) throw new Error('Missing breakpoint theme fixture element');
+    const markerStyles = getComputedStyle(marker);
+    const nodeStyles = getComputedStyle(node);
+    const activeStyles = getComputedStyle(active);
+    return {
+      markerBackgroundColor: markerStyles.backgroundColor,
+      markerColor: markerStyles.color,
+      nodeOutlineColor: nodeStyles.outlineColor,
+      activeBackgroundColor: activeStyles.backgroundColor,
+      activeBorderColor: activeStyles.borderColor,
+      activeColor: activeStyles.color,
+    };
+  });
+}
+
+function expectBreakpointChrome(
+  chrome: Awaited<ReturnType<typeof breakpointChrome>>,
+  breakpointColor: string,
+  foregroundColor: string,
+) {
+  expect(chrome.markerBackgroundColor).toBe(breakpointColor);
+  expect(chrome.markerColor).toBe(foregroundColor);
+  expect(chrome.nodeOutlineColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.nodeOutlineColor).not.toBe('rgba(0, 0, 0, 0)');
+  expect(chrome.activeBackgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.activeBackgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+  expect(chrome.activeBorderColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.activeColor).toBe(breakpointColor);
+}
+
+async function dangerChrome(locator: Locator) {
+  return locator.evaluate((el: Element) => {
+    const styles = getComputedStyle(el);
+    return {
+      backgroundColor: styles.backgroundColor,
+      borderLeftColor: styles.borderLeftColor,
+      borderLeftWidth: styles.borderLeftWidth,
+      color: styles.color,
+    };
+  });
+}
+
+function expectDangerChrome(chrome: Awaited<ReturnType<typeof dangerChrome>>) {
+  expect(chrome.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+  expect(chrome.borderLeftColor).toBe(chrome.color);
+  expect(parseFloat(chrome.borderLeftWidth)).toBeGreaterThan(0);
+  expect(chrome.color).toMatch(/^(?:rgb|rgba|color\()/);
+}
+
+async function installRunbookSuccessFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-runbook-success-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-runbook-success-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '20px';
+    fixture.style.top = '20px';
+    fixture.style.zIndex = '2147483000';
+    fixture.style.width = '460px';
+    fixture.innerHTML = `
+      <div class="runbook-action-row">
+        <button class="cta-ready" type="button">Continue</button>
+        <button type="button">Neutral</button>
+      </div>
+      <div class="pipe-failed-probe-actions">
+        <button class="pipe-failed-probe-retry" type="button">Retry probe</button>
+        <button class="pipe-failed-probe-skip" type="button">Skip probe</button>
+      </div>
+      <div class="runbook-replay-events-bar">
+        <button class="runbook-replay-stick-toggle active" type="button">Live tail</button>
+        <button class="runbook-replay-timeline-live" type="button">Live</button>
+      </div>
+      <div class="runbook-chip good">Ready</div>
+      <div class="runbook-generate-status good">generated</div>
+      <div class="runbook-latest-run-summary good">latest run ready</div>
+      <div class="runbook-guide good">good guide</div>
+      <div class="runbook-replay-events">
+        <div class="runbook-event runbook-event-fresh">fresh event</div>
+        <div class="runbook-event">neutral event</div>
+      </div>
+      <div class="runbook-diagnostics">
+        <div class="runbook-diagnostic good">good diagnostic</div>
+        <div class="runbook-diagnostic warning">warning diagnostic</div>
+      </div>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const fixture = win.locator('[data-runbook-success-theme-fixture]');
+  await expect(fixture).toBeVisible({ timeout: 3000 });
+  return fixture;
+}
+
+async function runbookSuccessChrome(fixture: Locator) {
+  return fixture.evaluate((root: Element) => {
+    const sample = (selector: string, pseudo?: string) => {
+      const el = root.querySelector(selector);
+      if (!el) throw new Error(`Missing runbook fixture selector: ${selector}`);
+      const styles = getComputedStyle(el, pseudo);
+      return {
+        backgroundColor: styles.backgroundColor,
+        borderColor: styles.borderColor,
+        borderLeftColor: styles.borderLeftColor,
+        borderStyle: styles.borderStyle,
+        borderWidth: styles.borderWidth,
+        color: styles.color,
+      };
+    };
+
+    return {
+      readyAction: sample('.runbook-action-row .cta-ready'),
+      neutralAction: sample('.runbook-action-row button:not(.cta-ready)'),
+      retryProbe: sample('.pipe-failed-probe-retry'),
+      skipProbe: sample('.pipe-failed-probe-skip'),
+      stickToggle: sample('.runbook-replay-stick-toggle.active'),
+      stickToggleMarker: sample('.runbook-replay-stick-toggle.active', '::before'),
+      timelineLive: sample('.runbook-replay-timeline-live'),
+      goodChip: sample('.runbook-chip.good'),
+      generateStatus: sample('.runbook-generate-status.good'),
+      latestSummary: sample('.runbook-latest-run-summary.good'),
+      guide: sample('.runbook-guide.good'),
+      freshEvent: sample('.runbook-event-fresh'),
+      neutralEvent: sample('.runbook-event:not(.runbook-event-fresh)'),
+      goodDiagnostic: sample('.runbook-diagnostic.good'),
+      warningDiagnostic: sample('.runbook-diagnostic.warning'),
+    };
+  });
+}
+
+function expectRunbookSuccessChrome(
+  chrome: Awaited<ReturnType<typeof runbookSuccessChrome>>,
+  successColor: string,
+) {
+  expect(chrome.readyAction.color).toBe(successColor);
+  expect(chrome.retryProbe.color).toBe(successColor);
+  expect(chrome.stickToggle.color).toBe(successColor);
+  expect(chrome.stickToggleMarker.color).toBe(successColor);
+  expect(chrome.timelineLive.color).toBe(successColor);
+  expect(chrome.goodChip.color).toBe(successColor);
+  expect(chrome.generateStatus.borderLeftColor).toBe(successColor);
+  expect(chrome.latestSummary.borderLeftColor).toBe(successColor);
+  expect(chrome.guide.borderLeftColor).toBe(successColor);
+  expect(chrome.goodDiagnostic.borderLeftColor).toBe(successColor);
+
+  expect(chrome.readyAction.color).not.toBe(chrome.neutralAction.color);
+  expect(chrome.retryProbe.color).not.toBe(chrome.skipProbe.color);
+  expect(chrome.stickToggle.color).not.toBe(chrome.neutralAction.color);
+  expect(chrome.timelineLive.color).not.toBe(chrome.neutralAction.color);
+  expect(chrome.goodDiagnostic.borderLeftColor).not.toBe(chrome.warningDiagnostic.borderLeftColor);
+  expect(chrome.freshEvent.borderLeftColor).not.toBe(chrome.neutralEvent.borderLeftColor);
+  expect(chrome.freshEvent.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.readyAction.borderStyle).not.toBe('none');
+  expect(parseFloat(chrome.readyAction.borderWidth)).toBeGreaterThan(0);
+  expect(chrome.retryProbe.borderStyle).not.toBe('none');
+  expect(parseFloat(chrome.retryProbe.borderWidth)).toBeGreaterThan(0);
+}
+
+async function installManagedRunActionFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-managed-run-action-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-managed-run-action-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '20px';
+    fixture.style.top = '20px';
+    fixture.style.zIndex = '2147483000';
+    fixture.style.width = '460px';
+    fixture.innerHTML = `
+      <div class="pipe-failed-probe-actions">
+        <button class="pipe-failed-probe-link" type="button">events.jsonl</button>
+      </div>
+      <div class="pipe-lifecycle-banner">
+        <div class="pipe-lifecycle-banner-title">Run blocked</div>
+        <div class="pipe-lifecycle-banner-actions">
+          <button class="pipe-lifecycle-banner-link" type="button">Review patches</button>
+        </div>
+      </div>
+      <div class="pipe-patch-outcome">
+        <div class="pipe-patch-outcome-counts"><span>2 approved</span><span>1 rejected</span></div>
+        <div class="pipe-patch-outcome-row"><span>Accepted</span><div class="pipe-patch-outcome-files"><code>base.css</code></div></div>
+      </div>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const fixture = win.locator('[data-managed-run-action-theme-fixture]');
+  await expect(fixture).toBeVisible({ timeout: 3000 });
+  return fixture;
+}
+
+async function managedRunActionChrome(fixture: Locator) {
+  return {
+    failedProbeLink: await surfaceChrome(fixture.locator('.pipe-failed-probe-link').first()),
+    lifecycleLink: await surfaceChrome(fixture.locator('.pipe-lifecycle-banner-link').first()),
+    patchOutcome: await surfaceChrome(fixture.locator('.pipe-patch-outcome').first()),
+  };
+}
+
+function expectManagedRunActionChromeClean(chrome: Awaited<ReturnType<typeof managedRunActionChrome>>) {
+  for (const surface of [chrome.failedProbeLink, chrome.lifecycleLink, chrome.patchOutcome]) {
+    expect(surface.backgroundImage).not.toMatch(/(?:radial|linear)-gradient/);
+    expect(surface.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(surface.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(surface.borderColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(surface.borderStyle).not.toBe('none');
+    expect(parseFloat(surface.borderWidth)).toBeGreaterThan(0);
+    expect(surface.color).toMatch(/^(?:rgb|rgba|color\()/);
+  }
+}
+
 test('default OrPAD Hero theme is first-class and switching theme changes --bg-primary', async () => {
   const app = await launchElectron();
   try {
@@ -303,10 +881,22 @@ test('default OrPAD Hero theme is first-class and switching theme changes --bg-p
     await win.waitForLoadState('domcontentloaded');
     await resetSavedTheme(win);
 
-    const beforeVars = await rootVars(win, ['--bg-primary', '--bg-secondary', '--accent-color']);
+    const beforeVars = await rootVars(win, [
+      '--bg-primary',
+      '--bg-secondary',
+      '--accent-color',
+      '--success-color',
+      '--warning-color',
+      '--danger-color',
+      '--breakpoint-color',
+    ]);
     expect(beforeVars['--bg-primary']).toBe(HERO_VARS.bgPrimary);
     expect(beforeVars['--bg-secondary']).toBe(HERO_VARS.bgSecondary);
     expect(beforeVars['--accent-color']).toBe(HERO_VARS.accentColor);
+    expect(beforeVars['--success-color']).toBe(HERO_VARS.successColor);
+    expect(beforeVars['--warning-color']).toBe(HERO_VARS.warningColor);
+    expect(beforeVars['--danger-color']).toBe(HERO_VARS.dangerColor);
+    expect(beforeVars['--breakpoint-color']).toBe(HERO_VARS.breakpointColor);
 
     // Open the theme panel
     await win.click('#btn-theme');
@@ -323,6 +913,167 @@ test('default OrPAD Hero theme is first-class and switching theme changes --bg-p
 
     const afterVars = await rootVars(win, ['--bg-primary']);
     expect(afterVars['--bg-primary']).not.toBe(beforeVars['--bg-primary']);
+  } finally {
+    await app.close();
+  }
+});
+
+test('managed-run action chrome follows theme switches', async () => {
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await resetSavedTheme(win);
+
+    const fixture = await installManagedRunActionFixture(win);
+    const beforeVars = await rootVars(win, ['--bg-primary', '--border-color', '--text-primary']);
+    const beforeChrome = await managedRunActionChrome(fixture);
+    expectManagedRunActionChromeClean(beforeChrome);
+
+    await switchToTheme(win, 'GitHub Light');
+
+    const afterVars = await rootVars(win, ['--bg-primary', '--border-color', '--text-primary']);
+    expect(afterVars['--bg-primary']).not.toBe(beforeVars['--bg-primary']);
+    expect(afterVars['--border-color']).not.toBe(beforeVars['--border-color']);
+    expect(afterVars['--text-primary']).not.toBe(beforeVars['--text-primary']);
+
+    const afterChrome = await managedRunActionChrome(fixture);
+    expectManagedRunActionChromeClean(afterChrome);
+    for (const surface of ['failedProbeLink', 'lifecycleLink', 'patchOutcome'] as const) {
+      expect(afterChrome[surface].backgroundColor).not.toBe(beforeChrome[surface].backgroundColor);
+      expect(afterChrome[surface].borderColor).not.toBe(beforeChrome[surface].borderColor);
+      expect(afterChrome[surface].color).not.toBe(beforeChrome[surface].color);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('semantic status tokens and warning/danger/breakpoint chrome follow theme switches', async () => {
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await resetSavedTheme(win);
+
+    const warningChip = await installWarningStatusFixture(win);
+    const diagnostic = await installDangerThemeFixture(win);
+    const breakpointFixture = await installBreakpointThemeFixture(win);
+    const beforeVars = await rootVars(win, [
+      '--success-color',
+      '--syntax-added',
+      '--warning-color',
+      '--syntax-meta',
+      '--danger-color',
+      '--syntax-deleted',
+      '--breakpoint-color',
+    ]);
+    expect(beforeVars['--success-color']).toBe(beforeVars['--syntax-added']);
+    expect(beforeVars['--success-color']).toBe(HERO_VARS.successColor);
+    expect(beforeVars['--warning-color']).toBe(beforeVars['--syntax-meta']);
+    expect(beforeVars['--warning-color']).toBe(HERO_VARS.warningColor);
+    expect(beforeVars['--danger-color']).toBe(beforeVars['--syntax-deleted']);
+    expect(beforeVars['--danger-color']).toBe(HERO_VARS.dangerColor);
+    expect(beforeVars['--breakpoint-color']).toBe(beforeVars['--danger-color']);
+    expect(beforeVars['--breakpoint-color']).toBe(HERO_VARS.breakpointColor);
+
+    const beforeWarningChrome = await warningChipChrome(warningChip);
+    expectWarningChipChrome(beforeWarningChrome);
+    const beforeChrome = await dangerChrome(diagnostic);
+    expectDangerChrome(beforeChrome);
+    const beforeResolved = await resolvedRootColors(win, ['--breakpoint-color', '--bg-primary']);
+    const beforeBreakpointChrome = await breakpointChrome(breakpointFixture);
+    expectBreakpointChrome(
+      beforeBreakpointChrome,
+      beforeResolved['--breakpoint-color'],
+      beforeResolved['--bg-primary'],
+    );
+
+    await switchToTheme(win, 'GitHub Light');
+
+    const afterVars = await rootVars(win, [
+      '--success-color',
+      '--syntax-added',
+      '--warning-color',
+      '--syntax-meta',
+      '--danger-color',
+      '--syntax-deleted',
+      '--breakpoint-color',
+    ]);
+    expect(afterVars['--success-color']).toBe(afterVars['--syntax-added']);
+    expect(afterVars['--success-color']).toBe('#22863a');
+    expect(afterVars['--success-color']).not.toBe(beforeVars['--success-color']);
+    expect(afterVars['--warning-color']).toBe(afterVars['--syntax-meta']);
+    expect(afterVars['--warning-color']).toBe('#735c0f');
+    expect(afterVars['--warning-color']).not.toBe(beforeVars['--warning-color']);
+    expect(afterVars['--danger-color']).toBe(afterVars['--syntax-deleted']);
+    expect(afterVars['--danger-color']).toBe('#b31d28');
+    expect(afterVars['--danger-color']).not.toBe(beforeVars['--danger-color']);
+    expect(afterVars['--breakpoint-color']).toBe(afterVars['--danger-color']);
+    expect(afterVars['--breakpoint-color']).not.toBe(beforeVars['--breakpoint-color']);
+
+    const afterWarningChrome = await warningChipChrome(warningChip);
+    expectWarningChipChrome(afterWarningChrome);
+    expect(afterWarningChrome.borderColor).not.toBe(beforeWarningChrome.borderColor);
+    expect(afterWarningChrome.color).not.toBe(beforeWarningChrome.color);
+
+    const afterChrome = await dangerChrome(diagnostic);
+    expectDangerChrome(afterChrome);
+    expect(afterChrome.backgroundColor).not.toBe(beforeChrome.backgroundColor);
+    expect(afterChrome.borderLeftColor).not.toBe(beforeChrome.borderLeftColor);
+    expect(afterChrome.color).not.toBe(beforeChrome.color);
+
+    const afterResolved = await resolvedRootColors(win, ['--breakpoint-color', '--bg-primary']);
+    const afterBreakpointChrome = await breakpointChrome(breakpointFixture);
+    expectBreakpointChrome(
+      afterBreakpointChrome,
+      afterResolved['--breakpoint-color'],
+      afterResolved['--bg-primary'],
+    );
+    expect(afterBreakpointChrome.markerBackgroundColor).not.toBe(beforeBreakpointChrome.markerBackgroundColor);
+    expect(afterBreakpointChrome.markerColor).not.toBe(beforeBreakpointChrome.markerColor);
+    expect(afterBreakpointChrome.activeColor).not.toBe(beforeBreakpointChrome.activeColor);
+  } finally {
+    await app.close();
+  }
+});
+
+test('runbook ready and live success accents follow theme switches', async () => {
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await resetSavedTheme(win);
+
+    const fixture = await installRunbookSuccessFixture(win);
+    const beforeTokens = await resolvedRootColors(win, ['--run-monitor-success-color', '--success-color', '--syntax-added', '--warning-color']);
+    expect(beforeTokens['--run-monitor-success-color']).toBe(beforeTokens['--success-color']);
+    expect(beforeTokens['--success-color']).toBe(beforeTokens['--syntax-added']);
+    expect(beforeTokens['--run-monitor-success-color']).not.toBe(beforeTokens['--warning-color']);
+
+    const beforeChrome = await runbookSuccessChrome(fixture);
+    expectRunbookSuccessChrome(beforeChrome, beforeTokens['--run-monitor-success-color']);
+
+    await switchToTheme(win, 'GitHub Light');
+
+    const afterTokens = await resolvedRootColors(win, ['--run-monitor-success-color', '--success-color', '--syntax-added', '--warning-color']);
+    expect(afterTokens['--run-monitor-success-color']).toBe(afterTokens['--success-color']);
+    expect(afterTokens['--success-color']).toBe(afterTokens['--syntax-added']);
+    expect(afterTokens['--run-monitor-success-color']).not.toBe(beforeTokens['--run-monitor-success-color']);
+    expect(afterTokens['--run-monitor-success-color']).not.toBe(afterTokens['--warning-color']);
+
+    const afterChrome = await runbookSuccessChrome(fixture);
+    expectRunbookSuccessChrome(afterChrome, afterTokens['--run-monitor-success-color']);
+    expect(afterChrome.readyAction.color).not.toBe(beforeChrome.readyAction.color);
+    expect(afterChrome.retryProbe.color).not.toBe(beforeChrome.retryProbe.color);
+    expect(afterChrome.stickToggle.color).not.toBe(beforeChrome.stickToggle.color);
+    expect(afterChrome.timelineLive.color).not.toBe(beforeChrome.timelineLive.color);
+    expect(afterChrome.goodChip.color).not.toBe(beforeChrome.goodChip.color);
+    expect(afterChrome.generateStatus.borderLeftColor).not.toBe(beforeChrome.generateStatus.borderLeftColor);
+    expect(afterChrome.latestSummary.borderLeftColor).not.toBe(beforeChrome.latestSummary.borderLeftColor);
+    expect(afterChrome.guide.borderLeftColor).not.toBe(beforeChrome.guide.borderLeftColor);
+    expect(afterChrome.freshEvent.borderLeftColor).not.toBe(beforeChrome.freshEvent.borderLeftColor);
+    expect(afterChrome.goodDiagnostic.borderLeftColor).not.toBe(beforeChrome.goodDiagnostic.borderLeftColor);
   } finally {
     await app.close();
   }
@@ -383,6 +1134,33 @@ test('orchestration graph edge connectors follow theme tokens', async () => {
   }
 });
 
+test('orchestration inspector runtime state chips follow theme tokens', async () => {
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await resetSavedTheme(win);
+
+    const fixture = await installRuntimeStepFixture(win);
+    const tokenNames = Object.values(RUNTIME_STEP_TOKEN_BY_STATE);
+    const beforeTokens = await resolvedRootColors(win, tokenNames);
+    const beforeChrome = await runtimeStepChrome(fixture);
+    expectRuntimeStepChrome(beforeChrome, beforeTokens);
+
+    await switchToTheme(win, 'GitHub Light');
+
+    const afterTokens = await resolvedRootColors(win, tokenNames);
+    const afterChrome = await runtimeStepChrome(fixture);
+    expectRuntimeStepChrome(afterChrome, afterTokens);
+    for (const state of RUNTIME_STEP_STATES) {
+      expect(afterChrome[state].backgroundColor).not.toBe(beforeChrome[state].backgroundColor);
+      expect(afterChrome[state].color).not.toBe(beforeChrome[state].color);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
 test('terminal picker and empty state chrome follow Hero and GitHub Light tokens', async () => {
   const app = await launchElectron();
   try {
@@ -394,6 +1172,7 @@ test('terminal picker and empty state chrome follow Hero and GitHub Light tokens
     const beforeVars = await rootVars(win, ['--bg-primary', '--bg-secondary', '--border-color', '--text-primary', '--accent-color']);
     const beforeChrome = await terminalFixtureChrome(fixture);
     expectTerminalChromeClean(beforeChrome);
+    expectTerminalLongProfileLayout(await terminalLongProfileLayout(fixture));
 
     await switchToTheme(win, 'GitHub Light');
 
@@ -406,6 +1185,7 @@ test('terminal picker and empty state chrome follow Hero and GitHub Light tokens
 
     const afterChrome = await terminalFixtureChrome(fixture);
     expectTerminalChromeClean(afterChrome);
+    expectTerminalLongProfileLayout(await terminalLongProfileLayout(fixture));
     expectThemeResponsiveChrome(beforeChrome.popover, afterChrome.popover);
     expectThemeResponsiveChrome(beforeChrome.cwdInput, afterChrome.cwdInput);
     expectThemeResponsiveChrome(beforeChrome.preferredCard, afterChrome.preferredCard);
@@ -417,6 +1197,34 @@ test('terminal picker and empty state chrome follow Hero and GitHub Light tokens
     expectThemeResponsiveChrome(beforeChrome.shellEmpty, afterChrome.shellEmpty);
     expectThemeResponsiveChrome(beforeChrome.ptyEmpty, afterChrome.ptyEmpty);
     expectThemeResponsiveChrome(beforeChrome.emptyButton, afterChrome.emptyButton);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Package Manager row chrome follows Hero and GitHub Light tokens', async () => {
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await resetSavedTheme(win);
+
+    const fixture = await installPackageManagerThemeFixture(win);
+    const beforeChrome = await packageManagerFixtureChrome(fixture);
+    expectPackageManagerRowsClean(beforeChrome);
+
+    await fixture.evaluate((el: Element) => el.remove());
+    await switchToTheme(win, 'GitHub Light');
+
+    const afterFixture = await installPackageManagerThemeFixture(win);
+    const afterChrome = await packageManagerFixtureChrome(afterFixture);
+    expectPackageManagerRowsClean(afterChrome);
+    for (const state of ['normal', 'active', 'warn', 'danger', 'conflict']) {
+      expect(afterChrome[state].backgroundColor).not.toBe(beforeChrome[state].backgroundColor);
+      expect(afterChrome[state].borderColor).not.toBe(beforeChrome[state].borderColor);
+      expect(afterChrome[state].color).not.toBe(beforeChrome[state].color);
+      expect(afterChrome[state].railColor).not.toBe(beforeChrome[state].railColor);
+    }
   } finally {
     await app.close();
   }

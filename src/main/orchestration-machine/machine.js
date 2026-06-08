@@ -3160,7 +3160,7 @@ function isRequiredCompletionGate(node = {}) {
     config.kind,
     config.gateKind,
   ].map(value => String(value || '').toLowerCase()).join(' ');
-  return /\b(worker[-\s]?evidence|work[-\s]?item[-\s]?evidence|evidence[-\s]?gate|evidence[-\s]?quality|completion[-\s]?gate|quality[-\s]?gate|deterministic[-\s]?preflight|preflight|discovery[-\s]?coverage|triage[-\s]?priority|final[-\s]?cross[-\s]?validation|cross[-\s]?validation|done[-\s]?gate)\b/i.test(text);
+  return /\b(worker[-\s]?evidence|work[-\s]?item[-\s]?evidence|evidence[-\s]?gate|evidence[-\s]?quality|completion[-\s]?gate|quality[-\s]?gate|deterministic[-\s]?preflight|preflight|discovery[-\s]?coverage|goal[-\s]?critical[-\s]?discovery|triage[-\s]?priority|final[-\s]?cross[-\s]?validation|cross[-\s]?validation|done[-\s]?gate|ui[-\s]?copy|editorial|visual[-\s]?polish|visual[-\s]?quality|theme[-\s]?matrix|theme[-\s]?token|workflow[-\s]?regression|regression[-\s]?gate|package[-\s]?release|release[-\s]?gate|queue[-\s]?drain)\b/i.test(text);
 }
 
 function isWorkerDependentCompletionGate(node = {}) {
@@ -4584,7 +4584,9 @@ async function executeSupportNode(runRoot, node, options = {}) {
   }, async () => {
     const config = { ...(node.config || {}) };
     if (options.supportMode === 'live-adapter') {
-      if (node.nodeType === 'orpad.gate' && !config.onFail) config.onFail = 'warn';
+      if (node.nodeType === 'orpad.gate' && !config.onFail) {
+        config.onFail = (config.advisory === true || config.auditOnly === true) ? 'warn' : 'block';
+      }
       if (node.nodeType === 'orpad.artifactContract' && !config.onMissing) config.onMissing = 'mark-partial';
     }
     if (node.nodeType === 'orpad.entry') {

@@ -1,8 +1,10 @@
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { attachReliableElectronClose, closeElectronApp, launchElectron } from '../helpers';
+
+type ElectronApp = Awaited<ReturnType<typeof electron.launch>>;
 
 function createOrpadFileLaunchFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-file-launch-'));
@@ -108,6 +110,84 @@ async function launchElectronWithFileArg(filePath: string) {
     }
     throw err;
   }
+}
+
+async function detachTerminalWindow(app: ElectronApp, win: Page) {
+  await win.locator('#btn-terminal').click();
+  await expect(win.locator('.terminal-panel')).toBeVisible();
+
+  const headBox = await win.locator('.terminal-head').boundingBox();
+  const viewport = await win.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  expect(headBox).not.toBeNull();
+
+  const detachedWindowPromise = app.waitForEvent('window');
+  await win.mouse.move(headBox!.x + 90, headBox!.y + 12);
+  await win.mouse.down();
+  await win.mouse.move(viewport.width / 2, viewport.height / 2, { steps: 6 });
+  await expect(win.locator('.terminal-dock-target.active')).toHaveAttribute('data-terminal-dock-target', 'floating');
+  await win.mouse.up();
+
+  const detachedTerminal = await detachedWindowPromise;
+  await detachedTerminal.waitForLoadState('domcontentloaded');
+  return detachedTerminal;
+}
+
+async function readDetachedTerminalChrome(page: Page) {
+  return page.evaluate(() => {
+    const requireElement = (selector: string) => {
+      const node = document.querySelector(selector);
+      if (!(node instanceof HTMLElement)) throw new Error(`Missing ${selector}`);
+      return node;
+    };
+    const resolveBackground = (varName: string) => {
+      const probe = document.createElement('div');
+      probe.style.backgroundColor = `var(${varName})`;
+      document.body.appendChild(probe);
+      const value = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return value;
+    };
+    const resolveColor = (varName: string) => {
+      const probe = document.createElement('div');
+      probe.style.color = `var(${varName})`;
+      document.body.appendChild(probe);
+      const value = getComputedStyle(probe).color;
+      probe.remove();
+      return value;
+    };
+
+    const rootStyle = getComputedStyle(document.documentElement);
+    const shellStyle = getComputedStyle(requireElement('.terminal-window-shell'));
+    const headStyle = getComputedStyle(requireElement('.terminal-window-head'));
+    return {
+      dataset: {
+        theme: document.documentElement.dataset.theme || '',
+        themeType: document.documentElement.dataset.themeType || '',
+      },
+      vars: {
+        bgPrimary: rootStyle.getPropertyValue('--bg-primary').trim(),
+        bgSecondary: rootStyle.getPropertyValue('--bg-secondary').trim(),
+        textPrimary: rootStyle.getPropertyValue('--text-primary').trim(),
+        textSecondary: rootStyle.getPropertyValue('--text-secondary').trim(),
+      },
+      tokens: {
+        bgPrimary: resolveBackground('--bg-primary'),
+        bgSecondary: resolveBackground('--bg-secondary'),
+        textPrimary: resolveColor('--text-primary'),
+        textSecondary: resolveColor('--text-secondary'),
+      },
+      shell: {
+        backgroundColor: shellStyle.backgroundColor,
+        backgroundImage: shellStyle.backgroundImage,
+        color: shellStyle.color,
+      },
+      head: {
+        backgroundColor: headStyle.backgroundColor,
+        backgroundImage: headStyle.backgroundImage,
+        color: headStyle.color,
+      },
+    };
+  });
 }
 
 test('desktop app launches, window title contains OrPAD', async () => {
@@ -252,6 +332,71 @@ test('desktop app launches, window title contains OrPAD', async () => {
   await win.evaluate(() => (window as any).orpadCommands.runCommand('git.openPanel'));
   await expect(win.locator('#fmt-modal')).toBeVisible();
 
+  } finally {
+    await closeElectronApp(app);
+  }
+});
+
+test('detached terminal follows saved and live OrPAD theme tokens', async () => {
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await win.evaluate(() => localStorage.setItem('orpad-theme', 'github-light'));
+
+    const detachedTerminal = await detachTerminalWindow(app, win);
+    await expect(detachedTerminal.locator('.terminal-pty-root')).toBeVisible();
+    await expect.poll(async () => (await readDetachedTerminalChrome(detachedTerminal)).vars.bgPrimary).toBe('#ffffff');
+
+    const lightChrome = await readDetachedTerminalChrome(detachedTerminal);
+    expect(lightChrome.vars.bgSecondary).toBe('#f6f8fa');
+    expect(lightChrome.vars.textPrimary).toBe('#1f2328');
+    expect(lightChrome.shell.backgroundImage).toBe('none');
+    expect(lightChrome.head.backgroundImage).toBe('none');
+    expect([lightChrome.tokens.bgPrimary, lightChrome.tokens.bgSecondary]).toContain(lightChrome.shell.backgroundColor);
+    expect(lightChrome.shell.color).toBe(lightChrome.tokens.textPrimary);
+    expect([lightChrome.tokens.bgPrimary, lightChrome.tokens.bgSecondary]).toContain(lightChrome.head.backgroundColor);
+    expect([lightChrome.tokens.textPrimary, lightChrome.tokens.textSecondary]).toContain(lightChrome.head.color);
+
+    await win.evaluate(() => localStorage.setItem('orpad-theme', 'github-dark'));
+    await expect.poll(async () => (await readDetachedTerminalChrome(detachedTerminal)).vars.bgPrimary).toBe('#0d1117');
+
+    const darkChrome = await readDetachedTerminalChrome(detachedTerminal);
+    expect(darkChrome.dataset.theme).toBe('github-dark');
+    expect(darkChrome.dataset.themeType).toBe('dark');
+    expect([darkChrome.tokens.bgPrimary, darkChrome.tokens.bgSecondary]).toContain(darkChrome.shell.backgroundColor);
+    expect(darkChrome.shell.backgroundImage).toBe('none');
+    expect(darkChrome.head.backgroundImage).toBe('none');
+
+    await win.evaluate(() => {
+      localStorage.setItem('orpad-custom-themes', JSON.stringify({
+        'custom-terminal-e2e': {
+          name: 'Detached terminal e2e',
+          type: 'light',
+          colors: {
+            bgPrimary: '#fdfefe',
+            bgSecondary: '#eef6ff',
+            borderColor: '#9db9d8',
+            textPrimary: '#182230',
+            textSecondary: '#536272',
+            accentColor: '#0b65c2',
+            editorBg: '#fdfefe',
+            syntaxKeyword: '#af1d42',
+            syntaxString: '#176f4d',
+          },
+        },
+      }));
+      localStorage.setItem('orpad-theme', 'custom-terminal-e2e');
+    });
+    await expect.poll(async () => (await readDetachedTerminalChrome(detachedTerminal)).vars.bgPrimary).toBe('#fdfefe');
+
+    const customChrome = await readDetachedTerminalChrome(detachedTerminal);
+    expect(customChrome.dataset.theme).toBe('custom-terminal-e2e');
+    expect(customChrome.dataset.themeType).toBe('light');
+    expect(customChrome.vars.bgSecondary).toBe('#eef6ff');
+    expect(customChrome.vars.textPrimary).toBe('#182230');
+    expect([customChrome.tokens.bgPrimary, customChrome.tokens.bgSecondary]).toContain(customChrome.shell.backgroundColor);
+    expect(customChrome.shell.color).toBe(customChrome.tokens.textPrimary);
   } finally {
     await closeElectronApp(app);
   }

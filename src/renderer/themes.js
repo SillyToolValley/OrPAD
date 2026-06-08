@@ -294,9 +294,23 @@ function toCssVar(key) {
   return '--' + key.replace(/([A-Z])/g, '-$1').toLowerCase();
 }
 
+function withDerivedThemeTokens(colors) {
+  const successColor = colors.successColor || colors.syntaxAdded || colors.syntaxString || colors.accentColor;
+  const dangerColor = colors.dangerColor || colors.syntaxDeleted || colors.syntaxKeyword || colors.accentColor;
+  const warningColor = colors.warningColor || colors.syntaxMeta || colors.syntaxNumber || colors.accentColor;
+  const breakpointColor = colors.breakpointColor || dangerColor || colors.syntaxDeleted || colors.accentColor;
+  return {
+    ...colors,
+    ...(successColor ? { successColor } : {}),
+    ...(!colors.dangerColor && dangerColor ? { dangerColor } : {}),
+    ...(!colors.warningColor && warningColor ? { warningColor } : {}),
+    ...(breakpointColor ? { breakpointColor } : {}),
+  };
+}
+
 export function applyThemeColors(colors) {
   const root = document.documentElement;
-  for (const [key, value] of Object.entries(colors)) {
+  for (const [key, value] of Object.entries(withDerivedThemeTokens(colors))) {
     root.style.setProperty(toCssVar(key), value);
   }
 }
@@ -430,6 +444,10 @@ export function deriveFullColors(base, isDark) {
     syntaxMeta: base.syntaxMeta || base.syntaxNumber,
     syntaxAdded: base.syntaxAdded || base.syntaxString,
     syntaxDeleted: base.syntaxDeleted || base.syntaxKeyword,
+    successColor: base.successColor || base.syntaxAdded || base.syntaxString || base.accentColor,
+    warningColor: base.warningColor || base.syntaxMeta || base.syntaxNumber || base.accentColor,
+    dangerColor: base.dangerColor || base.syntaxDeleted || base.syntaxKeyword || base.accentColor,
+    breakpointColor: base.breakpointColor || base.dangerColor || base.syntaxDeleted || base.syntaxKeyword || base.accentColor,
     syntaxAddedBg: `rgba(${hexToRgb(base.syntaxAdded || base.syntaxString || '#22863a').r},${hexToRgb(base.syntaxAdded || base.syntaxString || '#22863a').g},${hexToRgb(base.syntaxAdded || base.syntaxString || '#22863a').b},0.15)`,
     syntaxDeletedBg: `rgba(${hexToRgb(base.syntaxDeleted || base.syntaxKeyword || '#d73a49').r},${hexToRgb(base.syntaxDeleted || base.syntaxKeyword || '#d73a49').g},${hexToRgb(base.syntaxDeleted || base.syntaxKeyword || '#d73a49').b},0.15)`,
   };

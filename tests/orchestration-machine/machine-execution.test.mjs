@@ -2330,6 +2330,11 @@ test('required completion gate audit treats warn failures as blocking final comp
     { id: 'discovery-coverage-gate', nodePath: 'main/discovery-coverage-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
     { id: 'triage-priority-gate', nodePath: 'main/triage-priority-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
     { id: 'worker-evidence-gate', nodePath: 'main/worker-evidence-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'visual-polish-gate', nodePath: 'main/visual-polish-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'theme-matrix-gate', nodePath: 'main/theme-matrix-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'workflow-regression-gate', nodePath: 'main/workflow-regression-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'package-release-gate', nodePath: 'main/package-release-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
+    { id: 'queue-drain-gate', nodePath: 'main/queue-drain-gate', nodeType: 'orpad.gate', config: { onFail: 'warn' } },
   ];
   const events = nodes.map((node, index) => ({
     sequence: index + 1,

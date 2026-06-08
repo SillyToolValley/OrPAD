@@ -50,6 +50,8 @@ const GITHUB_LIGHT_VARS = {
   accentColor: '#0969da',
 };
 
+const LONG_RUNBAR_CURRENT_NODE_LABEL = 'main/orpad-ux-worker-loop/claim-wi-frontend-ux-runbar-current-node-readability/adapters/managed-run/current-node-with-readable-label';
+
 function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
   fs.writeFileSync(path.join(userData, 'approved-workspace.json'), JSON.stringify({
     version: 1,
@@ -674,6 +676,194 @@ async function fitGraphIfAvailable(win: Page): Promise<void> {
   }
 }
 
+async function expectRunbarCurrentNodeBreathes(runbar: Locator, viewport: ViewportCase): Promise<void> {
+  await runbar.evaluate((element, label) => {
+    const meta = element.querySelector('.pipeline-runbar-meta');
+    if (!meta) throw new Error('Runbar metadata container is missing');
+    let current = meta.querySelector<HTMLElement>('.pipeline-runbar-current');
+    if (!current) {
+      current = document.createElement('span');
+      current.className = 'pipeline-runbar-current';
+      meta.append(current);
+    }
+    current.textContent = label;
+    current.title = `Currently running: ${label}`;
+  }, LONG_RUNBAR_CURRENT_NODE_LABEL);
+
+  const currentChip = runbar.locator('.pipeline-runbar-current').first();
+  await expect(currentChip, `${viewport.name}: runbar should expose the long current node`).toHaveText(LONG_RUNBAR_CURRENT_NODE_LABEL);
+  await expect(currentChip, `${viewport.name}: long current node should keep its full title`).toHaveAttribute(
+    'title',
+    `Currently running: ${LONG_RUNBAR_CURRENT_NODE_LABEL}`,
+  );
+
+  const metrics = await runbar.evaluate((element) => {
+    const current = element.querySelector<HTMLElement>('.pipeline-runbar-current');
+    const status = element.querySelector<HTMLElement>('.pipeline-runbar-status[role="status"]');
+    const actions = element.querySelector<HTMLElement>('.pipeline-runbar-actions');
+    if (!current || !actions) throw new Error('Runbar current node or actions are missing');
+
+    const runbarRect = element.getBoundingClientRect();
+    const currentRect = current.getBoundingClientRect();
+    const statusRect = status?.getBoundingClientRect();
+    const actionsRect = actions.getBoundingClientRect();
+    const style = getComputedStyle(current);
+    const fullLabelProbe = current.cloneNode(true) as HTMLElement;
+    fullLabelProbe.style.position = 'fixed';
+    fullLabelProbe.style.visibility = 'hidden';
+    fullLabelProbe.style.pointerEvents = 'none';
+    fullLabelProbe.style.width = 'max-content';
+    fullLabelProbe.style.maxWidth = 'none';
+    fullLabelProbe.style.overflow = 'visible';
+    document.body.append(fullLabelProbe);
+    const fullLabelWidth = fullLabelProbe.getBoundingClientRect().width;
+    fullLabelProbe.remove();
+    return {
+      actionsRight: actionsRect.right,
+      actionsWidth: actionsRect.width,
+      currentClientWidth: current.clientWidth,
+      currentWidth: currentRect.width,
+      flexBasis: style.flexBasis,
+      flexGrow: style.flexGrow,
+      fullLabelWidth,
+      maxWidth: style.maxWidth,
+      overflowX: style.overflowX,
+      runbarClientWidth: element.clientWidth,
+      runbarRight: runbarRect.right,
+      runbarScrollWidth: element.scrollWidth,
+      statusWidth: statusRect?.width || 0,
+      textOverflow: style.textOverflow,
+      whiteSpace: style.whiteSpace,
+    };
+  });
+
+  expect(metrics.textOverflow, `${viewport.name}: long current node should ellipsize`).toBe('ellipsis');
+  expect(metrics.whiteSpace, `${viewport.name}: long current node should stay on one line`).toBe('nowrap');
+  expect(metrics.overflowX, `${viewport.name}: long current node should clip safely`).toBe('hidden');
+  expect(metrics.fullLabelWidth, `${viewport.name}: long current node fixture should be wider than the chip`).toBeGreaterThan(metrics.currentClientWidth + 8);
+  expect(metrics.runbarScrollWidth, `${viewport.name}: runbar should not create horizontal overflow`).toBeLessThanOrEqual(metrics.runbarClientWidth + 1);
+  expect(metrics.actionsWidth, `${viewport.name}: runbar actions should remain measurable`).toBeGreaterThan(0);
+  expect(metrics.actionsRight, `${viewport.name}: runbar actions should remain inside the runbar`).toBeLessThanOrEqual(metrics.runbarRight + 1);
+  expect(Number.parseFloat(metrics.flexGrow), `${viewport.name}: current node should flex beyond fixed metadata chips`).toBeGreaterThan(1);
+  expect(metrics.flexBasis, `${viewport.name}: current node should have a readable flex basis`).not.toBe('auto');
+  expect(metrics.maxWidth, `${viewport.name}: current node should keep a bounded max width`).not.toBe('none');
+  if (viewport.name === 'desktop') {
+    expect(metrics.currentWidth, `${viewport.name}: current node should be wider than secondary status chips`)
+      .toBeGreaterThan(Math.max(metrics.statusWidth + 24, 156));
+  } else {
+    expect(metrics.currentWidth, `${viewport.name}: current node should stay readable in constrained smoke viewport`)
+      .toBeGreaterThan(100);
+  }
+}
+
+async function expectRunbarSolidThemeChrome(runbar: Locator, name: string): Promise<void> {
+  await expect(runbar, `${name}: runbar should be visible for chrome inspection`).toBeVisible({ timeout: 15000 });
+
+  const chrome = await runbar.evaluate((element) => {
+    const parseColor = (value: string): { r: number; g: number; b: number; alpha: number } | null => {
+      const rgb = value.match(/rgba?\(([^)]+)\)/i);
+      if (rgb) {
+        const parts = rgb[1].split(/[\s,/]+/).filter(Boolean);
+        const [r, g, b] = parts.slice(0, 3).map((part) => Number.parseFloat(part));
+        const alpha = parts[3] === undefined
+          ? 1
+          : Number.parseFloat(parts[3]) / (parts[3].endsWith('%') ? 100 : 1);
+        return [r, g, b, alpha].every(Number.isFinite) ? { r, g, b, alpha } : null;
+      }
+      const srgb = value.match(/color\(\s*srgb\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)(?:\s*\/\s*([0-9.]+%?))?/i);
+      if (srgb) {
+        const [r, g, b] = srgb.slice(1, 4).map((part) => Number.parseFloat(part));
+        const alpha = srgb[4] === undefined
+          ? 1
+          : Number.parseFloat(srgb[4]) / (srgb[4].endsWith('%') ? 100 : 1);
+        if (![r, g, b, alpha].every(Number.isFinite)) return null;
+        return {
+          r: r <= 1 ? r * 255 : r,
+          g: g <= 1 ? g * 255 : g,
+          b: b <= 1 ? b * 255 : b,
+          alpha,
+        };
+      }
+      return null;
+    };
+
+    const backgroundAlpha = (style: CSSStyleDeclaration): number => {
+      const value = String(style.backgroundColor || '').trim();
+      if (!value || /\btransparent\b/i.test(value)) return 0;
+      return parseColor(value)?.alpha ?? 1;
+    };
+
+    const readBackdrop = (style: CSSStyleDeclaration): string => (
+      style.getPropertyValue('backdrop-filter')
+      || style.getPropertyValue('-webkit-backdrop-filter')
+      || 'none'
+    ).trim();
+
+    const readChip = (chip: HTMLElement) => {
+      const style = getComputedStyle(chip);
+      const before = getComputedStyle(chip, '::before');
+      const rect = chip.getBoundingClientRect();
+      return {
+        className: chip.className,
+        text: (chip.textContent || '').replace(/\s+/g, ' ').trim(),
+        width: rect.width,
+        height: rect.height,
+        backgroundColor: style.backgroundColor,
+        backgroundAlpha: backgroundAlpha(style),
+        backgroundImage: style.backgroundImage,
+        backdropFilter: readBackdrop(style),
+        boxShadow: style.boxShadow,
+        beforeBoxShadow: before.boxShadow,
+      };
+    };
+
+    const style = getComputedStyle(element);
+    const chips = [...element.querySelectorAll<HTMLElement>([
+      '.pipeline-runbar-path',
+      '.pipeline-runbar-status',
+      '.pipeline-runbar-current',
+      '.pipeline-runbar-progress',
+      '.pipeline-runbar-elapsed',
+      '.pipe-budget-chip',
+    ].join(','))]
+      .filter((chip) => {
+        const chipStyle = getComputedStyle(chip);
+        const rect = chip.getBoundingClientRect();
+        return rect.width > 0
+          && rect.height > 0
+          && chipStyle.display !== 'none'
+          && chipStyle.visibility !== 'hidden';
+      })
+      .map(readChip);
+
+    return {
+      runbar: {
+        backgroundColor: style.backgroundColor,
+        backgroundAlpha: backgroundAlpha(style),
+        backgroundImage: style.backgroundImage,
+        backdropFilter: readBackdrop(style),
+        boxShadow: style.boxShadow,
+      },
+      chips,
+    };
+  });
+
+  expect(chrome.runbar.backgroundImage, `${name}: runbar should not use gradients or image backgrounds`).toBe('none');
+  expect(chrome.runbar.backdropFilter, `${name}: runbar should not use blur or backdrop filters`).toBe('none');
+  expect(chrome.runbar.backgroundAlpha, `${name}: runbar should use an opaque theme-token surface`).toBeGreaterThan(0.98);
+  expect(chrome.runbar.boxShadow, `${name}: runbar should use solid chrome without raised/glow shadow`).toBe('none');
+  expect(chrome.chips.length, `${name}: runbar should expose compact status chips`).toBeGreaterThan(0);
+
+  for (const chip of chrome.chips) {
+    const label = chip.text || chip.className;
+    expect(chip.backgroundImage, `${name}: ${label} chip should not use gradients or image backgrounds`).toBe('none');
+    expect(chip.backdropFilter, `${name}: ${label} chip should not use blur or backdrop filters`).toBe('none');
+    expect(chip.backgroundAlpha, `${name}: ${label} chip should use an opaque theme-token surface`).toBeGreaterThan(0.98);
+    expect(chip.boxShadow, `${name}: ${label} chip should not use glow shadows`).toBe('none');
+    expect(chip.beforeBoxShadow, `${name}: ${label} chip marker should not use glow shadows`).toBe('none');
+  }
+}
+
 async function expectGraphToolbarSolidControls(win: Page, name: string): Promise<void> {
   const toolbar = win.locator('.orch-graph-frame .orch-graph-tools').first();
   await expect(toolbar, `${name}: graph toolbar should be visible`).toBeVisible({ timeout: 15000 });
@@ -768,6 +958,167 @@ async function expectGraphToolbarSolidControls(win: Page, name: string): Promise
   expect(Math.abs(active.height - normal.height), `${name}: active graph tool should not change height`).toBeLessThanOrEqual(0.5);
 }
 
+async function expectGraphOverlayControlsSolidChrome(win: Page, name: string): Promise<void> {
+  const frame = win.locator('.orch-graph-frame').first();
+  await expect(frame, `${name}: graph frame should be visible for overlay chrome inspection`).toBeVisible({ timeout: 15000 });
+
+  const probeId = `graph-overlay-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  await win.evaluate((id) => {
+    document.querySelector(`[data-graph-overlay-probe="${id}"]`)?.remove();
+    const graphFrame = document.querySelector<HTMLElement>('.orch-graph-frame');
+    if (!graphFrame) throw new Error('Missing .orch-graph-frame for overlay chrome probe');
+
+    const probe = document.createElement('div');
+    probe.dataset.graphOverlayProbe = id;
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.position = 'absolute';
+    probe.style.inset = '0';
+    probe.style.zIndex = '30';
+
+    const legend = document.createElement('div');
+    legend.className = 'orch-graph-legend';
+    legend.dataset.probeOverlay = 'legend';
+    const legendTitle = document.createElement('div');
+    legendTitle.className = 'orch-graph-legend-title';
+    legendTitle.textContent = 'Legend';
+    const legendList = document.createElement('ul');
+    legendList.className = 'orch-graph-legend-list';
+    const legendItem = document.createElement('li');
+    legendItem.className = 'orch-graph-legend-item';
+    legendItem.textContent = 'Forward';
+    legendList.append(legendItem);
+    legend.append(legendTitle, legendList);
+
+    const controls = document.createElement('div');
+    controls.className = 'orch-graph-run-controls';
+    controls.dataset.probeOverlay = 'run-controls';
+    controls.style.top = '44px';
+
+    const makeButton = (className: string, label: string, role: string) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.dataset.probeRunBtn = role;
+      button.textContent = label;
+      return button;
+    };
+
+    controls.append(
+      makeButton('orch-graph-run-btn', 'P', 'pause'),
+      makeButton('orch-graph-run-btn resume', 'R', 'resume'),
+      makeButton('orch-graph-run-btn cancel', 'C', 'cancel'),
+    );
+
+    probe.append(legend, controls);
+    graphFrame.append(probe);
+  }, probeId);
+
+  const probe = win.locator(`[data-graph-overlay-probe="${probeId}"]`);
+  const readChrome = (element: HTMLElement) => {
+    const parseAlpha = (value: string): number => {
+      const normalized = value.trim();
+      if (!normalized || /\btransparent\b/i.test(normalized)) return 0;
+      const rgb = normalized.match(/rgba?\(([^)]+)\)/i);
+      if (rgb) {
+        const parts = rgb[1].split(/[\s,/]+/).filter(Boolean);
+        const alpha = parts[3] === undefined
+          ? 1
+          : Number.parseFloat(parts[3]) / (parts[3].endsWith('%') ? 100 : 1);
+        return Number.isFinite(alpha) ? alpha : 1;
+      }
+      const srgb = normalized.match(/color\(\s*srgb\s+[0-9.]+\s+[0-9.]+\s+[0-9.]+(?:\s*\/\s*([0-9.]+%?))?/i);
+      if (srgb) {
+        const alpha = srgb[1] === undefined
+          ? 1
+          : Number.parseFloat(srgb[1]) / (srgb[1].endsWith('%') ? 100 : 1);
+        return Number.isFinite(alpha) ? alpha : 1;
+      }
+      return 1;
+    };
+
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return {
+      backgroundAlpha: parseAlpha(style.backgroundColor),
+      backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
+      backdropFilter: (
+        style.getPropertyValue('backdrop-filter')
+        || style.getPropertyValue('-webkit-backdrop-filter')
+        || 'none'
+      ).trim(),
+      borderColor: style.borderColor,
+      color: style.color,
+      height: rect.height,
+      width: rect.width,
+    };
+  };
+
+  try {
+    const overlayTargets = [
+      { label: 'legend', selector: '[data-probe-overlay="legend"]' },
+      { label: 'run controls', selector: '[data-probe-overlay="run-controls"]' },
+      { label: 'pause button', selector: '[data-probe-run-btn="pause"]' },
+      { label: 'resume button', selector: '[data-probe-run-btn="resume"]' },
+      { label: 'cancel button', selector: '[data-probe-run-btn="cancel"]' },
+    ];
+
+    for (const target of overlayTargets) {
+      const chrome = await probe.locator(target.selector).evaluate(readChrome);
+      expect(chrome.backgroundImage, `${name}: ${target.label} should not use gradient or image chrome`).toBe('none');
+      expect(chrome.backdropFilter, `${name}: ${target.label} should not use blurred glass chrome`).toBe('none');
+      expect(chrome.backgroundColor, `${name}: ${target.label} should keep a theme surface background`).toMatch(/rgb|color/i);
+      expect(chrome.backgroundAlpha, `${name}: ${target.label} should use an opaque theme-token surface`).toBeGreaterThan(0.98);
+      expect(chrome.borderColor, `${name}: ${target.label} should keep a themed border`).toMatch(/rgb|color/i);
+      expect(chrome.width, `${name}: ${target.label} should keep stable width`).toBeGreaterThan(0);
+      expect(chrome.height, `${name}: ${target.label} should keep stable height`).toBeGreaterThan(0);
+    }
+
+    const pauseButton = probe.locator('[data-probe-run-btn="pause"]');
+    const pauseNormal = await pauseButton.evaluate(readChrome);
+    await pauseButton.hover();
+    const pauseHover = await pauseButton.evaluate(readChrome);
+    expect(pauseHover.backgroundImage, `${name}: pause hover should stay solid`).toBe('none');
+    expect(pauseHover.backdropFilter, `${name}: pause hover should avoid backdrop filters`).toBe('none');
+    expect(pauseHover.backgroundColor, `${name}: pause hover should change background`).not.toBe(pauseNormal.backgroundColor);
+    expect(pauseHover.borderColor, `${name}: pause hover should change border`).not.toBe(pauseNormal.borderColor);
+    expect(pauseHover.color, `${name}: pause hover should change icon color`).not.toBe(pauseNormal.color);
+    expect(Math.abs(pauseHover.width - pauseNormal.width), `${name}: pause hover should not resize`).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(pauseHover.height - pauseNormal.height), `${name}: pause hover should not resize`).toBeLessThanOrEqual(0.5);
+
+    const resumeChrome = await probe.locator('[data-probe-run-btn="resume"]').evaluate(readChrome);
+    expect(resumeChrome.backgroundColor, `${name}: resume state should differ from pause`).not.toBe(pauseNormal.backgroundColor);
+    expect(resumeChrome.borderColor, `${name}: resume state should differ from pause border`).not.toBe(pauseNormal.borderColor);
+    expect(resumeChrome.color, `${name}: resume state should differ from pause color`).not.toBe(pauseNormal.color);
+    const resumeButton = probe.locator('[data-probe-run-btn="resume"]');
+    await resumeButton.hover();
+    const resumeHover = await resumeButton.evaluate(readChrome);
+    expect(resumeHover.backgroundImage, `${name}: resume hover should stay solid`).toBe('none');
+    expect(resumeHover.backgroundColor, `${name}: resume hover should change background`).not.toBe(resumeChrome.backgroundColor);
+    expect(resumeHover.borderColor, `${name}: resume hover should change border`).not.toBe(resumeChrome.borderColor);
+    expect(resumeHover.color, `${name}: resume hover should change icon color`).not.toBe(resumeChrome.color);
+
+    const cancelButton = probe.locator('[data-probe-run-btn="cancel"]');
+    const cancelChrome = await cancelButton.evaluate(readChrome);
+    expect(cancelChrome.backgroundColor, `${name}: cancel state should differ from pause`).not.toBe(pauseNormal.backgroundColor);
+    expect(cancelChrome.borderColor, `${name}: cancel state should differ from pause border`).not.toBe(pauseNormal.borderColor);
+    expect(cancelChrome.color, `${name}: cancel state should differ from pause color`).not.toBe(pauseNormal.color);
+    expect(cancelChrome.backgroundColor, `${name}: cancel state should differ from resume`).not.toBe(resumeChrome.backgroundColor);
+    expect(cancelChrome.borderColor, `${name}: cancel state should differ from resume border`).not.toBe(resumeChrome.borderColor);
+    await cancelButton.hover();
+    const cancelHover = await cancelButton.evaluate(readChrome);
+    expect(cancelHover.backgroundImage, `${name}: cancel hover should stay solid`).toBe('none');
+    expect(cancelHover.backgroundColor, `${name}: cancel hover should change background`).not.toBe(cancelChrome.backgroundColor);
+    expect(cancelHover.borderColor, `${name}: cancel hover should change border`).not.toBe(cancelChrome.borderColor);
+    expect(cancelHover.color, `${name}: cancel hover should change icon color`).not.toBe(cancelChrome.color);
+  } finally {
+    await win.evaluate((id) => {
+      document.querySelector(`[data-graph-overlay-probe="${id}"]`)?.remove();
+    }, probeId).catch(() => undefined);
+  }
+}
+
 function nodePackManagerRow(win: Page, label: string): Locator {
   return win.locator('.node-pack-manager-pack').filter({ hasText: label });
 }
@@ -814,6 +1165,21 @@ async function expectNodePackManagerSoftCardRows(manager: Locator, name: string)
     const rows = [...element.querySelectorAll<HTMLElement>('.node-pack-manager-pack')].map((row) => {
       const style = getComputedStyle(row);
       const shadowLayers = splitCssList(style.boxShadow);
+      const trustChips = [...row.querySelectorAll<HTMLElement>('.node-pack-manager-trust-chip')]
+        .map((chip) => {
+          const chipStyle = getComputedStyle(chip);
+          return {
+            text: chip.textContent?.trim() || '',
+            kind: chip.getAttribute('data-node-pack-manager-row-trust-chip') || '',
+            color: chipStyle.color,
+            textOverflow: chipStyle.textOverflow,
+            whiteSpace: chipStyle.whiteSpace,
+            clientWidth: chip.clientWidth,
+            scrollWidth: chip.scrollWidth,
+            clientHeight: chip.clientHeight,
+            scrollHeight: chip.scrollHeight,
+          };
+        });
       return {
         label: row.querySelector('strong')?.textContent?.trim() || '',
         validation: row.getAttribute('data-node-pack-validation') || '',
@@ -825,8 +1191,8 @@ async function expectNodePackManagerSoftCardRows(manager: Locator, name: string)
         boxShadow: style.boxShadow,
         shadowLayerCount: shadowLayers.length,
         hasRaisedShadow: shadowLayers.some(layer => !/\binset\b/i.test(layer)),
-        trustChipColors: [...row.querySelectorAll<HTMLElement>('.node-pack-manager-trust-chip')]
-          .map(chip => getComputedStyle(chip).color),
+        trustChips,
+        trustChipColors: trustChips.map(chip => chip.color),
       };
     });
 
@@ -834,6 +1200,7 @@ async function expectNodePackManagerSoftCardRows(manager: Locator, name: string)
       rowCount: rows.length,
       labels: rows.map(row => row.label),
       rows,
+      trustChipTexts: rows.flatMap(row => row.trustChips.map(chip => chip.text)),
       trustChipColors: [...new Set(rows.flatMap(row => row.trustChipColors).filter(Boolean))],
     };
   });
@@ -861,6 +1228,26 @@ async function expectNodePackManagerSoftCardRows(manager: Locator, name: string)
   expect(reviewRow?.borderColor, `${name}: danger row border should remain visually distinct`)
     .not.toBe(normalRow?.borderColor);
   expect(chrome.trustChipColors.length, `${name}: trust chips should keep distinct themed state colors`).toBeGreaterThanOrEqual(2);
+  expect(chrome.trustChipTexts, `${name}: trust chips should show full short trust and risk labels`)
+    .toEqual(expect.arrayContaining([
+      'trust official',
+      'state valid',
+      'trust signed-community',
+      'state approval-required',
+      '1 high-risk',
+    ]));
+
+  const trustChipReadabilityFailures = chrome.rows.flatMap(row => row.trustChips
+    .filter(chip => (
+      chip.textOverflow === 'ellipsis'
+      || chip.whiteSpace === 'nowrap'
+      || chip.text.includes('...')
+      || chip.text.includes('\u2026')
+      || chip.scrollWidth - chip.clientWidth > 1
+      || chip.scrollHeight - chip.clientHeight > 1
+    ))
+    .map(chip => `${row.label}: ${chip.text} (${chip.clientWidth}x${chip.clientHeight}/${chip.scrollWidth}x${chip.scrollHeight}, ${chip.whiteSpace}, ${chip.textOverflow})`));
+  expect(trustChipReadabilityFailures, `${name}: trust chips should fit their visible boxes without ellipsis`).toEqual([]);
 }
 
 async function closeModalIfVisible(win: Page): Promise<void> {
@@ -1058,6 +1445,7 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
       await expect(win.locator('.orch-graph-node')).toHaveCount(6);
       await fitGraphIfAvailable(win);
       await expectGraphToolbarSolidControls(win, `visual-smoke-${viewport.name}-orchestration`);
+      await expectGraphOverlayControlsSolidChrome(win, `visual-smoke-${viewport.name}-orchestration`);
 
       const runbar = win.locator('[data-pipeline-preview-runbar]').first();
       await expect(runbar).toContainText('Visual Smoke Workstream');
@@ -1079,6 +1467,8 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
       if (await managedRunAction.isVisible().catch(() => false)) {
         await runbar.locator('[data-pipeline-run-menu]').click();
       }
+      await expectRunbarCurrentNodeBreathes(runbar, viewport);
+      await expectRunbarSolidThemeChrome(runbar, `visual-smoke-${viewport.name}-runbar`);
 
       await captureSurfaceEvidence(
         testInfo,
@@ -1192,6 +1582,7 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
         await expect(win.locator('.orch-graph-node')).toHaveCount(6);
         await fitGraphIfAvailable(win);
         await expectGraphToolbarSolidControls(win, 'visual-smoke-desktop-orchestration-github-light');
+        await expectGraphOverlayControlsSolidChrome(win, 'visual-smoke-desktop-orchestration-github-light');
         const themedVmHarness = win.locator('#content.view-orch-graph [data-vm-harness-dashboard]').first();
         await expectVmHarnessDashboardReady(themedVmHarness);
         await expectVmHarnessThemeChrome(themedVmHarness, 'visual-smoke-desktop-vm-harness-github-light', {

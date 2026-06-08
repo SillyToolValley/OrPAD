@@ -479,7 +479,7 @@ test('generator honors explicit fork-join independent discovery probe requests',
   );
 });
 
-test('generator strips revise routing from pre-worker discovery inventory gates in subgraphs', async (t) => {
+test('generator preserves revise routing for goal-critical reference discovery gates in subgraphs', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-discovery-gate-routing-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));
   await writeWorkspaceSeed(workspace, 'OrPAD UX discovery gate fixture');
@@ -573,20 +573,85 @@ test('generator strips revise routing from pre-worker discovery inventory gates 
   const subgraph = await readJson(subgraphPath);
   const gate = subgraph.graph.nodes.find(node => node.id === 'gate-discovery');
   assert.ok(gate, 'expected generated discovery gate');
-  assert.equal(gate.config.advisory, true);
-  assert.equal(gate.config.requiredForCompletion, false);
-  assert.equal(gate.config.blocksCompletion, false);
-  assert.equal(gate.config.warningDoesNotPass, false);
-  assert.equal(gate.config.failureRouting, undefined);
-  assert.equal(gate.config.authoredFailureRouting, 'revise');
+  assert.equal(gate.config.advisory, false);
+  assert.equal(gate.config.requiredForCompletion, true);
+  assert.equal(gate.config.blocksCompletion, true);
+  assert.equal(gate.config.qualityGate, true);
+  assert.equal(gate.config.warningDoesNotPass, true);
+  assert.equal(gate.config.failureRouting, 'revise');
+  assert.equal(gate.config.discoveryPlanningGateHardened, true);
   assert.equal(
     subgraph.graph.transitions.some(edge => edge.from === 'gate-discovery' && edge.condition === 'revise'),
-    false,
+    true,
   );
   assert.equal(
     subgraph.graph.transitions.some(edge => edge.from === 'gate-discovery' && edge.to === 'exit' && edge.condition === 'pass'),
     true,
   );
+});
+
+test('generator hardens post-worker verification gates so warn failures cannot pass completion', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-authored-quality-gate-hardening-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Quality gate hardening fixture');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Improve OrPAD UI with Hero reference style and verify visual polish before completion.',
+    timestamp: '2026-06-08T13:11:00.000Z',
+    authoringSpec: {
+      title: 'Hero UI quality gate hardening',
+      description: 'Fixture for generated post-worker quality gates.',
+      graph: {
+        id: 'hero-ui-quality-gate-hardening',
+        label: 'Hero UI quality gate hardening',
+        start: 'entry',
+        nodes: [
+          { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+          { id: 'context', type: 'orpad.context', label: 'Map UI surface' },
+          { id: 'queue', type: 'orpad.workQueue', label: 'Queue UI work' },
+          { id: 'triage', type: 'orpad.triage', label: 'Triage UI work' },
+          { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch UI work' },
+          { id: 'worker', type: 'orpad.workerLoop', label: 'Implement UI work' },
+          { id: 'patch-review', type: 'orpad.patchReview', label: 'Review patch' },
+          { id: 'visual-polish-gate', type: 'orpad.gate', label: 'Visual polish gate', config: { criteria: ['Hero reference palette and surface hierarchy applied'], onFail: 'warn' } },
+          { id: 'theme-matrix-gate', type: 'orpad.gate', label: 'Theme matrix gate', config: { criteria: ['Built-in themes match requested visual system'], onFail: 'warn' } },
+          { id: 'queue-drain-gate', type: 'orpad.gate', label: 'Queue drain gate', config: { criteria: ['queue empty'], onFail: 'warn' } },
+          { id: 'artifact', type: 'orpad.artifactContract', label: 'Record evidence' },
+          { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+        ],
+        transitions: [
+          { from: 'entry', to: 'context' },
+          { from: 'context', to: 'queue' },
+          { from: 'queue', to: 'triage' },
+          { from: 'triage', to: 'dispatch' },
+          { from: 'dispatch', to: 'worker' },
+          { from: 'worker', to: 'patch-review' },
+          { from: 'patch-review', to: 'visual-polish-gate', condition: 'accepted' },
+          { from: 'visual-polish-gate', to: 'theme-matrix-gate', condition: 'pass' },
+          { from: 'visual-polish-gate', to: 'worker', condition: 'revise' },
+          { from: 'theme-matrix-gate', to: 'queue-drain-gate', condition: 'pass' },
+          { from: 'theme-matrix-gate', to: 'worker', condition: 'revise' },
+          { from: 'queue-drain-gate', to: 'dispatch', condition: 'queue-not-empty' },
+          { from: 'queue-drain-gate', to: 'artifact', condition: 'queue-empty' },
+          { from: 'queue-drain-gate', to: 'worker', condition: 'revise' },
+          { from: 'artifact', to: 'exit' },
+        ],
+      },
+    },
+  });
+
+  assert.equal(result.qualityAudit.ok, true, JSON.stringify(result.qualityAudit.diagnostics, null, 2));
+  const main = await readJson(path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph'));
+  const gate = main.graph.nodes.find(node => node.id === 'verification-gate');
+  assert.ok(gate, 'expected generated verification gate');
+  assert.equal(gate.config.onFail, 'warn');
+  assert.equal(gate.config.requiredForCompletion, true);
+  assert.equal(gate.config.blocksCompletion, true);
+  assert.equal(gate.config.qualityGate, true);
+  assert.equal(gate.config.warningDoesNotPass, true);
+  assert.equal(gate.config.failureRouting, 'strict-revise');
+  assert.equal(gate.config.qualityGateHardened, true);
 });
 
 test('generator repairs authored specs that omit requested fork-join and content editorial gate', async (t) => {

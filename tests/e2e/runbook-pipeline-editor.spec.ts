@@ -11,6 +11,160 @@ function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
   }));
 }
 
+type NodePackManagerChromeTarget = {
+  name: string;
+  selector: string;
+  minCount?: number;
+  maxSamples?: number;
+  requireBoxShadow?: boolean;
+};
+
+type NodePackManagerStateColorSpec = {
+  state: string;
+  rowText: string;
+  chipSelector?: string;
+};
+
+async function openPipelineEditorFixture(win: Page): Promise<void> {
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
+
+  await win.evaluate(async () => {
+    await (window as any).orpadCommands.runCommand('view.runbooks');
+  });
+  await win.locator('.runbook-item').filter({ hasText: 'Pipeline editor fixture' }).click();
+  await win.locator('#btn-preview').click();
+  await expect(win.locator('[data-node-pack-manager-open]')).toBeVisible();
+}
+
+async function expectNodePackManagerSolidChrome(
+  win: Page,
+  label: string,
+  targets: NodePackManagerChromeTarget[],
+): Promise<void> {
+  const chrome = await win.locator('.node-pack-manager').evaluate((manager, targetList) => {
+    const parseBackgroundAlpha = (value: string): number => {
+      const normalized = String(value || '').trim();
+      if (!normalized || /\btransparent\b/i.test(normalized)) return 0;
+
+      const rgb = normalized.match(/rgba?\(([^)]+)\)/i);
+      if (rgb) {
+        const parts = rgb[1].split(/[\s,/]+/).filter(Boolean);
+        if (parts.length < 4) return 1;
+        const alphaPart = parts[3];
+        const alpha = Number.parseFloat(alphaPart);
+        if (!Number.isFinite(alpha)) return 0;
+        return alphaPart.endsWith('%') ? alpha / 100 : alpha;
+      }
+
+      const srgb = normalized.match(/color\(\s*srgb\s+[-0-9.eE]+\s+[-0-9.eE]+\s+[-0-9.eE]+(?:\s*\/\s*([-0-9.eE]+%?))?/i);
+      if (srgb) {
+        if (!srgb[1]) return 1;
+        const alpha = Number.parseFloat(srgb[1]);
+        if (!Number.isFinite(alpha)) return 0;
+        return srgb[1].endsWith('%') ? alpha / 100 : alpha;
+      }
+
+      return 1;
+    };
+
+    const isVisible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0
+        && rect.height > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden';
+    };
+
+    return targetList.map((target) => {
+      const visible = [...manager.querySelectorAll<HTMLElement>(target.selector)].filter(isVisible);
+      return {
+        name: target.name,
+        minCount: target.minCount ?? 1,
+        requireBoxShadow: target.requireBoxShadow ?? false,
+        count: visible.length,
+        samples: visible.slice(0, target.maxSamples ?? 6).map((element) => {
+          const style = getComputedStyle(element);
+          return {
+            text: (element.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+            className: element.className,
+            backgroundColor: style.backgroundColor,
+            backgroundAlpha: parseBackgroundAlpha(style.backgroundColor),
+            backgroundImage: style.backgroundImage,
+            boxShadow: style.boxShadow,
+          };
+        }),
+      };
+    });
+  }, targets);
+
+  for (const target of chrome) {
+    expect(
+      target.count,
+      `${label}: ${target.name} should render visible Package Manager chrome`,
+    ).toBeGreaterThanOrEqual(target.minCount);
+    for (const sample of target.samples) {
+      expect(
+        sample.backgroundImage,
+        `${label}: ${target.name} "${sample.text}" should avoid gradient or image backgrounds`,
+      ).toBe('none');
+      expect(
+        sample.backgroundAlpha,
+        `${label}: ${target.name} "${sample.text}" should keep a non-transparent theme surface (${sample.backgroundColor})`,
+      ).toBeGreaterThan(0.01);
+      if (target.requireBoxShadow) {
+        expect(
+          sample.boxShadow,
+          `${label}: ${target.name} "${sample.text}" should keep soft row depth`,
+        ).not.toBe('none');
+      }
+    }
+  }
+}
+
+async function readNodePackManagerStateColorEvidence(
+  win: Page,
+  specs: NodePackManagerStateColorSpec[],
+): Promise<Array<{
+  state: string;
+  rowText: string;
+  found: boolean;
+  validation: string;
+  className: string;
+  chipTone: string;
+  stateColor: string;
+  stateBackgroundColor: string;
+  stateBorderColor: string;
+  rowBorderColor: string;
+  rowBackgroundColor: string;
+}>> {
+  return win.locator('.node-pack-manager').evaluate((manager, stateSpecs) => {
+    const normalize = (value: string) => value.trim().replace(/\s+/g, ' ');
+    const rows = [...manager.querySelectorAll<HTMLElement>('.node-pack-manager-pack')];
+    return stateSpecs.map((spec) => {
+      const row = rows.find(candidate => normalize(candidate.textContent || '').includes(spec.rowText));
+      const stateTarget = (spec.chipSelector && row?.querySelector<HTMLElement>(spec.chipSelector)) || row || null;
+      const rowStyle = row ? getComputedStyle(row) : null;
+      const stateStyle = stateTarget ? getComputedStyle(stateTarget) : null;
+      return {
+        state: spec.state,
+        rowText: spec.rowText,
+        found: !!row,
+        validation: row?.getAttribute('data-node-pack-validation') || '',
+        className: row?.className || '',
+        chipTone: stateTarget?.getAttribute('data-node-pack-manager-row-trust-tone') || '',
+        stateColor: stateStyle?.color || '',
+        stateBackgroundColor: stateStyle?.backgroundColor || '',
+        stateBorderColor: stateStyle?.borderColor || '',
+        rowBorderColor: rowStyle?.borderColor || '',
+        rowBackgroundColor: rowStyle?.backgroundColor || '',
+      };
+    });
+  }, specs);
+}
+
 async function expectFittedGraphNodesClearOfFloatingInspector(win: Page, label: string): Promise<void> {
   await win.locator('.orch-graph-frame [data-orch-action="fit"]').first().click();
   await win.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
@@ -82,7 +236,8 @@ async function expectHeroGraphChromeAtViewport(win: Page, label: string, viewpor
     const frameAfterStyle = getComputedStyle(frame, '::after');
     const graphTools = frame.querySelector<HTMLElement>('.orch-graph-tools');
     const toolsRect = rectOf(graphTools);
-    const legendRect = rectOf(frame.querySelector('.orch-graph-legend'));
+    const legend = frame.querySelector<HTMLElement>('.orch-graph-legend');
+    const legendRect = rectOf(legend);
     const sampleChrome = (element: HTMLElement) => {
       const rect = rectOf(element);
       const style = getComputedStyle(element);
@@ -180,6 +335,7 @@ async function expectHeroGraphChromeAtViewport(win: Page, label: string, viewpor
         borderRadius: frameStyle.borderRadius,
         boxShadow: frameStyle.boxShadow,
       },
+      legend: legend ? sampleChrome(legend) : null,
       tools: graphTools ? sampleChrome(graphTools) : null,
       toolButtonCount: toolButtons.length,
       enabledToolButtonCount: toolButtons.filter(button => !button.matches(':disabled') && button.getAttribute('aria-disabled') !== 'true').length,
@@ -215,11 +371,113 @@ async function expectHeroGraphChromeAtViewport(win: Page, label: string, viewpor
       backgroundColor: style.backgroundColor,
     };
   });
+  const injectedRunControls = !(await win.locator('.orch-graph-frame').first().evaluate((frame) => {
+    const isVisible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return rect.width > 0
+        && rect.height > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden';
+    };
+    return [...frame.querySelectorAll<HTMLElement>('.orch-graph-run-controls .orch-graph-run-btn:not(:disabled):not([aria-disabled="true"])')]
+      .some(isVisible);
+  }));
+  if (injectedRunControls) {
+    await win.locator('.orch-graph-frame').first().evaluate((frame) => {
+      const controls = document.createElement('div');
+      controls.className = 'orch-graph-run-controls';
+      controls.setAttribute('data-orch-run-controls-style-fixture', 'true');
+      for (const state of ['', 'resume', 'cancel']) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = ['orch-graph-run-btn', state].filter(Boolean).join(' ');
+        button.setAttribute('aria-label', state || 'pause');
+        controls.appendChild(button);
+      }
+      frame.appendChild(controls);
+    });
+  }
+  const runControlsSelector = injectedRunControls
+    ? '.orch-graph-frame .orch-graph-run-controls[data-orch-run-controls-style-fixture="true"]'
+    : '.orch-graph-frame .orch-graph-run-controls';
+  const graphRunControls = win.locator(runControlsSelector).first();
+  const graphRunButton = graphRunControls.locator('.orch-graph-run-btn:not(:disabled):not([aria-disabled="true"])').first();
+  await expect(graphRunControls, `${label}: graph run controls should stay visible`).toBeVisible();
+  await expect(graphRunButton, `${label}: graph run button should stay visible`).toBeVisible();
+  await expect(graphRunButton, `${label}: graph run button should stay usable`).toBeEnabled();
+  const runControlsChrome = await graphRunControls.evaluate((controls) => {
+    const style = getComputedStyle(controls as HTMLElement);
+    const filterStyle = style as CSSStyleDeclaration & { backdropFilter?: string; webkitBackdropFilter?: string };
+    const rect = (controls as HTMLElement).getBoundingClientRect();
+    return {
+      backgroundImage: style.backgroundImage,
+      backgroundColor: style.backgroundColor,
+      borderTopColor: style.borderTopColor,
+      borderTopWidth: style.borderTopWidth,
+      boxShadow: style.boxShadow,
+      backdropFilter: filterStyle.backdropFilter || 'none',
+      webkitBackdropFilter: filterStyle.webkitBackdropFilter || 'none',
+      width: rect.width,
+      height: rect.height,
+    };
+  });
+  const runButtonStates = await graphRunButton.evaluate((button) => {
+    const element = button as HTMLElement;
+    const control = button as HTMLButtonElement;
+    const originalClassName = element.className;
+    const originalDisabled = control.disabled;
+    const sampleChrome = () => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return {
+        backgroundImage: style.backgroundImage,
+        backgroundColor: style.backgroundColor,
+        borderTopColor: style.borderTopColor,
+        borderTopWidth: style.borderTopWidth,
+        boxShadow: style.boxShadow,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+    const sampleState = (className: string, disabled = false) => {
+      element.className = className;
+      control.disabled = disabled;
+      const sample = sampleChrome();
+      element.className = originalClassName;
+      control.disabled = originalDisabled;
+      return sample;
+    };
+    return {
+      normal: sampleState('orch-graph-run-btn'),
+      active: sampleState('orch-graph-run-btn active'),
+      resume: sampleState('orch-graph-run-btn resume'),
+      cancel: sampleState('orch-graph-run-btn cancel'),
+      disabled: sampleState('orch-graph-run-btn', true),
+    };
+  });
+  await graphRunButton.hover();
+  const hoveredRunButton = await graphRunButton.evaluate((button) => {
+    const style = getComputedStyle(button as HTMLElement);
+    return {
+      backgroundImage: style.backgroundImage,
+      backgroundColor: style.backgroundColor,
+    };
+  });
+  if (injectedRunControls) {
+    await win.locator('.orch-graph-run-controls[data-orch-run-controls-style-fixture="true"]').evaluateAll((controls) => {
+      controls.forEach((control) => control.remove());
+    });
+  }
   expect(audit.frame.backgroundImage, `${label}: frame should use a solid soft dashboard surface`).toBe('none');
   expect(audit.frame.beforeBackgroundImage, `${label}: frame chrome should avoid decorative pseudo-element gradients`).toBe('none');
   expect(audit.frame.afterBackgroundImage, `${label}: frame depth overlay should avoid decorative gradients`).toBe('none');
   expect(audit.frame.backgroundColor, `${label}: frame should retain a visible surface color`).not.toBe(transparentColor);
   expect(audit.frame.boxShadow, `${label}: frame should have neumorphic depth`).not.toBe('none');
+  expect(audit.legend?.visible, `${label}: legend should stay visible`).toBe(true);
+  expect(audit.legend?.backgroundImage, `${label}: legend should use solid chrome`).toBe('none');
+  expect(audit.legend?.backgroundColor, `${label}: legend should retain a visible surface color`).not.toBe(transparentColor);
+  expect(audit.legend?.boxShadow, `${label}: legend should retain compact depth`).not.toBe('none');
   expect(audit.tools?.backgroundImage, `${label}: graph tools should use solid toolbar chrome`).toBe('none');
   expect(audit.tools?.backgroundColor, `${label}: graph tools should retain a visible surface color`).not.toBe(transparentColor);
   expect(audit.tools?.boxShadow, `${label}: graph tools should retain soft depth`).not.toBe('none');
@@ -233,6 +491,21 @@ async function expectHeroGraphChromeAtViewport(win: Page, label: string, viewpor
   expect(audit.activeToolButtonSample?.backgroundColor, `${label}: active graph tool button should retain a visible state surface`).not.toBe(transparentColor);
   expect(hoveredToolButton.backgroundImage, `${label}: hovered graph tool button should avoid decorative gradients`).toBe('none');
   expect(hoveredToolButton.backgroundColor, `${label}: hovered graph tool button should retain a visible state surface`).not.toBe(transparentColor);
+  expect(runControlsChrome.backgroundImage, `${label}: graph run controls should use solid chrome`).toBe('none');
+  expect(runControlsChrome.backgroundColor, `${label}: graph run controls should retain a visible surface color`).not.toBe(transparentColor);
+  expect(runControlsChrome.borderTopWidth, `${label}: graph run controls should retain a border`).not.toBe('0px');
+  expect(runControlsChrome.borderTopColor, `${label}: graph run controls should retain a themed border color`).not.toBe(transparentColor);
+  expect(runControlsChrome.boxShadow, `${label}: graph run controls should retain compact depth`).not.toBe('none');
+  expect([runControlsChrome.backdropFilter, runControlsChrome.webkitBackdropFilter].every(value => !value || value === 'none'), `${label}: graph run controls should avoid blurred glass chrome`).toBe(true);
+  expect(runControlsChrome.width, `${label}: graph run controls should keep stable width`).toBeGreaterThanOrEqual(30);
+  expect(runControlsChrome.height, `${label}: graph run controls should keep stable height`).toBeGreaterThanOrEqual(30);
+  expect(Object.values(runButtonStates).every(button => button.backgroundImage === 'none'), `${label}: graph run button states should avoid decorative gradients`).toBe(true);
+  expect(Object.values(runButtonStates).every(button => button.backgroundColor !== transparentColor), `${label}: graph run button states should retain visible surfaces`).toBe(true);
+  expect(Object.values(runButtonStates).every(button => button.borderTopWidth !== '0px'), `${label}: graph run button states should retain borders`).toBe(true);
+  expect(Object.values(runButtonStates).every(button => button.borderTopColor !== transparentColor), `${label}: graph run button states should retain themed borders`).toBe(true);
+  expect(Object.values(runButtonStates).every(button => button.width >= 24 && button.height >= 24), `${label}: graph run buttons should keep usable hit dimensions`).toBe(true);
+  expect(hoveredRunButton.backgroundImage, `${label}: hovered graph run button should avoid decorative gradients`).toBe('none');
+  expect(hoveredRunButton.backgroundColor, `${label}: hovered graph run button should retain a visible state surface`).not.toBe(transparentColor);
   expect(audit.nodeCount, `${label}: graph nodes should render`).toBeGreaterThan(0);
   expect(audit.nodeSamples.every(node => node.backgroundImage === 'none'), `${label}: nodes should use solid operational surfaces`).toBe(true);
   expect(audit.nodeSamples.every(node => node.backgroundColor !== transparentColor), `${label}: node surfaces should remain visible`).toBe(true);
@@ -516,6 +789,62 @@ async function setNodePackManagerMock(
     (window as any).__orpadNodePackManagerListPacks = mockListNodePacks;
     (window as any).__orpadNodePackListPacks = mockListNodePacks;
   }, { response, delayMs, markTestOverride, bypassCatalogCache });
+}
+
+async function setNodePackManagerThemeStateMock(win: Page): Promise<void> {
+  await setNodePackManagerMock(win, {
+    success: true,
+    ok: true,
+    nodePacks: [
+      {
+        id: 'community.valid-theme-pack',
+        name: 'Valid Theme Pack',
+        version: '1.0.0',
+        origin: 'user-installed',
+        trustLevel: 'community',
+        resolutionState: 'resolved',
+        validationStatus: 'valid',
+        capabilities: ['read.workspace'],
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.valid-theme-pack',
+          manifestPath: '/packs/community.valid-theme-pack/orpad.node-pack.json',
+        },
+        nodes: [],
+      },
+      {
+        id: 'community.approval-theme-pack',
+        name: 'Approval Required Theme Pack',
+        version: '0.4.0',
+        origin: 'user-installed',
+        trustLevel: 'signed-community',
+        resolutionState: 'approval-required',
+        validationStatus: 'approval-required',
+        capabilities: ['read.workspace', 'use.credentials'],
+        highRiskCapabilities: ['use.credentials'],
+        diagnostics: [
+          {
+            level: 'warning',
+            code: 'NODE_PACK_HIGH_RISK_CAPABILITY_REVIEW_REQUIRED',
+            message: 'Community Package requests high-risk authority without approved review.',
+            packId: 'community.approval-theme-pack',
+            capability: 'use.credentials',
+            scope: 'pack',
+          },
+        ],
+        discovery: {
+          rootKind: 'user',
+          packDir: '/packs/community.approval-theme-pack',
+          manifestPath: '/packs/community.approval-theme-pack/orpad.node-pack.json',
+        },
+        nodes: [
+          { type: 'community.secretProbe', label: 'Secret Probe', capabilities: ['use.credentials'] },
+        ],
+      },
+    ],
+    diagnostics: [],
+    conflicts: [],
+  });
 }
 
 async function setNodePackManagerThrowingMock(win: Page, message: string): Promise<void> {
@@ -1754,11 +2083,39 @@ test('pipeline details surfaces missing Package diagnostics inline', async () =>
   await expect(nodePacksSection).toContainText('community.missing-pack');
   await expect(nodePacksSection).toContainText('>=9.9.0');
   await expect(nodePacksSection).toContainText('user-installed');
-  const nodePackRisk = nodePacksSection.locator('.pipeline-node-pack-risk');
-  await expect(nodePackRisk).toContainText('Trust');
-  await expect(nodePackRisk).toContainText('community');
-  await expect(nodePackRisk).toContainText('Workspace read and shell execution requested');
-  await expect(nodePackRisk).toContainText('2 high-risk capabilities');
+  const nodePackAuthority = nodePacksSection.locator('[data-pipeline-node-pack-authority]');
+  await expect(nodePackAuthority.locator('[data-pipeline-node-pack-authority-chip="validation"]')).toContainText('state missing');
+  await expect(nodePackAuthority.locator('[data-pipeline-node-pack-authority-chip="trust"]')).toContainText('trust community');
+  await expect(nodePackAuthority.locator('[data-pipeline-node-pack-authority-chip="risk"]')).toContainText('risk Workspace read and shell execution requested');
+  const highRiskChip = nodePackAuthority.locator('[data-pipeline-node-pack-authority-chip="high-risk"]');
+  await expect(highRiskChip).toContainText('2 high-risk');
+  await expect(highRiskChip).toHaveAttribute('title', /read\.workspace, run\.process/);
+  const nodePackRowLayout = await nodePacksSection.locator('.pipeline-node-pack-row').first().evaluate((row) => {
+    const rowEl = row as HTMLElement;
+    const previousStyle = rowEl.getAttribute('style');
+    rowEl.style.width = '420px';
+    rowEl.style.maxWidth = '420px';
+    rowEl.style.minWidth = '0';
+    rowEl.style.boxSizing = 'border-box';
+    const tolerance = 1;
+    const rowRect = rowEl.getBoundingClientRect();
+    const chipRects = [...rowEl.querySelectorAll<HTMLElement>('[data-pipeline-node-pack-authority-chip]')]
+      .map(chip => chip.getBoundingClientRect());
+    const actionRect = rowEl.querySelector<HTMLElement>('.pipeline-node-pack-actions')?.getBoundingClientRect() || null;
+    const result = {
+      scrollFits: rowEl.scrollWidth <= rowEl.clientWidth + tolerance,
+      chipCount: chipRects.length,
+      chipsInside: chipRects.every(rect => rect.left >= rowRect.left - tolerance && rect.right <= rowRect.right + tolerance),
+      actionInside: !actionRect || (actionRect.left >= rowRect.left - tolerance && actionRect.right <= rowRect.right + tolerance),
+    };
+    if (previousStyle === null) rowEl.removeAttribute('style');
+    else rowEl.setAttribute('style', previousStyle);
+    return result;
+  });
+  expect(nodePackRowLayout.scrollFits).toBe(true);
+  expect(nodePackRowLayout.chipCount).toBeGreaterThanOrEqual(4);
+  expect(nodePackRowLayout.chipsInside).toBe(true);
+  expect(nodePackRowLayout.actionInside).toBe(true);
   await expect(nodePacksSection).toContainText('PIPELINE_NODE_PACK_UNKNOWN');
   await expect(nodePacksSection.locator('.pipeline-inline-diagnostic')).toContainText('community.missing-pack');
   await expect(nodePacksSection.locator('[data-node-pack-manager-open]').first()).toContainText('Resolve in Package Manager');
@@ -2100,6 +2457,7 @@ test('Package manager manages registry source defaults recents and offline cache
   const { workspace } = writePipelineWorkspace();
   const app = await launchElectron();
   const win = await app.firstWindow();
+  await win.setViewportSize({ width: 980, height: 620 });
   const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
   writeApprovedWorkspace(userData, workspace);
 
@@ -2150,7 +2508,46 @@ test('Package manager manages registry source defaults recents and offline cache
   await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('missing / not attempted');
   await expect(win.locator('.node-pack-manager-diagnostics')).toContainText('NODE_PACK_REGISTRY_SOURCE_FAILED_CACHE_USED');
   await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('Recent Registry source');
-  await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('https://registry.example/custom.json');
+  await expect(win.locator('[data-node-pack-manager-registry-source-select]')).toContainText('registry.example/custom.json');
+  await expect(win.locator('[data-node-pack-manager-registry-source-select]')).not.toContainText('https://registry.example/custom.json');
+  await expect(win.locator('[data-node-pack-manager-registry-source-summary]')).toContainText('Recent Registry source');
+  await expect(win.locator('[data-node-pack-manager-registry-source-summary]')).toContainText('offline cache');
+  await expect(win.locator('[data-node-pack-manager-registry-source-summary]')).toContainText('https://registry.example/custom.json');
+
+  const registryControlsAudit = await win.locator('[data-node-pack-manager-registry-controls]').evaluate((controls) => {
+    const rectOf = (element: Element | null) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+        height: rect.height,
+      };
+    };
+    const controlsRect = rectOf(controls)!;
+    const itemTargets: Array<[string, Element | null]> = [
+      ['sourceSelect', controls.querySelector('[data-node-pack-manager-registry-source-select]')],
+      ['customSource', controls.querySelector('[data-node-pack-manager-registry-source]')],
+      ['search', controls.querySelector('[data-node-pack-manager-registry-query]')],
+      ['browse', controls.querySelector('[data-node-pack-manager-registry-load]')],
+      ['sourceSummary', controls.querySelector('[data-node-pack-manager-registry-source-summary]')],
+    ];
+    const items = itemTargets.map(([name, element]) => ({ name, rect: rectOf(element) }));
+    return {
+      overflowing: items
+        .filter(item => item.rect && (item.rect.left < controlsRect.left - 1 || item.rect.right > controlsRect.right + 1))
+        .map(item => item.name),
+      browseWidth: rectOf(controls.querySelector('[data-node-pack-manager-registry-load]'))?.width || 0,
+      sourceSummaryText: controls.querySelector('[data-node-pack-manager-registry-source-summary]')?.textContent?.trim().replace(/\s+/g, ' ') || '',
+      sourceCodeText: controls.querySelector('[data-node-pack-manager-registry-source-summary] code')?.textContent?.trim() || '',
+    };
+  });
+  expect(registryControlsAudit.overflowing).toEqual([]);
+  expect(registryControlsAudit.browseWidth).toBeGreaterThan(48);
+  expect(registryControlsAudit.sourceSummaryText).toContain('Recent Registry source');
+  expect(registryControlsAudit.sourceSummaryText).toContain('offline cache');
+  expect(registryControlsAudit.sourceCodeText).toBe('https://registry.example/custom.json');
 
   await win.locator('[data-node-pack-manager-tab="updates"]').click();
   await expect(win.locator('.node-pack-manager-status')).toContainText('1 update candidate');
@@ -2432,6 +2829,179 @@ test('Package manager shows workspace lock drift and syncs registry update metad
 
   await app.close();
   fs.rmSync(workspace, { recursive: true, force: true });
+});
+
+test('Package manager proves multi-tab theme chrome for Browse Updates and Workspace Lock', async () => {
+  test.setTimeout(120_000);
+  const { workspace } = writePipelineWorkspace();
+  const app = await launchElectron();
+
+  try {
+    const win = await app.firstWindow();
+    await win.setViewportSize({ width: 1200, height: 720 });
+    const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
+    writeApprovedWorkspace(userData, workspace);
+
+    for (const themeCase of [
+      { name: 'Hero', storageValue: null, light: false },
+      { name: 'GitHub Light', storageValue: 'github-light', light: true },
+    ]) {
+      await win.evaluate((themeValue) => {
+        if (themeValue) {
+          localStorage.setItem('orpad-theme', themeValue);
+        } else {
+          localStorage.removeItem('orpad-theme');
+        }
+      }, themeCase.storageValue);
+      await win.reload();
+      await openPipelineEditorFixture(win);
+
+      const themeVars = await win.evaluate(() => {
+        const style = getComputedStyle(document.documentElement);
+        return {
+          bgPrimary: style.getPropertyValue('--bg-primary').trim(),
+          bgSecondary: style.getPropertyValue('--bg-secondary').trim(),
+          accentColor: style.getPropertyValue('--accent-color').trim(),
+        };
+      });
+      expect(themeVars.bgPrimary, `${themeCase.name}: theme should expose primary surface token`).not.toBe('');
+      expect(themeVars.bgSecondary, `${themeCase.name}: theme should expose secondary surface token`).not.toBe('');
+      expect(themeVars.accentColor, `${themeCase.name}: theme should expose accent token`).not.toBe('');
+      if (themeCase.light) {
+        expect(themeVars.bgPrimary, `${themeCase.name}: light theme should be active`).toBe('#ffffff');
+      } else {
+        expect(themeVars.bgPrimary, `${themeCase.name}: hero theme should stay distinct from GitHub Light`).not.toBe('#ffffff');
+      }
+
+      await setNodePackManagerThemeStateMock(win);
+      await win.locator('#btn-package-manager').click();
+      const manager = win.locator('.node-pack-manager');
+      await expect(manager).toHaveAttribute('data-node-pack-manager-state', 'success', { timeout: 15000 });
+      await expect(manager).toHaveAttribute('data-node-pack-manager-tab', 'installed');
+      await expect(manager).toContainText('Valid Theme Pack');
+      await expect(manager).toContainText('Approval Required Theme Pack');
+      await expectNodePackManagerSolidChrome(win, `${themeCase.name} installed approval state`, [
+        { name: 'tab controls', selector: '.node-pack-manager-tab', minCount: 4 },
+        { name: 'status chips', selector: '.node-pack-manager-trust-chip', minCount: 4 },
+        { name: 'package rows', selector: '.node-pack-manager-pack', minCount: 2, requireBoxShadow: true },
+      ]);
+      const installedStateColors = await readNodePackManagerStateColorEvidence(win, [
+        {
+          state: 'valid',
+          rowText: 'Valid Theme Pack',
+          chipSelector: '[data-node-pack-manager-row-trust-chip="validation"]',
+        },
+        {
+          state: 'approval-required',
+          rowText: 'Approval Required Theme Pack',
+          chipSelector: '[data-node-pack-manager-row-trust-chip="validation"]',
+        },
+      ]);
+      for (const stateColor of installedStateColors) {
+        expect(stateColor.found, `${themeCase.name}: ${stateColor.state} package row should render`).toBe(true);
+        expect(stateColor.validation, `${themeCase.name}: ${stateColor.state} row should expose validation state`)
+          .toContain(stateColor.state);
+        expect(stateColor.stateColor, `${themeCase.name}: ${stateColor.state} status color should resolve`).not.toBe('');
+      }
+      const validState = installedStateColors.find(item => item.state === 'valid')!;
+      const approvalState = installedStateColors.find(item => item.state === 'approval-required')!;
+      expect(
+        approvalState.stateColor,
+        `${themeCase.name}: approval-required status color should not collapse to valid`,
+      ).not.toBe(validState.stateColor);
+      expect(
+        approvalState.chipTone,
+        `${themeCase.name}: approval-required status chip should keep danger review tone`,
+      ).toBe('danger');
+      await win.locator('#fmt-modal-close').click();
+      await expect(win.locator('#fmt-modal')).toBeHidden();
+
+      await setNodePackWorkspaceLockMock(win);
+      await win.locator('#btn-package-manager').click();
+      await expect(manager).toHaveAttribute('data-node-pack-manager-state', 'success', { timeout: 15000 });
+      await expect(manager).toHaveAttribute('data-node-pack-manager-tab', 'installed');
+      await expect(win.locator('[data-node-pack-manager-workspace-lock-panel]')).toContainText('/workspace/.orpad/orpad-node-packs.lock.json');
+      await expect(win.locator('.node-pack-manager-status')).toContainText('workspace drift');
+      await expectNodePackManagerSolidChrome(win, `${themeCase.name} installed workspace lock state`, [
+        { name: 'tab controls', selector: '.node-pack-manager-tab', minCount: 4 },
+        { name: 'workspace lock sections', selector: '.node-pack-manager-workspace-lock-panel, .node-pack-manager-workspace-lock-section', minCount: 1 },
+        { name: 'status chips', selector: '.node-pack-manager-trust-chip', minCount: 2 },
+        { name: 'package rows', selector: '.node-pack-manager-pack', minCount: 1, requireBoxShadow: true },
+      ]);
+
+      await manager.locator('.node-pack-manager-tab[data-node-pack-manager-tab="browse"]').click();
+      await expect(manager).toHaveAttribute('data-node-pack-manager-tab', 'browse');
+      await win.locator('[data-node-pack-manager-registry-source]').fill('https://registry.example/workspace-lock.json');
+      await win.locator('[data-node-pack-manager-registry-load]').click();
+      await expect(manager).toHaveAttribute('data-node-pack-manager-state', 'success');
+      await expect(win.locator('[data-node-pack-manager-registry-source-panel]')).toContainText('Workspace Lock Fixture Registry');
+      await expect(nodePackManagerRow(win, 'Workspace Lock Unsafe Pack')).toHaveAttribute('data-node-pack-validation', 'blocked');
+      await expectNodePackManagerSolidChrome(win, `${themeCase.name} Browse tab`, [
+        { name: 'tab controls', selector: '.node-pack-manager-tab', minCount: 4 },
+        { name: 'registry controls', selector: '.node-pack-manager-registry-controls button, .node-pack-manager-registry-controls input, .node-pack-manager-registry-controls select', minCount: 3 },
+        { name: 'source panels', selector: '.node-pack-manager-registry-source-panel', minCount: 1 },
+        { name: 'status chips', selector: '.node-pack-manager-trust-chip', minCount: 4 },
+        { name: 'package rows', selector: '.node-pack-manager-pack', minCount: 3, requireBoxShadow: true },
+      ]);
+
+      await manager.locator('.node-pack-manager-tab[data-node-pack-manager-tab="updates"]').click();
+      await expect(manager).toHaveAttribute('data-node-pack-manager-tab', 'updates');
+      await expect(win.locator('.node-pack-manager-status')).toContainText('1 update candidate');
+      await expectNodePackManagerSolidChrome(win, `${themeCase.name} Updates tab`, [
+        { name: 'tab controls', selector: '.node-pack-manager-tab', minCount: 4 },
+        { name: 'status chips', selector: '.node-pack-manager-trust-chip', minCount: 2 },
+        { name: 'package rows', selector: '.node-pack-manager-pack', minCount: 1, requireBoxShadow: true },
+      ]);
+
+      await manager.locator('.node-pack-manager-tab[data-node-pack-manager-tab="workspace"]').click();
+      await expect(manager).toHaveAttribute('data-node-pack-manager-tab', 'workspace');
+      await expect(win.locator('.node-pack-manager-status')).toContainText('dry-run required');
+      await win.locator('[data-node-pack-manager-workspace-dry-run]').click();
+      await expect(win.locator('.node-pack-manager-status')).toContainText('ready');
+      await expect(win.locator('.node-pack-manager-status')).toContainText('2 missing');
+      await expect(win.locator('.node-pack-manager-status')).toContainText('1 drift');
+      await expect(win.locator('.node-pack-manager-status')).toContainText('1 blocked');
+      await expect(nodePackManagerRow(win, 'Workspace Locked Pack')).toHaveAttribute('data-node-pack-validation', 'ready to update');
+      await expect(nodePackManagerRow(win, 'Workspace Lock Missing Candidate')).toHaveAttribute('data-node-pack-validation', 'ready to install');
+      await expect(nodePackManagerRow(win, 'Workspace Lock Unsafe Pack')).toHaveAttribute('data-node-pack-validation', 'blocked');
+      await expectNodePackManagerSolidChrome(win, `${themeCase.name} Workspace Lock tab`, [
+        { name: 'tab controls', selector: '.node-pack-manager-tab', minCount: 4 },
+        { name: 'workspace apply controls', selector: '.node-pack-manager-workspace-apply-controls button, [data-node-pack-manager-workspace-apply]', minCount: 1 },
+        { name: 'workspace lock sections', selector: '.node-pack-manager-workspace-lock-panel, .node-pack-manager-workspace-lock-section', minCount: 1 },
+        { name: 'status chips', selector: '.node-pack-manager-trust-chip', minCount: 4 },
+        { name: 'package rows', selector: '.node-pack-manager-pack', minCount: 3, requireBoxShadow: true },
+      ]);
+      const workspaceStateColors = await readNodePackManagerStateColorEvidence(win, [
+        { state: 'warning', rowText: 'Workspace Locked Pack' },
+        { state: 'danger', rowText: 'Workspace Lock Unsafe Pack' },
+      ]);
+      for (const stateColor of workspaceStateColors) {
+        expect(stateColor.found, `${themeCase.name}: ${stateColor.state} package row should render`).toBe(true);
+        expect(stateColor.rowBorderColor, `${themeCase.name}: ${stateColor.state} row border should resolve`).not.toBe('');
+        expect(stateColor.rowBackgroundColor, `${themeCase.name}: ${stateColor.state} row background should resolve`).not.toBe('');
+      }
+      const warningState = workspaceStateColors.find(item => item.state === 'warning')!;
+      const dangerState = workspaceStateColors.find(item => item.state === 'danger')!;
+      expect(
+        warningState.rowBorderColor,
+        `${themeCase.name}: warning and danger package row colors should stay distinct`,
+      ).not.toBe(dangerState.rowBorderColor);
+      expect(
+        warningState.rowBorderColor,
+        `${themeCase.name}: warning package row color should not collapse to valid`,
+      ).not.toBe(validState.rowBorderColor);
+      expect(
+        dangerState.rowBorderColor,
+        `${themeCase.name}: danger package row color should not collapse to valid`,
+      ).not.toBe(validState.rowBorderColor);
+
+      await win.locator('#fmt-modal-close').click();
+      await expect(win.locator('#fmt-modal')).toBeHidden();
+    }
+  } finally {
+    await app.close();
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
 });
 
 test('Package manager dry-runs workspace lock apply before package install', async () => {

@@ -1447,14 +1447,39 @@ function gateRunsBeforeWorker(node, nodes = []) {
   return firstWorkerIndex < 0 || gateIndex < firstWorkerIndex;
 }
 
+function gateRunsAfterWorker(node, nodes = []) {
+  const gateIndex = nodes.indexOf(node);
+  if (gateIndex < 0) return false;
+  const firstWorkerIndex = firstIndexMatching(nodes, candidate => candidate.type === 'orpad.workerLoop');
+  return firstWorkerIndex >= 0 && gateIndex > firstWorkerIndex;
+}
+
 function gateLooksLikeDiscoveryPlanning(node, nodes = []) {
   if (!node || node.type !== 'orpad.gate' || !gateRunsBeforeWorker(node, nodes)) return false;
   return /\b(discovery|candidate[-\s]?inventory|candidate|probe|planning|plan|scoped[-\s]?plan|inventory)\b/i
     .test(gateIdentityText(node));
 }
 
+function gateLooksGoalCriticalDiscovery(node) {
+  if (!node || node.type !== 'orpad.gate') return false;
+  return /\b(reference[-\s]?evidence|reference[-\s]?image|hero(?:\.png)?|style[-\s]?constraints|visual[-\s]?system|palette|surface[-\s]?system|current[-\s]?ui[-\s]?surfaces|screenshot|before[-\s]?after)\b/i
+    .test(gateIdentityText(node));
+}
+
 function normalizeDiscoveryPlanningGateConfig(node) {
   const config = node.config = node.config || {};
+  if (gateLooksGoalCriticalDiscovery(node)) {
+    if (!config.onFail) config.onFail = 'warn';
+    config.advisory = false;
+    config.requiredForCompletion = true;
+    config.blocksCompletion = true;
+    config.qualityGate = true;
+    config.warningDoesNotPass = true;
+    if (!config.gateKind) config.gateKind = 'goal-critical-discovery';
+    if (config.failureRouting === undefined) config.failureRouting = 'strict-revise';
+    config.discoveryPlanningGateHardened = true;
+    return;
+  }
   config.onFail = 'warn';
   config.advisory = true;
   config.requiredForCompletion = false;
@@ -1469,18 +1494,63 @@ function normalizeDiscoveryPlanningGateConfig(node) {
 }
 
 function normalizeDiscoveryPlanningGates(nodes, transitions) {
-  const planningGateIds = new Set();
+  const advisoryPlanningGateIds = new Set();
   for (const node of nodes) {
     if (!gateLooksLikeDiscoveryPlanning(node, nodes)) continue;
-    planningGateIds.add(node.id);
     normalizeDiscoveryPlanningGateConfig(node);
+    if (node.config?.advisory === true) advisoryPlanningGateIds.add(node.id);
   }
-  if (!planningGateIds.size) return;
+  if (!advisoryPlanningGateIds.size) return;
   for (let index = transitions.length - 1; index >= 0; index -= 1) {
     const transition = transitions[index];
-    if (!planningGateIds.has(transition.from)) continue;
+    if (!advisoryPlanningGateIds.has(transition.from)) continue;
     if (!GATE_REVISE_CONDITIONS.has(transitionCondition(transition))) continue;
     transitions.splice(index, 1);
+  }
+}
+
+function gateOutgoingConditions(gate, transitions = []) {
+  return transitions
+    .filter(transition => transition.from === gate.id)
+    .map(transition => canonicalGateCondition(transitionCondition(transition)) || normalizedConditionText(transitionCondition(transition)))
+    .filter(Boolean);
+}
+
+function gateLooksLikeCompletionQuality(node) {
+  if (!node || node.type !== 'orpad.gate') return false;
+  return /\b(ui[-\s]?copy|editorial|visual[-\s]?polish|visual[-\s]?quality|theme[-\s]?matrix|theme[-\s]?token|workflow[-\s]?regression|regression[-\s]?gate|package[-\s]?release|release[-\s]?gate|queue[-\s]?drain|verification[-\s]?gate|quality[-\s]?gate|done[-\s]?gate)\b/i
+    .test(gateIdentityText(node));
+}
+
+function hardenGateAsRequiredQuality(gate, reason) {
+  const config = gate.config = gate.config || {};
+  if (config.advisory === true || config.auditOnly === true) return false;
+  config.requiredForCompletion = true;
+  config.blocksCompletion = true;
+  config.qualityGate = true;
+  if (!config.gateKind) config.gateKind = reason;
+  if (!config.onFail) config.onFail = 'warn';
+  const onFail = String(config.onFail || '').trim().toLowerCase();
+  if (['warn', 'continue', 'continue-with-warning'].includes(onFail)) {
+    config.warningDoesNotPass = true;
+    if (config.failureRouting === undefined) config.failureRouting = 'strict-revise';
+  }
+  config.qualityGateHardened = true;
+  return true;
+}
+
+function hardenPostWorkerQualityGates(nodes, transitions, context = {}) {
+  const artifactIndex = context.artifact ? nodes.indexOf(context.artifact) : nodes.length;
+  for (const gate of nodes.filter(node => node.type === 'orpad.gate')) {
+    const gateIndex = nodes.indexOf(gate);
+    if (!gateRunsAfterWorker(gate, nodes)) continue;
+    if (gateIndex >= artifactIndex) continue;
+    const outgoingConditions = new Set(gateOutgoingConditions(gate, transitions));
+    const hasFailureOrDrainRoute = outgoingConditions.has('revise')
+      || outgoingConditions.has('queue-empty')
+      || outgoingConditions.has('queue-not-empty');
+    if (!hasFailureOrDrainRoute && !gateLooksLikeCompletionQuality(gate)) continue;
+    hardenGateAsRequiredQuality(gate, 'post-worker-quality-gate');
   }
 }
 
@@ -1852,6 +1922,8 @@ function enforceTransitionContracts(rawTransitions, nodes) {
       }
     }
   }
+
+  hardenPostWorkerQualityGates(nodes, transitions, { artifact, lastGateBeforeArtifact });
 
   if (artifact && exit) ensureTransition(transitions, seenIds, artifact.id, exit.id);
   return dedupeDecisionConditionTargets(dedupeRawTransitions(transitions), nodes, {
