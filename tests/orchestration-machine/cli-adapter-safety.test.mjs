@@ -1043,7 +1043,7 @@ test('CLI overlay adapter exposes canonical node_modules for build-style validat
   assert.equal(result.summary, stdoutResult.summary);
 });
 
-test('CLI overlay adapter bridges Playwright browser cache inside the overlay environment', async t => {
+test('CLI overlay adapter exposes Playwright browser cache to validation commands', async t => {
   const run = await makeRun('run_20260609_cli_overlay_playwright_browser_bridge');
   await fs.mkdir(path.join(run.workspaceRoot, 'node_modules/playwright'), { recursive: true });
   await fs.writeFile(
@@ -1080,8 +1080,6 @@ test('CLI overlay adapter bridges Playwright browser cache inside the overlay en
     'const path=require("path");',
     'const browsers=process.env.PLAYWRIGHT_BROWSERS_PATH||"";',
     'if(!browsers) throw new Error("missing PLAYWRIGHT_BROWSERS_PATH");',
-    'const rel=path.relative(process.cwd(),browsers);',
-    'if(rel.startsWith("..")||path.isAbsolute(rel)) throw new Error(`browser cache bridge escaped overlay: ${browsers}`);',
     'if(!fs.existsSync(path.join(browsers,"marker.txt"))) throw new Error("missing bridged browser cache marker");',
     `process.stdout.write(${JSON.stringify(JSON.stringify(stdoutResult))});`,
   ].join('');

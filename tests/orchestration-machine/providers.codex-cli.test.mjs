@@ -110,10 +110,13 @@ test('codexCliExecArgs can route long prompts through stdin', () => {
   const args = codexCliExecArgs({
     sandbox: 'read-only',
     approvalPolicy: 'never',
+    addDirs: ['/tmp/worker-browser-cache'],
     outputSchemaPath: '/tmp/worker-result-output.schema.json',
     promptViaStdin: true,
     ephemeral: true,
   });
+  assert.equal(args.includes('--add-dir'), true);
+  assert.equal(args[args.indexOf('--add-dir') + 1], '/tmp/worker-browser-cache');
   assert.equal(args.includes('--output-schema'), true);
   assert.equal(args[args.indexOf('--output-schema') + 1], '/tmp/worker-result-output.schema.json');
   assert.equal(args.at(-1), '-');
@@ -210,6 +213,7 @@ test('codex plugin buildWorkerCommandSpec produces stable codex CLI args from a 
       workerSandbox: 'workspace-write',
       approvalPolicy: 'never',
       ephemeral: true,
+      workerExposePlaywrightBrowsers: false,
     },
     prompt: 'Hello worker.',
     overlayRoot: '/tmp/overlay',
@@ -226,6 +230,37 @@ test('codex plugin buildWorkerCommandSpec produces stable codex CLI args from a 
   assert.equal(spec.args.includes('--ephemeral'), true);
   assert.equal(spec.args.at(-1), '-');
   assert.equal(spec.stdin, 'Hello worker.');
+});
+
+test('codex plugin exposes Playwright browser cache to workspace-write sandbox', async t => {
+  const plugin = getProviderPlugin('codex-cli');
+  const browserCache = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-codex-playwright-cache-'));
+  t.after(() => fs.rm(browserCache, { recursive: true, force: true }));
+
+  const spec = plugin.buildWorkerCommandSpec({
+    adapter: {
+      command: process.execPath,
+      commandPrefixArgs: ['/tmp/fake-codex.js'],
+      workerPlaywrightBrowsersPath: browserCache,
+    },
+    prompt: 'Hello worker.',
+    overlayRoot: '/tmp/overlay',
+  });
+
+  assert.equal(spec.args.includes('--add-dir'), true);
+  assert.equal(spec.args[spec.args.indexOf('--add-dir') + 1], path.resolve(browserCache));
+
+  const disabledSpec = plugin.buildWorkerCommandSpec({
+    adapter: {
+      command: process.execPath,
+      commandPrefixArgs: ['/tmp/fake-codex.js'],
+      workerPlaywrightBrowsersPath: browserCache,
+      workerExposePlaywrightBrowsers: false,
+    },
+    prompt: 'Hello worker.',
+    overlayRoot: '/tmp/overlay',
+  });
+  assert.equal(disabledSpec.args.includes('--add-dir'), false);
 });
 
 test('codex plugin adds worker output schema only when explicitly enabled', () => {

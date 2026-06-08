@@ -1,4 +1,5 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const { registerArtifact } = require('../../artifacts');
@@ -121,6 +122,40 @@ function normalizeApprovalPolicy(value) {
   return 'never';
 }
 
+function directoryExists(filePath) {
+  try {
+    return fs.statSync(filePath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function defaultPlaywrightBrowsersPath() {
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    return path.join(localAppData, 'ms-playwright');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+  }
+  return path.join(os.homedir(), '.cache', 'ms-playwright');
+}
+
+function workerSandboxAddDirs(adapter = {}) {
+  const configuredDirs = Array.isArray(adapter.workerAddDirs) ? adapter.workerAddDirs : [];
+  const dirs = configuredDirs.map(item => String(item || '').trim()).filter(Boolean);
+  if (adapter.workerExposePlaywrightBrowsers !== false) {
+    const configuredBrowsersPath = String(
+      adapter.workerPlaywrightBrowsersPath || process.env.PLAYWRIGHT_BROWSERS_PATH || '',
+    ).trim();
+    if (configuredBrowsersPath !== '0') {
+      const browsersPath = path.resolve(configuredBrowsersPath || defaultPlaywrightBrowsersPath());
+      if (directoryExists(browsersPath)) dirs.push(browsersPath);
+    }
+  }
+  return [...new Set(dirs.map(item => path.resolve(item)))];
+}
+
 function codexCliExecArgs(options = {}) {
   const args = [
     ...(Array.isArray(options.prefixArgs) ? options.prefixArgs.map(arg => String(arg)) : []),
@@ -136,6 +171,9 @@ function codexCliExecArgs(options = {}) {
     `approval_policy='${normalizeApprovalPolicy(options.approvalPolicy)}'`,
     '--skip-git-repo-check',
   );
+  for (const addDir of Array.isArray(options.addDirs) ? options.addDirs : []) {
+    if (addDir) args.push('--add-dir', String(addDir));
+  }
   if (options.outputLastMessagePath) {
     args.push('--output-last-message', options.outputLastMessagePath);
   }
@@ -390,6 +428,7 @@ function buildWorkerCommandSpec(input = {}) {
   const outputLastMessagePath = adapter.workerOutputLastMessagePath
     || `orpad-worker-result-${idSegment(request.adapterCallId || 'worker')}.json`;
   const outputSchemaPath = resolveWorkerOutputSchemaPath(adapter);
+  const addDirs = workerSandboxAddDirs(adapter);
   return {
     command: invocation.command,
     args: codexCliExecArgs({
@@ -397,6 +436,7 @@ function buildWorkerCommandSpec(input = {}) {
       sandbox: adapter.workerSandbox || adapter.sandbox || 'workspace-write',
       approvalPolicy: adapter.approvalPolicy || 'never',
       dangerouslyBypassApprovalsAndSandbox: adapter.bypassLlmApprovals === true,
+      addDirs,
       outputLastMessagePath,
       outputSchemaPath,
       promptViaStdin: true,

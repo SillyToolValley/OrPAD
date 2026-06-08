@@ -539,9 +539,9 @@ async function workspaceHasPlaywright(nodeModules) {
     || directoryExists(path.join(nodeModules, 'playwright-core'));
 }
 
-async function bridgePlaywrightBrowsersIntoOverlay(options = {}) {
-  const { workspaceRoot = '', overlayRoot = '', extraEnv = {} } = options;
-  if (!workspaceRoot || !overlayRoot) return extraEnv;
+async function exposePlaywrightBrowsersToValidationEnv(options = {}) {
+  const { workspaceRoot = '', extraEnv = {} } = options;
+  if (!workspaceRoot) return extraEnv;
   const nodeModules = path.join(path.resolve(workspaceRoot), 'node_modules');
   if (!(await workspaceHasPlaywright(nodeModules))) return extraEnv;
 
@@ -553,18 +553,10 @@ async function bridgePlaywrightBrowsersIntoOverlay(options = {}) {
   const browserCache = path.resolve(configuredBrowsersPath || defaultPlaywrightBrowsersPath());
   if (!(await directoryExists(browserCache))) return extraEnv;
 
-  const bridgePath = path.join(path.resolve(overlayRoot), 'node_modules', '.cache', 'ms-playwright');
-  try {
-    await fsp.rm(bridgePath, { recursive: true, force: true });
-    await fsp.mkdir(path.dirname(bridgePath), { recursive: true });
-    await fsp.symlink(browserCache, bridgePath, process.platform === 'win32' ? 'junction' : 'dir');
-    return {
-      ...extraEnv,
-      PLAYWRIGHT_BROWSERS_PATH: bridgePath,
-    };
-  } catch {
-    return extraEnv;
-  }
+  return {
+    ...extraEnv,
+    PLAYWRIGHT_BROWSERS_PATH: browserCache,
+  };
 }
 
 async function canonicalDependencyEnv(workspaceRoot, baseExtraEnv = {}, options = {}) {
@@ -586,9 +578,8 @@ async function canonicalDependencyEnv(workspaceRoot, baseExtraEnv = {}, options 
   ];
   extraEnv.NODE_PATH = [...new Set(nodePathParts)].join(path.delimiter);
   extraEnv.PATH = [...new Set(pathParts)].join(path.delimiter);
-  return bridgePlaywrightBrowsersIntoOverlay({
+  return exposePlaywrightBrowsersToValidationEnv({
     workspaceRoot,
-    overlayRoot: options.overlayRoot || '',
     extraEnv,
   });
 }
@@ -736,9 +727,11 @@ function createCliAgentAdapter(options = {}) {
               ...overlay,
               cleanupPlanned: cleanupSystemOverlay,
               canonicalNodeModulesAvailable: Boolean(processExtraEnv.NODE_PATH),
+              playwrightBrowsersPathAvailable: Boolean(
+                processExtraEnv.PLAYWRIGHT_BROWSERS_PATH,
+              ),
               playwrightBrowsersPathBridged: Boolean(
-                processExtraEnv.PLAYWRIGHT_BROWSERS_PATH
-                && isInsideResolvedPath(overlay.overlayRoot, processExtraEnv.PLAYWRIGHT_BROWSERS_PATH),
+                processExtraEnv.PLAYWRIGHT_BROWSERS_PATH,
               ),
             },
             containment,
