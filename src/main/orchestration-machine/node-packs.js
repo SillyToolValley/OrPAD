@@ -809,7 +809,7 @@ const STARTER_NODE_PACK_MANIFESTS = [
         'UI behavior findings should target renderer/web source and CSS implementation files first. Include focused e2e files in targetFiles only when the user explicitly asked to author or repair the verification harness.',
         'Context-menu or inspector findings should name the exact state transition and the UI surface where it appears.',
         'Do not treat visual verification as optional when the change affects layout, changed UI surfaces, menus, canvas controls, or reference styling.',
-        'Reference-image findings should target the palette/theme source and CSS surface system. Keep reference images, generated screenshots, and existing visual smoke coverage as source evidence/read-only context unless the user explicitly requests harness edits.',
+        'Reference-image findings should target the palette/theme source, CSS surface system, and representative markup/component files when the requested reference is a hero, layout, composition, or surface hierarchy. Keep reference images, generated screenshots, and existing visual smoke coverage as source evidence/read-only context unless the user explicitly requests harness edits.',
         'Before/after visual evidence must be captured from the changed UI surface or recorded as a concrete blocker; do not satisfy visual evidence by fabricating standalone placeholder or synthetic PNGs.',
       ],
       rule: {

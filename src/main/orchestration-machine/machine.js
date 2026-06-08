@@ -1088,7 +1088,8 @@ function visualReferenceTaskPromptLines(taskText = '') {
     '- Rank candidates by direct overlap with the user-requested nouns and files. The top candidate must target the requested hero/theme/palette/surface system when those words appear in the user task.',
     '- Do not rank incidental reference subcomponents such as terminal/editor/card details above the requested hero/theme/palette/surface work unless the user explicitly named that subcomponent.',
     '- For visual-reference work, candidate evidence and acceptanceCriteria must mention the reference path plus palette, surface hierarchy, typography/material cues, and before/after visual evidence or a concrete blocker.',
-    '- For visual-reference UI/theme work, targetFiles must be implementation files by default. Keep reference images, Playwright/e2e specs, generated screenshots, and visual smoke harness files as read-only evidence unless the user explicitly requested test-harness authoring.',
+    '- For visual-reference UI/theme work, targetFiles must be implementation files by default. Include representative markup/component files when the requested reference is a hero, layout, composition, or surface hierarchy that cannot be achieved by tokens/CSS alone.',
+    '- Keep reference images, Playwright/e2e specs, generated screenshots, and visual smoke harness files as read-only evidence unless the user explicitly requested test-harness authoring.',
     '- Do not propose synthetic placeholder PNG generation as visual evidence. Screenshot evidence must come from the changed UI surface, or the candidate must record the concrete screenshot blocker.',
   ];
 }
@@ -1166,12 +1167,13 @@ function liveProbePrompt(input = {}) {
     `Return at most ${candidateLimit} candidateProposals.`,
     'Use current, concrete evidence only. Prefer a small user-visible, source-of-truth fix.',
     'The first candidate must be the closest direct match to the user task, not merely a related issue found during inspection.',
-    'Every candidate must be small enough for one worker to finish and emit its JSON contract within the worker timeout. Do not propose whole-surface overhauls, full redesigns, or multi-area rewrites.',
-    'Keep each candidate to a bounded slice: at most two implementation files plus one focused test file. If renderer.js or base.css is involved, scope the title and criteria to one component/selector/state, not an entire surface.',
+    'Every candidate must be small enough for one worker to finish and emit its JSON contract within the worker timeout. Do not propose full-app redesigns, unrelated surface overhauls, or multi-area rewrites.',
+    'Keep each candidate to a bounded slice: at most two implementation files plus one focused test file. For visual-reference hero/layout composition work, at most three implementation files are allowed when one is the representative markup/component file needed to express the composition. If renderer.js or base.css is involved, scope the title and criteria to one component/selector/state, not an entire app surface.',
     'Keep acceptanceCriteria focused: no more than three concrete criteria unless the item is only a read-only/test item.',
     'If no actionable current finding is visible for this node, return status "done", candidateProposals: [], and an evidence-backed emptyPass.',
     'Do not create broad refactor candidates. Do not make generated latest-run evidence files the only sourceOfTruthTargets.',
     'For visual-reference UI/theme work, do not put tests/e2e, Playwright specs, test-results, or screenshot artifact files in targetFiles when implementation files are available; use those files as sourceOfTruthTargets/read-only evidence unless the user explicitly asked to repair the verification harness.',
+    'For visual-reference hero/layout work, do not reduce a composition mismatch to palette-only targetFiles when the current markup is a placeholder; include the representative markup/component file plus its focused CSS/theme files.',
   ].join('\n');
 }
 
@@ -1248,6 +1250,7 @@ function buildLiveWorkerPrompt(input = {}) {
     'Work to a hard timebox: make the smallest acceptance-criteria slice that fits the allowedFiles, then stop and emit the JSON result. The JSON result is mandatory and has priority over additional polish.',
     'Run at most one build/visual validation attempt before emitting the JSON result. If it fails, record the exact blocker in verification instead of continuing to iterate.',
     'For CSS/theme work, keep the diff compact: change the smallest token/rule set needed for the representative surface instead of adding a full visual system.',
+    'For visual-reference hero/layout composition work, implement enough structure in the allowed markup/component file to express the reference composition; do not stop at palette-only styling when the current markup is only a placeholder.',
     'Do not attempt broad visual overhauls or full-surface rewrites inside one worker claim. If the claim is too broad to complete safely in one pass, implement the smallest coherent slice or return status "blocked" with the precise smaller follow-up split.',
     'For docs, slides, tutorials, or other content work, OrPAD will independently evaluate the diff after patch review; leave concrete removals, merges, rewrites, and focused validation evidence instead of only claiming editorial quality in the summary.',
   ].join('\n');
