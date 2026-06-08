@@ -1089,6 +1089,7 @@ function visualReferenceTaskPromptLines(taskText = '') {
     '- Do not rank incidental reference subcomponents such as terminal/editor/card details above the requested hero/theme/palette/surface work unless the user explicitly named that subcomponent.',
     '- For visual-reference work, candidate evidence and acceptanceCriteria must mention the reference path plus palette, surface hierarchy, typography/material cues, and before/after visual evidence or a concrete blocker.',
     '- For visual-reference UI/theme work, targetFiles must be implementation files by default. Include representative markup/component files when the requested reference is a hero, layout, composition, or surface hierarchy that cannot be achieved by tokens/CSS alone.',
+    '- For visual-reference hero/layout composition work, propose a representative composition slice, not an exhaustive recreation: one central surface plus up to three supporting modules/panels is enough for one worker.',
     '- Keep reference images, Playwright/e2e specs, generated screenshots, and visual smoke harness files as read-only evidence unless the user explicitly requested test-harness authoring.',
     '- Do not propose synthetic placeholder PNG generation as visual evidence. Screenshot evidence must come from the changed UI surface, or the candidate must record the concrete screenshot blocker.',
   ];
@@ -1174,6 +1175,7 @@ function liveProbePrompt(input = {}) {
     'Do not create broad refactor candidates. Do not make generated latest-run evidence files the only sourceOfTruthTargets.',
     'For visual-reference UI/theme work, do not put tests/e2e, Playwright specs, test-results, or screenshot artifact files in targetFiles when implementation files are available; use those files as sourceOfTruthTargets/read-only evidence unless the user explicitly asked to repair the verification harness.',
     'For visual-reference hero/layout work, do not reduce a composition mismatch to palette-only targetFiles when the current markup is a placeholder; include the representative markup/component file plus its focused CSS/theme files.',
+    'For visual-reference hero/layout work, acceptanceCriteria must fit one bounded representative composition slice, not every sub-panel visible in the reference image.',
   ].join('\n');
 }
 
@@ -1251,6 +1253,8 @@ function buildLiveWorkerPrompt(input = {}) {
     'Run at most one build/visual validation attempt before emitting the JSON result. If it fails, record the exact blocker in verification instead of continuing to iterate.',
     'For CSS/theme work, keep the diff compact: change the smallest token/rule set needed for the representative surface instead of adding a full visual system.',
     'For visual-reference hero/layout composition work, implement enough structure in the allowed markup/component file to express the reference composition; do not stop at palette-only styling when the current markup is only a placeholder.',
+    'For visual-reference hero/layout composition work, keep the slice small: one central surface plus up to three supporting modules/panels, concise markup, and roughly 180 CSS lines or fewer. Do not exhaustively recreate every reference sub-panel.',
+    'After the first validation command or screenshot inspection, immediately write the required JSON result. Do not spend remaining time on extra polish, extra diffs, or additional inspection.',
     'Do not attempt broad visual overhauls or full-surface rewrites inside one worker claim. If the claim is too broad to complete safely in one pass, implement the smallest coherent slice or return status "blocked" with the precise smaller follow-up split.',
     'For docs, slides, tutorials, or other content work, OrPAD will independently evaluate the diff after patch review; leave concrete removals, merges, rewrites, and focused validation evidence instead of only claiming editorial quality in the summary.',
   ].join('\n');

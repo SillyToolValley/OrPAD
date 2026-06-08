@@ -801,11 +801,13 @@ test('live proposal prompt honors generated candidate limit for collect-all-visi
   assert.equal(prompt.includes('Do not rank incidental reference subcomponents'), true);
   assert.equal(prompt.includes('targetFiles must be implementation files by default'), true);
   assert.equal(prompt.includes('Include representative markup/component files'), true);
+  assert.equal(prompt.includes('one central surface plus up to three supporting modules/panels'), true);
   assert.equal(prompt.includes('Do not propose synthetic placeholder PNG generation as visual evidence'), true);
   assert.equal(prompt.includes('Do not propose full-app redesigns'), true);
   assert.equal(prompt.includes('at most three implementation files are allowed'), true);
   assert.equal(prompt.includes('do not put tests/e2e, Playwright specs, test-results, or screenshot artifact files in targetFiles'), true);
   assert.equal(prompt.includes('do not reduce a composition mismatch to palette-only targetFiles'), true);
+  assert.equal(prompt.includes('not every sub-panel visible in the reference image'), true);
 });
 
 test('live worker prompt requires concrete visual-reference evidence or blockers', () => {
@@ -842,6 +844,8 @@ test('live worker prompt requires concrete visual-reference evidence or blockers
   assert.equal(prompt.includes('Run at most one build/visual validation attempt before emitting the JSON result'), true);
   assert.equal(prompt.includes('For CSS/theme work, keep the diff compact'), true);
   assert.equal(prompt.includes('implement enough structure in the allowed markup/component file'), true);
+  assert.equal(prompt.includes('roughly 180 CSS lines or fewer'), true);
+  assert.equal(prompt.includes('immediately write the required JSON result'), true);
 });
 
 test('failed worker patch artifacts are not eligible for patch review auto-apply', () => {
