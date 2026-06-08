@@ -273,7 +273,7 @@ async function collectOverlayPatch(options = {}) {
     const after = await readFileSnapshotIfExists(resolveWorkspacePath(overlayRoot, relPath));
     if (!allowedPath) {
       if ((before?.sha256 || '') !== (after?.sha256 || '')) {
-        if (before === null && after !== null && isIgnoredOverlayGeneratedArtifactPath(relPath)) {
+        if (after !== null && isIgnoredOverlayGeneratedArtifactPath(relPath)) {
           ignoredGeneratedFiles.push({
             path: relPath,
             reason: ignoredOverlayGeneratedArtifactReason(relPath),

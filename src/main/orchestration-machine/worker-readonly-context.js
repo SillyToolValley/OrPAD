@@ -46,7 +46,15 @@ const DEFAULT_VALIDATION_CONTEXT_FILES = Object.freeze([
   'scripts',
 ]);
 
+const DEFAULT_VISUAL_RENDER_CONTEXT_FILES = Object.freeze([
+  'index.html',
+  'public',
+  'src/renderer',
+  'src/web',
+]);
+
 const VALIDATION_CONTEXT_RE = /\b(npm|pnpm|yarn|bun|node\s+--test|node\s+tests?\/|playwright|vitest|jest|cypress|storybook|vite|webpack|next|eslint|tsc|typecheck|build|test:|visual|screenshot|renderer|browser|e2e)\b/i;
+const VISUAL_RENDER_CONTEXT_RE = /\b(visual|screenshot|browser|e2e|playwright|renderer|hero|theme|surface)\b/i;
 
 function itemValidationText(item = {}) {
   return [
@@ -63,9 +71,12 @@ function itemValidationText(item = {}) {
 }
 
 function defaultValidationContextFilesForItem(item = {}) {
-  return VALIDATION_CONTEXT_RE.test(itemValidationText(item))
-    ? DEFAULT_VALIDATION_CONTEXT_FILES
-    : [];
+  const text = itemValidationText(item);
+  if (!VALIDATION_CONTEXT_RE.test(text)) return [];
+  return [
+    ...DEFAULT_VALIDATION_CONTEXT_FILES,
+    ...(VISUAL_RENDER_CONTEXT_RE.test(text) ? DEFAULT_VISUAL_RENDER_CONTEXT_FILES : []),
+  ];
 }
 
 function readOnlyFilesForClaim(claim = {}) {
@@ -82,6 +93,7 @@ function readOnlyFilesForClaim(claim = {}) {
 
 module.exports = {
   DEFAULT_VALIDATION_CONTEXT_FILES,
+  DEFAULT_VISUAL_RENDER_CONTEXT_FILES,
   defaultValidationContextFilesForItem,
   readOnlyFilesForClaim,
 };

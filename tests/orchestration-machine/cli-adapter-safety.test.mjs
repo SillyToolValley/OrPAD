@@ -489,6 +489,74 @@ test('CLI overlay adapter ignores new generated build output outside the write s
   }]);
 });
 
+test('CLI overlay adapter ignores modified generated build output outside the write set', async () => {
+  const run = await makeRun('run_20260430_cli_modified_build_output');
+  await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
+  await fs.mkdir(path.join(run.workspaceRoot, 'dist/styles'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'src/allowed.txt'), 'before\n', 'utf8');
+  await fs.writeFile(path.join(run.workspaceRoot, 'dist/styles/base.css'), 'old build css\n', 'utf8');
+
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['src/allowed.txt'],
+    adapterCallId: 'cli-modified-build-output-call',
+    attemptId: 'cli-modified-build-output-attempt-1',
+    idempotencyKey: 'cli-modified-build-output-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("src",{recursive:true});',
+    'fs.writeFileSync("src/allowed.txt","after\\n");',
+    'fs.mkdirSync("dist/styles",{recursive:true});',
+    'fs.writeFileSync("dist/styles/base.css","new build css\\n");',
+    'process.stdout.write(JSON.stringify({',
+    'schemaVersion:"orpad.workerResult.v1",',
+    `adapterCallId:${JSON.stringify(request.adapterCallId)},`,
+    `attemptId:${JSON.stringify(request.attemptId)},`,
+    `idempotencyKey:${JSON.stringify(request.idempotencyKey)},`,
+    'status:"done",summary:"Changed source and rebuilt generated CSS.",artifacts:[]',
+    '}));',
+  ].join('');
+  const commandSpec = {
+    command: process.execPath,
+    args: ['-e', script],
+    cwd: overlayRoot,
+  };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-modified-build-output',
+      expiresAt: '2026-04-30T01:00:00.000Z',
+    })],
+    now: '2026-04-30T00:00:30.000Z',
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.deepEqual(result.changedFiles, ['src/allowed.txt']);
+  assert.equal(result.verification[0].writeSetViolationCount, 0);
+  assert.equal(result.verification[0].ignoredGeneratedFileCount, 1);
+
+  const patch = JSON.parse(await fs.readFile(path.join(run.runRoot, result.patchArtifact), 'utf8'));
+  assert.deepEqual(patch.violations, []);
+  assert.deepEqual(patch.changes.map(change => change.path), ['src/allowed.txt']);
+  assert.deepEqual(patch.ignoredGeneratedFiles, [{
+    path: 'dist/styles/base.css',
+    reason: 'overlay-generated-build-output',
+  }]);
+});
+
 test('CLI overlay adapter refuses to run without an exact command grant', async () => {
   const run = await makeRun('run_20260430_cli_grant_block');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
@@ -843,6 +911,7 @@ test('worker read-only context includes package metadata for project validation 
   assert.equal(readOnlyFiles.includes('package.json'), true);
   assert.equal(readOnlyFiles.includes('playwright.config.js'), true);
   assert.equal(readOnlyFiles.includes('scripts'), true);
+  assert.equal(readOnlyFiles.includes('src/renderer'), true);
 });
 
 test('CLI overlay adapter extracts worker result JSON nested inside provider result text', async () => {
