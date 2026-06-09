@@ -280,7 +280,7 @@ async function scanRunbookWorkspace(workspaceRoot) {
           item.displayName = manifestSummary.displayName;
           item.pipelineId = manifestSummary.pipelineId;
           item.description = manifestSummary.description;
-          item.template = manifestSummary.template || !isWorkspacePipelinePackageFile(workspaceRoot, entryPath);
+          item.template = !isWorkspacePipelinePackageFile(workspaceRoot, entryPath);
           if (item.template) templatePipelines.push(item);
           else pipelines.push(item);
           runbooks.push(item);

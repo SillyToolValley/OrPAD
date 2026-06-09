@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fsp = require('fs/promises');
 
-const WORKSPACE_INDEX_CACHE_VERSION = 1;
+const WORKSPACE_INDEX_CACHE_VERSION = 2;
 
 function normalizeWorkspaceRoot(workspaceRoot) {
   const resolved = path.resolve(String(workspaceRoot || ''));
@@ -86,7 +86,8 @@ async function writeWorkspaceIndexCache(app, workspaceRoot, summary = {}) {
 async function readWorkspaceIndexCache(app, workspaceRoot) {
   if (!app || !workspaceRoot) return null;
   const raw = await fsp.readFile(cachePath(app, workspaceRoot), 'utf-8');
-  return JSON.parse(raw);
+  const snapshot = JSON.parse(raw);
+  return snapshot?.version === WORKSPACE_INDEX_CACHE_VERSION ? snapshot : null;
 }
 
 module.exports = {

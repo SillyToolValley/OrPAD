@@ -132,6 +132,44 @@ function writeFixtureWorkspace(): string {
     },
     graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
   }, null, 2));
+  const copiedRalphRoot = path.join(workspace, '.orpad', 'pipelines', 'ralph-verify-fix-loop-copy');
+  fs.mkdirSync(path.join(copiedRalphRoot, 'graphs'), { recursive: true });
+  fs.writeFileSync(path.join(copiedRalphRoot, 'graphs', 'main.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'ralph-verify-fix-loop-copy',
+      nodes: [
+        { id: 'context', type: 'orpad.context', label: 'Context', config: { summary: 'Review the failing loop.' } },
+        { id: 'probe', type: 'orpad.probe', label: 'Probe', config: { lens: 'ralph-loop', maxCandidates: 1 } },
+      ],
+      transitions: [],
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(copiedRalphRoot, 'pipeline.or-pipeline'), JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'ralph-verify-fix-loop-copy',
+    title: 'Ralph Verify Fix Loop Copy',
+    description: 'Copied Ralph template that should run as a workspace pipeline once materialized.',
+    template: true,
+    trustLevel: 'local-authored',
+    entryGraph: 'graphs/main.or-graph',
+    nodePacks: [
+      { id: 'orpad.core', version: '>=1.0.0-beta.3', origin: 'built-in' },
+      { id: 'orpad.workstream', version: '>=0.1.0', origin: 'built-in' },
+    ],
+    executionPolicy: {
+      mode: 'template-only',
+      copyBeforeRun: true,
+    },
+    run: {
+      artifactRoot: 'harness/generated/latest-run/artifacts',
+      queueRoot: 'harness/generated/latest-run/queue',
+      metadataPath: 'harness/generated/latest-run/run-metadata.json',
+    },
+    graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
+  }, null, 2));
   const templateRoot = path.join(workspace, 'nodes', 'orpad.workstream', 'examples');
   fs.mkdirSync(templateRoot, { recursive: true });
   fs.writeFileSync(path.join(templateRoot, 'maintenance-workstream.or-pipeline'), JSON.stringify({
@@ -196,12 +234,15 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   const legacySection = win.locator('[data-runbook-section="legacy"]');
   await expect(pipelinesSection.locator('.runbook-item[data-runbook-format="or-pipeline"]')
     .filter({ has: win.locator('strong').filter({ hasText: /^Agent Workstream$/ }) })).toBeVisible();
+  await expect(pipelinesSection.locator('.runbook-item[data-runbook-format="or-pipeline"]')
+    .filter({ has: win.locator('strong').filter({ hasText: /^Ralph Verify Fix Loop Copy$/ }) })).toBeVisible();
   await expect(pipelinesSection).not.toContainText('.orpad/pipelines');
   await expect(pipelinesSection).not.toContainText('pipeline.or-pipeline');
   await expect(pipelinesSection).not.toContainText('Maintenance Workstream Example');
-  await expect(pipelinesSection).toContainText('2 pipelines');
+  await expect(pipelinesSection).toContainText('3 pipelines');
   await expect(templatesSection).toContainText('Templates');
   await expect(templatesSection).toContainText('Maintenance Workstream Example');
+  await expect(templatesSection).not.toContainText('Ralph Verify Fix Loop Copy');
   await expect(templatesSection).toContainText('1 template');
   await expect(templatesSection).not.toContainText('nodes/orpad.workstream');
   await expect(templatesSection).not.toContainText('maintenance-workstream.or-pipeline');
@@ -211,7 +252,7 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(legacySection).toContainText('1 legacy flow');
   const workspaceMeta = win.locator('[data-runbook-workspace-meta]');
   await expect(workspaceMeta).toContainText(path.basename(workspace));
-  await expect(workspaceMeta).toContainText('2 pipelines');
+  await expect(workspaceMeta).toContainText('3 pipelines');
   await expect(workspaceMeta).toContainText('1 legacy flow');
   await expect(workspaceMeta).not.toContainText(workspace);
   await expect(workspaceMeta).toHaveAttribute('title', workspace.replace(/\\/g, '/'));
@@ -224,8 +265,10 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   expect(Array.isArray(cachedIndex.pipelines)).toBe(true);
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/agent-workstream/pipeline.or-pipeline');
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/default-agent-workstream/pipeline.or-pipeline');
+  expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/ralph-verify-fix-loop-copy/pipeline.or-pipeline');
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).not.toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
   expect(cachedIndex.templatePipelines.map((item: { path: string }) => item.path)).toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
+  expect(cachedIndex.templatePipelines.map((item: { path: string }) => item.path)).not.toContain('.orpad/pipelines/ralph-verify-fix-loop-copy/pipeline.or-pipeline');
   expect(cachedIndex.legacyRunbooks.map((item: { path: string }) => item.path)).toContain('.orch-tree.json');
   expect(cachedIndex.redaction.contentIncluded).toBe(false);
   expect(cachedIndex.redaction.candidates.map((item: { path: string }) => item.path)).toContain('.env');
