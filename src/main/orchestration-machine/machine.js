@@ -3789,20 +3789,67 @@ function isWorkerDependentCompletionGate(node = {}) {
   return /\b(worker|work[-\s]?item|work result|accepted worker proof|content[-\s]?editorial|editorial evaluation|evidence[-\s]?quality|queue empty)\b/i.test(text);
 }
 
-function latestAdapterResultFailures(events = []) {
+function graphKeyFromNodePath(nodePath) {
+  const parts = String(nodePath || '').split('/').filter(Boolean);
+  if (parts.length <= 1) return '';
+  return parts.slice(0, -1).join('/');
+}
+
+function resolveBarrierWaitForPath(barrierNode = {}, ref = '') {
+  const value = String(ref || '').trim();
+  if (!value) return '';
+  if (value.includes('/')) return value;
+  const graphKey = barrierNode.graphKey || graphKeyFromNodePath(barrierNode.nodePath);
+  return graphKey ? `${graphKey}/${value}` : value;
+}
+
+function partialFailureBarrierCoversAdapterFailure(event, events = [], orderedNodes = []) {
+  const nodePath = String(event?.nodePath || '').trim();
+  if (!nodePath || !Array.isArray(orderedNodes) || !orderedNodes.length) return false;
+  const failedNode = orderedNodes.find(node => node?.nodePath === nodePath);
+  if (failedNode?.nodeType !== 'orpad.probe') return false;
+
+  for (const barrierNode of orderedNodes) {
+    if (barrierNode?.nodeType !== 'orpad.barrier') continue;
+    const config = barrierNode.config || {};
+    if (!Object.prototype.hasOwnProperty.call(config, 'onPartialFailure')) continue;
+    const onPartialFailure = canonicalBarrierPartialFailurePolicy(config.onPartialFailure, config);
+    if (onPartialFailure !== 'continue-with-warning') continue;
+    const waitFor = Array.isArray(config.waitFor)
+      ? config.waitFor.map(ref => resolveBarrierWaitForPath(barrierNode, ref)).filter(Boolean)
+      : [];
+    if (waitFor.length < 2 || !waitFor.includes(nodePath)) continue;
+    const hasResolvedSibling = waitFor.some(refPath => (
+      refPath !== nodePath
+      && Boolean(latestNodeResolvedEvent(events, refPath))
+    ));
+    if (hasResolvedSibling) return true;
+  }
+  return false;
+}
+
+function latestAdapterResultFailures(events = [], options = {}) {
   const latestByCall = new Map();
   for (const event of events) {
     if (event?.eventType !== 'adapter.result') continue;
     const callId = String(event.payload?.adapterCallId || event.payload?.idempotencyKey || event.sequence || '').trim();
     latestByCall.set(callId, event);
   }
-  return [...latestByCall.values()].filter(event => {
+  let failures = [...latestByCall.values()].filter(event => {
     const status = String(event.payload?.status || '').toLowerCase();
     if (!['blocked', 'failed', 'approval-required', 'rejected'].includes(status)) return false;
     if ((Number(event.payload?.proposalCount) || 0) > 0) return false;
     if ((Number(event.payload?.triageTransitionCount) || 0) > 0) return false;
     return true;
-  }).map(event => ({
+  });
+  if (options.ignorePartialFailureProbeAdapters === true) {
+    failures = failures.filter(event => !partialFailureBarrierCoversAdapterFailure(
+      event,
+      events,
+      options.orderedNodes || [],
+    ));
+  }
+  return failures.map(event => ({
     nodePath: event.nodePath || '',
     adapterCallId: event.payload?.adapterCallId || '',
     taskKind: event.payload?.taskKind || '',
@@ -3841,9 +3888,9 @@ function inventoryLooksToolBlocked(inventory = null) {
   return /\b(windows sandbox:\s*spawn setup refresh|sandbox spawn setup|spawn setup refresh|failed before execution|terminal runner|filesystem reads failed before|could not read any source files|could not inspect local workspace|workspace inspection (?:was )?blocked)\b/i.test(text);
 }
 
-async function noActionableWorkDiscovered(runRoot, events = null) {
+async function noActionableWorkDiscovered(runRoot, events = null, options = {}) {
   const machineEvents = events || await readMachineEvents(runRoot);
-  if (latestAdapterResultFailures(machineEvents).length) return false;
+  if (latestAdapterResultFailures(machineEvents, options).length) return false;
   const latest = await readLatestCandidateInventoryArtifact(runRoot, machineEvents);
   const queueItems = await readQueueItems(runRoot);
   const candidateCount = Number(latest?.inventory?.candidateCount) || 0;
@@ -4014,7 +4061,10 @@ async function completionAuditBlock(runRoot, options = {}) {
   });
   const events = await readMachineEvents(runRoot);
   const currentInventory = await summarizeQueueInventory(runRoot);
-  const adapterFailures = latestAdapterResultFailures(events);
+  const adapterFailures = latestAdapterResultFailures(events, {
+    orderedNodes: options.orderedNodes || [],
+    ignorePartialFailureProbeAdapters: true,
+  });
   if (adapterFailures.length) {
     return {
       summaryStatus: 'partial',
@@ -4031,7 +4081,10 @@ async function completionAuditBlock(runRoot, options = {}) {
     };
   }
   const requiredGates = auditRequiredCompletionGates(events, options.orderedNodes || [], {
-    noActionableWorkDiscovered: await noActionableWorkDiscovered(runRoot, events),
+    noActionableWorkDiscovered: await noActionableWorkDiscovered(runRoot, events, {
+      orderedNodes: options.orderedNodes || [],
+      ignorePartialFailureProbeAdapters: true,
+    }),
     currentInventory,
   });
   if (!requiredGates.valid) {
@@ -7092,7 +7145,10 @@ async function executeMachineRunStep(options = {}) {
           if (!probe && probeResults[0]) probe = probeResults[0].result;
         }
         probeFanoutExecuted = true;
-        const blockingProbeFailures = latestAdapterResultFailures(await latestEventsForScheduler())
+        const blockingProbeFailures = latestAdapterResultFailures(await latestEventsForScheduler(), {
+          orderedNodes,
+          ignorePartialFailureProbeAdapters: true,
+        })
           .filter(failure => probeNodePaths.has(failure.nodePath));
         if (blockingProbeFailures.length) {
           stopScheduler = true;
@@ -7555,6 +7611,7 @@ module.exports = {
   selectNodes,
   supportNodesForExecution,
   __test_latestNodeResolvedEvent: latestNodeResolvedEvent,
+  __test_latestAdapterResultFailures: latestAdapterResultFailures,
   __test_activeNodeExecutionsFromEvents: activeNodeExecutionsFromEvents,
   __test_emitGraphDriftWarningIfChanged: emitGraphDriftWarningIfChanged,
   __test_executeTreeWrapper: executeTreeWrapper,

@@ -4872,22 +4872,42 @@ function renderPipelinePreviewRunBar(context = pipelineContextForPath(), pipelin
   const titleControlHtml = IS_ORCHESTRATION_WINDOW
     ? renderOrchestrationPipelineSelectControl(runbookPath, displayTitle)
     : `<strong>${escapeHtml(displayTitle)}</strong>`;
+  const primarySignalTitle = [
+    runStatus.text,
+    runHeaderMetrics.currentNode ? `Currently running: ${runHeaderMetrics.currentNode}` : '',
+  ].filter(Boolean).join(' - ');
+  const secondaryMetaTitle = [
+    activePathTitle ? `Path: ${activePathTitle}` : '',
+    runHeaderMetrics.progressTitle ? `Progress: ${runHeaderMetrics.progressTitle}` : '',
+    runHeaderMetrics.startedAt ? `Started ${runHeaderMetrics.startedAt}` : '',
+    harnessProgress?.title || '',
+    harnessPending && !harnessProgress ? 'Harness implementation request is starting.' : '',
+    harnessBlocked ? (harnessState?.message || 'Harness provisioning blocked.') : '',
+    harnessImplementedAt ? `Harness implemented at ${harnessImplementedAt}` : '',
+    harnessAuthoringBadge?.title || '',
+    externalResearchLimitation || '',
+  ].filter(Boolean).join(' | ');
+  const budgetIndicatorHtml = renderMachineBudgetIndicatorHtml(pipelineDoc);
   const runbarHtml = `
     <div class="pipeline-runbar" data-pipeline-preview-runbar data-pipeline-path="${escapeHtml(runbookPath)}">
       <div class="pipeline-runbar-meta">
-        ${titleControlHtml}
-        <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
-        <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}" role="status" aria-live="polite">${escapeHtml(runStatus.text)}</span>
-        ${runHeaderMetrics.currentNode ? `<span class="pipeline-runbar-current" title="${escapeHtml(`Currently running: ${runHeaderMetrics.currentNode}`)}">${escapeHtml(runHeaderMetrics.currentNode)}</span>` : ''}
-        ${runHeaderMetrics.progressLabel ? `<span class="pipeline-runbar-progress" title="${escapeHtml(runHeaderMetrics.progressTitle || '')}">progress <code>${escapeHtml(runHeaderMetrics.progressLabel)}</code></span>` : ''}
-        ${runHeaderMetrics.elapsed ? `<span class="pipeline-runbar-elapsed" title="${escapeHtml(`Started ${runHeaderMetrics.startedAt}`)}">${escapeHtml(runHeaderMetrics.elapsed)}</span>` : ''}
-        ${harnessProgress ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(harnessProgress.title)}">${escapeHtml(harnessProgress.label)}</span>` : ''}
-        ${harnessPending && !harnessProgress ? '<span class="pipeline-runbar-status warn" title="Harness implementation request is starting.">Starting harness</span>' : ''}
-        ${harnessBlocked ? `<span class="pipeline-runbar-status danger" title="${escapeHtml(harnessState?.message || 'Harness provisioning blocked.')}">Harness blocked</span>` : ''}
-        ${harnessImplementedAt ? `<span class="pipeline-runbar-status done" title="${escapeHtml(`Harness implemented at ${harnessImplementedAt}`)}">Harness ready</span>` : ''}
-        ${harnessAuthoringBadge ? `<span class="pipeline-runbar-status ${escapeHtml(harnessAuthoringBadge.state)}" title="${escapeHtml(harnessAuthoringBadge.title)}">${escapeHtml(harnessAuthoringBadge.label)}</span>` : ''}
-        ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
-        ${renderMachineBudgetIndicatorHtml(pipelineDoc)}
+        <div class="pipeline-runbar-title">${titleControlHtml}</div>
+        <div class="pipeline-runbar-primary-signal" title="${escapeHtml(primarySignalTitle)}">
+          <span class="pipeline-runbar-status ${escapeHtml(runStatus.state)}" role="status" aria-live="polite">${escapeHtml(runStatus.text)}</span>
+          ${runHeaderMetrics.currentNode ? `<span class="pipeline-runbar-current" title="${escapeHtml(`Currently running: ${runHeaderMetrics.currentNode}`)}">${escapeHtml(runHeaderMetrics.currentNode)}</span>` : ''}
+        </div>
+        <div class="pipeline-runbar-secondary-meta" title="${escapeHtml(secondaryMetaTitle)}">
+          <span class="pipeline-runbar-path" title="${escapeHtml(activePathTitle)}">${escapeHtml(activeLabel)}</span>
+          ${runHeaderMetrics.progressLabel ? `<span class="pipeline-runbar-progress" title="${escapeHtml(runHeaderMetrics.progressTitle || '')}">progress <code>${escapeHtml(runHeaderMetrics.progressLabel)}</code></span>` : ''}
+          ${runHeaderMetrics.elapsed ? `<span class="pipeline-runbar-elapsed" title="${escapeHtml(`Started ${runHeaderMetrics.startedAt}`)}">${escapeHtml(runHeaderMetrics.elapsed)}</span>` : ''}
+          ${harnessProgress ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(harnessProgress.title)}">${escapeHtml(harnessProgress.label)}</span>` : ''}
+          ${harnessPending && !harnessProgress ? '<span class="pipeline-runbar-status warn" title="Harness implementation request is starting.">Starting harness</span>' : ''}
+          ${harnessBlocked ? `<span class="pipeline-runbar-status danger" title="${escapeHtml(harnessState?.message || 'Harness provisioning blocked.')}">Harness blocked</span>` : ''}
+          ${harnessImplementedAt ? `<span class="pipeline-runbar-status done" title="${escapeHtml(`Harness implemented at ${harnessImplementedAt}`)}">Harness ready</span>` : ''}
+          ${harnessAuthoringBadge ? `<span class="pipeline-runbar-status ${escapeHtml(harnessAuthoringBadge.state)}" title="${escapeHtml(harnessAuthoringBadge.title)}">${escapeHtml(harnessAuthoringBadge.label)}</span>` : ''}
+          ${externalResearchLimitation ? `<span class="pipeline-runbar-status warn" title="${escapeHtml(externalResearchLimitation)}">External research needs approval</span>` : ''}
+          ${budgetIndicatorHtml}
+        </div>
       </div>
       <div class="pipeline-runbar-actions">
         <button class="pipeline-run-primary${defaultDangerClass}" data-pipeline-run-action="${escapeHtml(defaultAction)}" data-path="${escapeHtml(runbookPath)}" data-run-id="${escapeHtml(previewActionRunId)}" ${defaultDisabled ? 'disabled' : ''} title="${escapeHtml(defaultTitle)}" aria-label="${escapeHtml(defaultTitle)}">
@@ -10266,6 +10286,44 @@ function renderNodePackManagerInstalledRowTrustChips(pack = {}, status = null, c
   `;
 }
 
+function nodePackManagerPackageRowActionGlyph(label = '') {
+  const text = nodePackManagerString(label, '').trim().toLowerCase();
+  if (text.includes('block')) return '!';
+  if (text.includes('update')) return 'U';
+  if (text.includes('install') || text === 'import') return '+';
+  if (text.includes('imported') || text === 'synced') return 'OK';
+  if (text.includes('apply')) return 'A';
+  return text ? text.slice(0, 2).toUpperCase() : '+';
+}
+
+function nodePackManagerPackageRowActionKind(label = '', disabled = false) {
+  const text = nodePackManagerString(label, '').trim().toLowerCase();
+  if (text.includes('block')) return 'blocked';
+  if (text.includes('imported') || text === 'synced') return 'complete';
+  if (text.includes('update')) return 'update';
+  if (text.includes('install') || text.includes('import') || text.includes('apply')) return disabled ? 'disabled' : 'apply';
+  return disabled ? 'disabled' : 'action';
+}
+
+function renderNodePackManagerPackageRowActionButton(options = {}) {
+  const dataAttrs = Array.isArray(options.dataAttrs) ? options.dataAttrs : [];
+  const extraAttrs = dataAttrs
+    .filter(attr => attr && attr.name)
+    .map(attr => ` ${escapeHtml(attr.name)}="${escapeHtml(nodePackManagerString(attr.value, ''))}"`)
+    .join('');
+  const label = nodePackManagerString(options.label, 'Package action');
+  const title = nodePackManagerString(options.title, label);
+  const ariaLabel = nodePackManagerString(options.ariaLabel, title || label);
+  const kind = nodePackManagerString(options.kind, nodePackManagerPackageRowActionKind(label, options.disabled === true));
+  const glyph = nodePackManagerString(options.glyph, nodePackManagerPackageRowActionGlyph(label));
+  const className = ['node-pack-manager-row-action', options.className].filter(Boolean).join(' ');
+  return `
+    <button type="button" class="${escapeHtml(className)}"${extraAttrs} data-node-pack-manager-row-action="${escapeHtml(kind)}" ${options.disabled === true ? 'disabled' : ''} title="${escapeHtml(title)}" aria-label="${escapeHtml(ariaLabel)}">
+      <span aria-hidden="true">${escapeHtml(glyph)}</span>
+    </button>
+  `;
+}
+
 function renderNodePackManagerPackageRow(options = {}) {
   const className = nodePackManagerString(options.className, '');
   const validation = nodePackManagerString(options.validation, '');
@@ -10282,9 +10340,6 @@ function renderNodePackManagerPackageRow(options = {}) {
     .filter(attr => attr && attr.name)
     .map(attr => ` ${escapeHtml(attr.name)}="${escapeHtml(nodePackManagerString(attr.value, ''))}"`)
     .join('');
-  const importDataAttr = importAttr
-    ? ` ${escapeHtml(importAttr)}="${escapeHtml(importValue)}"`
-    : '';
   const rowTrustHtml = nodePackManagerString(options.rowTrustHtml, '');
   return `
     <div class="node-pack-manager-pack node-pack-manager-package-row ${escapeHtml(className)}" data-node-pack-validation="${escapeHtml(validation)}" role="listitem"${extraAttrs}>
@@ -10294,8 +10349,27 @@ function renderNodePackManagerPackageRow(options = {}) {
       </div>
       ${rowTrustHtml}
       <div class="node-pack-manager-package-row-actions">
-        <button type="button" data-node-pack-manager-detail-open="${escapeHtml(detailKind)}" data-node-pack-manager-detail-index="${escapeHtml(detailIndex)}" title="${escapeHtml(detailTitle)}">Detail</button>
-        <button type="button"${importDataAttr} ${disabled ? 'disabled' : ''} title="${escapeHtml(importTitle)}">${escapeHtml(importLabel)}</button>
+        ${renderNodePackManagerPackageRowActionButton({
+          className: 'node-pack-manager-row-action-detail',
+          dataAttrs: [
+            { name: 'data-node-pack-manager-detail-open', value: detailKind },
+            { name: 'data-node-pack-manager-detail-index', value: detailIndex },
+          ],
+          label: 'Detail',
+          title: detailTitle,
+          ariaLabel: detailTitle,
+          kind: 'detail',
+          glyph: 'i',
+        })}
+        ${renderNodePackManagerPackageRowActionButton({
+          className: 'node-pack-manager-row-action-primary',
+          dataAttrs: importAttr ? [{ name: importAttr, value: importValue }] : [],
+          label: importLabel,
+          title: importTitle,
+          ariaLabel: `${importLabel}: ${importTitle}`,
+          kind: nodePackManagerPackageRowActionKind(importLabel, disabled),
+          disabled,
+        })}
       </div>
     </div>
   `;
@@ -11124,7 +11198,7 @@ function openOrchNodePackManager(resolutionContext = null) {
         detailTitle: 'Open installed package details.',
         importAttr: 'data-node-pack-manager-pack-import',
         importValue: nodePackManagerString(pack.id, ''),
-        importLabel: 'Import',
+        importLabel: 'Imported',
         importDisabled: true,
         importTitle: 'This package is already imported.',
         rowTrustHtml: renderNodePackManagerInstalledRowTrustChips(pack, status, state.catalog),

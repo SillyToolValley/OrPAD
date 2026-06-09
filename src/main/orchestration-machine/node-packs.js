@@ -3232,7 +3232,11 @@ function workspaceFileMatchesSignal(fileValue, signalValue) {
 // gate is meaningless. This pattern flags such tasks so a workspace-only content-QA
 // match is dropped (a genuine prompt keyword like "docs"/"tutorial" still keeps it).
 const CONTENT_QA_NODE_PACK_ID = 'orpad.starter.content-qa';
+const RELEASE_READINESS_NODE_PACK_ID = 'orpad.starter.release-readiness';
+const NODE_PACK_HARDENING_NODE_PACK_ID = 'orpad.starter.node-pack-hardening';
 const AUTHORING_CODE_INTENT_PATTERN = /\b(code|coding|refactor(?:ing)?|debug(?:ging)?|bug|api|sdk|cli|compiler|compile|runtime|kernel|build|component|widget|render(?:er|ing)?|shader|transform|anchor|viewport|layout|ui|ux|mod|mods|modding|plugin|add[-\s]?on|game|unity|unreal|godot|engine|editor|typescript|javascript|python|rust|golang|kotlin|swift)\b|코드|코딩|버그|디버그|리팩|컴파일|런타임|커널|모드|게임|렌더|셰이더|플러그인|엔진|편집기/i;
+const RELEASE_READINESS_EXPLICIT_INTENT_PATTERN = /\b(release|release notes|ship|shipping|version|changelog|installer|packaging|publish|electron-builder|dist:win|build)\b/i;
+const NODE_PACK_HARDENING_EXPLICIT_INTENT_PATTERN = /\b(node[-\s]?pack|nodepacks|orpad\.node-pack|starter package|authoring package|package manifest|manifest parity|catalog parity|package hardening|hardening orchestration|capability grant|trust evidence|quarantine|deprecate package|package maintenance|package catalog|package orchestration|community package|package discovery|package validation)\b/i;
 
 function contentQaSelectionHasContentPrompt(matchedSignals = []) {
   return (Array.isArray(matchedSignals) ? matchedSignals : []).some(signal => (
@@ -3240,6 +3244,19 @@ function contentQaSelectionHasContentPrompt(matchedSignals = []) {
     || String(signal || '') === 'combined:prompt+workspace'
     || String(signal || '') === 'explicit'
   ));
+}
+
+function authoringSelectionWasExplicit(matchedSignals = []) {
+  return (Array.isArray(matchedSignals) ? matchedSignals : [])
+    .some(signal => String(signal || '') === 'explicit');
+}
+
+function taskHasExplicitReleaseReadinessIntent(taskText) {
+  return RELEASE_READINESS_EXPLICIT_INTENT_PATTERN.test(String(taskText || ''));
+}
+
+function taskHasExplicitNodePackHardeningIntent(taskText) {
+  return NODE_PACK_HARDENING_EXPLICIT_INTENT_PATTERN.test(String(taskText || ''));
 }
 
 function scoreAuthoringNodePack(pack, taskText, workspaceSnapshot = {}) {
@@ -4449,12 +4466,22 @@ function selectAuthoringNodePacks(taskText, workspaceSnapshot = {}, options = {}
   // .md/docs path) — its voice/tone/density editorial contract is meaningless there.
   // A genuine content prompt keyword (docs/tutorial/...) or an explicit request keeps it.
   const taskIsCodeIntent = AUTHORING_CODE_INTENT_PATTERN.test(normalizeAuthoringSignal(taskText));
-  const eligibleScored = taskIsCodeIntent
+  let eligibleScored = taskIsCodeIntent
     ? scored.filter(item => (
       item.pack.id !== CONTENT_QA_NODE_PACK_ID
       || contentQaSelectionHasContentPrompt(item.matchedSignals)
     ))
     : scored;
+  eligibleScored = eligibleScored.filter(item => {
+    if (authoringSelectionWasExplicit(item.matchedSignals)) return true;
+    if (item.pack.id === RELEASE_READINESS_NODE_PACK_ID) {
+      return taskHasExplicitReleaseReadinessIntent(taskText);
+    }
+    if (item.pack.id === NODE_PACK_HARDENING_NODE_PACK_ID) {
+      return taskHasExplicitNodePackHardeningIntent(taskText);
+    }
+    return true;
+  });
 
   return eligibleScored
     .slice(0, maxPacks)

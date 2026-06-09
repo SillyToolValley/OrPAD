@@ -158,10 +158,10 @@ export function createTerminalPanel({ hooks, track }) {
           <button type="button" data-terminal-mode="terminal" class="active">${t('terminal.mode.terminal')}</button>
           <button type="button" data-terminal-mode="runner">${t('terminal.mode.runner')}</button>
         </div>
-        <span class="terminal-dock-hint">${t('terminal.dragHint')}</span>
+        <span class="terminal-dock-hint" role="img"><span aria-hidden="true"></span></span>
         <span class="terminal-env"></span>
         <button type="button" class="terminal-cancel" disabled>${t('terminal.cancel')}</button>
-        <button type="button" class="terminal-close">x</button>
+        <button type="button" class="terminal-close" aria-label="Close terminal" title="Close terminal"><span aria-hidden="true"></span></button>
       </div>
     </div>
     <div class="terminal-runner-view hidden">
@@ -184,11 +184,11 @@ export function createTerminalPanel({ hooks, track }) {
   const dockOverlay = el('div', 'terminal-dock-overlay hidden');
   dockOverlay.innerHTML = `
     <div class="terminal-dock-preview"></div>
-    <div class="terminal-dock-guide" aria-hidden="true">
-      <div class="terminal-dock-target terminal-dock-left" data-terminal-dock-target="left"><strong>L</strong><span>${t('terminal.dock.left')}</span></div>
-      <div class="terminal-dock-target terminal-dock-float" data-terminal-dock-target="floating"><strong>W</strong><span>${t('terminal.dock.window')}</span></div>
-      <div class="terminal-dock-target terminal-dock-right" data-terminal-dock-target="right"><strong>R</strong><span>${t('terminal.dock.right')}</span></div>
-      <div class="terminal-dock-target terminal-dock-bottom" data-terminal-dock-target="bottom"><strong>B</strong><span>${t('terminal.dock.bottom')}</span></div>
+    <div class="terminal-dock-guide">
+      <div class="terminal-dock-target terminal-dock-left" data-terminal-dock-target="left" role="img"><span class="terminal-dock-icon" aria-hidden="true"></span><span class="terminal-dock-label"></span></div>
+      <div class="terminal-dock-target terminal-dock-float" data-terminal-dock-target="floating" role="img"><span class="terminal-dock-icon" aria-hidden="true"></span><span class="terminal-dock-label"></span></div>
+      <div class="terminal-dock-target terminal-dock-right" data-terminal-dock-target="right" role="img"><span class="terminal-dock-icon" aria-hidden="true"></span><span class="terminal-dock-label"></span></div>
+      <div class="terminal-dock-target terminal-dock-bottom" data-terminal-dock-target="bottom" role="img"><span class="terminal-dock-icon" aria-hidden="true"></span><span class="terminal-dock-label"></span></div>
     </div>
   `;
   document.body.appendChild(dockOverlay);
@@ -208,6 +208,36 @@ export function createTerminalPanel({ hooks, track }) {
   const resizeHandle = root.querySelector('.terminal-resize-handle');
   const dockPreview = dockOverlay.querySelector('.terminal-dock-preview');
   const dockTargets = Array.from(dockOverlay.querySelectorAll('[data-terminal-dock-target]'));
+
+  function dockTargetLabel(layout) {
+    if (layout === 'left') return t('terminal.dock.left');
+    if (layout === 'right') return t('terminal.dock.right');
+    if (layout === 'bottom') return t('terminal.dock.bottom');
+    return t('terminal.dock.window');
+  }
+
+  function refreshDockTargetLabels() {
+    for (const target of dockTargets) {
+      const label = dockTargetLabel(target.dataset.terminalDockTarget);
+      target.setAttribute('aria-label', label);
+      target.setAttribute('title', label);
+      const text = target.querySelector('.terminal-dock-label');
+      if (text) text.textContent = label;
+    }
+  }
+
+  function refreshDockHintLabel() {
+    const dragHint = root.querySelector('.terminal-dock-hint');
+    if (!dragHint) return;
+    const label = t('terminal.dragHint');
+    dragHint.setAttribute('aria-label', label);
+    dragHint.setAttribute('title', label);
+  }
+
+  function refreshCloseButtonLabel() {
+    closeBtn.setAttribute('aria-label', 'Close terminal');
+    closeBtn.setAttribute('title', 'Close terminal');
+  }
 
   const blocks = [];
   let activeRunId = '';
@@ -240,20 +270,14 @@ export function createTerminalPanel({ hooks, track }) {
     if (subtitle) subtitle.textContent = t('terminal.subtitle');
     root.querySelector('[data-terminal-mode="terminal"]').textContent = t('terminal.mode.terminal');
     root.querySelector('[data-terminal-mode="runner"]').textContent = t('terminal.mode.runner');
-    root.querySelector('.terminal-dock-hint').textContent = t('terminal.dragHint');
+    refreshDockHintLabel();
+    refreshCloseButtonLabel();
     cancelBtn.textContent = t('terminal.cancel');
     root.querySelector('.terminal-banner').textContent = t('terminal.runner.banner');
     const cwdLabel = root.querySelector('.terminal-cwd-row label');
     if (cwdLabel?.firstChild) cwdLabel.firstChild.textContent = `${t('terminal.cwd')} `;
     runBtn.textContent = t('modal.run');
-    for (const target of dockTargets) {
-      const layout = target.dataset.terminalDockTarget;
-      const label = target.querySelector('span');
-      if (layout === 'left') label.textContent = t('terminal.dock.left');
-      else if (layout === 'right') label.textContent = t('terminal.dock.right');
-      else if (layout === 'bottom') label.textContent = t('terminal.dock.bottom');
-      else if (layout === 'floating') label.textContent = t('terminal.dock.window');
-    }
+    refreshDockTargetLabels();
     ptyGroup?.refreshLocale?.();
   }
 
@@ -957,6 +981,9 @@ export function createTerminalPanel({ hooks, track }) {
     runBtn.disabled = true;
   }
 
+  refreshDockHintLabel();
+  refreshCloseButtonLabel();
+  refreshDockTargetLabels();
   refreshCwdIfEmpty();
   applyTerminalLayout({ persist: false });
 

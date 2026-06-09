@@ -1222,6 +1222,35 @@ test('frontend UX reference pipelines use bounded visual-reference gate criteria
   assert.equal(gate.config.criteria.some(item => /menus, and inspector controls/.test(item)), false);
 });
 
+test('authoring Package selector keeps package manager UI work out of release and Package hardening packs', () => {
+  const selected = selectAuthoringNodePacks(
+    'OrPAD UI/UX overhaul using OrPAD Hero visual reference style: improve pipeline builder, run monitor, editor, terminal, VM, and package manager screens with theme switching across all UI.',
+    {
+      files: [
+        'package.json',
+        'src/renderer/renderer.js',
+        'src/renderer/styles/base.css',
+        'src/renderer/themes.js',
+        'src/renderer/terminal/panel.js',
+        'tests/e2e/ux-visual-smoke.spec.ts',
+        'tests/e2e/theme-switch.spec.ts',
+        'assets/screenshots/hero.png',
+        'nodes/orpad.starter.node-pack-hardening/orpad.node-pack.json',
+        'src/main/orchestration-machine/node-packs.js',
+        'src/main/orchestration-authoring/generator.js',
+      ],
+    },
+    { maxPacks: 5 },
+  );
+  const ids = selected.map(pack => pack.id);
+
+  assert.equal(ids.includes('orpad.starter.frontend-ux'), true);
+  assert.equal(ids.includes('orpad.starter.release-readiness'), false,
+    `package manager UI work must not select release-readiness; got ${JSON.stringify(ids)}`);
+  assert.equal(ids.includes('orpad.starter.node-pack-hardening'), false,
+    `package manager UI work must not select Package hardening; got ${JSON.stringify(ids)}`);
+});
+
 test('generated Package hardening pipeline selects Package hardening guidance', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-node-pack-hardening-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));

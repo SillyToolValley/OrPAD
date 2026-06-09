@@ -1088,6 +1088,9 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
 
   if (available) {
     removePtyListener = window.pty.onEvent(handlePtyEvent);
+    if (Array.isArray(window.__orpadTerminalPtyListeners) && !window.__orpadTerminalPtyListeners.includes(handlePtyEvent)) {
+      window.__orpadTerminalPtyListeners.push(handlePtyEvent);
+    }
     ensureShells().catch(() => {});
   } else {
     setControlsEnabled(false);
@@ -1129,6 +1132,10 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       document.removeEventListener('keydown', handleDocumentKeyDown, true);
       window.removeEventListener('resize', positionNewTerminalPopover);
       if (removePtyListener) removePtyListener();
+      if (Array.isArray(window.__orpadTerminalPtyListeners)) {
+        window.__orpadTerminalPtyListeners = window.__orpadTerminalPtyListeners
+          .filter(listener => listener !== handlePtyEvent);
+      }
       for (const session of sessions.slice()) closeSession(session.id);
     },
   };

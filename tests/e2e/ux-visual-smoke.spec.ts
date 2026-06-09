@@ -50,7 +50,21 @@ const GITHUB_LIGHT_VARS = {
   accentColor: '#0969da',
 };
 
-const LONG_RUNBAR_CURRENT_NODE_LABEL = 'main/orpad-ux-worker-loop/claim-wi-frontend-ux-runbar-current-node-readability/adapters/managed-run/current-node-with-readable-label';
+const HERO_GRAPH_NODE_VARS = {
+  bg: '#edf4ff',
+  border: '#9ab9f2',
+  text: '#102247',
+  muted: '#566b94',
+};
+
+const GITHUB_LIGHT_GRAPH_NODE_VARS = {
+  bg: GITHUB_LIGHT_VARS.bgSecondary,
+  border: '#d1d9e0',
+  text: '#1f2328',
+  muted: '#656d76',
+};
+
+const LONG_RUNBAR_CURRENT_NODE_LABEL = 'main/orpad-ux-worker-loop/claim-wi-frontend-ux-runbar-current-node-readability/adapters/managed-run/current-node-with-readable-label/orpad-hero-themed-runbar-overflow-protection-extra-long-current-node-label';
 
 function writeApprovedWorkspace(userData: string, workspaceRoot: string): void {
   fs.writeFileSync(path.join(userData, 'approved-workspace.json'), JSON.stringify({
@@ -680,11 +694,12 @@ async function expectRunbarCurrentNodeBreathes(runbar: Locator, viewport: Viewpo
   await runbar.evaluate((element, label) => {
     const meta = element.querySelector('.pipeline-runbar-meta');
     if (!meta) throw new Error('Runbar metadata container is missing');
-    let current = meta.querySelector<HTMLElement>('.pipeline-runbar-current');
+    const primary = meta.querySelector('.pipeline-runbar-primary-signal') || meta;
+    let current = primary.querySelector<HTMLElement>('.pipeline-runbar-current');
     if (!current) {
       current = document.createElement('span');
       current.className = 'pipeline-runbar-current';
-      meta.append(current);
+      primary.append(current);
     }
     current.textContent = label;
     current.title = `Currently running: ${label}`;
@@ -700,8 +715,11 @@ async function expectRunbarCurrentNodeBreathes(runbar: Locator, viewport: Viewpo
   const metrics = await runbar.evaluate((element) => {
     const current = element.querySelector<HTMLElement>('.pipeline-runbar-current');
     const status = element.querySelector<HTMLElement>('.pipeline-runbar-status[role="status"]');
+    const path = element.querySelector<HTMLElement>('.pipeline-runbar-path');
+    const primary = element.querySelector<HTMLElement>('.pipeline-runbar-primary-signal');
+    const secondary = element.querySelector<HTMLElement>('.pipeline-runbar-secondary-meta');
     const actions = element.querySelector<HTMLElement>('.pipeline-runbar-actions');
-    if (!current || !actions) throw new Error('Runbar current node or actions are missing');
+    if (!current || !actions || !primary || !secondary) throw new Error('Runbar priority lanes, current node, or actions are missing');
 
     const runbarRect = element.getBoundingClientRect();
     const currentRect = current.getBoundingClientRect();
@@ -723,14 +741,20 @@ async function expectRunbarCurrentNodeBreathes(runbar: Locator, viewport: Viewpo
       actionsWidth: actionsRect.width,
       currentClientWidth: current.clientWidth,
       currentWidth: currentRect.width,
+      currentInPrimary: current.closest('.pipeline-runbar-primary-signal') === primary,
       flexBasis: style.flexBasis,
       flexGrow: style.flexGrow,
       fullLabelWidth,
       maxWidth: style.maxWidth,
       overflowX: style.overflowX,
+      pathInSecondary: !path || path.closest('.pipeline-runbar-secondary-meta') === secondary,
+      pathTitle: path?.getAttribute('title') || '',
       runbarClientWidth: element.clientWidth,
       runbarRight: runbarRect.right,
       runbarScrollWidth: element.scrollWidth,
+      secondaryTitle: secondary.getAttribute('title') || '',
+      statusInPrimary: !!status && status.closest('.pipeline-runbar-primary-signal') === primary,
+      statusPresent: !!status,
       statusWidth: statusRect?.width || 0,
       textOverflow: style.textOverflow,
       whiteSpace: style.whiteSpace,
@@ -744,6 +768,13 @@ async function expectRunbarCurrentNodeBreathes(runbar: Locator, viewport: Viewpo
   expect(metrics.runbarScrollWidth, `${viewport.name}: runbar should not create horizontal overflow`).toBeLessThanOrEqual(metrics.runbarClientWidth + 1);
   expect(metrics.actionsWidth, `${viewport.name}: runbar actions should remain measurable`).toBeGreaterThan(0);
   expect(metrics.actionsRight, `${viewport.name}: runbar actions should remain inside the runbar`).toBeLessThanOrEqual(metrics.runbarRight + 1);
+  expect(metrics.statusPresent, `${viewport.name}: runbar should expose primary status`).toBe(true);
+  expect(metrics.statusInPrimary, `${viewport.name}: primary status should live in the priority lane`).toBe(true);
+  expect(metrics.currentInPrimary, `${viewport.name}: current node should live in the priority lane`).toBe(true);
+  expect(metrics.pathInSecondary, `${viewport.name}: path should degrade as secondary metadata`).toBe(true);
+  if (metrics.pathTitle) {
+    expect(metrics.secondaryTitle, `${viewport.name}: secondary lane title should preserve compacted path metadata`).toContain(metrics.pathTitle);
+  }
   expect(Number.parseFloat(metrics.flexGrow), `${viewport.name}: current node should flex beyond fixed metadata chips`).toBeGreaterThan(1);
   expect(metrics.flexBasis, `${viewport.name}: current node should have a readable flex basis`).not.toBe('auto');
   expect(metrics.maxWidth, `${viewport.name}: current node should keep a bounded max width`).not.toBe('none');
@@ -862,6 +893,167 @@ async function expectRunbarSolidThemeChrome(runbar: Locator, name: string): Prom
     expect(chip.boxShadow, `${name}: ${label} chip should not use glow shadows`).toBe('none');
     expect(chip.beforeBoxShadow, `${name}: ${label} chip marker should not use glow shadows`).toBe('none');
   }
+}
+
+async function expectGraphNodesSoftCardThemeChrome(
+  win: Page,
+  name: string,
+  expected: { bg: string; border: string; text: string; muted: string; expectPaleSurface?: boolean },
+): Promise<void> {
+  const nodes = win.locator('.orch-graph-node');
+  await expect(nodes.first(), `${name}: graph should expose themed nodes`).toBeVisible({ timeout: 15000 });
+
+  const chrome = await nodes.first().evaluate((node) => {
+    type Rgba = { r: number; g: number; b: number; alpha: number };
+
+    const parseColor = (value: string): Rgba | null => {
+      const rgb = value.match(/rgba?\(([^)]+)\)/i);
+      if (rgb) {
+        const parts = rgb[1].split(/[\s,/]+/).filter(Boolean);
+        const [r, g, b] = parts.slice(0, 3).map((part) => Number.parseFloat(part));
+        const alpha = parts[3] === undefined
+          ? 1
+          : Number.parseFloat(parts[3]) / (parts[3].endsWith('%') ? 100 : 1);
+        return [r, g, b, alpha].every(Number.isFinite) ? { r, g, b, alpha } : null;
+      }
+      const srgb = value.match(/color\(\s*srgb\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+)(?:\s*\/\s*([0-9.]+%?))?/i);
+      if (srgb) {
+        const [r, g, b] = srgb.slice(1, 4).map((part) => Number.parseFloat(part));
+        const alpha = srgb[4] === undefined
+          ? 1
+          : Number.parseFloat(srgb[4]) / (srgb[4].endsWith('%') ? 100 : 1);
+        if (![r, g, b, alpha].every(Number.isFinite)) return null;
+        return {
+          r: r <= 1 ? r * 255 : r,
+          g: g <= 1 ? g * 255 : g,
+          b: b <= 1 ? b * 255 : b,
+          alpha,
+        };
+      }
+      return null;
+    };
+
+    const luminance = (color: Rgba | null): number => (
+      color ? (color.r * 299 + color.g * 587 + color.b * 114) / 1000 : 0
+    );
+
+    const splitCssList = (value: string): string[] => {
+      if (!value || value === 'none') return [];
+      const items: string[] = [];
+      let depth = 0;
+      let start = 0;
+      for (let i = 0; i < value.length; i += 1) {
+        const char = value[i];
+        if (char === '(') depth += 1;
+        else if (char === ')') depth = Math.max(0, depth - 1);
+        else if (char === ',' && depth === 0) {
+          items.push(value.slice(start, i).trim());
+          start = i + 1;
+        }
+      }
+      items.push(value.slice(start).trim());
+      return items.filter(Boolean);
+    };
+
+    const readBackdrop = (style: CSSStyleDeclaration): string => (
+      style.getPropertyValue('backdrop-filter')
+      || style.getPropertyValue('-webkit-backdrop-filter')
+      || 'none'
+    ).trim();
+
+    const rootStyle = getComputedStyle(document.documentElement);
+    const style = getComputedStyle(node);
+    const titleStyle = getComputedStyle(node.querySelector<HTMLElement>('.orch-graph-node-top strong') || node);
+    const metaStyle = getComputedStyle(node.querySelector<HTMLElement>('.orch-graph-node-meta') || node);
+    const background = parseColor(style.backgroundColor);
+    const titleColor = parseColor(titleStyle.color);
+    const shadowLayers = splitCssList(style.boxShadow);
+    const originalClass = node.getAttribute('class') || '';
+    const originalTransition = node.style.transition;
+    node.style.transition = 'none';
+    const runtimeClasses = [
+      'runtime-running',
+      'runtime-completed',
+      'runtime-blocked',
+      'runtime-skipped',
+      'runtime-failed',
+      'runtime-cancelled',
+      'runtime-paused',
+      'runtime-cancelling',
+    ];
+    const readStateBorder = (stateClass?: string): string => {
+      node.setAttribute('class', originalClass);
+      runtimeClasses.forEach((className) => node.classList.remove(className));
+      if (stateClass) node.classList.add(stateClass);
+      void node.offsetWidth;
+      return getComputedStyle(node).borderRightColor;
+    };
+    const stateBorderColors = {
+      normal: readStateBorder(),
+      running: readStateBorder('runtime-running'),
+      completed: readStateBorder('runtime-completed'),
+      warning: readStateBorder('runtime-blocked'),
+      danger: readStateBorder('runtime-failed'),
+    };
+    node.setAttribute('class', originalClass);
+    node.style.transition = originalTransition;
+
+    return {
+      vars: {
+        bg: rootStyle.getPropertyValue('--graph-node-bg').trim().toLowerCase(),
+        border: rootStyle.getPropertyValue('--graph-node-border').trim().toLowerCase(),
+        text: rootStyle.getPropertyValue('--graph-node-text').trim().toLowerCase(),
+        muted: rootStyle.getPropertyValue('--graph-node-muted').trim().toLowerCase(),
+        shadow: rootStyle.getPropertyValue('--graph-node-shadow').trim().toLowerCase(),
+      },
+      backgroundColor: style.backgroundColor,
+      backgroundAlpha: background?.alpha ?? 1,
+      backgroundImage: style.backgroundImage,
+      backgroundLuminance: luminance(background),
+      backdropFilter: readBackdrop(style),
+      borderColor: style.borderRightColor,
+      color: style.color,
+      titleColor: titleStyle.color,
+      titleLuminance: luminance(titleColor),
+      metaColor: metaStyle.color,
+      boxShadow: style.boxShadow,
+      shadowLayerCount: shadowLayers.length,
+      hasRaisedShadow: shadowLayers.some((layer) => !/\binset\b/i.test(layer)),
+      stateBorderColors,
+    };
+  });
+
+  expect(chrome.vars.bg, `${name}: graph node background should come from the active theme token`).toBe(expected.bg);
+  expect(chrome.vars.border, `${name}: graph node border should come from the active theme token`).toBe(expected.border);
+  expect(chrome.vars.text, `${name}: graph node title color should come from the active theme token`).toBe(expected.text);
+  expect(chrome.vars.muted, `${name}: graph node metadata color should come from the active theme token`).toBe(expected.muted);
+  expect(chrome.vars.shadow, `${name}: graph node shadow token should be set by theme derivation`).not.toBe('');
+  expect(chrome.backgroundImage, `${name}: graph node should not use gradients or image backgrounds`).toBe('none');
+  expect(chrome.backdropFilter, `${name}: graph node should not use blurred glass chrome`).toBe('none');
+  expect(chrome.backgroundAlpha, `${name}: graph node should use an opaque token surface`).toBeGreaterThan(0.98);
+  expect(chrome.shadowLayerCount, `${name}: graph node should layer highlight and raised shadow`).toBeGreaterThanOrEqual(2);
+  expect(chrome.hasRaisedShadow, `${name}: graph node should read as a raised soft card`).toBe(true);
+  expect(chrome.color, `${name}: graph node body text should use the muted token`).toBe(chrome.metaColor);
+  expect(chrome.titleColor, `${name}: graph node title text should differ from muted metadata`).not.toBe(chrome.color);
+
+  if (expected.expectPaleSurface) {
+    expect(chrome.backgroundLuminance, `${name}: graph node should render as a pale soft-card surface`).toBeGreaterThan(185);
+    expect(chrome.titleLuminance, `${name}: graph node title should stay dark on the pale surface`).toBeLessThan(95);
+  }
+
+  expect(chrome.stateBorderColors.running, `${name}: running border should remain distinct`).not.toBe(chrome.stateBorderColors.normal);
+  expect(chrome.stateBorderColors.completed, `${name}: completed border should remain distinct`).not.toBe(chrome.stateBorderColors.normal);
+  expect(chrome.stateBorderColors.warning, `${name}: warning border should remain distinct`).not.toBe(chrome.stateBorderColors.normal);
+  expect(chrome.stateBorderColors.danger, `${name}: danger border should remain distinct`).not.toBe(chrome.stateBorderColors.normal);
+  expect(
+    new Set([
+      chrome.stateBorderColors.running,
+      chrome.stateBorderColors.completed,
+      chrome.stateBorderColors.warning,
+      chrome.stateBorderColors.danger,
+    ]).size,
+    `${name}: runtime state borders should preserve running, completed, warning, and danger colors`,
+  ).toBe(4);
 }
 
 async function expectGraphToolbarSolidControls(win: Page, name: string): Promise<void> {
@@ -1123,7 +1315,7 @@ function nodePackManagerRow(win: Page, label: string): Locator {
   return win.locator('.node-pack-manager-pack').filter({ hasText: label });
 }
 
-async function expectNodePackManagerSoftCardRows(manager: Locator, name: string): Promise<void> {
+async function expectNodePackManagerScannableRows(manager: Locator, name: string): Promise<void> {
   const chrome = await manager.evaluate((element) => {
     const parseColor = (value: string): { alpha: number } | null => {
       const rgb = value.match(/rgba?\(([^)]+)\)/i);
@@ -1165,6 +1357,26 @@ async function expectNodePackManagerSoftCardRows(manager: Locator, name: string)
     const rows = [...element.querySelectorAll<HTMLElement>('.node-pack-manager-pack')].map((row) => {
       const style = getComputedStyle(row);
       const shadowLayers = splitCssList(style.boxShadow);
+      const actionRail = row.querySelector<HTMLElement>('.node-pack-manager-package-row-actions');
+      const actionButtons = actionRail
+        ? [...actionRail.querySelectorAll<HTMLButtonElement>('button')].map((button) => {
+          const buttonStyle = getComputedStyle(button);
+          const rect = button.getBoundingClientRect();
+          return {
+            text: button.textContent?.trim() || '',
+            ariaLabel: button.getAttribute('aria-label') || '',
+            title: button.getAttribute('title') || '',
+            kind: button.getAttribute('data-node-pack-manager-row-action') || '',
+            disabled: button.disabled,
+            backgroundImage: buttonStyle.backgroundImage,
+            whiteSpace: buttonStyle.whiteSpace,
+            width: rect.width,
+            height: rect.height,
+            clientWidth: button.clientWidth,
+            scrollWidth: button.scrollWidth,
+          };
+        })
+        : [];
       const trustChips = [...row.querySelectorAll<HTMLElement>('.node-pack-manager-trust-chip')]
         .map((chip) => {
           const chipStyle = getComputedStyle(chip);
@@ -1191,6 +1403,9 @@ async function expectNodePackManagerSoftCardRows(manager: Locator, name: string)
         boxShadow: style.boxShadow,
         shadowLayerCount: shadowLayers.length,
         hasRaisedShadow: shadowLayers.some(layer => !/\binset\b/i.test(layer)),
+        actionRailClientWidth: actionRail?.clientWidth || 0,
+        actionRailScrollWidth: actionRail?.scrollWidth || 0,
+        actionButtons,
         trustChips,
         trustChipColors: trustChips.map(chip => chip.color),
       };
@@ -1216,10 +1431,26 @@ async function expectNodePackManagerSoftCardRows(manager: Locator, name: string)
   for (const row of chrome.rows) {
     expect(row.backgroundImage, `${name}: ${row.label} row should not use gradient or image backgrounds`).toBe('none');
     expect(row.backgroundAlpha, `${name}: ${row.label} row should use an opaque theme-token surface`).toBeGreaterThan(0.98);
-    expect(row.boxShadow, `${name}: ${row.label} row should have raised soft-card shadow`).not.toBe('none');
-    expect(row.hasRaisedShadow, `${name}: ${row.label} row should include an outer raised shadow, not only inset status strips`).toBe(true);
-    expect(row.shadowLayerCount, `${name}: ${row.label} row should layer surface highlight and raised shadow`).toBeGreaterThanOrEqual(2);
+    expect(row.boxShadow, `${name}: ${row.label} row should stay flat for scanability`).toBe('none');
+    expect(row.hasRaisedShadow, `${name}: ${row.label} row should not add raised shadows beside status chips`).toBe(false);
+    expect(row.shadowLayerCount, `${name}: ${row.label} row should keep shadow layers absent`).toBe(0);
+    expect(row.actionButtons, `${name}: ${row.label} should expose detail and package action controls`).toHaveLength(2);
+    expect(row.actionRailScrollWidth - row.actionRailClientWidth, `${name}: ${row.label} compact action rail should not overflow`).toBeLessThanOrEqual(1);
+    for (const action of row.actionButtons) {
+      expect(action.ariaLabel, `${name}: ${row.label} ${action.kind} action should keep an accessible label`).not.toBe('');
+      expect(action.title, `${name}: ${row.label} ${action.kind} action should keep a tooltip title`).not.toBe('');
+      expect(action.backgroundImage, `${name}: ${row.label} ${action.kind} action should stay solid`).toBe('none');
+      expect(action.whiteSpace, `${name}: ${row.label} ${action.kind} action should not wrap`).toBe('nowrap');
+      expect(Math.abs(action.width - action.height), `${name}: ${row.label} ${action.kind} action should be square`).toBeLessThanOrEqual(1);
+      expect(action.width, `${name}: ${row.label} ${action.kind} action should use compact fixed sizing`).toBeLessThanOrEqual(36);
+      expect(action.scrollWidth - action.clientWidth, `${name}: ${row.label} ${action.kind} glyph should fit`).toBeLessThanOrEqual(1);
+    }
   }
+
+  const verboseActionText = chrome.rows.flatMap(row => row.actionButtons
+    .filter(action => /detail|import|install|update|blocked/i.test(action.text))
+    .map(action => `${row.label}: ${action.text}`));
+  expect(verboseActionText, `${name}: row actions should not repeat verbose text labels`).toEqual([]);
 
   const normalRow = chrome.rows.find(row => row.label === 'OrPAD Core Nodes');
   const reviewRow = chrome.rows.find(row => row.label === 'Review Required Package');
@@ -1446,6 +1677,10 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
       await fitGraphIfAvailable(win);
       await expectGraphToolbarSolidControls(win, `visual-smoke-${viewport.name}-orchestration`);
       await expectGraphOverlayControlsSolidChrome(win, `visual-smoke-${viewport.name}-orchestration`);
+      await expectGraphNodesSoftCardThemeChrome(win, `visual-smoke-${viewport.name}-orchestration`, {
+        ...HERO_GRAPH_NODE_VARS,
+        expectPaleSurface: true,
+      });
 
       const runbar = win.locator('[data-pipeline-preview-runbar]').first();
       await expect(runbar).toContainText('Visual Smoke Workstream');
@@ -1545,7 +1780,7 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
           expectChrome: true,
         },
       );
-      await expectNodePackManagerSoftCardRows(manager, `visual-smoke-${viewport.name}-package-manager`);
+      await expectNodePackManagerScannableRows(manager, `visual-smoke-${viewport.name}-package-manager`);
 
       const reviewPack = nodePackManagerRow(win, 'Review Required Package');
       await expect(reviewPack).toHaveAttribute('data-node-pack-validation', 'approval-required');
@@ -1583,6 +1818,10 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
         await fitGraphIfAvailable(win);
         await expectGraphToolbarSolidControls(win, 'visual-smoke-desktop-orchestration-github-light');
         await expectGraphOverlayControlsSolidChrome(win, 'visual-smoke-desktop-orchestration-github-light');
+        await expectGraphNodesSoftCardThemeChrome(win, 'visual-smoke-desktop-orchestration-github-light', {
+          ...GITHUB_LIGHT_GRAPH_NODE_VARS,
+          expectPaleSurface: true,
+        });
         const themedVmHarness = win.locator('#content.view-orch-graph [data-vm-harness-dashboard]').first();
         await expectVmHarnessDashboardReady(themedVmHarness);
         await expectVmHarnessThemeChrome(themedVmHarness, 'visual-smoke-desktop-vm-harness-github-light', {
@@ -1619,7 +1858,7 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
             expectChrome: true,
           },
         );
-        await expectNodePackManagerSoftCardRows(themedManager, 'visual-smoke-desktop-package-manager-github-light');
+        await expectNodePackManagerScannableRows(themedManager, 'visual-smoke-desktop-package-manager-github-light');
         await closeModalIfVisible(win);
       }
     }

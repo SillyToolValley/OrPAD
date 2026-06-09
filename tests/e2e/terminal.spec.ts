@@ -66,6 +66,7 @@ async function setTerminalHistoryLimit(win: Page, limit: number): Promise<void> 
 }
 
 async function capturePtyListeners(win: Page): Promise<void> {
+  await win.waitForFunction(() => !!(window as any).pty?.onEvent, null, { timeout: 10000 });
   await win.evaluate(() => {
     const pty = (window as any).pty;
     if (!pty || pty.__orpadTerminalTestCapture) return;
@@ -205,6 +206,62 @@ test('terminal dock overlay uses theme-safe solid surfaces', async () => {
     await expect(win.locator('.terminal-dock-guide')).toBeVisible();
     await expectDockSurfaceThemeSafe(win, '.terminal-dock-preview');
     await expectDockSurfaceThemeSafe(win, '.terminal-dock-guide');
+    await expect(win.locator('.terminal-dock-target strong')).toHaveCount(0);
+
+    const dockTargets = await win.locator('.terminal-dock-target').evaluateAll((nodes) => nodes.map((node) => {
+      const element = node as HTMLElement;
+      const rect = element.getBoundingClientRect();
+      return {
+        target: element.dataset.terminalDockTarget,
+        ariaLabel: element.getAttribute('aria-label'),
+        title: element.getAttribute('title'),
+        hasIcon: !!element.querySelector('.terminal-dock-icon'),
+        hasLetterTarget: !!element.querySelector('strong'),
+        width: rect.width,
+        height: rect.height,
+      };
+    }));
+    expect(dockTargets).toHaveLength(4);
+    for (const target of dockTargets) {
+      expect(target.target).toBeTruthy();
+      expect(target.ariaLabel).toBeTruthy();
+      expect(target.title).toBe(target.ariaLabel);
+      expect(target.hasIcon).toBe(true);
+      expect(target.hasLetterTarget).toBe(false);
+      expect(target.width).toBeGreaterThan(24);
+      expect(target.width).toBeLessThanOrEqual(90);
+      expect(target.height).toBeGreaterThan(24);
+      expect(target.height).toBeLessThanOrEqual(110);
+    }
+
+    const closeControl = await win.locator('.terminal-close').evaluate((node) => {
+      const element = node as HTMLButtonElement;
+      const rect = element.getBoundingClientRect();
+      return {
+        text: element.textContent?.trim() || '',
+        ariaLabel: element.getAttribute('aria-label'),
+        title: element.getAttribute('title'),
+        width: rect.width,
+        height: rect.height,
+      };
+    });
+    expect(closeControl.text).toBe('');
+    expect(closeControl.ariaLabel).toBe('Close terminal');
+    expect(closeControl.title).toBe('Close terminal');
+    expect(closeControl.width).toBeGreaterThan(0);
+    expect(Math.abs(closeControl.width - closeControl.height)).toBeLessThan(1);
+
+    const dragHint = await win.locator('.terminal-dock-hint').evaluate((node) => {
+      const element = node as HTMLElement;
+      return {
+        text: element.textContent?.trim() || '',
+        ariaLabel: element.getAttribute('aria-label'),
+        title: element.getAttribute('title'),
+      };
+    });
+    expect(dragHint.text).toBe('');
+    expect(dragHint.ariaLabel).toBeTruthy();
+    expect(dragHint.title).toBe(dragHint.ariaLabel);
     await win.mouse.up();
   } finally {
     await closeElectronApp(app);

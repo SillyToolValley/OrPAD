@@ -17,6 +17,7 @@ const RUNTIME_STEP_TOKEN_BY_STATE = {
   failed: '--syntax-deleted',
   blocked: '--syntax-meta',
 } as const;
+const CSS_COLOR_VALUE_PATTERN = /^(?:rgb|rgba|color\(|oklab\(|oklch\()/;
 
 async function rootVars(win: Page, names: string[]) {
   return win.evaluate((varNames: string[]) => {
@@ -64,15 +65,87 @@ async function surfaceChrome(locator: Locator) {
   });
 }
 
+async function installEditorSearchFixture(win: Page) {
+  await win.evaluate(() => {
+    document.querySelector('[data-editor-search-theme-fixture]')?.remove();
+    const fixture = document.createElement('div');
+    fixture.setAttribute('data-editor-search-theme-fixture', '');
+    fixture.style.position = 'fixed';
+    fixture.style.left = '24px';
+    fixture.style.top = '24px';
+    fixture.style.zIndex = '2147483000';
+    fixture.style.width = '420px';
+    fixture.style.height = '112px';
+    fixture.innerHTML = `
+      <div class="cm-editor">
+        <div class="cm-scroller">
+          <div class="cm-content">
+            <div class="cm-line">
+              <span class="cm-searchMatch" data-editor-search-match>pipeline</span>
+              <span class="cm-searchMatch cm-searchMatch-selected" data-editor-search-selected>builder</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(fixture);
+  });
+
+  const fixture = win.locator('[data-editor-search-theme-fixture]');
+  await expect(fixture).toBeVisible({ timeout: 3000 });
+  return fixture;
+}
+
+async function editorSearchHighlightChrome(fixture: Locator) {
+  return fixture.evaluate((root: Element) => {
+    const readChrome = (selector: string) => {
+      const el = root.querySelector(selector);
+      if (!el) throw new Error(`Missing editor search fixture selector: ${selector}`);
+      const styles = getComputedStyle(el);
+      return {
+        backgroundColor: styles.backgroundColor,
+        backgroundImage: styles.backgroundImage,
+        color: styles.color,
+        outlineColor: styles.outlineColor,
+        outlineStyle: styles.outlineStyle,
+        outlineWidth: styles.outlineWidth,
+      };
+    };
+
+    return {
+      editor: readChrome('.cm-editor'),
+      match: readChrome('[data-editor-search-match]'),
+      selected: readChrome('[data-editor-search-selected]'),
+    };
+  });
+}
+
+function expectEditorSearchHighlightChrome(chrome: Awaited<ReturnType<typeof editorSearchHighlightChrome>>) {
+  for (const highlight of [chrome.match, chrome.selected]) {
+    expect(highlight.backgroundImage).not.toMatch(/(?:radial|linear)-gradient/);
+    expect(highlight.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
+    expect(highlight.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(highlight.backgroundColor).not.toBe(chrome.editor.backgroundColor);
+    expect(highlight.backgroundColor).not.toMatch(/255,\s*213,\s*0/);
+    expect(highlight.color).toMatch(CSS_COLOR_VALUE_PATTERN);
+    expect(highlight.color).not.toBe(highlight.backgroundColor);
+    expect(highlight.outlineColor).toMatch(CSS_COLOR_VALUE_PATTERN);
+    expect(highlight.outlineStyle).not.toBe('none');
+    expect(parseFloat(highlight.outlineWidth)).toBeGreaterThan(0);
+  }
+  expect(chrome.selected.backgroundColor).not.toBe(chrome.match.backgroundColor);
+  expect(chrome.selected.outlineColor).not.toBe(chrome.match.outlineColor);
+}
+
 function expectCleanSoftChrome(chrome: Awaited<ReturnType<typeof surfaceChrome>>) {
   expect(chrome.backgroundImage).not.toMatch(/(?:radial|linear)-gradient/);
-  expect(chrome.backgroundColor).toMatch(/rgb|color/);
+  expect(chrome.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-  expect(chrome.borderColor).toMatch(/rgb|color/);
+  expect(chrome.borderColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.borderStyle).not.toBe('none');
   expect(parseFloat(chrome.borderWidth)).toBeGreaterThan(0);
   expect(chrome.boxShadow).not.toBe('none');
-  expect(chrome.color).toMatch(/rgb|color/);
+  expect(chrome.color).toMatch(CSS_COLOR_VALUE_PATTERN);
 }
 
 function expectThemeResponsiveChrome(
@@ -80,14 +153,14 @@ function expectThemeResponsiveChrome(
   after: Awaited<ReturnType<typeof surfaceChrome>>,
 ) {
   expect(after.backgroundImage).not.toMatch(/(?:radial|linear)-gradient/);
-  expect(after.backgroundColor).toMatch(/rgb|color/);
+  expect(after.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(after.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
   expect(after.backgroundColor).not.toBe(before.backgroundColor);
-  expect(after.borderColor).toMatch(/rgb|color/);
+  expect(after.borderColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(after.borderColor).not.toBe(before.borderColor);
   expect(after.borderStyle).not.toBe('none');
   expect(parseFloat(after.borderWidth)).toBeGreaterThan(0);
-  expect(after.color).toMatch(/rgb|color/);
+  expect(after.color).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(after.color).not.toBe(before.color);
 }
 
@@ -98,14 +171,14 @@ async function openCommandPalette(win: Page) {
     for (const id of ['commandPalette.open', 'commands.openPalette', 'quickOpen.open', 'file.quickOpen']) {
       try {
         await commands.runCommand(id);
-        if (document.querySelector('.cmdk-shell')) return;
+        if (document.querySelector('.cmdk-shell:not(.quick-open)')) return;
       } catch {
         // Some builds do not register every command alias.
       }
     }
   });
 
-  const shell = win.locator('.cmdk-shell');
+  const shell = win.locator('.cmdk-shell:not(.quick-open)').first();
   if (await shell.isVisible().catch(() => false)) return;
 
   await win.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P');
@@ -222,7 +295,7 @@ async function orchestrationEdgeStrokes(fixture: Locator) {
 
 function expectVisibleEdgeStrokes(strokes: Record<string, string>) {
   for (const stroke of Object.values(strokes)) {
-    expect(stroke).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(stroke).toMatch(CSS_COLOR_VALUE_PATTERN);
     expect(stroke).not.toBe('none');
     expect(stroke).not.toBe('rgba(0, 0, 0, 0)');
   }
@@ -272,7 +345,7 @@ function expectRuntimeStepChrome(
   tokens: Record<string, string>,
 ) {
   for (const state of RUNTIME_STEP_STATES) {
-    expect(chrome[state].backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(chrome[state].backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
     expect(chrome[state].backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
     expect(chrome[state].color).toBe(tokens[RUNTIME_STEP_TOKEN_BY_STATE[state]]);
   }
@@ -551,14 +624,14 @@ function expectPackageManagerRowsClean(chrome: Awaited<ReturnType<typeof package
   for (const state of ['normal', 'active', 'warn', 'danger', 'conflict']) {
     const row = chrome[state];
     expect(row.backgroundImage).not.toMatch(/(?:radial|linear)-gradient/);
-    expect(row.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(row.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
     expect(row.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-    expect(row.borderColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(row.borderColor).toMatch(CSS_COLOR_VALUE_PATTERN);
     expect(row.borderStyle).not.toBe('none');
     expect(parseFloat(row.borderWidth)).toBeGreaterThan(0);
     expect(row.boxShadow).toBe('none');
-    expect(row.color).toMatch(/^(?:rgb|rgba|color\()/);
-    expect(row.railColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(row.color).toMatch(CSS_COLOR_VALUE_PATTERN);
+    expect(row.railColor).toMatch(CSS_COLOR_VALUE_PATTERN);
     expect(row.railColor).not.toBe('rgba(0, 0, 0, 0)');
     expect(parseFloat(row.railWidth)).toBeGreaterThan(0);
     expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
@@ -650,12 +723,12 @@ async function warningChipChrome(locator: Locator) {
 }
 
 function expectWarningChipChrome(chrome: Awaited<ReturnType<typeof warningChipChrome>>) {
-  expect(chrome.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-  expect(chrome.borderColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.borderColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.borderStyle).not.toBe('none');
   expect(parseFloat(chrome.borderWidth)).toBeGreaterThan(0);
-  expect(chrome.color).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.color).toMatch(CSS_COLOR_VALUE_PATTERN);
 }
 
 async function breakpointChrome(fixture: Locator) {
@@ -685,11 +758,11 @@ function expectBreakpointChrome(
 ) {
   expect(chrome.markerBackgroundColor).toBe(breakpointColor);
   expect(chrome.markerColor).toBe(foregroundColor);
-  expect(chrome.nodeOutlineColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.nodeOutlineColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.nodeOutlineColor).not.toBe('rgba(0, 0, 0, 0)');
-  expect(chrome.activeBackgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.activeBackgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.activeBackgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-  expect(chrome.activeBorderColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.activeBorderColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.activeColor).toBe(breakpointColor);
 }
 
@@ -706,11 +779,11 @@ async function dangerChrome(locator: Locator) {
 }
 
 function expectDangerChrome(chrome: Awaited<ReturnType<typeof dangerChrome>>) {
-  expect(chrome.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
   expect(chrome.borderLeftColor).toBe(chrome.color);
   expect(parseFloat(chrome.borderLeftWidth)).toBeGreaterThan(0);
-  expect(chrome.color).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.color).toMatch(CSS_COLOR_VALUE_PATTERN);
 }
 
 async function installRunbookSuccessFixture(win: Page) {
@@ -814,7 +887,7 @@ function expectRunbookSuccessChrome(
   expect(chrome.timelineLive.color).not.toBe(chrome.neutralAction.color);
   expect(chrome.goodDiagnostic.borderLeftColor).not.toBe(chrome.warningDiagnostic.borderLeftColor);
   expect(chrome.freshEvent.borderLeftColor).not.toBe(chrome.neutralEvent.borderLeftColor);
-  expect(chrome.freshEvent.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+  expect(chrome.freshEvent.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
   expect(chrome.readyAction.borderStyle).not.toBe('none');
   expect(parseFloat(chrome.readyAction.borderWidth)).toBeGreaterThan(0);
   expect(chrome.retryProbe.borderStyle).not.toBe('none');
@@ -865,12 +938,12 @@ async function managedRunActionChrome(fixture: Locator) {
 function expectManagedRunActionChromeClean(chrome: Awaited<ReturnType<typeof managedRunActionChrome>>) {
   for (const surface of [chrome.failedProbeLink, chrome.lifecycleLink, chrome.patchOutcome]) {
     expect(surface.backgroundImage).not.toMatch(/(?:radial|linear)-gradient/);
-    expect(surface.backgroundColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(surface.backgroundColor).toMatch(CSS_COLOR_VALUE_PATTERN);
     expect(surface.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-    expect(surface.borderColor).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(surface.borderColor).toMatch(CSS_COLOR_VALUE_PATTERN);
     expect(surface.borderStyle).not.toBe('none');
     expect(parseFloat(surface.borderWidth)).toBeGreaterThan(0);
-    expect(surface.color).toMatch(/^(?:rgb|rgba|color\()/);
+    expect(surface.color).toMatch(CSS_COLOR_VALUE_PATTERN);
   }
 }
 
@@ -913,6 +986,38 @@ test('default OrPAD Hero theme is first-class and switching theme changes --bg-p
 
     const afterVars = await rootVars(win, ['--bg-primary']);
     expect(afterVars['--bg-primary']).not.toBe(beforeVars['--bg-primary']);
+  } finally {
+    await app.close();
+  }
+});
+
+test('editor search highlights follow theme tokens', async () => {
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+    await resetSavedTheme(win);
+
+    const fixture = await installEditorSearchFixture(win);
+    const beforeVars = await rootVars(win, ['--editor-bg', '--accent-color', '--text-primary']);
+    const beforeChrome = await editorSearchHighlightChrome(fixture);
+    expectEditorSearchHighlightChrome(beforeChrome);
+
+    await switchToTheme(win, 'GitHub Light');
+
+    const afterVars = await rootVars(win, ['--editor-bg', '--accent-color', '--text-primary']);
+    expect(afterVars['--editor-bg']).not.toBe(beforeVars['--editor-bg']);
+    expect(afterVars['--accent-color']).not.toBe(beforeVars['--accent-color']);
+    expect(afterVars['--text-primary']).not.toBe(beforeVars['--text-primary']);
+
+    const afterChrome = await editorSearchHighlightChrome(fixture);
+    expectEditorSearchHighlightChrome(afterChrome);
+    expect(afterChrome.match.backgroundColor).not.toBe(beforeChrome.match.backgroundColor);
+    expect(afterChrome.match.outlineColor).not.toBe(beforeChrome.match.outlineColor);
+    expect(afterChrome.selected.backgroundColor).not.toBe(beforeChrome.selected.backgroundColor);
+    expect(afterChrome.selected.outlineColor).not.toBe(beforeChrome.selected.outlineColor);
+    expect(afterChrome.match.color).not.toBe(beforeChrome.match.color);
+    expect(afterChrome.selected.color).not.toBe(beforeChrome.selected.color);
   } finally {
     await app.close();
   }
@@ -1238,7 +1343,7 @@ test('OrPAD Hero paints command palette and terminal chrome', async () => {
     await resetSavedTheme(win);
 
     await openCommandPalette(win);
-    const paletteChrome = await surfaceChrome(win.locator('.cmdk-shell'));
+    const paletteChrome = await surfaceChrome(win.locator('.cmdk-shell:not(.quick-open)').first());
     expectCleanSoftChrome(paletteChrome);
     await win.keyboard.press('Escape');
 

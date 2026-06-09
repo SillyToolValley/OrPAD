@@ -10,6 +10,8 @@ export const builtinThemes = {
       accentColor: '#38a3ff', linkColor: '#77c7ff',
       hoverBg: 'rgba(56,163,255,0.16)', activeBg: 'rgba(56,163,255,0.22)',
       codeBg: 'rgba(35,79,145,0.26)', preBg: '#071228',
+      graphNodeBg: '#edf4ff', graphNodeBgActive: '#e4efff', graphNodeBorder: '#9ab9f2',
+      graphNodeText: '#102247', graphNodeMuted: '#566b94', graphNodeShadow: 'rgba(7,18,45,0.34)',
       tableBorder: '#2d60a9', tableHeaderBg: '#101d3b', tableRowBg: 'rgba(56,163,255,0.09)',
       scrollbarThumb: 'rgba(119,199,255,0.22)', scrollbarThumbHover: 'rgba(119,199,255,0.42)',
       editorBg: '#071228', editorGutterBg: '#08162f', editorGutterColor: '#3e69a7',
@@ -299,12 +301,24 @@ function withDerivedThemeTokens(colors) {
   const dangerColor = colors.dangerColor || colors.syntaxDeleted || colors.syntaxKeyword || colors.accentColor;
   const warningColor = colors.warningColor || colors.syntaxMeta || colors.syntaxNumber || colors.accentColor;
   const breakpointColor = colors.breakpointColor || dangerColor || colors.syntaxDeleted || colors.accentColor;
+  const graphNodeBg = colors.graphNodeBg || colors.bgSecondary;
+  const graphNodeBgActive = colors.graphNodeBgActive || graphNodeBg || colors.bgSecondary;
+  const graphNodeBorder = colors.graphNodeBorder || colors.borderColor;
+  const graphNodeText = colors.graphNodeText || colors.textPrimary;
+  const graphNodeMuted = colors.graphNodeMuted || colors.textSecondary;
+  const graphNodeShadow = colors.graphNodeShadow || 'rgba(0,0,0,0.18)';
   return {
     ...colors,
     ...(successColor ? { successColor } : {}),
     ...(!colors.dangerColor && dangerColor ? { dangerColor } : {}),
     ...(!colors.warningColor && warningColor ? { warningColor } : {}),
     ...(breakpointColor ? { breakpointColor } : {}),
+    ...(!colors.graphNodeBg && graphNodeBg ? { graphNodeBg } : {}),
+    ...(!colors.graphNodeBgActive && graphNodeBgActive ? { graphNodeBgActive } : {}),
+    ...(!colors.graphNodeBorder && graphNodeBorder ? { graphNodeBorder } : {}),
+    ...(!colors.graphNodeText && graphNodeText ? { graphNodeText } : {}),
+    ...(!colors.graphNodeMuted && graphNodeMuted ? { graphNodeMuted } : {}),
+    ...(!colors.graphNodeShadow && graphNodeShadow ? { graphNodeShadow } : {}),
   };
 }
 
@@ -448,6 +462,12 @@ export function deriveFullColors(base, isDark) {
     warningColor: base.warningColor || base.syntaxMeta || base.syntaxNumber || base.accentColor,
     dangerColor: base.dangerColor || base.syntaxDeleted || base.syntaxKeyword || base.accentColor,
     breakpointColor: base.breakpointColor || base.dangerColor || base.syntaxDeleted || base.syntaxKeyword || base.accentColor,
+    graphNodeBg: base.graphNodeBg || base.bgSecondary,
+    graphNodeBgActive: base.graphNodeBgActive || base.graphNodeBg || base.bgSecondary,
+    graphNodeBorder: base.graphNodeBorder || base.borderColor,
+    graphNodeText: base.graphNodeText || base.textPrimary,
+    graphNodeMuted: base.graphNodeMuted || base.textSecondary,
+    graphNodeShadow: base.graphNodeShadow || (isDark ? 'rgba(0,0,0,0.28)' : 'rgba(31,35,40,0.12)'),
     syntaxAddedBg: `rgba(${hexToRgb(base.syntaxAdded || base.syntaxString || '#22863a').r},${hexToRgb(base.syntaxAdded || base.syntaxString || '#22863a').g},${hexToRgb(base.syntaxAdded || base.syntaxString || '#22863a').b},0.15)`,
     syntaxDeletedBg: `rgba(${hexToRgb(base.syntaxDeleted || base.syntaxKeyword || '#d73a49').r},${hexToRgb(base.syntaxDeleted || base.syntaxKeyword || '#d73a49').g},${hexToRgb(base.syntaxDeleted || base.syntaxKeyword || '#d73a49').b},0.15)`,
   };

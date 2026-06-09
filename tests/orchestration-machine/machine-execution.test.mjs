@@ -47,6 +47,7 @@ const {
   __test_configuredWorkerConcurrency,
   __test_machineConfigWithQueueProtocolClaimPolicy,
   __test_gateFailureOnlyStaleQueueActive,
+  __test_latestAdapterResultFailures,
   __test_liveTriageCandidatesFromQueue,
   __test_normalizeNonRunnableBlockedQueueItems,
   __test_requiredValidationCommandsForWorkerNode,
@@ -2879,6 +2880,61 @@ test('runtime support nodes reject non-string contract arrays before coercion', 
     }),
     error => error?.code === 'MACHINE_CONFIG_INVALID',
   );
+});
+
+test('adapter failure audit treats explicit partial multi-probe joins as warnings after a sibling resolves', () => {
+  const orderedNodes = [
+    { graphKey: 'main', nodePath: 'main/probe-frontend-ux', nodeType: 'orpad.probe' },
+    { graphKey: 'main', nodePath: 'main/probe-release-readiness', nodeType: 'orpad.probe' },
+    {
+      graphKey: 'main',
+      nodePath: 'main/join-package-discovery',
+      nodeType: 'orpad.barrier',
+      config: {
+        waitFor: ['probe-frontend-ux', 'probe-release-readiness'],
+        onPartialFailure: 'continue-with-warning',
+      },
+    },
+  ];
+  const events = [
+    {
+      sequence: 1,
+      eventType: 'node.completed',
+      nodePath: 'main/probe-frontend-ux',
+      payload: { nodeType: 'orpad.probe', status: 'completed' },
+    },
+    {
+      sequence: 2,
+      eventType: 'adapter.result',
+      nodePath: 'main/probe-release-readiness',
+      payload: {
+        adapterCallId: 'release-probe-call',
+        taskKind: 'proposal',
+        status: 'failed',
+        proposalCount: 0,
+        triageTransitionCount: 0,
+        deferredReason: 'probe-timeout',
+      },
+    },
+  ];
+
+  assert.equal(__test_latestAdapterResultFailures(events).length, 1);
+  assert.equal(__test_latestAdapterResultFailures(events, {
+    orderedNodes,
+    ignorePartialFailureProbeAdapters: true,
+  }).length, 0);
+  assert.equal(__test_latestAdapterResultFailures(events.slice(1), {
+    orderedNodes,
+    ignorePartialFailureProbeAdapters: true,
+  }).length, 1);
+  assert.equal(__test_latestAdapterResultFailures(events, {
+    orderedNodes: orderedNodes.map(node => (
+      node.nodeType === 'orpad.barrier'
+        ? { ...node, config: { waitFor: node.config.waitFor } }
+        : node
+    )),
+    ignorePartialFailureProbeAdapters: true,
+  }).length, 1);
 });
 
 test('external research selector records local-only mode without failing the graph', async () => {
