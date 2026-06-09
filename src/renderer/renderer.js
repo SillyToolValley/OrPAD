@@ -12447,16 +12447,24 @@ function renderOrchEdge(edge, byPath, runProjection = null, layoutCtx = null) {
   const point = orchTransitionPoint(edge.id, source, target, edge);
   const edgePath = orchEdgePath(source, target, edge.id, edge);
   const edgeDomId = `orch-edge-${hash32(`${edge.id}:${edgePath}`)}`;
-  // Only emit the moving-arrow animation when the runtime is actively traversing
-  // this edge. Single ">" glyph (not "> > >") so a busy graph doesn't read as
-  // multiple simultaneous traversals. Slower 2.2s cycle to reduce visual noise.
-  // CSS @media (prefers-reduced-motion: reduce) hides this animate element and
-  // falls back to restrained static emphasis on .runtime-active edges.
+  // Only emit the flow animation while the runtime is actively traversing this
+  // edge. The icon reference uses a solid rounded connector with small light
+  // points moving along it, so keep the main path solid and layer motion above it.
   const activeFlow = runtime?.state === 'active'
     ? `
-    <text class="orch-transition-flow-arrows" dy="-5" aria-hidden="true">
-      <textPath href="#${escapeHtml(edgeDomId)}" startOffset="6%"><animate attributeName="startOffset" values="6%;82%" dur="2.2s" repeatCount="indefinite" />&gt;</textPath>
-    </text>`
+    <g class="orch-transition-flow-arrows" aria-hidden="true">
+      <path class="orch-transition-flow-trail" d="${edgePath}" />
+      <circle class="orch-transition-flow-dot primary" r="4">
+        <animateMotion dur="1.85s" repeatCount="indefinite" rotate="auto">
+          <mpath href="#${escapeHtml(edgeDomId)}" />
+        </animateMotion>
+      </circle>
+      <circle class="orch-transition-flow-dot secondary" r="2.4">
+        <animateMotion begin="0.32s" dur="1.85s" repeatCount="indefinite" rotate="auto">
+          <mpath href="#${escapeHtml(edgeDomId)}" />
+        </animateMotion>
+      </circle>
+    </g>`
     : '';
   // Label: condition string ("rejected", "self-check-fail", "revise"...) with a
   // -prefix for loop-backs so it reads as a back-edge at a glance.
@@ -12620,14 +12628,14 @@ function renderOrchGraphCanvas(graph, readwrite, tools = true, runProjection = n
           <div class="orch-graph-canvas" style="width:${gw}px;height:${gh}px">
             <svg class="orch-graph-edges" style="left:${gx}px;top:${gy}px;width:${gw}px;height:${gh}px" viewBox="${gx} ${gy} ${gw} ${gh}">
               <defs>
-                <!-- Shared arrow markers. Each category references one of these
-                     via marker-end so the head colour matches the stroke. -->
-                <marker id="orch-arrow-forward" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="strokeWidth" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M0,0 L10,5 L0,10 Z" fill="context-stroke" />
+                <!-- Shared rounded arrow markers. The head follows context-stroke
+                     so runtime-active edges turn into the same blue icon accent. -->
+                <marker id="orch-arrow-forward" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="16" markerHeight="16" orient="auto-start-reverse">
+                  <path class="orch-arrow-head" d="M2.2,2.2 L9.8,6 L2.2,9.8" fill="none" stroke="context-stroke" stroke-linecap="round" stroke-linejoin="round" />
                 </marker>
-                <marker id="orch-arrow-loopback" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="strokeWidth" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                  <!-- Slightly larger / hollow head so back-edges read distinctly even at small zoom. -->
-                  <path d="M0,0 L10,5 L0,10 L3,5 Z" fill="context-stroke" />
+                <marker id="orch-arrow-loopback" viewBox="0 0 12 12" refX="10" refY="6" markerUnits="userSpaceOnUse" markerWidth="17" markerHeight="17" orient="auto-start-reverse">
+                  <!-- Slightly larger / doubled head so back-edges read distinctly even at small zoom. -->
+                  <path class="orch-arrow-head" d="M2.2,2.2 L9.8,6 L2.2,9.8 M4.2,3.6 L9.8,6 L4.2,8.4" fill="none" stroke="context-stroke" stroke-linecap="round" stroke-linejoin="round" />
                 </marker>
               </defs>
               ${graph.edges.map(edge => renderOrchEdge(edge, byPath, runProjection, layoutCtx)).join('')}

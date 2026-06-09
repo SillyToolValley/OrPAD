@@ -171,6 +171,10 @@ async function expectRuntimeHeroGraphChrome(page: Page, label: string): Promise<
     const runControls = frame.querySelector<HTMLElement>('.orch-graph-run-controls');
     const runningStyle = runningNode ? getComputedStyle(runningNode) : null;
     const activeEdgeStyle = activeEdge ? getComputedStyle(activeEdge) : null;
+    const flowTrail = frame.querySelector<SVGPathElement>('.orch-transition-flow-trail');
+    const flowDot = frame.querySelector<SVGElement>('.orch-transition-flow-dot.primary');
+    const flowTrailStyle = flowTrail ? getComputedStyle(flowTrail) : null;
+    const flowDotStyle = flowDot ? getComputedStyle(flowDot) : null;
     const nodeRects = [...frame.querySelectorAll<HTMLElement>('.orch-graph-node')].map(rectOf);
     const runControlRect = rectOf(runControls);
     return {
@@ -186,6 +190,11 @@ async function expectRuntimeHeroGraphChrome(page: Page, label: string): Promise<
       activeEdgeStrokeWidth: Number.parseFloat(activeEdgeStyle?.strokeWidth || '0'),
       activeEdgeStrokeDasharray: activeEdgeStyle?.strokeDasharray || '',
       activeEdgeFilter: activeEdgeStyle?.filter || '',
+      flowTrailVisible: !!flowTrail,
+      flowTrailStrokeDasharray: flowTrailStyle?.strokeDasharray || '',
+      flowTrailAnimationName: flowTrailStyle?.animationName || '',
+      flowDotVisible: !!flowDot,
+      flowDotFilter: flowDotStyle?.filter || '',
     };
   });
 
@@ -200,8 +209,13 @@ async function expectRuntimeHeroGraphChrome(page: Page, label: string): Promise<
   expect(audit.runningNodeBoxShadow, `${label}: running node should have a glow/depth treatment`).not.toBe('none');
   expect(audit.runningNodeAnimationName, `${label}: running node should pulse when motion is allowed`).toContain('orch-runtime-pulse');
   expect(audit.activeEdgeStrokeWidth, `${label}: active path should scan by weight, not color alone`).toBeGreaterThanOrEqual(5);
-  expect(audit.activeEdgeStrokeDasharray, `${label}: active path should scan by dash pattern, not color alone`).not.toBe('none');
+  expect(audit.activeEdgeStrokeDasharray, `${label}: active path should stay a solid rounded connector like the OrPAD icon`).toBe('none');
   expect(audit.activeEdgeFilter, `${label}: active path should have a static glow fallback`).not.toBe('none');
+  expect(audit.flowTrailVisible, `${label}: active path should expose an icon-style moving light trail`).toBe(true);
+  expect(audit.flowTrailStrokeDasharray, `${label}: flow trail should use small light points instead of text arrows`).not.toBe('none');
+  expect(audit.flowTrailAnimationName, `${label}: flow trail should animate along the transition`).toContain('orch-edge-flow-dots');
+  expect(audit.flowDotVisible, `${label}: active flow should include a bright moving node accent`).toBe(true);
+  expect(audit.flowDotFilter, `${label}: moving node accent should glow`).not.toBe('none');
 }
 
 async function expectReducedMotionHeroGraphFallback(page: Page, label: string): Promise<void> {
@@ -209,7 +223,7 @@ async function expectReducedMotionHeroGraphFallback(page: Page, label: string): 
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
   const audit = await page.locator('.orch-graph-frame').first().evaluate((frame) => {
     const activeEdge = frame.querySelector<SVGPathElement>('.orch-transition[data-machine-edge-state="active"]');
-    const flowArrow = frame.querySelector<SVGTextElement>('.orch-transition-flow-arrows');
+    const flowArrow = frame.querySelector<SVGGElement>('.orch-transition-flow-arrows');
     const runningNode = frame.querySelector<HTMLElement>('.orch-graph-node.runtime-running');
     const activeStyle = activeEdge ? getComputedStyle(activeEdge) : null;
     const arrowStyle = flowArrow ? getComputedStyle(flowArrow) : null;
@@ -221,8 +235,8 @@ async function expectReducedMotionHeroGraphFallback(page: Page, label: string): 
       runningNodeAnimationName: nodeStyle?.animationName || '',
     };
   });
-  expect(audit.flowArrowDisplay, `${label}: reduced motion should hide moving edge glyphs`).toBe('none');
-  expect(audit.activeEdgeAnimationName, `${label}: reduced motion should stop active edge dash animation`).toBe('none');
+  expect(audit.flowArrowDisplay, `${label}: reduced motion should hide moving edge flow accents`).toBe('none');
+  expect(audit.activeEdgeAnimationName, `${label}: reduced motion should keep the active connector static`).toBe('none');
   expect(audit.activeEdgeFilter, `${label}: reduced motion should keep a static path glow`).not.toBe('none');
   expect(audit.runningNodeAnimationName, `${label}: reduced motion should stop running node pulse`).toBe('none');
   await page.emulateMedia({ reducedMotion: 'no-preference' });
@@ -1121,7 +1135,7 @@ test('Machine graph continues queued work after reviewable blocked patch', async
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('Machine UI shows running managed runs as busy and blocks duplicate Continue', async (_fixtures, testInfo) => {
+test('Machine UI shows running managed runs as busy and blocks duplicate Continue', async ({}, testInfo) => {
   const { workspace, pipelinePath } = writeMachineWorkspace();
   const run = await createMachineRun({
     workspaceRoot: workspace,

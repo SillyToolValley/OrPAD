@@ -4015,14 +4015,22 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   height: 100%;
   overflow: visible;
 }
-.orch-graph-edges path {
+.orch-graph-edges .orch-transition {
   fill: none;
-  stroke: color-mix(in srgb, var(--border-color) 78%, var(--text-tertiary));
-  stroke-width: 3;
+  stroke: color-mix(in srgb, var(--graph-node-border, var(--border-color)) 70%, var(--text-secondary));
+  stroke-width: 3.2;
   stroke-linecap: round;
   stroke-linejoin: round;
   filter: none;
   cursor: pointer;
+}
+.orch-arrow-head {
+  fill: none;
+  stroke: context-stroke;
+  stroke-width: 2.05;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  paint-order: stroke;
 }
 .orch-transition-hit {
   fill: none;
@@ -4039,40 +4047,59 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   filter: none;
 }
 .orch-graph-edges .orch-transition.runtime-completed {
-  stroke: color-mix(in srgb, var(--success-color) 64%, var(--border-color));
-  stroke-width: 3.4;
+  stroke: color-mix(in srgb, var(--success-color) 34%, var(--accent-color));
+  stroke-width: 3.5;
   filter: none;
 }
 .orch-graph-edges .orch-transition.runtime-active {
   stroke: var(--accent-color);
-  stroke-width: 5;
-  stroke-dasharray: 12 5;
-  animation: orch-edge-dash 1.5s linear infinite;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent-color) 54%, transparent));
+  stroke-width: 5.2;
+  stroke-dasharray: none;
+  animation: none;
+  filter:
+    drop-shadow(0 0 4px color-mix(in srgb, var(--accent-color) 42%, transparent))
+    drop-shadow(0 0 10px color-mix(in srgb, var(--accent-color) 24%, transparent));
 }
 .orch-transition-flow-arrows {
-  fill: var(--accent-color);
-  stroke: var(--bg-primary);
-  stroke-width: 3px;
-  paint-order: stroke;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: calc(14px * var(--us));
-  font-weight: 800;
-  letter-spacing: 0;
   pointer-events: none;
 }
+.orch-transition-flow-trail {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent-color) 82%, #ffffff);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1 10;
+  stroke-dashoffset: 0;
+  opacity: 0.92;
+  animation: orch-edge-flow-dots 1.85s linear infinite;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent-color) 42%, transparent));
+}
+.orch-transition-flow-dot {
+  fill: #ffffff;
+  stroke: var(--accent-color);
+  stroke-width: 2;
+  paint-order: stroke;
+  filter:
+    drop-shadow(0 0 5px color-mix(in srgb, var(--accent-color) 62%, transparent))
+    drop-shadow(0 0 12px color-mix(in srgb, var(--accent-color) 32%, transparent));
+}
+.orch-transition-flow-dot.secondary {
+  fill: color-mix(in srgb, var(--accent-color) 72%, #ffffff);
+  stroke-width: 1.6;
+  opacity: 0.72;
+}
 
-/* Respect OS-level "reduce motion" preference: hide the animated arrow on
- * active edges and keep the same restrained transition emphasis without
- * motion. */
+/* Respect OS-level "reduce motion" preference: hide the animated light trail on
+ * active edges and keep the same restrained transition emphasis without motion. */
 @media (prefers-reduced-motion: reduce) {
   .orch-graph-edges .orch-transition-flow-arrows {
     display: none;
   }
   .orch-graph-edges .orch-transition.runtime-active {
     animation: none;
-    stroke-width: 5;
-    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent-color) 44%, transparent));
+    stroke-width: 5.2;
+    filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-color) 38%, transparent));
   }
   .orch-graph-node.runtime-running,
   .orch-graph-node-breakpoint,
@@ -4081,17 +4108,14 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
     animation: none !important;
   }
 }
-@keyframes orch-edge-dash {
-  to { stroke-dashoffset: -17; }
-}
-.orch-transition-flow-arrows.secondary {
-  opacity: 0.62;
+@keyframes orch-edge-flow-dots {
+  to { stroke-dashoffset: -11; }
 }
 .orch-graph-edges .orch-transition.runtime-blocked {
   stroke: color-mix(in srgb, var(--warning-color) 72%, var(--border-color));
   stroke-width: 4.4;
   stroke-dasharray: 3 7;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--warning-color) 34%, transparent));
+  filter: none;
 }
 .orch-graph-edges .orch-transition.runtime-muted {
   stroke: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
@@ -4106,7 +4130,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   stroke: color-mix(in srgb, var(--success-color) 50%, var(--accent-color, #6cb6ff));
   stroke-width: 4;
   stroke-dasharray: 8 3 2 3;
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent-color) 28%, transparent));
+  filter: none;
 }
 /* Phase 2.6: untraversed — a downstream branch the dispatcher did
  * NOT pick (selector / conditional). Dimmed and dashed so the
@@ -4128,16 +4152,16 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
  * theme while keeping connector categories visually distinct. Override in a
  * theme by redefining the --orch-edge-* tokens. */
 :root {
-  --orch-edge-forward: color-mix(in srgb, var(--accent-color) 78%, var(--text-primary));
-  --orch-edge-branch: color-mix(in srgb, var(--syntax-keyword) 72%, var(--accent-color));
-  --orch-edge-accept: color-mix(in srgb, var(--syntax-string) 84%, var(--text-primary));
-  --orch-edge-reject: color-mix(in srgb, var(--syntax-deleted) 84%, var(--text-primary));
-  --orch-edge-queue-empty: color-mix(in srgb, var(--link-color, var(--accent-color)) 64%, var(--text-secondary));
-  --orch-edge-queue-loop: color-mix(in srgb, var(--syntax-meta) 84%, var(--accent-color));
-  --orch-edge-loopback: color-mix(in srgb, var(--syntax-number) 82%, var(--accent-color));
-  --orch-edge-loop-revise: color-mix(in srgb, var(--syntax-meta) 76%, var(--syntax-number));
-  --orch-edge-loop-reject: color-mix(in srgb, var(--syntax-deleted) 82%, var(--syntax-meta));
-  --orch-edge-loop-fail: color-mix(in srgb, var(--syntax-deleted) 68%, var(--accent-color));
+  --orch-edge-forward: color-mix(in srgb, var(--accent-color) 45%, var(--text-secondary));
+  --orch-edge-branch: color-mix(in srgb, var(--accent-color) 62%, var(--syntax-keyword));
+  --orch-edge-accept: color-mix(in srgb, var(--accent-color) 58%, var(--success-color, var(--syntax-string)));
+  --orch-edge-reject: color-mix(in srgb, var(--accent-color) 42%, var(--syntax-deleted));
+  --orch-edge-queue-empty: color-mix(in srgb, var(--accent-color) 34%, var(--text-tertiary));
+  --orch-edge-queue-loop: color-mix(in srgb, var(--accent-color) 54%, var(--syntax-meta));
+  --orch-edge-loopback: color-mix(in srgb, var(--accent-color) 50%, var(--syntax-number));
+  --orch-edge-loop-revise: color-mix(in srgb, var(--accent-color) 44%, var(--syntax-meta));
+  --orch-edge-loop-reject: color-mix(in srgb, var(--accent-color) 36%, var(--syntax-deleted));
+  --orch-edge-loop-fail: color-mix(in srgb, var(--accent-color) 32%, var(--danger-color, var(--syntax-deleted)));
 }
 
 /* Default — all forward edges. */
@@ -4150,9 +4174,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   stroke: var(--orch-edge-queue-loop);
   stroke-dasharray: 8 4;
 }
-/* All loop-back variants are dashed so the back-edge nature stays visible
- * even when a runtime state (completed / active / blocked) overrides the
- * stroke. The colour distinguishes WHY it loops back. */
+/* All idle loop-back variants are dashed so the back-edge nature stays visible.
+ * Active runtime edges override this to a solid glowing connector with motion. */
 .orch-graph-edges .orch-transition.loop-back,
 .orch-graph-edges .orch-transition.category-loop-back,
 .orch-graph-edges .orch-transition.category-loop-revise,
@@ -4166,16 +4189,19 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .orch-graph-edges .orch-transition.category-loop-reject { stroke: var(--orch-edge-loop-reject); }
 .orch-graph-edges .orch-transition.category-loop-fail { stroke: var(--orch-edge-loop-fail); }
 
-/* Runtime overrides keep precedence over category colour but preserve the
- * dashed pattern for loop-backs and queue-drain edges so the back/loop
- * meaning is never lost. */
+/* Runtime overrides keep precedence over category colour. Historical loop and
+ * queue edges stay dashed after traversal; the currently firing transition is
+ * solid so the active flow reads like the OrPAD icon connector. */
 .orch-graph-edges .orch-transition.loop-back.runtime-completed,
-.orch-graph-edges .orch-transition.loop-back.runtime-active,
 .orch-graph-edges .orch-transition.loop-back.runtime-blocked,
 .orch-graph-edges .orch-transition.loop-back.runtime-traversed,
 .orch-graph-edges .orch-transition.category-queue-not-empty.runtime-completed,
-.orch-graph-edges .orch-transition.category-queue-not-empty.runtime-active {
+.orch-graph-edges .orch-transition.category-queue-not-empty.runtime-traversed {
   stroke-dasharray: 8 4;
+}
+.orch-graph-edges .orch-transition.loop-back.runtime-active,
+.orch-graph-edges .orch-transition.category-queue-not-empty.runtime-active {
+  stroke-dasharray: none;
 }
 
 .orch-graph-edges .orch-transition.runtime-completed {
