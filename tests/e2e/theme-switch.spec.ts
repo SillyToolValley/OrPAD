@@ -2,13 +2,13 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import { launchElectron } from '../helpers';
 
 const HERO_VARS = {
-  bgPrimary: '#050b1f',
-  bgSecondary: '#0b1530',
-  accentColor: '#38a3ff',
-  successColor: '#73e6c2',
-  warningColor: '#b8d8ff',
-  dangerColor: '#ff8ba7',
-  breakpointColor: '#ff8ba7',
+  bgPrimary: '#f6f8fd',
+  bgSecondary: '#ffffff',
+  accentColor: '#236cff',
+  successColor: '#19a886',
+  warningColor: '#d98b1e',
+  dangerColor: '#d92f54',
+  breakpointColor: '#d92f54',
 };
 
 const RUNTIME_STEP_STATES = ['completed', 'failed', 'blocked'] as const;
@@ -947,7 +947,7 @@ function expectManagedRunActionChromeClean(chrome: Awaited<ReturnType<typeof man
   }
 }
 
-test('default OrPAD Hero theme is first-class and switching theme changes --bg-primary', async () => {
+test('default OrPAD Default theme is first-class and switching theme changes --bg-primary', async () => {
   const app = await launchElectron();
   try {
     const win = await app.firstWindow();
@@ -974,7 +974,7 @@ test('default OrPAD Hero theme is first-class and switching theme changes --bg-p
     // Open the theme panel
     await win.click('#btn-theme');
     await expect(win.locator('#theme-panel')).toBeVisible({ timeout: 5000 });
-    const heroTheme = win.locator('#theme-list .theme-item').filter({ hasText: 'OrPAD Hero' });
+    const heroTheme = win.locator('#theme-list .theme-item').filter({ hasText: 'OrPAD Default' });
     await expect(heroTheme).toBeVisible({ timeout: 3000 });
     await expect(heroTheme).toHaveClass(/active/);
 
@@ -1266,7 +1266,7 @@ test('orchestration inspector runtime state chips follow theme tokens', async ()
   }
 });
 
-test('terminal picker and empty state chrome follow Hero and GitHub Light tokens', async () => {
+test('terminal picker and empty state chrome follow OrPAD Default and GitHub Light tokens', async () => {
   const app = await launchElectron();
   try {
     const win = await app.firstWindow();
@@ -1335,7 +1335,7 @@ test('Package Manager row chrome follows Hero and GitHub Light tokens', async ()
   }
 });
 
-test('OrPAD Hero paints command palette and terminal chrome', async () => {
+test('OrPAD Default paints command palette and terminal chrome', async () => {
   const app = await launchElectron();
   try {
     const win = await app.firstWindow();

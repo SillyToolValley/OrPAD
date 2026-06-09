@@ -12451,7 +12451,7 @@ function renderOrchEdge(edge, byPath, runProjection = null, layoutCtx = null) {
   // this edge. Single ">" glyph (not "> > >") so a busy graph doesn't read as
   // multiple simultaneous traversals. Slower 2.2s cycle to reduce visual noise.
   // CSS @media (prefers-reduced-motion: reduce) hides this animate element and
-  // falls back to a static glow on .runtime-active edges.
+  // falls back to restrained static emphasis on .runtime-active edges.
   const activeFlow = runtime?.state === 'active'
     ? `
     <text class="orch-transition-flow-arrows" dy="-5" aria-hidden="true">

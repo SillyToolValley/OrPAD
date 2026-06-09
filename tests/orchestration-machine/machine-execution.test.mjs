@@ -959,7 +959,7 @@ test('visual UX gate criteria pass from explicit worker screenshot and layout ev
         {
           command: 'visual-reference-composition-material-check',
           status: 'passed',
-          summary: 'Changed UI screen reflects the OrPAD Hero visual reference constraints: deep navy palette, cool white glass surface hierarchy, electric blue connector treatment, dark terminal inset, compact typography, and material cues. The fixture has no pre-existing essential interactive controls/actions to regress beyond preserving the static package add button.',
+          summary: 'Changed UI screen reflects the OrPAD Hero visual reference constraints: reference palette uses white/light-gray paper surfaces, the surface hierarchy separates the document console from supporting modules, blue binder and flow accents provide selective connector treatment, and compact typography/material cues are recorded. The fixture has no pre-existing essential interactive controls/actions to regress beyond preserving the static package add button.',
         },
         {
           command: 'responsive-layout-overlap-check',

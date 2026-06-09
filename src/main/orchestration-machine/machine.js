@@ -526,7 +526,7 @@ function deterministicOrpadHeroReferenceProposal(input = {}) {
       {
         id: 'orpad-hero-reference-image',
         file: seed.referencePath,
-        summary: 'The user-provided OrPAD Hero reference shows a central document console, supporting file, terminal, pipeline, overview, VM, and package modules, and bright blue glass connector treatment.',
+        summary: 'The user-provided OrPAD Hero reference shows a white paper-like document console with blue binder rings, flow nodes, and selective bright-blue connector emphasis.',
       },
       {
         id: 'orpad-hero-current-markup',
@@ -536,11 +536,11 @@ function deterministicOrpadHeroReferenceProposal(input = {}) {
       {
         id: 'orpad-hero-current-style',
         file: seed.targetFiles[1],
-        summary: 'The current base styles do not express the reference image surface hierarchy, glowing connector system, or light glass modules.',
+        summary: 'The current base styles do not express the reference image surface hierarchy, white-paper base, blue accent system, or selective connector emphasis.',
       },
     ],
     acceptanceCriteria: [
-      'The representative OrPAD Hero surface uses the reference image palette, light glass modules, dark terminal inset, and blue connector treatment.',
+      'The representative OrPAD Hero surface uses a white/light-gray paper palette, blue binder and flow accents, and selective blue connector treatment.',
       'The allowed markup and style files express one central hero surface plus supporting modules without text or panel overlap at desktop and narrow viewports.',
       'Visual validation records before and after screenshots from the changed OrPAD Hero surface and blocks if the after capture is unchanged from baseline.',
     ],
@@ -651,22 +651,22 @@ function deterministicOrpadHeroWorkerHtml() {
 
 function deterministicOrpadHeroWorkerCss() {
   return `:root {
-  color-scheme: dark;
+  color-scheme: light;
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  background: #020716;
-  color: #f4f7ff;
+  background: #f6f8fd;
+  color: #17233d;
 }
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; background: #020716; }
+body { margin: 0; min-height: 100vh; background: #f6f8fd; }
 button, pre { font: inherit; }
 .orpad-hero {
-  --background: #020716;
-  --surface: #eef5ff;
-  --panel: #dfe9ff;
-  --text: #17233f;
-  --muted: #5f6f92;
-  --accent: #2f80ff;
-  --border: #9db8f4;
+  --background: #f6f8fd;
+  --surface: #ffffff;
+  --panel: #edf4ff;
+  --text: #17233d;
+  --muted: #5c6f8b;
+  --accent: #236cff;
+  --border: #b9c9e4;
   position: relative;
   width: 100%;
   min-height: 720px;
@@ -675,9 +675,8 @@ button, pre { font: inherit; }
   overflow: hidden;
   padding: 30px;
   background:
-    radial-gradient(circle at 48% 58%, rgba(47,128,255,.34), transparent 32%),
-    radial-gradient(circle at 80% 18%, rgba(118,174,255,.18), transparent 28%),
-    linear-gradient(145deg, #030718 0%, #071437 58%, #020716 100%);
+    radial-gradient(circle at 48% 58%, rgba(35,108,255,.12), transparent 32%),
+    linear-gradient(145deg, #ffffff 0%, #f6f8fd 58%, #edf4ff 100%);
 }
 .hero-layout {
   position: relative;
@@ -692,11 +691,11 @@ button, pre { font: inherit; }
 }
 .module {
   position: relative;
-  border: 1px solid rgba(191,211,255,.82);
+  border: 1px solid rgba(185,201,228,.92);
   border-radius: 18px;
-  background: linear-gradient(145deg, rgba(248,252,255,.96), rgba(204,219,247,.9));
+  background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(237,244,255,.94));
   color: var(--text);
-  box-shadow: 0 22px 44px rgba(1,9,32,.34), inset 0 1px 0 rgba(255,255,255,.85);
+  box-shadow: 0 14px 30px rgba(35,73,132,.14), inset 0 1px 0 rgba(255,255,255,.92);
 }
 .module-label {
   position: absolute;
@@ -707,12 +706,12 @@ button, pre { font: inherit; }
   padding: 8px 16px;
   border: 1px solid rgba(119,154,234,.8);
   border-radius: 8px;
-  background: #12234e;
-  color: #f5f8ff;
+  background: #ffffff;
+  color: #236cff;
   font-weight: 800;
   font-size: 14px;
   white-space: nowrap;
-  box-shadow: 0 8px 18px rgba(0,0,0,.28);
+  box-shadow: 0 8px 18px rgba(35,73,132,.14);
 }
 .editor-support { grid-column: 1; grid-row: 1; padding: 22px 16px 16px; }
 .file-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; height: 100%; }
@@ -737,13 +736,13 @@ button, pre { font: inherit; }
   min-width: 28px;
   height: 24px;
   border-radius: 6px;
-  background: #2f80ff;
+  background: #236cff;
   color: #eaf2ff;
   font-weight: 900;
   font-size: 11px;
 }
-.terminal-panel { grid-column: 1; grid-row: 3; overflow: hidden; padding: 34px 18px 16px; background: #091229; color: #dbe8ff; }
-.terminal-chrome { position: absolute; inset: 0 0 auto; height: 28px; background: #1a2544; }
+.terminal-panel { grid-column: 1; grid-row: 3; overflow: hidden; padding: 34px 18px 16px; background: #fbfdff; color: #17233d; }
+.terminal-chrome { position: absolute; inset: 0 0 auto; height: 28px; background: #edf4ff; }
 .terminal-chrome span { float: left; width: 8px; height: 8px; margin: 10px 0 0 10px; border-radius: 50%; background: #7989ad; }
 .terminal-chrome b { float: right; width: 10px; height: 10px; margin: 9px 12px 0 0; border-radius: 50%; background: #37d6c4; }
 pre { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
@@ -756,7 +755,7 @@ pre { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
   border-radius: 34px;
   background: linear-gradient(145deg, #f8fbff 0%, #dfe8fb 68%, #c6d4ef 100%);
   border: 1px solid rgba(255,255,255,.86);
-  box-shadow: 0 34px 70px rgba(0,8,32,.44), 0 0 0 12px rgba(47,128,255,.12);
+  box-shadow: 0 24px 54px rgba(35,73,132,.18), 0 0 0 10px rgba(35,108,255,.08);
 }
 .core-console::after {
   content: "";
@@ -766,16 +765,16 @@ pre { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
   bottom: -26px;
   height: 54px;
   border-radius: 50%;
-  background: rgba(29,94,216,.45);
+  background: rgba(35,108,255,.18);
   filter: blur(10px);
 }
 .binder { position: absolute; left: -17px; top: 86px; display: grid; gap: 28px; }
-.binder span { width: 46px; height: 20px; border-radius: 999px; background: #236eff; box-shadow: 0 0 18px rgba(47,128,255,.8); }
+.binder span { width: 46px; height: 20px; border-radius: 999px; background: #236cff; box-shadow: 0 5px 12px rgba(35,108,255,.28); }
 .fold { position: absolute; top: 0; right: 0; width: 92px; height: 92px; border-radius: 0 34px 0 24px; background: linear-gradient(145deg, #fff, #d9e4fb); box-shadow: -10px 12px 18px rgba(56,76,120,.15); }
-.flow-root { position: absolute; top: 80px; left: 50%; width: 58px; height: 58px; transform: translateX(-50%); border-radius: 16px; background: linear-gradient(145deg, #5fb0ff, #1f6cff); box-shadow: 0 0 24px rgba(47,128,255,.75); }
+.flow-root { position: absolute; top: 80px; left: 50%; width: 58px; height: 58px; transform: translateX(-50%); border-radius: 16px; background: linear-gradient(145deg, #5fb0ff, #236cff); box-shadow: 0 0 16px rgba(35,108,255,.38); }
 .flow-nodes { position: absolute; top: 184px; left: 96px; right: 96px; display: flex; justify-content: space-between; }
-.flow-nodes span { width: 40px; height: 40px; border: 10px solid #2f80ff; border-radius: 50%; background: #cfe2ff; box-shadow: 0 0 18px rgba(47,128,255,.7); }
-.screen { position: absolute; left: 64px; right: 64px; bottom: 104px; padding: 22px 28px; border-radius: 22px; background: #07112c; color: #8bc3ff; box-shadow: inset 0 0 0 2px rgba(255,255,255,.08), 0 18px 34px rgba(1,7,24,.34); }
+.flow-nodes span { width: 40px; height: 40px; border: 10px solid #236cff; border-radius: 50%; background: #dbe9ff; box-shadow: 0 0 14px rgba(35,108,255,.32); }
+.screen { position: absolute; left: 64px; right: 64px; bottom: 104px; padding: 22px 28px; border-radius: 22px; background: #edf4ff; color: #236cff; box-shadow: inset 0 0 0 2px rgba(35,108,255,.08), 0 14px 28px rgba(35,73,132,.14); }
 .screen strong { display: block; margin-bottom: 14px; font-size: 24px; }
 .pager { position: absolute; left: 50%; bottom: 58px; transform: translateX(-50%); display: flex; gap: 8px; }
 .pager span { width: 10px; height: 10px; border-radius: 50%; background: #96caff; }
@@ -790,14 +789,14 @@ pre { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
   box-shadow: inset 0 1px 0 #fff;
 }
 .pipeline-row span { padding: 14px 6px; text-align: center; font-size: 12px; font-weight: 800; }
-.play { display: grid; place-items: center; height: 42px; border-radius: 12px; background: #2f80ff; color: #fff; box-shadow: 0 0 18px rgba(47,128,255,.7); }
+.play { display: grid; place-items: center; height: 42px; border-radius: 12px; background: #236cff; color: #fff; box-shadow: 0 0 12px rgba(35,108,255,.28); }
 .retry-row { margin-top: 18px; display: flex; justify-content: center; gap: 12px; }
 .retry-row span { min-width: 76px; padding: 12px; text-align: center; color: var(--muted); font-weight: 800; }
 .overview-grid { display: grid; grid-template-columns: 92px 92px; gap: 8px; }
 .overview-grid span { padding: 9px 11px; font-size: 12px; color: var(--muted); }
 .overview-grid b { color: var(--text); font-size: 18px; }
 .node-map { position: absolute; right: 18px; top: 54px; width: 138px; height: 104px; border-radius: 16px; background: linear-gradient(145deg, rgba(223,233,255,.8), rgba(183,202,239,.7)); }
-.node-map i { position: absolute; width: 24px; height: 24px; border-radius: 50%; background: #2f80ff; box-shadow: 0 0 12px rgba(47,128,255,.65); }
+.node-map i { position: absolute; width: 24px; height: 24px; border-radius: 50%; background: #236cff; box-shadow: 0 0 10px rgba(35,108,255,.28); }
 .node-map i:nth-child(1) { left: 18px; top: 18px; } .node-map i:nth-child(2) { left: 66px; top: 34px; }
 .node-map i:nth-child(3) { right: 18px; top: 22px; } .node-map i:nth-child(4) { left: 38px; bottom: 18px; }
 .node-map i:nth-child(5) { right: 38px; bottom: 20px; } .node-map i:nth-child(6) { right: 10px; bottom: 54px; }
@@ -807,11 +806,11 @@ pre { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
 .kits button { font-size: 28px; color: #1e4d9d; }
 .package-card > strong { display: block; margin-top: 14px; font-size: 15px; }
 .vm-card { position: absolute; left: 324px; bottom: 8px; width: 268px; min-height: 144px; padding: 34px 18px 14px 92px; }
-.vm-cube { position: absolute; left: 18px; top: 48px; width: 58px; height: 58px; border-radius: 16px; background: linear-gradient(145deg, #8cc6ff, #1f6cff); box-shadow: 0 0 24px rgba(47,128,255,.68); }
+.vm-cube { position: absolute; left: 18px; top: 48px; width: 58px; height: 58px; border-radius: 16px; background: linear-gradient(145deg, #8cc6ff, #236cff); box-shadow: 0 0 14px rgba(35,108,255,.3); }
 .vm-card ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
 .vm-card li { position: relative; padding-right: 24px; color: var(--text); font-weight: 800; font-size: 13px; }
 .vm-card li::after { content: ""; position: absolute; right: 0; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #40cfc0; box-shadow: 0 0 10px rgba(64,207,192,.8); }
-.hero-cable { position: absolute; z-index: 0; border-radius: 999px; background: rgba(47,128,255,.72); box-shadow: 0 0 18px rgba(47,128,255,.9), inset 0 0 0 3px rgba(183,220,255,.35); }
+.hero-cable { position: absolute; z-index: 0; border-radius: 999px; background: rgba(35,108,255,.44); box-shadow: 0 0 12px rgba(35,108,255,.26), inset 0 0 0 3px rgba(183,220,255,.35); }
 .cable-a { left: 21%; top: 31%; width: 29%; height: 16px; transform: rotate(18deg); }
 .cable-b { right: 20%; top: 43%; width: 24%; height: 16px; transform: rotate(-20deg); }
 .cable-c { left: 43%; bottom: 17%; width: 24%; height: 16px; transform: rotate(12deg); }
@@ -830,14 +829,14 @@ pre { margin: 0; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
 function deterministicOrpadHeroWorkerThemes() {
   return `export const themes = {
   builtIn: {
-    name: 'Built-in OrPAD',
-    background: '#020716',
-    surface: '#eef5ff',
-    panel: '#dfe9ff',
-    text: '#17233f',
-    muted: '#5f6f92',
-    accent: '#2f80ff',
-    border: '#9db8f4'
+    name: 'OrPAD Default',
+    background: '#f6f8fd',
+    surface: '#ffffff',
+    panel: '#edf4ff',
+    text: '#17233d',
+    muted: '#5c6f8b',
+    accent: '#236cff',
+    border: '#b9c9e4'
   }
 };
 `;
@@ -893,10 +892,10 @@ try {
 } catch (_) {}
 if (evidence) {
   evidence.referenceCues = {
-    palette: 'deep navy #020716 background, cool white glass panels, electric blue #2f80ff glow connectors',
+    palette: 'white/light-gray paper base, blue binder rings and flow accents, selective #236cff connector emphasis',
     surfaceHierarchy: 'central OrPAD document console plus editor, terminal, pipeline, overview, VM, and package modules',
-    typography: 'compact module labels, dark terminal monospace inset, readable kit and workflow labels',
-    material: 'light glass panels, dark terminal inset, blue connector glow, soft panel shadows',
+    typography: 'compact module labels and readable kit and workflow labels on light surfaces',
+    material: 'white paper modules, restrained blue connector emphasis, soft panel shadows',
   };
   evidence.layoutChecks = [
     'desktop 1280x720 after screenshot reviewed for no text or panel overlap',
@@ -921,7 +920,7 @@ const screenshotCheck = {
 const compositionCheck = {
   command: 'visual-reference-composition-material-check',
   status: changed ? 'passed' : 'blocked',
-  summary: 'Changed UI screen reflects the OrPAD Hero visual reference constraints: deep navy palette #020716, cool white glass surface hierarchy, electric blue #2f80ff connector treatment, dark terminal inset, compact typography, and material cues. The fixture has no pre-existing essential interactive controls/actions to regress beyond preserving the static package add button.',
+  summary: 'Changed UI screen reflects the OrPAD Hero visual reference constraints: reference palette uses white/light-gray paper surfaces, the surface hierarchy separates the document console from supporting modules, blue binder and flow accents provide selective #236cff connector treatment, and compact typography/material cues are recorded. The fixture has no pre-existing essential interactive controls/actions to regress beyond preserving the static package add button.',
 };
 const layoutCheck = {
   command: 'responsive-layout-overlap-check',

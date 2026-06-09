@@ -10,10 +10,10 @@ const REQUIRED_DOCS_ARTIFACTS = [
   'styles/base.css',
 ];
 const HERO_VARS = {
-  bgPrimary: '#050b1f',
-  bgSecondary: '#0b1530',
-  accentColor: '#38a3ff',
-  editorBg: '#071228',
+  bgPrimary: '#f6f8fd',
+  bgSecondary: '#ffffff',
+  accentColor: '#236cff',
+  editorBg: '#fbfdff',
 };
 const GITHUB_LIGHT_VARS = {
   bgPrimary: '#ffffff',
@@ -76,7 +76,7 @@ test.afterEach(async ({ page }) => {
   expect(realErrors).toEqual([]);
 });
 
-test('web default OrPAD Hero theme switches to GitHub Light across visible chrome', async ({ page }) => {
+test('web default OrPAD Default theme switches to GitHub Light across visible chrome', async ({ page }) => {
   await resetSavedTheme(page);
   const { url, close } = await startStaticServer(docsDir);
 
@@ -99,7 +99,7 @@ test('web default OrPAD Hero theme switches to GitHub Light across visible chrom
 
     await page.locator('#btn-theme').click();
     await expect(page.locator('#theme-panel')).toBeVisible({ timeout: 5000 });
-    const heroTheme = page.locator('#theme-list .theme-item').filter({ hasText: 'OrPAD Hero' });
+    const heroTheme = page.locator('#theme-list .theme-item').filter({ hasText: 'OrPAD Default' });
     await expect(heroTheme).toBeVisible({ timeout: 3000 });
     await expect(heroTheme).toHaveClass(/active/);
 

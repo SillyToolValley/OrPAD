@@ -3,29 +3,29 @@
    (set at runtime by themes.js)
    ============================================= */
 
-/* Default values (OrPAD Hero) to prevent flash before JS loads */
+/* Default values (OrPAD Default) to prevent flash before JS loads */
 :root {
   --ui-scale: 1;
   --us: var(--ui-scale);
   --terminal-frame-top: 105px; --terminal-frame-bottom: 24px; --terminal-docked-side-size: 480px;
-  --bg-primary: #050b1f; --bg-secondary: #0b1530; --border-color: #2d60a9;
-  --text-primary: #edf5ff; --text-secondary: #a9bee6; --text-tertiary: #647ca9;
-  --accent-color: #38a3ff; --link-color: #77c7ff;
-  --hover-bg: rgba(56,163,255,0.16); --active-bg: rgba(56,163,255,0.22);
-  --code-bg: rgba(35,79,145,0.26); --pre-bg: #071228;
-  --graph-node-bg: #edf4ff; --graph-node-bg-active: #e4efff; --graph-node-border: #9ab9f2;
-  --graph-node-text: #102247; --graph-node-muted: #566b94; --graph-node-shadow: rgba(7,18,45,0.34);
-  --table-border: #2d60a9; --table-header-bg: #101d3b; --table-row-bg: rgba(56,163,255,0.09);
-  --scrollbar-thumb: rgba(119,199,255,0.22); --scrollbar-thumb-hover: rgba(119,199,255,0.42);
-  --editor-bg: #071228; --editor-gutter-bg: #08162f; --editor-gutter-color: #3e69a7;
-  --editor-active-line: #0d1c3c; --editor-selection: rgba(56,163,255,0.36); --editor-cursor: #bfe9ff;
-  --syntax-comment: #5f78a8; --syntax-keyword: #8fb7ff; --syntax-string: #73e6c2;
-  --syntax-number: #ffd27a; --syntax-function: #77c7ff; --syntax-variable: #edf5ff;
-  --syntax-tag: #ff8ba7; --syntax-attribute: #8ad8ff; --syntax-operator: #9be7ff;
-  --syntax-meta: #b8d8ff; --syntax-added: #73e6c2; --syntax-deleted: #ff8ba7;
-  --success-color: #73e6c2; --warning-color: #b8d8ff; --danger-color: #ff8ba7; --breakpoint-color: #ff8ba7;
+  --bg-primary: #f6f8fd; --bg-secondary: #ffffff; --border-color: #d7e0ef;
+  --text-primary: #17233d; --text-secondary: #56677f; --text-tertiary: #8794aa;
+  --accent-color: #236cff; --link-color: #007dff;
+  --hover-bg: rgba(35,108,255,0.08); --active-bg: rgba(35,108,255,0.14);
+  --code-bg: rgba(35,108,255,0.08); --pre-bg: #edf4ff;
+  --graph-node-bg: #ffffff; --graph-node-bg-active: #edf5ff; --graph-node-border: #b9c9e4;
+  --graph-node-text: #17233d; --graph-node-muted: #5c6f8b; --graph-node-shadow: rgba(35,73,132,0.16);
+  --table-border: #d7e0ef; --table-header-bg: #edf4ff; --table-row-bg: rgba(35,108,255,0.045);
+  --scrollbar-thumb: rgba(35,108,255,0.18); --scrollbar-thumb-hover: rgba(35,108,255,0.34);
+  --editor-bg: #fbfdff; --editor-gutter-bg: #edf4ff; --editor-gutter-color: #7a8cab;
+  --editor-active-line: #f0f6ff; --editor-selection: rgba(35,108,255,0.22); --editor-cursor: #236cff;
+  --syntax-comment: #728198; --syntax-keyword: #2559d8; --syntax-string: #128f9b;
+  --syntax-number: #7a56d6; --syntax-function: #007dff; --syntax-variable: #17233d;
+  --syntax-tag: #d92f54; --syntax-attribute: #006ddf; --syntax-operator: #0f68c8;
+  --syntax-meta: #d98b1e; --syntax-added: #19a886; --syntax-deleted: #d92f54;
+  --success-color: #19a886; --warning-color: #d98b1e; --danger-color: #d92f54; --breakpoint-color: #d92f54;
   --run-monitor-success-color: var(--success-color);
-  --syntax-added-bg: rgba(115,230,194,0.14); --syntax-deleted-bg: rgba(255,139,167,0.14);
+  --syntax-added-bg: rgba(25,168,134,0.12); --syntax-deleted-bg: rgba(217,47,84,0.11);
 }
 
 @supports not (background: color-mix(in srgb, red 50%, blue)) {
@@ -359,7 +359,9 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-meta stron
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-title {
   grid-area: title;
-  overflow: hidden;
+  position: relative;
+  z-index: 2;
+  overflow: visible;
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-runbar-primary-signal {
   grid-area: primary;
@@ -384,7 +386,7 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger {
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu-wrap[open],
 body.orchestration-window #orchestration-runbar-slot .pipeline-run-menu-wrap[open] {
-  z-index: 260;
+  z-index: 360;
 }
 body.orchestration-window #orchestration-runbar-slot .pipeline-select-trigger {
   width: 100%;
@@ -431,7 +433,7 @@ body.orchestration-window #orchestration-runbar-slot .pipeline-select-menu {
   position: absolute;
   top: calc(30px * var(--us));
   left: 0;
-  z-index: 240;
+  z-index: 370;
   width: min(calc(360px * var(--us)), calc(100vw - calc(48px * var(--us))));
   max-height: min(calc(360px * var(--us)), calc(100vh - calc(84px * var(--us))));
   overflow: auto;
@@ -3558,7 +3560,8 @@ body.json-diff-mode #preview-pane {
   gap: calc(6px * var(--us));
 }
 .pipeline-runbar-title {
-  overflow: hidden;
+  position: relative;
+  overflow: visible;
 }
 .pipeline-runbar-title > strong {
   min-width: 0;
@@ -3748,8 +3751,8 @@ body.json-diff-mode #preview-pane {
   padding: calc(5px * var(--us));
   border: 1px solid var(--border-color);
   border-radius: calc(8px * var(--us));
-  background: var(--bg-primary);
-  box-shadow: 0 calc(12px * var(--us)) calc(28px * var(--us)) rgba(0, 0, 0, 0.24);
+  background: var(--bg-secondary);
+  box-shadow: 0 calc(12px * var(--us)) calc(28px * var(--us)) color-mix(in srgb, var(--graph-node-shadow) 90%, transparent);
 }
 .pipeline-run-menu button {
   min-height: calc(30px * var(--us));
@@ -3781,7 +3784,7 @@ body.json-diff-mode #preview-pane {
   cursor: pointer;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
-    0 4px 12px color-mix(in srgb, #000 18%, transparent);
+    0 4px 12px color-mix(in srgb, var(--graph-node-shadow) 70%, transparent);
 }
 .orch-tool-btn:hover {
   border-color: color-mix(in srgb, var(--accent-color) 60%, var(--border-color));
@@ -3790,17 +3793,14 @@ body.json-diff-mode #preview-pane {
   color: var(--text-primary);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
-    0 0 18px color-mix(in srgb, var(--accent-color) 13%, transparent),
-    0 5px 14px color-mix(in srgb, #000 22%, transparent);
+    0 5px 14px color-mix(in srgb, var(--graph-node-shadow) 76%, transparent);
 }
 .orch-tool-btn.active {
   border-color: color-mix(in srgb, var(--accent-color) 70%, var(--border-color));
   background: color-mix(in srgb, var(--accent-color) 18%, var(--bg-secondary));
   background-image: none;
   color: var(--accent-color);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 20%, transparent),
-    0 0 24px color-mix(in srgb, var(--accent-color) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 20%, transparent);
 }
 .ogi {
   display: block;
@@ -3832,10 +3832,9 @@ body.json-diff-mode #preview-pane {
   background-image: none;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 14%, transparent),
-    0 0 24px color-mix(in srgb, var(--accent-color) 11%, transparent),
-    0 14px 32px color-mix(in srgb, #000 28%, transparent);
-  backdrop-filter: blur(14px) saturate(130%);
-  -webkit-backdrop-filter: blur(14px) saturate(130%);
+    0 10px 24px color-mix(in srgb, var(--graph-node-shadow) 86%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .orch-graph-tools .orch-tool-btn {
   width: calc(30px * var(--us));
@@ -3903,15 +3902,14 @@ body.json-diff-mode #preview-pane {
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
   border-radius: 8px;
-  background-color: color-mix(in srgb, var(--bg-secondary) 74%, #060a12);
+  background-color: color-mix(in srgb, var(--bg-primary) 86%, var(--bg-secondary));
   background-image: none;
   cursor: default;
   touch-action: none;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 11%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, #000 28%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--accent-color) 6%, transparent),
-    0 22px 54px color-mix(in srgb, #000 30%, transparent);
+    inset 0 -1px 0 color-mix(in srgb, var(--border-color) 76%, transparent),
+    0 16px 36px color-mix(in srgb, var(--graph-node-shadow) 86%, transparent);
   isolation: isolate;
 }
 .orch-graph-frame::before,
@@ -3924,7 +3922,7 @@ body.json-diff-mode #preview-pane {
 }
 .orch-graph-frame::before {
   inset: 10px;
-  border: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 60%, transparent);
   border-radius: 6px;
   background-image: none;
   opacity: 0.72;
@@ -3932,9 +3930,7 @@ body.json-diff-mode #preview-pane {
 .orch-graph-frame::after {
   inset: 1px;
   border-radius: 7px;
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 5%, transparent),
-    inset 0 0 84px color-mix(in srgb, #000 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 4%, transparent);
 }
 #content.view-orch-tree .orch-graph-frame,
 #content.view-orch-graph .orch-graph-frame {
@@ -4021,11 +4017,11 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .orch-graph-edges path {
   fill: none;
-  stroke: color-mix(in srgb, var(--accent-color) 46%, var(--border-color));
-  stroke-width: 3.2;
+  stroke: color-mix(in srgb, var(--border-color) 78%, var(--text-tertiary));
+  stroke-width: 3;
   stroke-linecap: round;
   stroke-linejoin: round;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent-color) 28%, transparent));
+  filter: none;
   cursor: pointer;
 }
 .orch-transition-hit {
@@ -4039,26 +4035,20 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 .orch-graph-edges .orch-transition:hover,
 .orch-graph-edges .orch-transition.selected {
   stroke: var(--accent-color);
-  stroke-width: 4.8;
-  filter:
-    drop-shadow(0 0 6px color-mix(in srgb, var(--accent-color) 64%, transparent))
-    drop-shadow(0 0 18px color-mix(in srgb, var(--accent-color) 34%, transparent));
+  stroke-width: 4.2;
+  filter: none;
 }
 .orch-graph-edges .orch-transition.runtime-completed {
   stroke: color-mix(in srgb, var(--success-color) 64%, var(--border-color));
-  stroke-width: 3.8;
-  filter:
-    drop-shadow(0 0 5px color-mix(in srgb, var(--success-color) 42%, transparent))
-    drop-shadow(0 0 16px color-mix(in srgb, var(--success-color) 20%, transparent));
+  stroke-width: 3.4;
+  filter: none;
 }
 .orch-graph-edges .orch-transition.runtime-active {
   stroke: var(--accent-color);
-  stroke-width: 5.4;
+  stroke-width: 5;
   stroke-dasharray: 12 5;
   animation: orch-edge-dash 1.5s linear infinite;
-  filter:
-    drop-shadow(0 0 7px color-mix(in srgb, var(--accent-color) 72%, transparent))
-    drop-shadow(0 0 24px color-mix(in srgb, var(--accent-color) 46%, transparent));
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent-color) 54%, transparent));
 }
 .orch-transition-flow-arrows {
   fill: var(--accent-color);
@@ -4073,19 +4063,16 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 
 /* Respect OS-level "reduce motion" preference: hide the animated arrow on
- * active edges and fall back to a static glow so users with vestibular
- * sensitivity (or anyone who finds the moving glyph distracting) can still
- * see which edge is currently active. */
+ * active edges and keep the same restrained transition emphasis without
+ * motion. */
 @media (prefers-reduced-motion: reduce) {
   .orch-graph-edges .orch-transition-flow-arrows {
     display: none;
   }
   .orch-graph-edges .orch-transition.runtime-active {
     animation: none;
-    stroke-width: 5.4;
-    filter:
-      drop-shadow(0 0 7px color-mix(in srgb, var(--accent-color) 64%, transparent))
-      drop-shadow(0 0 20px color-mix(in srgb, var(--accent-color) 36%, transparent));
+    stroke-width: 5;
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent-color) 44%, transparent));
   }
   .orch-graph-node.runtime-running,
   .orch-graph-node-breakpoint,
@@ -4102,11 +4089,9 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .orch-graph-edges .orch-transition.runtime-blocked {
   stroke: color-mix(in srgb, var(--warning-color) 72%, var(--border-color));
-  stroke-width: 4.8;
+  stroke-width: 4.4;
   stroke-dasharray: 3 7;
-  filter:
-    drop-shadow(0 0 6px color-mix(in srgb, var(--warning-color) 56%, transparent))
-    drop-shadow(0 0 18px color-mix(in srgb, var(--warning-color) 28%, transparent));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--warning-color) 34%, transparent));
 }
 .orch-graph-edges .orch-transition.runtime-muted {
   stroke: color-mix(in srgb, var(--text-tertiary) 44%, var(--border-color));
@@ -4119,11 +4104,9 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
  * the in-progress branch even when the run is paused. */
 .orch-graph-edges .orch-transition.runtime-traversed {
   stroke: color-mix(in srgb, var(--success-color) 50%, var(--accent-color, #6cb6ff));
-  stroke-width: 4.3;
+  stroke-width: 4;
   stroke-dasharray: 8 3 2 3;
-  filter:
-    drop-shadow(0 0 5px color-mix(in srgb, var(--success-color) 48%, transparent))
-    drop-shadow(0 0 18px color-mix(in srgb, var(--accent-color) 24%, transparent));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent-color) 28%, transparent));
 }
 /* Phase 2.6: untraversed — a downstream branch the dispatcher did
  * NOT pick (selector / conditional). Dimmed and dashed so the
@@ -4139,9 +4122,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   stroke-width: 2;
   cursor: move;
   pointer-events: all;
-  filter:
-    drop-shadow(0 0 8px color-mix(in srgb, var(--accent-color) 62%, transparent))
-    drop-shadow(0 4px 10px color-mix(in srgb, #000 32%, transparent));
+  filter: drop-shadow(0 4px 10px color-mix(in srgb, #000 18%, transparent));
 }
 /* Edge palette - theme-aware colors so the graph reads from the active
  * theme while keeping connector categories visually distinct. Override in a
@@ -4221,10 +4202,10 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 }
 .orch-transition-label-bg {
   fill: color-mix(in srgb, var(--bg-primary, #1d1f23) 82%, transparent);
-  stroke: color-mix(in srgb, var(--accent-color, #38a3ff) 38%, var(--border-color, #3a3d42));
+  stroke: color-mix(in srgb, var(--accent-color, #236cff) 38%, var(--border-color, #3a3d42));
   stroke-width: 1;
   opacity: 0.96;
-  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent-color, #38a3ff) 14%, transparent));
+  filter: none;
 }
 .orch-transition-label-group.loop-back .orch-transition-label-bg {
   stroke: color-mix(in srgb, var(--orch-edge-loopback) 70%, transparent);
@@ -4257,7 +4238,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   gap: 4px;
   max-width: 220px;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent-color, #38a3ff) 34%, var(--border-color, #3a3d42));
+  border: 1px solid color-mix(in srgb, var(--accent-color, #236cff) 34%, var(--border-color, #3a3d42));
   border-radius: 8px;
   background-color: color-mix(in srgb, var(--bg-primary, #1d1f23) 88%, var(--bg-secondary, #252831));
   background-image: none;
@@ -4265,8 +4246,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   -webkit-backdrop-filter: none;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 12%, transparent),
-    0 12px 28px color-mix(in srgb, #000 28%, transparent),
-    0 0 20px color-mix(in srgb, var(--accent-color, #38a3ff) 8%, transparent);
+    0 10px 24px color-mix(in srgb, #000 12%, transparent);
   font-size: calc(11px * var(--us));
   line-height: 1.35;
   color: var(--text-secondary, #c0c4cc);
@@ -4333,9 +4313,8 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   color: var(--graph-node-muted);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 68%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, #000 12%, transparent),
-    0 12px 24px var(--graph-node-shadow),
-    0 0 0 1px color-mix(in srgb, var(--accent-color) 5%, transparent);
+    inset 0 -1px 0 color-mix(in srgb, var(--border-color) 58%, transparent),
+    0 10px 20px var(--graph-node-shadow);
   cursor: pointer;
   user-select: none;
   transform: translateZ(0);
@@ -4349,34 +4328,31 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   transform: translateY(-1px);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent),
-    0 15px 30px var(--graph-node-shadow),
-    0 0 28px color-mix(in srgb, var(--accent-color) 14%, transparent);
+    0 13px 26px var(--graph-node-shadow);
 }
 .orch-graph-node.selected {
   border-color: color-mix(in srgb, var(--accent-color) 76%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent),
     0 0 0 2px color-mix(in srgb, var(--accent-color) 18%, transparent),
-    0 0 30px color-mix(in srgb, var(--accent-color) 20%, transparent),
-    0 13px 28px var(--graph-node-shadow);
+    0 13px 26px var(--graph-node-shadow);
 }
 .orch-graph-node.primary {
   border-color: var(--accent-color);
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent),
-    0 0 0 3px color-mix(in srgb, var(--accent-color) 22%, transparent),
-    0 0 34px color-mix(in srgb, var(--accent-color) 22%, transparent),
-    0 15px 32px var(--graph-node-shadow);
+    0 0 0 2px color-mix(in srgb, var(--accent-color) 18%, transparent),
+    0 14px 28px var(--graph-node-shadow);
 }
 .orch-graph-node.runtime-running {
   border-color: color-mix(in srgb, var(--accent-color) 76%, var(--border-color));
-  background-color: color-mix(in srgb, var(--graph-node-bg) 86%, var(--accent-color) 14%);
+  background-color: color-mix(in srgb, var(--graph-node-bg) 92%, var(--accent-color) 8%);
   background-image: none;
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent),
     0 0 0 3px color-mix(in srgb, var(--accent-color) 20%, transparent),
-    0 0 36px color-mix(in srgb, var(--accent-color) 22%, transparent),
-    0 14px 30px var(--graph-node-shadow);
+    0 0 14px color-mix(in srgb, var(--accent-color) 18%, transparent),
+    0 14px 28px var(--graph-node-shadow);
   animation: orch-runtime-pulse 1.5s ease-in-out infinite;
 }
 .orch-graph-node.runtime-queued {
@@ -4420,24 +4396,21 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   border-color: color-mix(in srgb, var(--success-color) 54%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent),
-    0 12px 26px var(--graph-node-shadow),
-    0 0 24px color-mix(in srgb, var(--success-color) 10%, transparent);
+    0 12px 24px var(--graph-node-shadow);
 }
 .orch-graph-node.runtime-blocked,
 .orch-graph-node.runtime-skipped {
   border-color: color-mix(in srgb, var(--warning-color) 58%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent),
-    0 12px 26px var(--graph-node-shadow),
-    0 0 26px color-mix(in srgb, var(--warning-color) 14%, transparent);
+    0 12px 24px var(--graph-node-shadow);
 }
 .orch-graph-node.runtime-failed,
 .orch-graph-node.runtime-cancelled {
   border-color: color-mix(in srgb, var(--danger-color) 62%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, #fff 72%, transparent),
-    0 12px 26px var(--graph-node-shadow),
-    0 0 28px color-mix(in srgb, var(--danger-color) 15%, transparent);
+    0 12px 24px var(--graph-node-shadow);
 }
 /* Supervised-autonomy run states on the live graph. */
 .orch-graph-node.runtime-paused {
@@ -4504,7 +4477,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   border: 1px solid color-mix(in srgb, var(--accent-color) 34%, var(--border-color));
   box-shadow:
     inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
-    0 10px 24px color-mix(in srgb, var(--bg-primary) 58%, transparent);
+    0 8px 20px color-mix(in srgb, var(--graph-node-shadow) 82%, transparent);
 }
 .orch-graph-run-btn {
   display: inline-grid;
@@ -4533,9 +4506,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   background-color: color-mix(in srgb, var(--accent-color) 13%, var(--bg-primary));
   background-image: none;
   color: var(--accent-color);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
-    0 0 16px color-mix(in srgb, var(--accent-color) 14%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 .orch-graph-run-btn:active:hover,
 .orch-graph-run-btn.active:hover,
@@ -4550,9 +4521,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   background-color: color-mix(in srgb, var(--danger-color) 12%, var(--bg-primary));
   background-image: none;
   color: var(--danger-color);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent),
-    0 0 16px color-mix(in srgb, var(--danger-color) 13%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 .orch-graph-run-btn.cancel:hover {
   border-color: color-mix(in srgb, var(--danger-color) 72%, var(--border-color));
@@ -4693,17 +4662,17 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
 @keyframes orch-runtime-pulse {
   0%, 100% {
     box-shadow:
-      inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
-      0 0 0 2px color-mix(in srgb, var(--accent-color) 13%, transparent),
-      0 0 26px color-mix(in srgb, var(--accent-color) 16%, transparent),
-      0 14px 30px color-mix(in srgb, #000 34%, transparent);
+      inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent),
+      0 0 0 2px color-mix(in srgb, var(--accent-color) 14%, transparent),
+      0 0 12px color-mix(in srgb, var(--accent-color) 14%, transparent),
+      0 14px 28px var(--graph-node-shadow);
   }
   50% {
     box-shadow:
-      inset 0 1px 0 color-mix(in srgb, var(--text-primary) 18%, transparent),
-      0 0 0 5px color-mix(in srgb, var(--accent-color) 26%, transparent),
-      0 0 42px color-mix(in srgb, var(--accent-color) 28%, transparent),
-      0 14px 30px color-mix(in srgb, #000 34%, transparent);
+      inset 0 1px 0 color-mix(in srgb, #fff 76%, transparent),
+      0 0 0 4px color-mix(in srgb, var(--accent-color) 20%, transparent),
+      0 0 16px color-mix(in srgb, var(--accent-color) 18%, transparent),
+      0 14px 28px var(--graph-node-shadow);
   }
 }
 .orch-node-progress-badge {
@@ -4719,7 +4688,7 @@ body.orchestration-window #content.view-orch-graph .orch-graph-frame {
   border-radius: 50%;
   z-index: 3;
   pointer-events: none;
-  box-shadow: 0 2px 8px color-mix(in srgb, #000 28%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--graph-node-shadow) 88%, transparent);
 }
 .orch-node-progress-spinner {
   position: absolute;
@@ -10558,18 +10527,18 @@ body.orchestration-window .ai-sidebar-resize { display: none !important; }
   .ai-history { width: 96px; flex-basis: 96px; }
 }
 
-/* ===================== OrPAD Hero Surfaces ===================== */
+/* ===================== OrPAD Default Surfaces ===================== */
 body {
-  --orpad-soft-highlight: color-mix(in srgb, var(--text-primary) 15%, transparent);
+  --orpad-soft-highlight: color-mix(in srgb, #fff 82%, transparent);
   --orpad-soft-shell-shadow:
     inset 0 1px 0 var(--orpad-soft-highlight),
-    inset 0 -1px 0 color-mix(in srgb, #000 16%, transparent),
-    0 14px 32px color-mix(in srgb, #000 18%, transparent);
+    inset 0 -1px 0 color-mix(in srgb, var(--border-color) 54%, transparent),
+    0 8px 20px color-mix(in srgb, var(--graph-node-shadow) 64%, transparent);
   --orpad-soft-panel-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 16%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, #000 20%, transparent),
-    0 18px 40px color-mix(in srgb, #000 28%, transparent);
-  background: color-mix(in srgb, var(--bg-primary) 94%, #000);
+    inset 0 1px 0 var(--orpad-soft-highlight),
+    inset 0 -1px 0 color-mix(in srgb, var(--border-color) 60%, transparent),
+    0 12px 28px color-mix(in srgb, var(--graph-node-shadow) 76%, transparent);
+  background: var(--bg-primary);
 }
 
 #toolbar,
@@ -10581,7 +10550,7 @@ body {
 .terminal-pty-topbar,
 .terminal-window-head {
   border-color: color-mix(in srgb, var(--accent-color) 28%, var(--border-color));
-  background: color-mix(in srgb, var(--bg-secondary) 90%, var(--bg-primary));
+  background: color-mix(in srgb, var(--bg-secondary) 96%, var(--bg-primary));
   box-shadow: var(--orpad-soft-shell-shadow);
 }
 
@@ -10615,10 +10584,10 @@ body.zen-mode #workspace {
 .terminal-window-modal,
 .terminal-new-popover {
   border-color: color-mix(in srgb, var(--accent-color) 32%, var(--border-color));
-  background: color-mix(in srgb, var(--bg-secondary) 88%, var(--bg-primary));
+  background: color-mix(in srgb, var(--bg-secondary) 96%, var(--bg-primary));
   box-shadow: var(--orpad-soft-panel-shadow);
-  backdrop-filter: blur(8px) saturate(112%);
-  -webkit-backdrop-filter: blur(8px) saturate(112%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .cmdk-shell,
@@ -10629,7 +10598,7 @@ body.zen-mode #workspace {
 }
 
 .cmdk-overlay {
-  background: color-mix(in srgb, #000 62%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 26%, transparent);
 }
 
 .cmdk-input,
@@ -10641,10 +10610,10 @@ body.zen-mode #workspace {
 .terminal-pty-container,
 .terminal-window-stage,
 .terminal-output {
-  background: color-mix(in srgb, var(--editor-bg) 94%, var(--bg-primary));
+  background: color-mix(in srgb, var(--editor-bg) 98%, var(--bg-primary));
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 8%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, #000 14%, transparent);
+    inset 0 1px 0 var(--orpad-soft-highlight),
+    inset 0 0 0 1px color-mix(in srgb, var(--border-color) 78%, transparent);
 }
 
 .cmdk-item:hover,
@@ -10656,9 +10625,7 @@ body.zen-mode #workspace {
 .jedit-seg-btn.active {
   border-color: color-mix(in srgb, var(--accent-color) 66%, var(--border-color));
   background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-secondary));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 18%, transparent),
-    0 0 22px color-mix(in srgb, var(--accent-color) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 18%, transparent);
 }
 
 .tab-item.active {
@@ -10667,11 +10634,11 @@ body.zen-mode #workspace {
 
 .tab-item.active::after,
 .orpad-budget-meter__bar-inner {
-  box-shadow: 0 0 16px color-mix(in srgb, var(--accent-color) 70%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-color) 28%, transparent);
 }
 
 .jedit-tree {
-  text-shadow: 0 0 18px color-mix(in srgb, var(--accent-color) 9%, transparent);
+  text-shadow: none;
 }
 
 .jedit-children {
@@ -10694,6 +10661,6 @@ body.zen-mode #workspace {
 
 .terminal-panel.terminal-layout-bottom {
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 15%, transparent),
-    0 -20px 48px color-mix(in srgb, #000 32%, transparent);
+    inset 0 1px 0 var(--orpad-soft-highlight),
+    0 -10px 28px color-mix(in srgb, var(--graph-node-shadow) 80%, transparent);
 }

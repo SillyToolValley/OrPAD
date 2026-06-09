@@ -39,9 +39,9 @@ const VISUAL_VIEWPORTS: ViewportCase[] = [
 ];
 
 const HERO_VARS = {
-  bgPrimary: '#050b1f',
-  bgSecondary: '#0b1530',
-  accentColor: '#38a3ff',
+  bgPrimary: '#f6f8fd',
+  bgSecondary: '#ffffff',
+  accentColor: '#236cff',
 };
 
 const GITHUB_LIGHT_VARS = {
@@ -51,10 +51,10 @@ const GITHUB_LIGHT_VARS = {
 };
 
 const HERO_GRAPH_NODE_VARS = {
-  bg: '#edf4ff',
-  border: '#9ab9f2',
-  text: '#102247',
-  muted: '#566b94',
+  bg: '#ffffff',
+  border: '#b9c9e4',
+  text: '#17233d',
+  muted: '#5c6f8b',
 };
 
 const GITHUB_LIGHT_GRAPH_NODE_VARS = {
@@ -1056,6 +1056,43 @@ async function expectGraphNodesSoftCardThemeChrome(
   ).toBe(4);
 }
 
+async function expectGraphEdgesRestrainedChrome(win: Page, name: string): Promise<void> {
+  const edges = win.locator('.orch-graph-edges .orch-transition');
+  await expect.poll(
+    async () => await edges.count(),
+    { message: `${name}: graph should expose transition edges`, timeout: 15000 },
+  ).toBeGreaterThan(0);
+
+  const normalFilters = await edges.evaluateAll((items) => items.map((edge) => {
+    const className = edge.getAttribute('class') || '';
+    return {
+      className,
+      filter: getComputedStyle(edge).filter,
+      runtime: /runtime-(?:active|blocked|traversed)/.test(className),
+    };
+  }));
+
+  expect(normalFilters.length, `${name}: graph should render transition edges`).toBeGreaterThan(0);
+  for (const edge of normalFilters.filter(item => !item.runtime)) {
+    expect(edge.filter, `${name}: non-runtime edge ${edge.className} should not glow`).toBe('none');
+  }
+
+  const activeProbe = await edges.first().evaluate((edge) => {
+    const originalClass = edge.getAttribute('class') || '';
+    edge.classList.add('runtime-active');
+    edge.setAttribute('data-machine-edge-state', 'active');
+    void (edge as SVGPathElement).getBBox();
+    const filter = getComputedStyle(edge).filter;
+    const strokeWidth = getComputedStyle(edge).strokeWidth;
+    edge.setAttribute('class', originalClass);
+    edge.removeAttribute('data-machine-edge-state');
+    return { filter, strokeWidth };
+  });
+
+  expect(activeProbe.filter, `${name}: runtime-active edge should keep the only transition glow`).toMatch(/drop-shadow/i);
+  expect(Number.parseFloat(activeProbe.strokeWidth), `${name}: runtime-active edge should be emphasized`).toBeGreaterThan(3);
+}
+
 async function expectGraphToolbarSolidControls(win: Page, name: string): Promise<void> {
   const toolbar = win.locator('.orch-graph-frame .orch-graph-tools').first();
   await expect(toolbar, `${name}: graph toolbar should be visible`).toBeVisible({ timeout: 15000 });
@@ -1675,6 +1712,7 @@ test('visual smoke captures redesigned orchestration VM Harness editor terminal 
       await expect(win.locator('.orch-preview')).toContainText('Pipeline setup');
       await expect(win.locator('.orch-graph-node')).toHaveCount(6);
       await fitGraphIfAvailable(win);
+      await expectGraphEdgesRestrainedChrome(win, `visual-smoke-${viewport.name}-orchestration`);
       await expectGraphToolbarSolidControls(win, `visual-smoke-${viewport.name}-orchestration`);
       await expectGraphOverlayControlsSolidChrome(win, `visual-smoke-${viewport.name}-orchestration`);
       await expectGraphNodesSoftCardThemeChrome(win, `visual-smoke-${viewport.name}-orchestration`, {

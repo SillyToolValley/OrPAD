@@ -354,7 +354,20 @@ test('toolbar opens Orchestration in a dedicated workspace window', async () => 
   const toolbarRunbar = orchestrationWin.locator('#toolbar #orchestration-runbar-slot [data-pipeline-preview-runbar]');
   await expect(toolbarRunbar).toBeVisible();
   await expect(toolbarRunbar.locator('[data-pipeline-select-trigger] span')).toContainText('Agent Workstream');
-  await expect(toolbarRunbar.locator('.pipeline-runbar-status').first()).toBeHidden();
+  await toolbarRunbar.locator('[data-pipeline-select-trigger]').click();
+  const defaultPipelineOption = orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Default Agent Workstream$/ }) });
+  await expect(defaultPipelineOption).toBeVisible();
+  await defaultPipelineOption.click();
+  await expect(toolbarRunbar.locator('[data-pipeline-select-trigger] span')).toContainText('Default Agent Workstream');
+  await expect(orchestrationWin.locator('.orch-graph-node')).toHaveCount(4);
+  await toolbarRunbar.locator('[data-pipeline-select-trigger]').click();
+  const agentPipelineOptionAgain = orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
+    .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) });
+  await expect(agentPipelineOptionAgain).toBeVisible();
+  await agentPipelineOptionAgain.click();
+  await expect(toolbarRunbar.locator('[data-pipeline-select-trigger] span')).toContainText('Agent Workstream');
+  await expect(toolbarRunbar.locator('.pipeline-runbar-status').first()).toBeAttached();
   await expect(toolbarRunbar.locator('.pipeline-run-menu')).toBeHidden();
   await expect(toolbarRunbar.locator('.pipeline-select-menu')).toBeHidden();
   await toolbarRunbar.locator('[data-pipeline-run-menu]').click();
@@ -456,8 +469,19 @@ test('Orchestration windows stay scoped to the opener workspace', async () => {
   }, secondWorkspace);
   expect(patchedDialog).toBe(true);
 
+  const openedWorkspace = await win.evaluate(async () => {
+    return await (window as any).orpad.openFolderDialog();
+  });
+  expect(String(openedWorkspace || '').replace(/\\/g, '/')).toBe(secondWorkspace.replace(/\\/g, '/'));
+  writeApprovedWorkspace(userData, secondWorkspace);
+  await win.evaluate((workspaceRoot) => {
+    localStorage.setItem('orpad-workspace-path', workspaceRoot);
+  }, secondWorkspace);
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
   await win.evaluate(async () => {
-    await (window as any).orpadCommands.runCommand('file.openFolder');
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
   await expect(win.locator('[data-runbook-workspace-meta] strong')).toContainText(path.basename(secondWorkspace));
@@ -548,8 +572,19 @@ test('workspace switch clears stale selected pipeline and graph preview', async 
   }, emptyWorkspace);
   expect(patchedDialog).toBe(true);
 
+  const openedWorkspace = await win.evaluate(async () => {
+    return await (window as any).orpad.openFolderDialog();
+  });
+  expect(String(openedWorkspace || '').replace(/\\/g, '/')).toBe(emptyWorkspace.replace(/\\/g, '/'));
+  writeApprovedWorkspace(userData, emptyWorkspace);
+  await win.evaluate((workspaceRoot) => {
+    localStorage.setItem('orpad-workspace-path', workspaceRoot);
+  }, emptyWorkspace);
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForSelector('.cm-editor');
+  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
   await win.evaluate(async () => {
-    await (window as any).orpadCommands.runCommand('file.openFolder');
     await (window as any).orpadCommands.runCommand('view.runbooks');
   });
 
