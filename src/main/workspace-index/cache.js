@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fsp = require('fs/promises');
 
-const WORKSPACE_INDEX_CACHE_VERSION = 2;
+const WORKSPACE_INDEX_CACHE_VERSION = 3;
 
 function normalizeWorkspaceRoot(workspaceRoot) {
   const resolved = path.resolve(String(workspaceRoot || ''));

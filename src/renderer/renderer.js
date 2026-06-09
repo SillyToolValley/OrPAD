@@ -15956,6 +15956,16 @@ function isWorkspacePipelinePackagePath(filePath) {
   return normalized.endsWith('/pipeline.or-pipeline');
 }
 
+function isNestedWorkspacePipelinePackagePath(filePath) {
+  const root = runbookNormalizePath(workspacePath).replace(/\/+$/, '').toLowerCase();
+  const normalized = runbookNormalizePath(filePath).toLowerCase();
+  if (!root || !normalized.startsWith(`${root}/`)) return false;
+  const relative = normalized.slice(root.length + 1);
+  return !relative.startsWith('.orpad/pipelines/')
+    && relative.includes('/.orpad/pipelines/')
+    && relative.endsWith('/pipeline.or-pipeline');
+}
+
 function renderRunbookListItems(items, selectedKey) {
   return items.map(item => {
     const relativePath = runbookRelativePath(item.path);
@@ -16086,6 +16096,7 @@ function buildWorkspaceRunbookSummary() {
     const ext = runbookExt(file.name);
     extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
     if (isOrpadPipelineFile(file.name)) {
+      if (isNestedWorkspacePipelinePackagePath(file.path)) continue;
       const isWorkspacePipeline = isWorkspacePipelinePackagePath(file.path);
       const displayNameSource = isWorkspacePipeline
         ? runbookDirname(file.path).split('/').pop() || file.name

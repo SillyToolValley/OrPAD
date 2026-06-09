@@ -179,9 +179,7 @@ function isRiskyWorkspaceFile(name) {
 }
 
 function isPipelineGeneratedHarnessDir(workspaceRoot, dirPath) {
-  const relativeParts = path.relative(workspaceRoot, dirPath)
-    .split(/[\\/]+/)
-    .filter(Boolean);
+  const relativeParts = workspaceRelativeParts(workspaceRoot, dirPath);
 
   for (let index = 0; index <= relativeParts.length - 5; index += 1) {
     if (
@@ -197,10 +195,33 @@ function isPipelineGeneratedHarnessDir(workspaceRoot, dirPath) {
   return false;
 }
 
-function isWorkspacePipelinePackageFile(workspaceRoot, filePath) {
-  const relativeParts = path.relative(workspaceRoot, filePath)
+function workspaceRelativeParts(workspaceRoot, targetPath) {
+  return path.relative(workspaceRoot, targetPath)
     .split(/[\\/]+/)
     .filter(Boolean);
+}
+
+function isNestedWorkspaceMetadataDir(workspaceRoot, dirPath) {
+  const relativeParts = workspaceRelativeParts(workspaceRoot, dirPath);
+  return relativeParts.length > 1 && relativeParts[relativeParts.length - 1] === '.orpad';
+}
+
+function isNestedWorkspacePipelinePackageFile(workspaceRoot, filePath) {
+  const relativeParts = workspaceRelativeParts(workspaceRoot, filePath);
+  for (let index = 1; index <= relativeParts.length - 4; index += 1) {
+    if (
+      relativeParts[index] === '.orpad'
+      && relativeParts[index + 1] === 'pipelines'
+      && relativeParts[index + 3] === 'pipeline.or-pipeline'
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isWorkspacePipelinePackageFile(workspaceRoot, filePath) {
+  const relativeParts = workspaceRelativeParts(workspaceRoot, filePath);
   return relativeParts.length >= 4
     && relativeParts[0] === '.orpad'
     && relativeParts[1] === 'pipelines'
@@ -266,6 +287,7 @@ async function scanRunbookWorkspace(workspaceRoot) {
           hasRuns = true;
           continue;
         }
+        if (isNestedWorkspaceMetadataDir(workspaceRoot, entryPath)) continue;
         if (isPipelineGeneratedHarnessDir(workspaceRoot, entryPath)) continue;
         if (RUNBOOK_SCAN_IGNORED_DIRS.has(entry.name)) continue;
         await walk(entryPath, depth + 1);
@@ -275,6 +297,7 @@ async function scanRunbookWorkspace(workspaceRoot) {
         const item = { name: entry.name, path: entryPath, kind: 'file' };
         extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
         if (isPipelineFile(entry.name)) {
+          if (isNestedWorkspacePipelinePackageFile(workspaceRoot, entryPath)) continue;
           const manifestSummary = await readPipelineManifestSummary(entryPath);
           item.format = 'or-pipeline';
           item.displayName = manifestSummary.displayName;

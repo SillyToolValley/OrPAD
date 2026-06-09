@@ -170,6 +170,34 @@ function writeFixtureWorkspace(): string {
     },
     graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
   }, null, 2));
+  const nestedWorkspaceRalphRoot = path.join(workspace, 'generated-ui-runs', 'ui-reference-20260609', '.orpad', 'pipelines', 'nested-ralph-copy');
+  fs.mkdirSync(path.join(nestedWorkspaceRalphRoot, 'graphs'), { recursive: true });
+  fs.writeFileSync(path.join(nestedWorkspaceRalphRoot, 'graphs', 'main.or-graph'), JSON.stringify({
+    kind: 'orpad.graph',
+    version: '1.0',
+    graph: {
+      id: 'nested-ralph-copy',
+      nodes: [
+        { id: 'context', type: 'orpad.context', label: 'Context', config: { summary: 'Nested generated workspace.' } },
+      ],
+      transitions: [],
+    },
+  }, null, 2));
+  fs.writeFileSync(path.join(nestedWorkspaceRalphRoot, 'pipeline.or-pipeline'), JSON.stringify({
+    kind: 'orpad.pipeline',
+    version: '1.0',
+    id: 'nested-ralph-copy',
+    title: 'Nested Ralph Generated Copy',
+    description: 'Generated in a nested workspace and should not pollute the parent template list.',
+    template: true,
+    trustLevel: 'local-authored',
+    entryGraph: 'graphs/main.or-graph',
+    executionPolicy: {
+      mode: 'template-only',
+      copyBeforeRun: true,
+    },
+    graphs: [{ id: 'main', file: 'graphs/main.or-graph' }],
+  }, null, 2));
   const templateRoot = path.join(workspace, 'nodes', 'orpad.workstream', 'examples');
   fs.mkdirSync(templateRoot, { recursive: true });
   fs.writeFileSync(path.join(templateRoot, 'maintenance-workstream.or-pipeline'), JSON.stringify({
@@ -239,10 +267,12 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   await expect(pipelinesSection).not.toContainText('.orpad/pipelines');
   await expect(pipelinesSection).not.toContainText('pipeline.or-pipeline');
   await expect(pipelinesSection).not.toContainText('Maintenance Workstream Example');
+  await expect(pipelinesSection).not.toContainText('Nested Ralph Generated Copy');
   await expect(pipelinesSection).toContainText('3 pipelines');
   await expect(templatesSection).toContainText('Templates');
   await expect(templatesSection).toContainText('Maintenance Workstream Example');
   await expect(templatesSection).not.toContainText('Ralph Verify Fix Loop Copy');
+  await expect(templatesSection).not.toContainText('Nested Ralph Generated Copy');
   await expect(templatesSection).toContainText('1 template');
   await expect(templatesSection).not.toContainText('nodes/orpad.workstream');
   await expect(templatesSection).not.toContainText('maintenance-workstream.or-pipeline');
@@ -267,8 +297,10 @@ test('pipelines sidebar keeps the local flow simple and validates selected entri
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/default-agent-workstream/pipeline.or-pipeline');
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).toContain('.orpad/pipelines/ralph-verify-fix-loop-copy/pipeline.or-pipeline');
   expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).not.toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
+  expect(cachedIndex.pipelines.map((item: { path: string }) => item.path)).not.toContain('generated-ui-runs/ui-reference-20260609/.orpad/pipelines/nested-ralph-copy/pipeline.or-pipeline');
   expect(cachedIndex.templatePipelines.map((item: { path: string }) => item.path)).toContain('nodes/orpad.workstream/examples/maintenance-workstream.or-pipeline');
   expect(cachedIndex.templatePipelines.map((item: { path: string }) => item.path)).not.toContain('.orpad/pipelines/ralph-verify-fix-loop-copy/pipeline.or-pipeline');
+  expect(cachedIndex.templatePipelines.map((item: { path: string }) => item.path)).not.toContain('generated-ui-runs/ui-reference-20260609/.orpad/pipelines/nested-ralph-copy/pipeline.or-pipeline');
   expect(cachedIndex.legacyRunbooks.map((item: { path: string }) => item.path)).toContain('.orch-tree.json');
   expect(cachedIndex.redaction.contentIncluded).toBe(false);
   expect(cachedIndex.redaction.candidates.map((item: { path: string }) => item.path)).toContain('.env');
