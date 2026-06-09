@@ -419,17 +419,25 @@ test('toolbar opens Orchestration in a dedicated workspace window', async () => 
   await expect(orchestrationWin.locator('#runbooks-content [data-runbook-section="pipelines"]')).toHaveCount(0);
   await expect(orchestrationWin.locator('#toolbar #orchestration-runbar-slot [data-orchestration-runbar-placeholder]')).toBeVisible();
   await expect(orchestrationWin.locator('#toolbar #orchestration-runbar-slot')).toContainText('Select Pipeline');
+  const emptySelectTriggerBox = await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').boundingBox();
+  expect(emptySelectTriggerBox?.width || 0).toBeGreaterThan(230);
   await orchestrationWin.locator('#toolbar [data-pipeline-select-trigger]').click();
+  const emptySelectMenuBox = await orchestrationWin.locator('#toolbar .pipeline-select-menu').boundingBox();
+  expect(emptySelectMenuBox?.width || 0).toBeGreaterThan(360);
   const pipelineOption = orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
     .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Agent Workstream$/ }) });
   await expect(pipelineOption).toBeVisible();
   const pipelineOptionBox = await pipelineOption.boundingBox();
-  expect(pipelineOptionBox?.width || 0).toBeGreaterThan(220);
+  expect(pipelineOptionBox?.width || 0).toBeGreaterThan(340);
   await pipelineOption.click();
   const toolbarRunbar = orchestrationWin.locator('#toolbar #orchestration-runbar-slot [data-pipeline-preview-runbar]');
   await expect(toolbarRunbar).toBeVisible();
   await expect(toolbarRunbar.locator('[data-pipeline-select-trigger] span')).toContainText('Agent Workstream');
+  const selectedSelectTriggerBox = await toolbarRunbar.locator('[data-pipeline-select-trigger]').boundingBox();
+  expect(selectedSelectTriggerBox?.width || 0).toBeGreaterThan(230);
   await toolbarRunbar.locator('[data-pipeline-select-trigger]').click();
+  const selectedSelectMenuBox = await toolbarRunbar.locator('.pipeline-select-menu').boundingBox();
+  expect(selectedSelectMenuBox?.width || 0).toBeGreaterThan(360);
   const defaultPipelineOption = orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline]')
     .filter({ has: orchestrationWin.locator('strong').filter({ hasText: /^Default Agent Workstream$/ }) });
   await expect(defaultPipelineOption).toBeVisible();
@@ -458,7 +466,7 @@ test('toolbar opens Orchestration in a dedicated workspace window', async () => 
   const selectedPipelineOption = orchestrationWin.locator('#toolbar [data-orchestration-select-pipeline].selected');
   await expect(selectedPipelineOption).toBeVisible();
   const selectedPipelineOptionBox = await selectedPipelineOption.boundingBox();
-  expect(selectedPipelineOptionBox?.width || 0).toBeGreaterThan(220);
+  expect(selectedPipelineOptionBox?.width || 0).toBeGreaterThan(340);
   await toolbarRunbar.locator('[data-pipeline-run-menu]').click();
   await expect(selectedPipelineOption).toBeHidden();
   await expect(toolbarRunbar.locator('.pipeline-run-menu button').filter({ hasText: 'Start Run' }).first()).toBeVisible();
