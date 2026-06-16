@@ -3,6 +3,7 @@ const path = require('path');
 const { validateRunbookFile } = require('../runbooks/validator');
 const { loadPipelineGraphSet } = require('../orchestration-machine/graph-loader');
 const { normalizeProvisionConfig } = require('../orchestration-machine/provision-node');
+const { normalizePullRequestConfig } = require('../orchestration-machine/pull-request-node');
 const { buildTraversalPlan, detectGraphCycles } = require('../orchestration-machine/traversal');
 
 const GATE_CONDITIONS = new Set([
@@ -532,6 +533,28 @@ function auditGraphRuntimeContracts(graph, graphSet, diagnostics) {
       const firstWorkerIndex = (graph.nodes || []).findIndex(item => nodeType(item) === 'orpad.workerLoop');
       if (firstWorkerIndex >= 0 && provisionIndex > firstWorkerIndex) {
         diagnostics.push(diagnostic('warning', 'AUTHORING_PROVISION_AFTER_WORKER', 'Provision nodes should run before worker fan-out so provisioned checkouts exist when work items execute.', { graphRef: graph.graphRef, nodeId: id }));
+      }
+    }
+
+    if (type === 'orpad.pullRequest') {
+      // Shares the machine's normalizer so authoring and runtime agree on a
+      // valid pull-request node. Opening a PR is a real external action, so an
+      // invalid config is a hard error at every tier (see the complexity-tier
+      // permission-boundary keep-list).
+      const { problems } = normalizePullRequestConfig(config);
+      for (const problem of problems) {
+        diagnostics.push(diagnostic('error', 'AUTHORING_PULL_REQUEST_CONFIG_INVALID', `Pull-request node config must be executable as authored: ${problem.message}`, {
+          graphRef: graph.graphRef,
+          nodeId: id,
+          problemCode: problem.code,
+        }));
+      }
+      // A PR opens on the changes a patch-review node has already applied to the
+      // canonical workspace, so it must run after one.
+      const pullRequestIndex = (graph.nodes || []).indexOf(node);
+      const firstPatchReviewIndex = (graph.nodes || []).findIndex(item => nodeType(item) === 'orpad.patchReview');
+      if (firstPatchReviewIndex < 0 || pullRequestIndex < firstPatchReviewIndex) {
+        diagnostics.push(diagnostic('warning', 'AUTHORING_PULL_REQUEST_BEFORE_PATCH_REVIEW', 'Pull-request nodes should run after an orpad.patchReview node so the applied changes exist before the PR is opened.', { graphRef: graph.graphRef, nodeId: id }));
       }
     }
   }

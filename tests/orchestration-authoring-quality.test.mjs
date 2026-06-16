@@ -2317,6 +2317,50 @@ test('quality auditor fails provision nodes whose steps cannot execute as author
   assert.ok(provisionErrors.some(item => item.problemCode === 'PROVISION_CLONE_TARGET_DIR_INVALID'));
 });
 
+test('quality auditor fails pull-request nodes whose config cannot execute as authored', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-pull-request-invalid-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeReplayWorkspaceSeed(workspace, 'Pull request invalid fixture');
+
+  const spec = cloneJson(REPLAY_AUTHORING_SPEC);
+  spec.title = 'Pull request invalid fixture';
+  spec.graph.id = 'pull-request-invalid-fixture';
+  // Insert a pull-request node after the evidence contract (so it runs after the
+  // patch-review node) with a valid title so generation succeeds.
+  const exitIndex = spec.graph.nodes.findIndex(node => node.id === 'exit');
+  spec.graph.nodes.splice(exitIndex, 0, {
+    id: 'open-pr',
+    type: 'orpad.pullRequest',
+    label: 'Open pull request',
+    config: { title: 'OrPAD replay PR', requireChecks: false },
+  });
+  spec.graph.transitions = spec.graph.transitions
+    .filter(edge => !(edge.from === 'artifact' && edge.to === 'exit'))
+    .concat([{ from: 'artifact', to: 'open-pr' }, { from: 'open-pr', to: 'exit' }]);
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Repair the replay item and open a pull request with the change.',
+    timestamp: '2026-06-11T00:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: spec,
+  });
+
+  const graphPath = path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph');
+  const mainGraph = JSON.parse(await fs.readFile(graphPath, 'utf-8'));
+  const pr = mainGraph.graph.nodes.find(node => node.id === 'open-pr');
+  assert.ok(pr, 'the authored pull-request node survived generation');
+  pr.config.title = '';
+  pr.config.remote = 'bad/remote';
+  await fs.writeFile(graphPath, `${JSON.stringify(mainGraph, null, 2)}\n`, 'utf-8');
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.equal(audit.ok, false);
+  const prErrors = audit.diagnostics.filter(item => item.code === 'AUTHORING_PULL_REQUEST_CONFIG_INVALID');
+  assert.ok(prErrors.some(item => item.problemCode === 'PULL_REQUEST_TITLE_REQUIRED'), JSON.stringify(prErrors));
+  assert.ok(prErrors.some(item => item.problemCode === 'PULL_REQUEST_REMOTE_INVALID'), JSON.stringify(prErrors));
+});
+
 test('quality auditor warns when an external-repo task has no provision node', async (t) => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-provision-missing-'));
   t.after(() => fs.rm(workspace, { recursive: true, force: true }));

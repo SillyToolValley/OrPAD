@@ -18,6 +18,7 @@ const { createAdapterRequest } = require('./adapters/proposal-adapter');
 const { summarizeApprovalsFromEvents } = require('./approvals');
 const { assertNoSymlinkInRunPath, registerArtifact, writeArtifactManifest } = require('./artifacts');
 const { executeProvisionSteps } = require('./provision-node');
+const { executePullRequestSteps } = require('./pull-request-node');
 const { claimNextQueuedItem } = require('./dispatcher');
 const { createCommandGrant } = require('./command-grants');
 const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
@@ -87,6 +88,7 @@ const SUPPORT_NODE_TYPES = new Set([
   'orpad.artifactContract',
   'orpad.patchReview',
   'orpad.provision',
+  'orpad.pullRequest',
   'orpad.exit',
   'orpad.graph',
   // Fork-Join Phase 1 (Deliverable 5): orpad.tree wrappers used to
@@ -5478,6 +5480,17 @@ async function executeSupportNode(runRoot, node, options = {}) {
       config: node.config || {},
     }));
   }
+  if (node.nodeType === 'orpad.pullRequest') {
+    return executeBlockingSupportNode(runRoot, node, options, () => executePullRequestSteps({
+      runRoot,
+      runId: options.runId,
+      nodePath: node.nodePath,
+      workspaceRoot: options.workspaceRoot,
+      config: node.config || {},
+      ...(options.pullRequestProcessRunner ? { runProcess: options.pullRequestProcessRunner } : {}),
+      ...(options.pullRequestSleep ? { sleep: options.pullRequestSleep } : {}),
+    }));
+  }
   if (node.nodeType === 'orpad.exit') {
     return executeExitNode(runRoot, node, options);
   }
@@ -5963,6 +5976,8 @@ async function executeMachineRunStep(options = {}) {
     loadProviderKey = null,
     fetchImpl = null,
     apiProbeProviderInvoker = null,
+    pullRequestProcessRunner = null,
+    pullRequestSleep = null,
     signal = null,
   } = options;
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
@@ -7021,6 +7036,8 @@ async function executeMachineRunStep(options = {}) {
         externalResearch: runtimeExternalResearch,
         pipelineDir,
         gateJudgeAdapter,
+        pullRequestProcessRunner,
+        pullRequestSleep,
       });
     } catch (innerError) {
       // onInnerFailure mirror for the parallel batch path. Same
@@ -7419,6 +7436,8 @@ async function executeMachineRunStep(options = {}) {
           externalResearch: runtimeExternalResearch,
           pipelineDir,
           gateJudgeAdapter,
+          pullRequestProcessRunner,
+          pullRequestSleep,
         });
       } catch (innerError) {
         // onInnerFailure (Phase 3+): if this node lives inside an

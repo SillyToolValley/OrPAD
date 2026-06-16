@@ -119,6 +119,7 @@ const AUTHORABLE_NODE_TYPES = new Set([
   'orpad.patchReview',
   'orpad.probe',
   'orpad.provision',
+  'orpad.pullRequest',
   'orpad.rule',
   'orpad.selector',
   'orpad.skill',
@@ -1389,6 +1390,7 @@ function defaultNodeConfig(node, taskText, externalResearchLimitation = '') {
     };
   }
   if (node.type === 'orpad.patchReview') return { reviewMode: 'user-selected-files' };
+  if (node.type === 'orpad.pullRequest') return { title: taskText ? `OrPAD: ${String(taskText).slice(0, 80)}` : 'OrPAD automated change', remote: 'origin', requireChecks: false };
   if (node.type === 'orpad.gate') return { criteria: ['work result accepted', 'queue empty'], onFail: 'warn' };
   if (node.type === 'orpad.artifactContract') {
     return {

@@ -1248,6 +1248,13 @@ const BUILT_IN_NODE_PACK_MANIFESTS = [
         machineApi: 'orpad.machine.v1',
         capabilities: ['read.workspace', 'write.workspace', 'write.runArtifacts'],
       },
+      {
+        type: 'orpad.pullRequest',
+        path: 'nodes/pull-request.or-node',
+        runtimeHandlerKind: 'machine-builtin',
+        machineApi: 'orpad.machine.v1',
+        capabilities: ['read.workspace', 'write.workspace', 'write.runArtifacts'],
+      },
     ],
     graphs: [
       {

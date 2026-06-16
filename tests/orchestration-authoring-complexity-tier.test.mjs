@@ -165,6 +165,9 @@ test('applyTierAuditGating: external-action / permission boundary codes stay har
   // is authored from the LLM spec, so the authoring gate is the real enforcement point —
   // it must not relax with the tier. Permission/capability/approval keywords are kept too.
   assert.equal(tier.auditCodeMustStayError('AUTHORING_PROVISION_CONFIG_INVALID'), true);
+  // Opening a real pull request is an external action, so an invalid PR node config
+  // must also stay a hard error at every tier.
+  assert.equal(tier.auditCodeMustStayError('AUTHORING_PULL_REQUEST_CONFIG_INVALID'), true);
   assert.equal(tier.auditCodeMustStayError('NODE_PACK_HIGH_RISK_CAPABILITY_REQUIRES_APPROVAL'), true);
   // Node-pack provenance/undeclared is compiler-fillable declaration hygiene re-enforced
   // by the runtime trust audit, so it MAY relax at low tiers — it legitimately does not
