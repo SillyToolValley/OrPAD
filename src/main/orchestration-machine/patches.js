@@ -61,6 +61,17 @@ function ignoredOverlayGeneratedArtifactReason(filePath) {
   if (/(^|\/)(dist|build|out|release|\.next|\.nuxt|\.svelte-kit|storybook-static)\//.test(normalized)) {
     return 'overlay-generated-build-output';
   }
+  // Tool caches a worker's verification commands drop as a side effect (pytest
+  // writing .pytest_cache/, Python importing into __pycache__/, etc.). They are
+  // never the work product, but they land in the overlay and were being flagged
+  // as out-of-write-set violations that failed the whole patch (SpriteGenTest:
+  // toolchain-bringup ran pytest, which created vendor/sprite-gen/.pytest_cache).
+  if (/(^|\/)(\.pytest_cache|__pycache__|\.mypy_cache|\.ruff_cache|\.pytype|\.tox|\.cache)\//.test(normalized)) {
+    return 'overlay-generated-tool-cache';
+  }
+  if (/(^|\/)[^/]+\.pyc$/.test(normalized)) {
+    return 'overlay-generated-tool-cache';
+  }
   return '';
 }
 

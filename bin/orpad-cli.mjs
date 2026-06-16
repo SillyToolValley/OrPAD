@@ -39,8 +39,8 @@ function loadGeneratorModule() {
 function usage() {
   return [
     'Usage:',
-    '  orpad generate --workspace <path> --prompt <text> [--authoring-spec-file <file>] [--user-packages <path>] [--json]',
-    '  orpad generate --workspace <path> --prompt-file <file> [--authoring-spec-file <file>] [--user-packages <path>] [--json]',
+    '  orpad generate --workspace <path> --prompt <text> [--tier T0|T1|T2|auto] [--authoring-spec-file <file>] [--user-packages <path>] [--json]',
+    '  orpad generate --workspace <path> --prompt-file <file> [--tier T0|T1|T2|auto] [--authoring-spec-file <file>] [--user-packages <path>] [--json]',
     '  orpad generate --workspace <path> --prompt <text> --emit-authoring-prompt',
     '  orpad packages list [--user-packages <path>] [--user-data <path>] [--package-trust-evidence <json>|--package-trust-evidence-file <file>] [--package-granted-capabilities <json>|--package-granted-capabilities-file <file>] [--json]',
     '  orpad packages registry list --registry <url-or-file> [--user-data <path>] [--json]',
@@ -279,6 +279,13 @@ function printResult(result, json) {
   }
   process.stdout.write(`Generated OrPAD pipeline: ${result.pipelinePath}\n`);
   process.stdout.write(`Entry graph: ${result.graphPath}\n`);
+  if (result.complexityTier) {
+    process.stdout.write(`Complexity tier: ${result.complexityTier} (${result.complexityTierReason || 'default'})\n`);
+  }
+  if (result.complexityTierCost) {
+    const c = result.complexityTierCost;
+    process.stdout.write(`Cost profile: ${c.costClass} (~${c.maxAdapterCalls} LLM call${c.maxAdapterCalls === 1 ? '' : 's'}; ${c.probes} probe/${c.workers} worker/${c.triage} triage/${c.llmGates} llm-gate)\n`);
+  }
 }
 
 function uniqueStrings(values) {
@@ -829,6 +836,7 @@ async function main() {
     authoringSpec,
     timestamp: args.timestamp,
     workspaceSnapshot,
+    ...(hasOwnOption(args, 'tier') ? { tier: args.tier } : {}),
     ...nodePackOptions,
   });
   printResult(result, !!args.json);

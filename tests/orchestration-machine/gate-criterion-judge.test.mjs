@@ -60,6 +60,84 @@ test('buildGateJudgeEvidence collects only done worker results and their evidenc
   assert.equal(evidence.taskText, 'MSW editing pipeline');
 });
 
+test('buildGateJudgeEvidence includes pre-worker machine evidence: provisions, probes, registered artifacts', () => {
+  // Regression: SpriteGenTest gate-toolchain-mapped failed every criterion
+  // because the judge package only carried worker.result evidence — at a
+  // pre-worker gate that package is empty even when provision cloned the
+  // checkout and probes filed candidates.
+  const evidence = buildGateJudgeEvidence({
+    events: [
+      {
+        eventType: 'node.completed',
+        nodePath: 'main/provision-sprite-gen',
+        payload: {
+          nodeType: 'orpad.provision',
+          valid: false,
+          onFail: 'warn',
+          stepCount: 2,
+          executedCount: 1,
+          skippedCount: 0,
+          failedCount: 1,
+          evidenceArtifact: 'artifacts/provision/main-provision-sprite-gen.json',
+          steps: [
+            { kind: 'git-clone', repo: 'https://github.com/example/sprite-gen', targetDir: 'vendor/sprite-gen', status: 'completed', exitCode: 0 },
+            { kind: 'install', tool: 'npm', dir: 'vendor/sprite-gen', status: 'failed', exitCode: 1, stderrTail: 'npm ERR! missing package.json' },
+          ],
+        },
+      },
+      {
+        eventType: 'artifact.registered',
+        artifactRefs: ['artifacts/provision/main-provision-sprite-gen.json'],
+        payload: { file: { path: 'artifacts/provision/main-provision-sprite-gen.json', producedBy: 'orpad.provision' } },
+      },
+      {
+        eventType: 'adapter.result',
+        nodePath: 'main/probe-runner-animation-contract',
+        artifactRefs: ['artifacts/adapters/probe-call.transcript.json'],
+        payload: { taskKind: 'probe', status: 'done', proposalCount: 5 },
+      },
+      { eventType: 'node.started', payload: {} },
+    ],
+    inventory: { activeCount: 5, doneCount: 0 },
+    queueItems: [
+      {
+        itemId: 'author-runner-sprite-requests',
+        state: 'candidate',
+        title: 'Author runner sprite generation requests',
+        summary: 'Document the exact sprite-gen CLI command: node bin/sprite-gen.mjs --ref assets/Bride.png',
+        acceptanceCriteria: ['Generation command is copy-pasteable', 'Output contract recorded'],
+      },
+    ],
+    taskText: 'Test the sprite-gen repo',
+  });
+  assert.equal(evidence.acceptedWorkerCount, 0);
+  assert.equal(evidence.queueItems.length, 1);
+  assert.equal(evidence.queueItems[0].state, 'candidate');
+  assert.match(evidence.queueItems[0].summary, /sprite-gen CLI command/);
+  assert.equal(evidence.queueItems[0].acceptanceCriteria.length, 2);
+  assert.equal(evidence.provisions.length, 1);
+  assert.equal(evidence.provisions[0].nodePath, 'main/provision-sprite-gen');
+  assert.equal(evidence.provisions[0].valid, false);
+  assert.equal(evidence.provisions[0].steps[0].kind, 'git-clone');
+  assert.equal(evidence.provisions[0].steps[0].status, 'completed');
+  assert.equal(evidence.provisions[0].steps[0].exitCode, 0);
+  assert.equal(evidence.provisions[0].steps[1].status, 'failed');
+  assert.match(evidence.provisions[0].steps[1].stderrTail, /missing package\.json/);
+  assert.equal(evidence.probes.length, 1);
+  assert.equal(evidence.probes[0].proposalCount, 5);
+  assert.equal(evidence.registeredArtifacts.length, 1);
+  assert.equal(evidence.registeredArtifacts[0].producedBy, 'orpad.provision');
+  assert.ok(evidence.knownEvidenceRefs.includes('artifacts/provision/main-provision-sprite-gen.json'));
+  assert.ok(evidence.knownEvidenceRefs.includes('artifacts/adapters/probe-call.transcript.json'));
+});
+
+test('buildGateJudgePrompt explains provision evidence as machine-executed proof', () => {
+  const evidence = buildGateJudgeEvidence({ events: [], inventory: {}, taskText: '' });
+  const prompt = buildGateJudgePrompt(['checkout exists'], evidence);
+  assert.ok(prompt.includes('provisions'));
+  assert.ok(/machine-executed/i.test(prompt));
+});
+
 test('buildGateJudgePrompt lists every criterion and demands JSON-only output', () => {
   const evidence = buildGateJudgeEvidence({ events: [], inventory: {}, taskText: '' });
   const prompt = buildGateJudgePrompt(['typecheck passes', 'anchors match protocol'], evidence);

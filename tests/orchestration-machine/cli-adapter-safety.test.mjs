@@ -430,6 +430,72 @@ test('CLI overlay adapter ignores generated validation artifacts outside the wri
   assert.deepEqual([...new Set(patch.ignoredGeneratedFiles.map(item => item.reason))], ['overlay-generated-validation-artifact']);
 });
 
+test('CLI overlay adapter ignores tool caches (.pytest_cache/__pycache__) a worker drops outside the write set', async () => {
+  // Regression: SpriteGenTest toolchain-bringup ran pytest in the overlay,
+  // which created vendor/sprite-gen/.pytest_cache/*; those landed as
+  // out-of-write-set violations and failed the whole patch even though the
+  // worker only authored its one declared doc.
+  const run = await makeRun('run_20260611_cli_tool_cache');
+  await fs.mkdir(path.join(run.workspaceRoot, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(run.workspaceRoot, 'docs/report.md'), 'before\n', 'utf8');
+
+  const request = createAdapterRequest({
+    adapter: 'cli-agent-overlay',
+    runId: run.runId,
+    nodePath: 'queue/worker-loop',
+    taskKind: 'workerLoop',
+    workspaceRoot: run.workspaceRoot,
+    workspaceMode: 'read-only-plus-overlay',
+    allowedFiles: ['docs/report.md'],
+    adapterCallId: 'cli-tool-cache-call',
+    attemptId: 'cli-tool-cache-attempt-1',
+    idempotencyKey: 'cli-tool-cache-call:attempt-1',
+    outputContract: 'orpad.workerResult.v1',
+  });
+  const overlayRoot = cliOverlayRoot(run.runRoot, request);
+  const script = [
+    'const fs=require("fs");',
+    'fs.mkdirSync("docs",{recursive:true});',
+    'fs.writeFileSync("docs/report.md","after\\n");',
+    'fs.mkdirSync(".pytest_cache/v/cache",{recursive:true});',
+    'fs.writeFileSync(".pytest_cache/CACHEDIR.TAG","Signature\\n");',
+    'fs.writeFileSync(".pytest_cache/v/cache/nodeids","[]\\n");',
+    'fs.mkdirSync("scripts/__pycache__",{recursive:true});',
+    'fs.writeFileSync("scripts/__pycache__/runio.cpython-312.pyc","\\0\\0");',
+    'process.stdout.write(JSON.stringify({',
+    'schemaVersion:"orpad.workerResult.v1",',
+    `adapterCallId:${JSON.stringify(request.adapterCallId)},`,
+    `attemptId:${JSON.stringify(request.attemptId)},`,
+    `idempotencyKey:${JSON.stringify(request.idempotencyKey)},`,
+    'status:"done",summary:"Wrote the report and ran pytest as a verification command.",artifacts:[]',
+    '}));',
+  ].join('');
+  const commandSpec = { command: process.execPath, args: ['-e', script], cwd: overlayRoot };
+
+  const result = await createCliAgentAdapter({
+    enabled: true,
+    runRoot: run.runRoot,
+    workspaceRoot: run.workspaceRoot,
+    commandSpec,
+    commandGrants: [createCommandGrant({
+      ...commandSpec,
+      grantId: 'grant-cli-tool-cache',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    })],
+    now: '2026-06-11T00:00:30.000Z',
+  }).invoke(request);
+
+  assert.equal(result.status, 'done');
+  assert.deepEqual(result.changedFiles, ['docs/report.md']);
+  assert.equal(result.verification[0].writeSetViolationCount, 0);
+
+  const patch = JSON.parse(await fs.readFile(path.join(run.runRoot, result.patchArtifact), 'utf8'));
+  assert.deepEqual(patch.violations, []);
+  assert.deepEqual([...new Set(patch.ignoredGeneratedFiles.map(item => item.reason))], ['overlay-generated-tool-cache']);
+  assert.equal(patch.ignoredGeneratedFiles.some(item => item.path === '.pytest_cache/CACHEDIR.TAG'), true);
+  assert.equal(patch.ignoredGeneratedFiles.some(item => item.path === 'scripts/__pycache__/runio.cpython-312.pyc'), true);
+});
+
 test('CLI overlay adapter ignores new generated build output outside the write set', async () => {
   const run = await makeRun('run_20260430_cli_generated_build_output');
   await fs.mkdir(path.join(run.workspaceRoot, 'src'), { recursive: true });
@@ -1191,6 +1257,36 @@ test('CLI overlay copies .asar child seeds as the archive file instead of traver
   const copiedPath = path.join(overlayRoot, ...archiveRel.split('/'));
   assert.equal((await fs.stat(copiedPath)).isFile(), true);
   assert.deepEqual(await fs.readFile(copiedPath), archiveBytes);
+});
+
+test('CLI overlay materializes a directory read-context recursively for provisioned checkouts', async () => {
+  // A provisioned tree (orpad.provision clones into the canonical workspace)
+  // reaches workers as a directory entry in their read-only context; the
+  // whole tree must land in the overlay or post-provision items stay blind.
+  const run = await makeRun('run_20260611_cli_dir_readonly_context');
+  const treeFiles = {
+    'sprite-gen/package.json': '{"name":"sprite-gen"}\n',
+    'sprite-gen/src/index.js': 'module.exports = 1;\n',
+    'sprite-gen/docs/usage.md': '# usage\n',
+  };
+  for (const [rel, content] of Object.entries(treeFiles)) {
+    const absolute = path.join(run.workspaceRoot, ...rel.split('/'));
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    await fs.writeFile(absolute, content, 'utf8');
+  }
+
+  const overlayRoot = path.join(run.runRoot, 'adapters', 'overlays', 'dir-readonly-context');
+  const copied = await copyAllowedFilesToOverlay({
+    workspaceRoot: run.workspaceRoot,
+    overlayRoot,
+    allowedFiles: ['docs/report.md'],
+    readOnlyFiles: ['sprite-gen'],
+  });
+
+  assert.deepEqual([...copied].sort(), Object.keys(treeFiles).sort());
+  for (const [rel, content] of Object.entries(treeFiles)) {
+    assert.equal(await fs.readFile(path.join(overlayRoot, ...rel.split('/')), 'utf8'), content);
+  }
 });
 
 test('CLI overlay patch collection and apply preserve binary files byte-for-byte', async () => {

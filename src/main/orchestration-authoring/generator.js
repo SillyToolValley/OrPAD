@@ -11,6 +11,15 @@ const {
   auditGeneratedPipelineQuality,
 } = require('./quality-audit');
 const {
+  resolveComplexityTier,
+  tierWorkstreamEnabled,
+  applyTierAuditGating,
+  describeComplexityTier,
+  buildTierT0AuthoringSpec,
+  buildTierT1AuthoringSpec,
+  estimateTierCostProfile,
+} = require('./complexity-tier');
+const {
   BUILT_IN_NODE_PACK_MANIFESTS,
   HIGH_RISK_NODE_PACK_CAPABILITIES,
   authoringPackageRagPromptLines,
@@ -23,6 +32,23 @@ const {
 } = require('../orchestration-machine/node-packs');
 
 const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(search|competing products|competitors?|market|benchmarks?|benchmarking|web research|external research|browse|internet|online)\b/i;
+const MEDIA_GENERATION_INTENT_PATTERN = /\b(sprite(?:s|sheet)?|sprite[-\s]?sheets?|spritesheets?|animation[-\s]?sheets?|animated[-\s]?sprites?|frames?|texture[-\s]?atlas|character[-\s]?sheets?|image[-\s]?generation|asset[-\s]?generation|generate\s+(?:an?\s+)?images?|create\s+(?:an?\s+)?images?|make\s+(?:an?\s+)?images?|render\s+(?:an?\s+)?images?|draw\s+(?:an?\s+)?images?|video|gif)\b|\uC2A4\uD504\uB77C\uC774\uD2B8|\uC560\uB2C8\uBA54\uC774\uC158|\uD504\uB808\uC784|\uC601\uC0C1|\uBE44\uB514\uC624|\uB80C\uB354|(?:\uC774\uBBF8\uC9C0\s*(?:\uC0DD\uC131|\uB9CC\uB4E4|\uADF8\uB9AC|\uD544\uC694))|(?:(?:\uC0DD\uC131|\uB9CC\uB4E4|\uADF8\uB9AC)\s*\uC774\uBBF8\uC9C0)/i;
+const MEDIA_ASSET_FILE_PATTERN = /\.(?:png|jpe?g|webp|gif|psd|aseprite|kra|clip)$/i;
+const MEDIA_GENERATION_VERB_PATTERN = /\b(generate|create|make|produce|render|draw|animate|sprite|spritesheet|animation)\b|\uC0DD\uC131|\uB9CC\uB4E4|\uADF8\uB9AC|\uC560\uB2C8\uBA54\uC774\uC158|\uC2A4\uD504\uB77C\uC774\uD2B8/i;
+const STANDARD_TIMEOUT_PROFILE = Object.freeze({
+  id: 'standard',
+  proposalTimeoutMs: 240000,
+  workerTimeoutMs: 300000,
+  claimLeaseMs: 600000,
+  reason: 'Bounded code, content, and verification work should fail fast and split broad work into smaller claims.',
+});
+const MEDIA_GENERATION_TIMEOUT_PROFILE = Object.freeze({
+  id: 'media-generation',
+  proposalTimeoutMs: 600000,
+  workerTimeoutMs: 1800000,
+  claimLeaseMs: 2400000,
+  reason: 'Image, sprite, animation, and render tasks can spend substantial time in generation and artifact validation.',
+});
 const CANONICAL_QUEUE_NODE = { id: 'queue', type: 'orpad.workQueue', label: 'Own candidate queue state' };
 const CANONICAL_TRIAGE_NODE = { id: 'triage', type: 'orpad.triage', label: 'Prioritize bounded work' };
 const CANONICAL_DISPATCH_NODE = { id: 'dispatch', type: 'orpad.dispatcher', label: 'Claim one safe work item' };
@@ -92,6 +118,7 @@ const AUTHORABLE_NODE_TYPES = new Set([
   'orpad.graph',
   'orpad.patchReview',
   'orpad.probe',
+  'orpad.provision',
   'orpad.rule',
   'orpad.selector',
   'orpad.skill',
@@ -247,6 +274,19 @@ function runbookTimestamp(now = new Date()) {
 
 function hasExternalResearchIntent(taskText) {
   return EXTERNAL_RESEARCH_INTENT_PATTERN.test(normalizeTask(taskText));
+}
+
+function timeoutProfileForTask(taskText, workspaceSnapshot = {}) {
+  const normalizedTask = normalizeTask(taskText);
+  const files = Array.isArray(workspaceSnapshot.files)
+    ? workspaceSnapshot.files.map(file => String(file || ''))
+    : [];
+  const hasMediaAssets = files.some(file => MEDIA_ASSET_FILE_PATTERN.test(file));
+  if (MEDIA_GENERATION_INTENT_PATTERN.test(normalizedTask)
+    || (hasMediaAssets && MEDIA_GENERATION_VERB_PATTERN.test(normalizedTask))) {
+    return MEDIA_GENERATION_TIMEOUT_PROFILE;
+  }
+  return STANDARD_TIMEOUT_PROFILE;
 }
 
 function externalResearchLimitationText() {
@@ -731,6 +771,45 @@ function sanitizeGateOnFail(value) {
   return { onFail: 'warn', original: trimmed, replaced: true };
 }
 
+// Authoring agents routinely emit gate fields as node-level siblings of `type`
+// ("criteria": [...] next to "label") instead of inside `config`, despite the
+// prompt asking for config placement. sanitizeNode builds config exclusively
+// from raw.config, so node-level criteria used to be silently dropped and the
+// nodeWithConfig merge backfilled the generic two-phrase defaults — semantic
+// quality gates shipped as decoration the runtime judge never saw
+// (SpriteGenTest trace root-cause). Lift the known gate fields into config;
+// explicit config values always win over node-level ones.
+const GATE_NODE_LEVEL_CRITERIA_ALIASES = Object.freeze(['criteria', 'acceptanceCriteria', 'checks']);
+const GATE_NODE_LEVEL_STRING_FIELDS = Object.freeze(['evaluationMode', 'onFail', 'failureRouting', 'approvalStatePath']);
+const GATE_NODE_LEVEL_BOOLEAN_FIELDS = Object.freeze(['advisory', 'auditOnly', 'warningDoesNotPass']);
+
+function liftNodeLevelGateFields(raw, config) {
+  const lifted = [];
+  if (!stringArray(config.criteria).length) {
+    for (const alias of GATE_NODE_LEVEL_CRITERIA_ALIASES) {
+      const values = stringArray(raw[alias]);
+      if (!values.length) continue;
+      config.criteria = [...new Set(values)];
+      lifted.push(alias === 'criteria' ? 'criteria' : `criteria<-${alias}`);
+      break;
+    }
+  }
+  for (const key of GATE_NODE_LEVEL_STRING_FIELDS) {
+    if (config[key] !== undefined) continue;
+    if (typeof raw[key] !== 'string' || !raw[key].trim()) continue;
+    config[key] = raw[key].trim();
+    lifted.push(key);
+  }
+  for (const key of GATE_NODE_LEVEL_BOOLEAN_FIELDS) {
+    if (config[key] !== undefined) continue;
+    if (typeof raw[key] !== 'boolean') continue;
+    config[key] = raw[key];
+    lifted.push(key);
+  }
+  if (lifted.length) config.liftedNodeLevelGateFields = lifted;
+  return lifted;
+}
+
 // Refs inside `<pipelineDir>/graphs/main.or-graph` resolve relative to that
 // file's directory. main lives in `graphs/`, so:
 //   • a sub-graph that sits alongside main uses a bare filename
@@ -910,6 +989,19 @@ function sanitizeNode(raw, seen) {
       config.authoredOnPartialFailure = authoredOnPartialFailure;
     }
   }
+  if (type === 'orpad.provision') {
+    // Same planner-drift tolerance family as the gate criteria lift: steps
+    // authored at node level instead of under config are folded in. Steps are
+    // NEVER autofilled — a provision node without steps is an authoring
+    // defect the quality audit must surface, not silently repair.
+    if ((!Array.isArray(config.steps) || !config.steps.length) && Array.isArray(raw.steps) && raw.steps.length) {
+      config.steps = raw.steps;
+      config.liftedNodeLevelProvisionFields = ['steps'];
+    }
+    if (!config.onFail && typeof raw.onFail === 'string' && raw.onFail.trim()) {
+      config.onFail = raw.onFail.trim();
+    }
+  }
   if (type === 'orpad.workerLoop') {
     config.queueRef ||= 'queue';
     const evidenceOutput = workerEvidenceOutputContract();
@@ -1011,9 +1103,17 @@ function sanitizeNode(raw, seen) {
     }
   }
   if (type === 'orpad.gate') {
-    const sanitized = sanitizeGateOnFail(config.onFail);
+    liftNodeLevelGateFields(raw, config);
+    const authoredOnFail = config.onFail;
+    const sanitized = sanitizeGateOnFail(authoredOnFail);
     config.onFail = sanitized.onFail;
-    if (sanitized.replaced) {
+    // Only annotate when the author actually wrote a value; an absent onFail
+    // is the default path, not a coercion worth an audit note. The autofill
+    // marker lets later passes (hardenPreExecutionApprovalGates) distinguish
+    // a deliberate canonical "warn" from a defaulted one.
+    if (authoredOnFail === undefined) {
+      config.onFailAutoFilled = true;
+    } else if (sanitized.replaced) {
       config.authoredOnFail = sanitized.original;
       config.onFailNote = `Machine runtime only accepts ${GATE_ON_FAIL_VALUES.join('|')}; authored value preserved in authoredOnFail.`;
     }
@@ -1305,13 +1405,23 @@ function defaultNodeConfig(node, taskText, externalResearchLimitation = '') {
 }
 
 function nodeWithConfig(node, taskText, externalResearchLimitation = '') {
-  return {
+  const merged = {
     ...node,
     config: {
       ...defaultNodeConfig(node, taskText, externalResearchLimitation),
       ...(node.config || {}),
     },
   };
+  // A gate whose author supplied no criteria just received the generic
+  // two-phrase defaults above. Mark the backfill so downstream passes
+  // (hardenGateAsRequiredQuality) and the quality audit can tell an
+  // authored quality assertion apart from machine-made plumbing — an
+  // unmarked backfilled gate reads as "hardened" while checking nothing
+  // (SpriteGenTest trace root-cause).
+  if (node.type === 'orpad.gate' && !stringArray(node.config?.criteria).length) {
+    merged.config.criteriaAutoFilled = true;
+  }
+  return merged;
 }
 
 function firstIndexMatching(nodes, predicate, fallback = nodes.length) {
@@ -1397,7 +1507,7 @@ function ensureCoreWorkstreamNodes(nodes, seen) {
     id: 'verification-gate',
     type: 'orpad.gate',
     label: 'Verify task-specific result',
-    config: { criteria: ['worker proof accepted', 'queue empty'], onFail: 'warn' },
+    config: { criteria: ['worker proof accepted', 'queue empty'], criteriaAutoFilled: true, onFail: 'warn' },
   }, afterPatchReview);
 
   const beforeExit = () => firstIndexMatching(nodes, node => node.type === 'orpad.exit');
@@ -1522,9 +1632,68 @@ function gateLooksLikeCompletionQuality(node) {
     .test(gateIdentityText(node));
 }
 
+const PRE_EXECUTION_APPROVAL_GATE_PATTERN = /\b(approval|approve|capabilit(?:y|ies)|permission|authoriz\w*|sandbox|isolated[-\s]?(?:repo[-\s]?)?execution|repo[-\s]?execution|execution[-\s]?approval|clone|network[-\s]?access|credential)\b/i;
+
+// Approval identity is decided from what the gate IS (id/label/kind/summary),
+// never from its criteria text: readiness/documentation gates routinely write
+// criteria that mention "clone" or "credentials" ("clone step did not
+// warn-fail", "the run never proceeds by inventing credentials"), and
+// criteria-based matching block-escalated those gates into a deadlock — the
+// gate demanded completed documentation work while blocking the workers that
+// would produce it (SpriteGenTest gate-toolchain-mapped).
+function gateApprovalIdentityText(node) {
+  const config = node?.config || {};
+  return [
+    node?.id,
+    node?.label,
+    config.summary,
+    config.kind,
+    config.gateKind,
+  ].map(value => String(value || '')).join('\n');
+}
+
+function gateLooksLikePreExecutionApproval(node) {
+  if (!node || node.type !== 'orpad.gate') return false;
+  return PRE_EXECUTION_APPROVAL_GATE_PATTERN.test(gateApprovalIdentityText(node));
+}
+
+// A pre-worker approval/capability gate exists to stop the run when a core
+// execution capability (repo checkout, network access, sandbox approval) is
+// missing. The generator used to flatten every gate to onFail:'warn', so the
+// SpriteGenTest run's "Approve Isolated Repo Execution" gate failed both
+// criteria and warn-passed straight into execution without the repo. Escalate
+// these gates to onFail:'block' unless the author explicitly chose a canonical
+// policy — a defaulted warn (onFailAutoFilled) or a coerced semantic value
+// like "block-until-approved" (authoredOnFail) both signal blocking intent.
+function hardenPreExecutionApprovalGates(nodes) {
+  for (const gate of nodes.filter(node => node.type === 'orpad.gate')) {
+    if (!gateRunsBeforeWorker(gate, nodes)) continue;
+    if (gateLooksLikeDiscoveryPlanning(gate, nodes)) continue;
+    if (!gateLooksLikePreExecutionApproval(gate)) continue;
+    const config = gate.config = gate.config || {};
+    if (config.advisory === true || config.auditOnly === true) continue;
+    const defaulted = config.onFailAutoFilled === true;
+    const coerced = config.authoredOnFail !== undefined;
+    if (!defaulted && !coerced) continue;
+    if (config.onFail !== 'block') {
+      config.onFailEscalatedFrom = config.onFail;
+      config.onFail = 'block';
+    }
+    config.preExecutionApprovalGateHardened = true;
+  }
+}
+
 function hardenGateAsRequiredQuality(gate, reason) {
   const config = gate.config = gate.config || {};
   if (config.advisory === true || config.auditOnly === true) return false;
+  // Refuse to brand machine-backfilled criteria as a quality gate: the
+  // generic two-phrase defaults can't verify task quality, so the flags
+  // would only manufacture a hardened look. Record why so the audit and
+  // inspector can surface the gap instead of hiding it.
+  if (config.criteriaAutoFilled === true) {
+    config.qualityGateHardenSkipped = 'criteria-auto-filled';
+    return false;
+  }
   config.requiredForCompletion = true;
   config.blocksCompletion = true;
   config.qualityGate = true;
@@ -1923,6 +2092,7 @@ function enforceTransitionContracts(rawTransitions, nodes) {
     }
   }
 
+  hardenPreExecutionApprovalGates(nodes);
   hardenPostWorkerQualityGates(nodes, transitions, { artifact, lastGateBeforeArtifact });
 
   if (artifact && exit) ensureTransition(transitions, seenIds, artifact.id, exit.id);
@@ -3451,7 +3621,8 @@ function orderGraphNodesForMachineCycles(nodes, transitions, startId) {
   return ordered;
 }
 
-function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks = []) {
+function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks = [], tierOptions = {}) {
+  const skipWorkstreamScaffold = tierOptions && tierOptions.skipWorkstreamScaffold === true;
   const spec = isPlainObject(rawSpec) ? rawSpec : deterministicAuthoringSpec(taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks);
   const graphSpec = isPlainObject(spec.graph) ? spec.graph : spec;
   const intentText = authoringSpecIntentText(spec, graphSpec, taskText);
@@ -3460,11 +3631,22 @@ function normalizeAuthoringSpec(rawSpec, taskText, externalResearchIntent, exter
     ? graphSpec.nodes.map(raw => sanitizeNode(raw, seen)).filter(Boolean)
     : [];
   if (!nodes.length) {
+    // Empty spec falls back to the deterministic (full T2) shape regardless of tier:
+    // a tier that produced no nodes has nothing to keep lightweight.
     return normalizeAuthoringSpec(deterministicAuthoringSpec(taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks), taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks);
   }
-  nodes = ensureCoreWorkstreamNodes(nodes, seen);
-  const requestedForkJoinTransitions = ensureRequestedForkJoinDiscovery(nodes, seen, intentText, selectedNodePacks);
-  ensureContentEditorialGateNode(nodes, seen, intentText, selectedNodePacks);
+  // T0 (skipWorkstreamScaffold) keeps the authored read-only shape: do not inject the
+  // queue → worker → patch-review → artifact scaffold, the content-editorial gate, or
+  // the fork-join discovery fan-out. Higher tiers retain today's full normalization.
+  if (!skipWorkstreamScaffold) {
+    nodes = ensureCoreWorkstreamNodes(nodes, seen);
+  }
+  const requestedForkJoinTransitions = skipWorkstreamScaffold
+    ? []
+    : ensureRequestedForkJoinDiscovery(nodes, seen, intentText, selectedNodePacks);
+  if (!skipWorkstreamScaffold) {
+    ensureContentEditorialGateNode(nodes, seen, intentText, selectedNodePacks);
+  }
   nodes = nodes.filter(Boolean).map(node => nodeWithConfig(node, taskText, externalResearchLimitation));
   ensureSelectedNodePackProvenance(nodes, selectedNodePacks);
   const firstQueue = nodes.find(node => node.type === 'orpad.workQueue')?.id || 'queue';
@@ -3573,10 +3755,11 @@ async function createOrchestrationPipeline(options = {}) {
   ];
   const generatedWorkerClaimLimit = 1;
   const generatedLoopBackRedriveLimit = 1;
-  const generatedProposalTimeoutMs = 240000;
-  const generatedWorkerTimeoutMs = 300000;
-  const generatedClaimLeaseMs = 600000;
   const workspaceSnapshot = options.workspaceSnapshot || {};
+  const timeoutProfile = timeoutProfileForTask(taskText, workspaceSnapshot);
+  const generatedProposalTimeoutMs = timeoutProfile.proposalTimeoutMs;
+  const generatedWorkerTimeoutMs = timeoutProfile.workerTimeoutMs;
+  const generatedClaimLeaseMs = timeoutProfile.claimLeaseMs;
   const nodePackSelectionDiagnostics = [];
   const authoringNodePackOptions = nodePackSelectionOptions(options, nodePackSelectionDiagnostics);
   let selectedNodePacks = selectAuthoringNodePacks(
@@ -3599,7 +3782,34 @@ async function createOrchestrationPipeline(options = {}) {
     maxPackageRagAssetsPerPack: options.maxPackageRagAssetsPerPack,
     maxPackageRagAssetBytes: options.maxPackageRagAssetBytes,
   });
-  const authoringSpec = normalizeAuthoringSpec(rawAuthoringSpec, taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks);
+  // Complexity tier (Azure "lowest complexity that works"). Unset → T2 = today's
+  // behavior, byte-for-byte. "auto" runs the deterministic classifier. T0 routes to a
+  // read-only single-call analysis spec and skips the workstream scaffold.
+  const tierDecision = resolveComplexityTier({
+    requestedTier: options.tier
+      ?? (isPlainObject(rawAuthoringSpec) ? (rawAuthoringSpec.metadata?.tier ?? rawAuthoringSpec.tier) : undefined),
+    taskText,
+    authoringSpec: rawAuthoringSpec,
+  });
+  const complexityTier = tierDecision.tier;
+  const workstreamEnabled = tierWorkstreamEnabled(complexityTier);
+  // T1 with no authored spec uses the lean linear builder (single bounded worker pass, no
+  // patch-review / queue-drain loops). T1 WITH an authored spec keeps the agent's graph and
+  // only relaxes the audit. T0 uses the read-only analysis builder (no worker at all).
+  const useLeanT1 = complexityTier === 'T1' && !hasAuthoredSpec;
+  const skipWorkstreamScaffold = complexityTier === 'T0' || useLeanT1;
+  const tierOptions = skipWorkstreamScaffold ? { skipWorkstreamScaffold: true } : {};
+  const tierBuilderOptions = {
+    externalResearchLimitation,
+    skill: isPlainObject(rawAuthoringSpec) ? rawAuthoringSpec.skill : undefined,
+    rule: isPlainObject(rawAuthoringSpec) ? rawAuthoringSpec.rule : undefined,
+  };
+  const effectiveRawSpec = complexityTier === 'T0'
+    ? buildTierT0AuthoringSpec(taskText, tierBuilderOptions)
+    : useLeanT1
+      ? buildTierT1AuthoringSpec(taskText, tierBuilderOptions)
+      : rawAuthoringSpec;
+  const authoringSpec = normalizeAuthoringSpec(effectiveRawSpec, taskText, externalResearchIntent, externalResearchLimitation, selectedNodePacks, tierOptions);
   const graphNodes = authoringSpec.graph.nodes;
   const graphTransitions = authoringSpec.graph.transitions;
   const probeNodes = graphNodes.filter(node => node.type === 'orpad.probe');
@@ -3636,12 +3846,30 @@ async function createOrchestrationPipeline(options = {}) {
     },
   };
   const complexity = analyzeGraphComplexity(graphNodes, graphTransitions);
+  const complexityTierCost = estimateTierCostProfile(
+    complexityTier,
+    [
+      ...graphNodes,
+      ...(authoringSpec.subgraphs || []).flatMap(sg => (Array.isArray(sg.graph?.nodes) ? sg.graph.nodes : [])),
+    ],
+    { loopBackRedriveLimit: generatedLoopBackRedriveLimit },
+  );
   const metadata = {
     orchestrationAuthoring: {
       tool: 'orpad-cli',
       command: 'generate',
       focus: 'orchestration-authoring',
-      mode: hasAuthoredSpec ? 'llm-authored-spec' : 'deterministic-fallback',
+      // T0/lean-T1 are intentional minimal builds, not fallbacks from a failed LLM spec —
+      // label them honestly so the artifact does not read as "the authored spec broke".
+      mode: complexityTier === 'T0'
+        ? 'tier-t0-analysis'
+        : useLeanT1
+          ? 'tier-t1-linear'
+          : (hasAuthoredSpec ? 'llm-authored-spec' : 'deterministic-fallback'),
+      complexityTier,
+      complexityTierReason: tierDecision.reason,
+      complexityTierLabel: describeComplexityTier(complexityTier),
+      complexityTierCost,
       promptPath: 'harness/generated/orchestration-authoring-prompt.md',
       specPath: 'harness/generated/orchestration-authoring-spec.json',
       generatedAt: new Date(options.now || options.timestamp || new Date()).toISOString(),
@@ -3649,6 +3877,13 @@ async function createOrchestrationPipeline(options = {}) {
       authoringNotes: authoringSpec.metadata.authoringNotes || '',
       nodePackSelection: selectedPackMetadata(selectedNodePacks),
       nodePackSelectionDiagnostics,
+      timeoutProfile: {
+        id: timeoutProfile.id,
+        proposalTimeoutMs: timeoutProfile.proposalTimeoutMs,
+        workerTimeoutMs: timeoutProfile.workerTimeoutMs,
+        claimLeaseMs: timeoutProfile.claimLeaseMs,
+        reason: timeoutProfile.reason,
+      },
       packageRag: summarizeAuthoringPackageContext(
         packageRagContext,
         'harness/generated/package-rag-context.json',
@@ -3715,18 +3950,24 @@ async function createOrchestrationPipeline(options = {}) {
         workerSandbox: 'workspace-write',
         approvalPolicy: 'never',
         ephemeral: true,
+        timeoutProfile: timeoutProfile.id,
+        timeoutProfileReason: timeoutProfile.reason,
         candidateLimit: generatedCandidateLimit,
         proposalTimeoutMs: generatedProposalTimeoutMs,
         workerTimeoutMs: generatedWorkerTimeoutMs,
         claimLeaseMs: generatedClaimLeaseMs,
-        workerClaimLimit: generatedWorkerClaimLimit,
-        loopBackRedriveLimit: generatedLoopBackRedriveLimit,
+        ...(workstreamEnabled ? {
+          workerClaimLimit: generatedWorkerClaimLimit,
+          loopBackRedriveLimit: generatedLoopBackRedriveLimit,
+        } : {}),
         processUntil: generatedProcessUntil,
-        claimPolicy: {
-          concurrency: 1,
-          maxClaims: generatedWorkerClaimLimit,
-          processUntil: generatedProcessUntil,
-        },
+        ...(workstreamEnabled ? {
+          claimPolicy: {
+            concurrency: 1,
+            maxClaims: generatedWorkerClaimLimit,
+            processUntil: generatedProcessUntil,
+          },
+        } : {}),
         probeNodePaths: generatedProbeNodePaths(graphNodes, authoringSpec.subgraphs),
         // User report 2026-05-15: an 8-probe pipeline ran each probe back-to-
         // back (~5 min apart) because configuredProbeConcurrency() in
@@ -3737,24 +3978,28 @@ async function createOrchestrationPipeline(options = {}) {
         // remain serial (claimPolicy.concurrency: 1) until the file-lock
         // queue lands — patches are not yet race-condition safe.
         probeConcurrency: 'all',
-        triageNodePath: firstNodePath(graphNodes, 'orpad.triage', 'main/triage'),
-        dispatcherNodePath: firstNodePath(graphNodes, 'orpad.dispatcher', 'main/dispatch'),
-        workerNodePath: firstNodePath(graphNodes, 'orpad.workerLoop', 'main/worker'),
+        ...(workstreamEnabled ? {
+          triageNodePath: firstNodePath(graphNodes, 'orpad.triage', 'main/triage'),
+          dispatcherNodePath: firstNodePath(graphNodes, 'orpad.dispatcher', 'main/dispatch'),
+          workerNodePath: firstNodePath(graphNodes, 'orpad.workerLoop', 'main/worker'),
+        } : {}),
         supportNodePolicy: 'record-gate-warnings-and-mark-artifact-partial',
         description: 'Generated managed-run adapter. OrPAD owns work state, run status, and evidence files; Codex CLI submits candidate/result/proof through adapter contracts.',
       },
-      queueProtocol: {
-        schema: WORK_ITEM_SCHEMA_VERSION,
-        states: [...WORK_ITEM_STATES],
-        claimPolicy: {
-          concurrency: 1,
-          maxClaims: generatedWorkerClaimLimit,
-          defaultAction: 'continue-claiming',
-          processUntil: generatedProcessUntil,
-          stopWhenQueueEmpty: true,
-          stopOnApprovalRequired: true,
+      ...(workstreamEnabled ? {
+        queueProtocol: {
+          schema: WORK_ITEM_SCHEMA_VERSION,
+          states: [...WORK_ITEM_STATES],
+          claimPolicy: {
+            concurrency: 1,
+            maxClaims: generatedWorkerClaimLimit,
+            defaultAction: 'continue-claiming',
+            processUntil: generatedProcessUntil,
+            stopWhenQueueEmpty: true,
+            stopOnApprovalRequired: true,
+          },
         },
-      },
+      } : {}),
     },
     metadata,
   };
@@ -3868,9 +4113,12 @@ async function createOrchestrationPipeline(options = {}) {
     '',
   ].join('\n'), createdFiles);
 
-  const qualityAudit = await auditGeneratedPipelineQuality(
-    pipelinePath,
-    nodePackQualityAuditOptions(authoringNodePackOptions, selectedNodePacks),
+  const qualityAudit = applyTierAuditGating(
+    await auditGeneratedPipelineQuality(
+      pipelinePath,
+      nodePackQualityAuditOptions(authoringNodePackOptions, selectedNodePacks),
+    ),
+    complexityTier,
   );
   pipeline.metadata.orchestrationAuthoring.qualityAudit = {
     ok: qualityAudit.ok,
@@ -3939,6 +4187,9 @@ async function createOrchestrationPipeline(options = {}) {
     createdFiles,
     generatedBy: metadata.orchestrationAuthoring,
     graphComplexity: complexity,
+    complexityTier,
+    complexityTierReason: tierDecision.reason,
+    complexityTierCost,
     qualityAudit: pipeline.metadata.orchestrationAuthoring.qualityAudit,
   };
 }

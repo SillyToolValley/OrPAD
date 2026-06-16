@@ -110,7 +110,12 @@ function claudeCodeExecArgs(options = {}) {
   if (options.allowedTools) args.push('--allowed-tools', String(options.allowedTools));
   if (options.disallowedTools) args.push('--disallowed-tools', String(options.disallowedTools));
   if (options.cd) args.push('--cd', String(options.cd));
-  args.push(String(options.prompt || ''));
+  // With promptViaStdin the positional prompt is omitted and the CLI reads it
+  // from stdin (`--print` mode). Prompt text must not ride argv: the process-
+  // containment gate rejects any arg containing the canonical workspace root
+  // (task text routinely names workspace paths), and Windows caps the whole
+  // command line at 32K chars.
+  if (options.promptViaStdin !== true) args.push(String(options.prompt || ''));
   return args;
 }
 
@@ -226,8 +231,9 @@ function createProposalAdapter(options = {}) {
           dangerouslySkipPermissions: options.dangerouslySkipPermissions === true,
           allowedTools: options.allowedTools,
           disallowedTools: options.disallowedTools,
-          prompt,
+          promptViaStdin: true,
         }),
+        stdin: prompt,
         cwd: workspaceRoot,
       };
       let processResult;
@@ -235,6 +241,7 @@ function createProposalAdapter(options = {}) {
         processResult = await runMachineProcess({
           command: commandSpec.command,
           args: commandSpec.args,
+          stdin: commandSpec.stdin,
           cwd: commandSpec.cwd,
           runId,
           adapterCallId: request.adapterCallId,
@@ -345,8 +352,9 @@ function buildWorkerCommandSpec(input = {}) {
       dangerouslySkipPermissions: adapter.bypassLlmApprovals === true,
       allowedTools: adapter.allowedTools,
       disallowedTools: adapter.disallowedTools,
-      prompt,
+      promptViaStdin: true,
     }),
+    stdin: String(prompt || ''),
     cwd: overlayRoot,
   };
 }

@@ -78,7 +78,9 @@ async function writeMachineSmokeWorkspace(options = {}) {
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   await fs.writeFile(targetPath, 'before from OrPAD Machine smoke workspace\n', 'utf8');
 
-  await writeJson(graphPath, {
+  // options.graph lets callers (e.g. the lean-T1 runtime verification test) swap in an
+  // alternate machine-executable graph while reusing the proven node-cli fixture harness.
+  await writeJson(graphPath, options.graph || {
     kind: 'orpad.graph',
     version: '1.0',
     graph: {

@@ -32,6 +32,12 @@ const MAX_WORKERS_IN_EVIDENCE = 24;
 const MAX_VERIFICATION_PER_WORKER = 12;
 const MAX_CHANGED_FILES_PER_WORKER = 40;
 const MAX_SUMMARY_CHARS = 600;
+const MAX_PROVISIONS_IN_EVIDENCE = 8;
+const MAX_STEPS_PER_PROVISION = 8;
+const MAX_PROBES_IN_EVIDENCE = 12;
+const MAX_REGISTERED_ARTIFACTS_IN_EVIDENCE = 48;
+const MAX_QUEUE_ITEMS_IN_EVIDENCE = 24;
+const MAX_ACCEPTANCE_CRITERIA_PER_ITEM = 6;
 
 function normalizeCriterion(value) {
   return String(value || '').trim().toLowerCase();
@@ -56,15 +62,80 @@ function normalizeVerificationEntry(entry = {}) {
   return out;
 }
 
-// Collect the run's worker evidence into a compact, judge-readable structure.
-// The judge can only evaluate against what actually happened, so this is the
-// sole source of truth handed to the model — there is no workspace read here.
+function normalizeProvisionStepEntry(step = {}) {
+  const out = { kind: clampText(step.kind || '', 40), status: clampText(step.status || '', 40) };
+  if (step.repo) out.repo = clampText(step.repo, 200);
+  if (step.targetDir) out.targetDir = clampText(step.targetDir, 200);
+  if (step.tool) out.tool = clampText(step.tool, 40);
+  if (step.dir) out.dir = clampText(step.dir, 200);
+  if (step.skippedReason) out.skippedReason = clampText(step.skippedReason, 80);
+  if (Number.isFinite(Number(step.exitCode))) out.exitCode = Number(step.exitCode);
+  if (step.detail) out.detail = clampText(step.detail, 300);
+  if (step.stderrTail) out.stderrTail = clampText(step.stderrTail, 300);
+  return out;
+}
+
+// Collect the run's machine-owned evidence into a compact, judge-readable
+// structure. The judge can only evaluate against what actually happened, so
+// this is the sole source of truth handed to the model — there is no
+// workspace read here. Workers are NOT the only evidence source: provision
+// steps, discovery probe results, and registered artifacts all exist before
+// the first worker runs, and pre-worker gates judged against an empty
+// package fail unconditionally (SpriteGenTest gate-toolchain-mapped trace).
 function buildGateJudgeEvidence(input = {}) {
   const events = Array.isArray(input.events) ? input.events : [];
   const inventory = input.inventory || {};
   const knownRefs = new Set();
   const workers = [];
+  const provisions = [];
+  const probes = [];
+  const registeredArtifacts = [];
   for (const event of events) {
+    if (event?.eventType === 'node.completed' && event.payload?.nodeType === 'orpad.provision') {
+      const payload = event.payload || {};
+      provisions.push({
+        nodePath: clampText(event.nodePath || '', 160),
+        valid: payload.valid === true,
+        onFail: clampText(payload.onFail || '', 20),
+        stepCount: Number.isFinite(Number(payload.stepCount)) ? Number(payload.stepCount) : null,
+        executedCount: Number.isFinite(Number(payload.executedCount)) ? Number(payload.executedCount) : null,
+        skippedCount: Number.isFinite(Number(payload.skippedCount)) ? Number(payload.skippedCount) : null,
+        failedCount: Number.isFinite(Number(payload.failedCount)) ? Number(payload.failedCount) : null,
+        steps: (Array.isArray(payload.steps) ? payload.steps : [])
+          .slice(0, MAX_STEPS_PER_PROVISION)
+          .map(normalizeProvisionStepEntry),
+      });
+      if (payload.evidenceArtifact) knownRefs.add(normalizeLockPath(payload.evidenceArtifact));
+      continue;
+    }
+    if (event?.eventType === 'adapter.result') {
+      const payload = event.payload || {};
+      const artifactRefs = (Array.isArray(event.artifactRefs) ? event.artifactRefs : [])
+        .map(normalizeLockPath)
+        .filter(Boolean);
+      artifactRefs.forEach(ref => knownRefs.add(ref));
+      probes.push({
+        nodePath: clampText(event.nodePath || '', 160),
+        taskKind: clampText(payload.taskKind || '', 40),
+        status: clampText(payload.status || '', 40),
+        ...(payload.summary ? { summary: clampText(payload.summary, MAX_SUMMARY_CHARS) } : {}),
+        ...(Number.isFinite(Number(payload.proposalCount)) ? { proposalCount: Number(payload.proposalCount) } : {}),
+        artifactRefs,
+      });
+      continue;
+    }
+    if (event?.eventType === 'artifact.registered') {
+      const file = event.payload?.file || {};
+      const refPath = normalizeLockPath(file.path || (Array.isArray(event.artifactRefs) ? event.artifactRefs[0] : ''));
+      if (refPath) {
+        knownRefs.add(refPath);
+        registeredArtifacts.push({
+          path: refPath,
+          ...(file.producedBy ? { producedBy: clampText(file.producedBy, 80) } : {}),
+        });
+      }
+      continue;
+    }
     if (event?.eventType !== 'worker.result') continue;
     const payload = event.payload || {};
     if (payload.status !== 'done') continue;
@@ -96,6 +167,18 @@ function buildGateJudgeEvidence(input = {}) {
     });
   }
   const trimmedWorkers = workers.slice(-MAX_WORKERS_IN_EVIDENCE);
+  const queueItems = (Array.isArray(input.queueItems) ? input.queueItems : [])
+    .filter(entry => entry && (entry.itemId || entry.title))
+    .slice(0, MAX_QUEUE_ITEMS_IN_EVIDENCE)
+    .map(entry => ({
+      itemId: clampText(entry.itemId || '', 120),
+      state: clampText(entry.state || '', 40),
+      title: clampText(entry.title || '', 200),
+      ...(entry.summary ? { summary: clampText(entry.summary, MAX_SUMMARY_CHARS) } : {}),
+      ...(Array.isArray(entry.acceptanceCriteria) && entry.acceptanceCriteria.length
+        ? { acceptanceCriteria: entry.acceptanceCriteria.slice(0, MAX_ACCEPTANCE_CRITERIA_PER_ITEM).map(item => clampText(item, 300)) }
+        : {}),
+    }));
   return {
     schemaVersion: GATE_JUDGE_SCHEMA_VERSION,
     taskText: clampText(input.taskText || '', 1600),
@@ -103,6 +186,10 @@ function buildGateJudgeEvidence(input = {}) {
     completedQueueCount: Number.isFinite(Number(inventory.doneCount)) ? Number(inventory.doneCount) : null,
     acceptedWorkerCount: workers.length,
     workers: trimmedWorkers,
+    provisions: provisions.slice(-MAX_PROVISIONS_IN_EVIDENCE),
+    probes: probes.slice(-MAX_PROBES_IN_EVIDENCE),
+    registeredArtifacts: registeredArtifacts.slice(-MAX_REGISTERED_ARTIFACTS_IN_EVIDENCE),
+    queueItems,
     knownEvidenceRefs: [...knownRefs],
   };
 }
@@ -110,12 +197,15 @@ function buildGateJudgeEvidence(input = {}) {
 function buildGateJudgePrompt(criteria, evidence) {
   const criteriaList = criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n');
   return [
-    'You are OrPAD\'s gate-criterion judge. A pipeline run has produced worker evidence and reached a quality gate.',
+    'You are OrPAD\'s gate-criterion judge. A pipeline run has produced machine-owned evidence and reached a quality gate.',
     'Decide, for EACH listed criterion, whether the run evidence demonstrably satisfies it.',
     '',
     'Hard rules:',
     '- Judge ONLY against the evidence provided below. Do not assume work happened that the evidence does not show.',
-    '- A criterion passes ONLY if the evidence clearly demonstrates it (e.g. a relevant changed file plus a passing verification command, or an explicit worker summary backed by an artifact).',
+    '- A criterion passes ONLY if the evidence clearly demonstrates it (e.g. a relevant changed file plus a passing verification command, an explicit worker summary backed by an artifact, or a machine-executed provision step that completed with exit code 0).',
+    '- `provisions` entries are machine-executed environment steps (git clone, dependency install) with exit codes — a completed clone step IS proof the checkout exists; a failed or skipped step is proof of its own status.',
+    '- `probes` are discovery results and `registeredArtifacts` lists artifacts the machine recorded; they prove that discovery ran and what it filed, but artifact CONTENTS are not shown — do not invent contents.',
+    '- `queueItems` are work items discovery filed. Their titles/summaries/acceptance criteria ARE evidence of what discovery documented or planned, but a candidate/queued item is NOT proof its work was performed — only done items backed by worker evidence prove completed work.',
     '- If the evidence is missing, ambiguous, or insufficient to confirm a criterion, mark it passed=false and say what evidence is missing.',
     '- Cite the concrete evidence you relied on in evidenceRefs (file paths, artifact refs, or verification commands copied from the evidence).',
     '- Copy each criterion verbatim into the "criterion" field.',
@@ -198,6 +288,7 @@ async function judgeUnsupportedGateCriteria(input = {}) {
   const evidence = buildGateJudgeEvidence({
     events: input.events,
     inventory: input.inventory,
+    queueItems: input.queueItems,
     taskText: input.taskText,
   });
   const prompt = buildGateJudgePrompt(criteria, evidence);

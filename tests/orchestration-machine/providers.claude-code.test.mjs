@@ -44,6 +44,12 @@ test('claudeCodeExecArgs includes --print and --output-format json by default', 
   assert.equal(args.at(-1), 'hello');
 });
 
+test('claudeCodeExecArgs omits the positional prompt when promptViaStdin is set', () => {
+  const args = claudeCodeExecArgs({ prompt: 'hello', promptViaStdin: true });
+  assert.equal(args.includes('hello'), false);
+  assert.equal(args.at(-1), 'json');
+});
+
 test('claudeCodeExecArgs threads allowedTools/disallowedTools and cwd', () => {
   const args = claudeCodeExecArgs({
     outputFormat: 'json',
@@ -121,7 +127,7 @@ test('claude-code dangerousArgs flow into assertCliProcessContainment', async ()
   }
 });
 
-test('claude-code buildWorkerCommandSpec produces stable args from a generic prompt', () => {
+test('claude-code buildWorkerCommandSpec sends the prompt over stdin, not argv', () => {
   const plugin = getProviderPlugin('claude-code');
   const spec = plugin.buildWorkerCommandSpec({
     adapter: { command: process.execPath, commandPrefixArgs: ['/tmp/fake-claude.js'] },
@@ -132,7 +138,39 @@ test('claude-code buildWorkerCommandSpec produces stable args from a generic pro
   assert.equal(spec.command, process.execPath);
   assert.equal(spec.args[0], '/tmp/fake-claude.js');
   assert.equal(spec.args.includes('--print'), true);
-  assert.equal(spec.args.at(-1), 'hello worker.');
+  assert.equal(spec.args.includes('hello worker.'), false);
+  assert.equal(spec.stdin, 'hello worker.');
+});
+
+test('claude-code worker prompt naming the canonical workspace passes containment', async () => {
+  // Regression: the SpriteGenTest run failed every worker spawn with
+  // MACHINE_PROCESS_CANONICAL_PATH_ARG because the prompt (which carried the
+  // task text's absolute workspace paths) rode argv. Over stdin the
+  // containment gate only sees flag args and must accept the spec.
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-claude-canonical-'));
+  try {
+    const overlayRoot = path.join(tempRoot, '.orpad', 'adapters', 'overlays', 'fake-overlay');
+    await fs.mkdir(overlayRoot, { recursive: true });
+    const plugin = getProviderPlugin('claude-code');
+    const spec = plugin.buildWorkerCommandSpec({
+      adapter: { command: process.execPath, commandPrefixArgs: ['/tmp/fake-claude.js'] },
+      prompt: `Generate sprites from the assets in ${path.join(tempRoot, 'assets')} and verify ${tempRoot} stays clean.`,
+      overlayRoot,
+    });
+    const containment = assertCliProcessContainment({
+      commandSpec: spec,
+      grant: {},
+      overlayRoot,
+      workspaceRoot: tempRoot,
+      request: {},
+      allowDangerousSandboxBypass: false,
+      dangerousArgs: dangerousArgsForProvider('claude-code'),
+    });
+    assert.equal(containment.cwdKind, 'overlay');
+    assert.equal(containment.canonicalWorkspacePathArgsBlocked, true);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('claude-code buildWorkerCommandSpec adds skip-permissions only for bypass runs', () => {

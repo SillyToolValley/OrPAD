@@ -1,0 +1,84 @@
+{
+  "kind": "orpad.node",
+  "schemaVersion": "1.0",
+  "type": "orpad.provision",
+  "label": "Provision",
+  "category": "Workstream",
+  "description": "Deterministically acquires the workspace environment before worker fan-out: clones declared external repositories and installs dependencies (lifecycle scripts quarantined). Steps are idempotent and machine-executed; failures block the run with typed evidence instead of warn-passing.",
+  "inputs": [
+    {
+      "name": "input",
+      "type": "control"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "provisioned",
+      "type": "control"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "required": ["steps"],
+    "properties": {
+      "steps": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["git-clone", "install"]
+            },
+            "repo": {
+              "type": "string",
+              "description": "git-clone: https://, git@, ssh://, or file:// repository reference."
+            },
+            "targetDir": {
+              "type": "string",
+              "description": "git-clone: workspace-relative directory; never absolute, never under .orpad."
+            },
+            "ref": {
+              "type": "string"
+            },
+            "depth": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tool": {
+              "type": "string",
+              "enum": ["npm", "pnpm", "yarn"],
+              "description": "install: package manager; --ignore-scripts is always enforced."
+            },
+            "dir": {
+              "type": "string",
+              "description": "install: workspace-relative directory containing the manifest."
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      },
+      "onFail": {
+        "type": "string",
+        "enum": ["block", "warn"],
+        "default": "block"
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "capabilities": ["read.workspace", "write.workspace", "write.runArtifacts"]
+}

@@ -32,6 +32,7 @@ const pathResolver = require('./path-resolver');
 const processRunner = require('./adapters/process-runner');
 const processContainment = require('./adapters/process-containment');
 const probeRunner = require('./probe-runner');
+const provisionNode = require('./provision-node');
 const providerPolicy = require('./providers/policy');
 const providerRegistry = require('./providers/registry');
 const providerCatalog = require('../../shared/ai/provider-catalog');
@@ -90,6 +91,7 @@ module.exports = {
   ...processRunner,
   ...processContainment,
   ...probeRunner,
+  ...provisionNode,
   ...providerPolicy,
   ...providerRegistry,
   ...providerCatalog,

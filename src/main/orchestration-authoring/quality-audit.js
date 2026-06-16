@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { validateRunbookFile } = require('../runbooks/validator');
 const { loadPipelineGraphSet } = require('../orchestration-machine/graph-loader');
+const { normalizeProvisionConfig } = require('../orchestration-machine/provision-node');
 const { buildTraversalPlan, detectGraphCycles } = require('../orchestration-machine/traversal');
 
 const GATE_CONDITIONS = new Set([
@@ -40,6 +41,19 @@ const HARD_ITEM_EVIDENCE_ENFORCEMENT = 'hard-required-by-artifact-contract';
 const CONTENT_GRAPH_INTENT_PATTERN = /\b(readme|docs?|documentation|markdown|content|tutorial|lesson|lecture|course|slides?|copy|localization|locale|onboarding|learning material|course material)\b|\uBB38\uC11C|\uAC15\uC758|\uC790\uB8CC|\uC2AC\uB77C\uC774\uB4DC|\uD559\uC2B5|\uAD50\uC721|\uC218\uC5C5|\uD29C\uD1A0\uB9AC\uC5BC|\uB9C8\uD06C\uB2E4\uC6B4|\uBC88\uC5ED|\uD604\uC9C0\uD654/i;
 const FORK_JOIN_DISCOVERY_INTENT_PATTERN = /\bfork[-\s]?join\b|\bindependent probes?\b|\bparallel probes?\b|\bfork[-\s]?join discovery\b/i;
 const EDITORIAL_GATE_PATTERN = /\b(editorial|voice|tone|style|density|readability|audience|duplicate|duplication|repetition|rewrite|polish|presentation|slide|role[-\s]?separat|human-authored|ai-sounding|model meta|over-explanation)\b/i;
+const APPROVAL_GATE_IDENTITY_PATTERN = /\b(approval|approve|capabilit(?:y|ies)|permission|authoriz\w*|sandbox|isolated[-\s]?(?:repo[-\s]?)?execution|repo[-\s]?execution|execution[-\s]?approval|clone|network[-\s]?access|credential)\b/i;
+const EXTERNAL_REPO_INTENT_PATTERN = /(https?:\/\/(?:www\.)?(?:github|gitlab|bitbucket)\.(?:com|org)\/[^\s'")]+|git@[\w.-]+:[\w./~-]+|\bgit\s+clone\b)/i;
+const MEDIA_GENERATION_INTENT_PATTERN = /\b(sprite(?:s|sheet)?|sprite[-\s]?sheets?|spritesheets?|animation[-\s]?sheets?|animated[-\s]?sprites?|frames?|texture[-\s]?atlas|character[-\s]?sheets?|image[-\s]?generation|asset[-\s]?generation|generate\s+(?:an?\s+)?images?|create\s+(?:an?\s+)?images?|make\s+(?:an?\s+)?images?|render\s+(?:an?\s+)?images?|draw\s+(?:an?\s+)?images?|video|gif)\b|\uC2A4\uD504\uB77C\uC774\uD2B8|\uC560\uB2C8\uBA54\uC774\uC158|\uD504\uB808\uC784|\uC601\uC0C1|\uBE44\uB514\uC624|\uB80C\uB354|(?:\uC774\uBBF8\uC9C0\s*(?:\uC0DD\uC131|\uB9CC\uB4E4|\uADF8\uB9AC|\uD544\uC694))|(?:(?:\uC0DD\uC131|\uB9CC\uB4E4|\uADF8\uB9AC)\s*\uC774\uBBF8\uC9C0)/i;
+const STANDARD_TIMEOUT_CAPS = Object.freeze({
+  profile: 'standard',
+  proposalTimeoutMs: 240000,
+  workerTimeoutMs: 300000,
+});
+const MEDIA_GENERATION_TIMEOUT_CAPS = Object.freeze({
+  profile: 'media-generation',
+  proposalTimeoutMs: 600000,
+  workerTimeoutMs: 1800000,
+});
 const EDITORIAL_DIMENSION_PATTERNS = {
   voice: /\b(voice|tone|style|human-authored|ai-sounding|model meta|generic model|summary phrases|copy)\b/i,
   density: /\b(density|repetition|duplicate|duplication|over-explanation|checklist|one main|edited down|concise|slide|section)\b/i,
@@ -123,6 +137,20 @@ function nodeText(node) {
     ...(Array.isArray(config.criteria) ? config.criteria : []),
     ...(Array.isArray(config.reviewChecklist) ? config.reviewChecklist : []),
     ...(Array.isArray(config.qualityDimensions) ? config.qualityDimensions : []),
+  ].map(item => String(item || '')).join('\n');
+}
+
+// Approval identity must come from what the gate IS, not from criteria text —
+// mirrors the generator's gateApprovalIdentityText so audit and escalation
+// can never disagree about which gates are approval gates.
+function nodeApprovalIdentityText(node) {
+  const config = node?.config || {};
+  return [
+    node?.id,
+    node?.label,
+    config.summary,
+    config.kind,
+    config.gateKind,
   ].map(item => String(item || '')).join('\n');
 }
 
@@ -470,6 +498,40 @@ function auditGraphRuntimeContracts(graph, graphSet, diagnostics) {
       const criteria = Array.isArray(config.criteria) ? config.criteria.map(String).filter(Boolean) : [];
       if (!criteria.length || criteria.some(item => /task-specific checks pass|checks pass/i.test(item))) {
         diagnostics.push(diagnostic('error', 'AUTHORING_GATE_CRITERIA_WEAK', 'Gate criteria must be concrete and task-specific.', { graphRef: graph.graphRef, nodeId: id }));
+      }
+      if (config.criteriaAutoFilled === true) {
+        diagnostics.push(diagnostic('warning', 'AUTHORING_GATE_CRITERIA_AUTOFILLED', 'Gate shipped with machine-backfilled generic criteria; it can verify queue plumbing but not task quality. Author task-specific criteria on this gate.', { graphRef: graph.graphRef, nodeId: id, label: node.label || '' }));
+      }
+      const gateIndex = (graph.nodes || []).indexOf(node);
+      const firstWorkerIndex = (graph.nodes || []).findIndex(item => nodeType(item) === 'orpad.workerLoop');
+      const runsBeforeWorker = firstWorkerIndex < 0 || gateIndex < firstWorkerIndex;
+      if (
+        runsBeforeWorker
+        && APPROVAL_GATE_IDENTITY_PATTERN.test(nodeApprovalIdentityText(node))
+        && config.advisory !== true
+        && config.auditOnly !== true
+        && String(config.onFail || '') !== 'block'
+      ) {
+        diagnostics.push(diagnostic('warning', 'AUTHORING_APPROVAL_GATE_NOT_BLOCKING', 'Pre-execution approval/capability gates should use onFail block so a missing core capability stops the run instead of warn-passing into execution.', { graphRef: graph.graphRef, nodeId: id, onFail: String(config.onFail || '') }));
+      }
+    }
+
+    if (type === 'orpad.provision') {
+      // Static check shares the machine's normalizer so authoring and runtime
+      // can never disagree about what a valid provision step is.
+      const { problems } = normalizeProvisionConfig(config);
+      for (const problem of problems) {
+        diagnostics.push(diagnostic('error', 'AUTHORING_PROVISION_CONFIG_INVALID', `Provision node config must be executable as authored: ${problem.message}`, {
+          graphRef: graph.graphRef,
+          nodeId: id,
+          problemCode: problem.code,
+          ...(problem.stepIndex !== undefined ? { stepIndex: problem.stepIndex } : {}),
+        }));
+      }
+      const provisionIndex = (graph.nodes || []).indexOf(node);
+      const firstWorkerIndex = (graph.nodes || []).findIndex(item => nodeType(item) === 'orpad.workerLoop');
+      if (firstWorkerIndex >= 0 && provisionIndex > firstWorkerIndex) {
+        diagnostics.push(diagnostic('warning', 'AUTHORING_PROVISION_AFTER_WORKER', 'Provision nodes should run before worker fan-out so provisioned checkouts exist when work items execute.', { graphRef: graph.graphRef, nodeId: id }));
       }
     }
   }
@@ -877,6 +939,45 @@ function auditRequestedForkJoinDiscovery(pipeline, graphSet, diagnostics) {
   }
 }
 
+function timeoutCapsForPipeline(pipeline = {}) {
+  const adapter = pipeline?.run?.machineAdapter || {};
+  const explicitProfile = String(
+    adapter.timeoutProfile
+      || pipeline?.metadata?.orchestrationAuthoring?.timeoutProfile?.id
+      || '',
+  ).trim().toLowerCase();
+  const taskText = [
+    pipeline?.metadata?.orchestrationAuthoring?.taskText,
+    pipeline?.title,
+    pipeline?.description,
+  ].map(value => String(value || '')).join(' ');
+  if (explicitProfile === MEDIA_GENERATION_TIMEOUT_CAPS.profile
+    || MEDIA_GENERATION_INTENT_PATTERN.test(taskText)) {
+    return MEDIA_GENERATION_TIMEOUT_CAPS;
+  }
+  return STANDARD_TIMEOUT_CAPS;
+}
+
+function auditExternalRepoProvision(pipeline, graphSet, diagnostics) {
+  // Workers execute in a write-set-sliced overlay with no clone capability:
+  // a task that targets an external repository can only progress when an
+  // orpad.provision node brings the checkout into the canonical workspace
+  // before fan-out (SpriteGenTest runs blocked exactly here).
+  const taskText = [
+    pipeline?.metadata?.orchestrationAuthoring?.taskText,
+    pipeline?.title,
+    pipeline?.description,
+  ].map(value => String(value || '')).join(' ');
+  const match = taskText.match(EXTERNAL_REPO_INTENT_PATTERN);
+  if (!match) return;
+  const hasProvision = (graphSet.graphs || []).some(graph =>
+    (graph.nodes || []).some(node => nodeType(node) === 'orpad.provision'));
+  if (hasProvision) return;
+  diagnostics.push(diagnostic('warning', 'AUTHORING_PROVISION_MISSING', 'Task text references an external repository but no orpad.provision node exists; workers cannot clone from their sliced overlay, so the run will block on a missing checkout.', {
+    matchedReference: match[0].slice(0, 200),
+  }));
+}
+
 function auditMachineAdapter(pipeline, orderedNodes, diagnostics) {
   const adapter = pipeline?.run?.machineAdapter || {};
   if (!adapter || adapter.enabled === false) return;
@@ -936,13 +1037,22 @@ function auditMachineAdapter(pipeline, orderedNodes, diagnostics) {
   if (adapter.workerNodePath && !adapterProcessUntil.includes('verification-blocked')) {
     diagnostics.push(diagnostic('error', 'AUTHORING_PROCESS_UNTIL_VERIFICATION_BLOCKED_MISSING', 'Generated live Machine adapters must carry processUntil=verification-blocked into the adapter config, not only queueProtocol metadata.', { configured: adapterProcessUntil }));
   }
+  const timeoutCaps = timeoutCapsForPipeline(pipeline);
   const proposalTimeoutMs = Number(adapter?.proposalTimeoutMs);
-  if (adapter.workerNodePath && (!Number.isFinite(proposalTimeoutMs) || proposalTimeoutMs > 240000)) {
-    diagnostics.push(diagnostic('error', 'AUTHORING_PROPOSAL_TIMEOUT_UNBOUNDED', 'Generated live Machine adapters must cap proposal discovery at four minutes so small managed runs do not spend excessive time before worker dispatch.', { configured: adapter?.proposalTimeoutMs ?? null }));
+  if (adapter.workerNodePath && (!Number.isFinite(proposalTimeoutMs) || proposalTimeoutMs > timeoutCaps.proposalTimeoutMs)) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_PROPOSAL_TIMEOUT_UNBOUNDED', 'Generated live Machine adapters must cap proposal discovery according to the task timeout profile so small managed runs fail fast while media-generation runs have enough discovery time.', {
+      configured: adapter?.proposalTimeoutMs ?? null,
+      profile: timeoutCaps.profile,
+      maxAllowedMs: timeoutCaps.proposalTimeoutMs,
+    }));
   }
   const workerTimeoutMs = Number(adapter?.workerTimeoutMs);
-  if (adapter.workerNodePath && (!Number.isFinite(workerTimeoutMs) || workerTimeoutMs > 300000)) {
-    diagnostics.push(diagnostic('error', 'AUTHORING_WORKER_TIMEOUT_UNBOUNDED', 'Generated live Machine adapters must cap individual workers at five minutes; larger work should split or hand off instead of extending one worker.', { configured: adapter?.workerTimeoutMs ?? null }));
+  if (adapter.workerNodePath && (!Number.isFinite(workerTimeoutMs) || workerTimeoutMs > timeoutCaps.workerTimeoutMs)) {
+    diagnostics.push(diagnostic('error', 'AUTHORING_WORKER_TIMEOUT_UNBOUNDED', 'Generated live Machine adapters must cap individual workers according to the task timeout profile; larger work should split or hand off instead of running without bounds.', {
+      configured: adapter?.workerTimeoutMs ?? null,
+      profile: timeoutCaps.profile,
+      maxAllowedMs: timeoutCaps.workerTimeoutMs,
+    }));
   }
   const queueConcurrency = pipeline?.run?.queueProtocol?.claimPolicy?.concurrency;
   if (pipeline?.run?.queueProtocol && queueConcurrency !== 1) {
@@ -1168,6 +1278,7 @@ async function auditGeneratedPipelineQuality(pipelinePath, options = {}) {
       auditGraphTangledCycles(graph, diagnostics);
     }
     auditRequestedForkJoinDiscovery(pipeline, graphSet, diagnostics);
+    auditExternalRepoProvision(pipeline, graphSet, diagnostics);
     auditMachineAdapter(pipeline, orderedNodes, diagnostics);
     auditDeclaredNodePackReferences(pipeline, graphSet, diagnostics);
     auditSelectedNodePackProvenance(pipeline, graphSet, diagnostics);

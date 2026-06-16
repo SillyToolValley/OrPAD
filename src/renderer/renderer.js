@@ -3029,7 +3029,7 @@ const ORCH_TREE_NODE_TYPES = [
 const ORCH_GRAPH_NODE_TYPES = [
   'orpad.entry', 'orpad.context', 'orpad.gate', 'orpad.selector', 'orpad.skill', 'orpad.tree', 'orpad.graph',
   'orpad.rule', 'orpad.artifactContract', 'orpad.patchReview', 'orpad.exit', 'orpad.probe', 'orpad.workQueue',
-  'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop', 'orpad.barrier',
+  'orpad.triage', 'orpad.dispatcher', 'orpad.workerLoop', 'orpad.barrier', 'orpad.provision',
   'State', 'Tool', 'Human', 'Wait',
 ];
 const ORCH_NODE_TYPE_LABELS = {
@@ -3050,6 +3050,7 @@ const ORCH_NODE_TYPE_LABELS = {
   'orpad.dispatcher': 'Dispatcher',
   'orpad.workerLoop': 'Worker loop',
   'orpad.barrier': 'Barrier',
+  'orpad.provision': 'Provision',
   State: 'Step',
   Tool: 'Tool',
   Human: 'Human',

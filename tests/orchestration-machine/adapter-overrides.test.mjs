@@ -208,6 +208,33 @@ test('applyAdapterOverridesToPipelineAdapter carries pipeline orchestration fiel
   assert.equal(lifted.command, undefined);
 });
 
+test('applyAdapterOverridesToPipelineAdapter lets provider timeout override legacy probe and worker caps', async () => {
+  const { applyAdapterOverridesToPipelineAdapter } = orchestration;
+  const v1Adapter = {
+    type: 'codex-cli',
+    enabled: true,
+    probeNodePaths: ['main/probe'],
+    proposalTimeoutMs: 240000,
+    workerTimeoutMs: 300000,
+    claimLeaseMs: 600000,
+  };
+  const overrides = {
+    schemaVersion: 'orpad.adapterOverrides.v1',
+    pipelineDefault: {
+      providerId: 'codex-cli',
+      model: 'codex',
+      family: 'cli',
+      timeoutMs: 600000,
+    },
+    nodeOverrides: {},
+  };
+  const lifted = applyAdapterOverridesToPipelineAdapter(v1Adapter, overrides);
+  assert.equal(lifted.default.timeoutMs, 600000);
+  assert.equal(lifted.proposalTimeoutMs, 600000);
+  assert.equal(lifted.workerTimeoutMs, 600000);
+  assert.equal(lifted.claimLeaseMs, 600000);
+});
+
 test('applyAdapterOverridesToPipelineAdapter preserves custom command when provider stays the same', async () => {
   const { applyAdapterOverridesToPipelineAdapter } = orchestration;
   const v1Adapter = {

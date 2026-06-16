@@ -37,8 +37,41 @@ function workerResultIsReviewableBlockedPatch(result = {}) {
     && (result.changedFiles || []).length > 0;
 }
 
+// Typed blocked-evidence detector: a worker may self-report `status: done`
+// while its own verification evidence records that every substantive check was
+// blocked (SpriteGenTest trace: "Repo quality smoke is blocked, not passed"
+// closed as done). Inspect only worker-authored verification entries — process
+// bookkeeping entries (phase cli-process / adapter-invoke / worker-result-
+// application) always carry a `phase` and are excluded. Returns null when the
+// result claims nothing or proves at least one check.
+function workerResultEvidenceBlock(result = {}) {
+  if (result.status !== 'done') return null;
+  const checks = (result.verification || [])
+    .filter(entry => entry && !String(entry.phase || '').trim());
+  if (!checks.length) return null;
+  const statuses = checks.map(entry => String(entry.status || '').trim().toLowerCase());
+  const blockedCount = statuses.filter(status => status === 'blocked').length;
+  const passedCount = statuses.filter(status => status === 'passed').length;
+  if (!blockedCount) return null;
+  return {
+    blockedCount,
+    passedCount,
+    checkCount: checks.length,
+    // Nothing passed and something blocked: the worker proved none of its own
+    // checks, so "done" is the worker's opinion, not an outcome the runtime
+    // can count. (Workers also record not-applicable checks as blocked — the
+    // verification status vocabulary has no skipped value — so a mixed
+    // passed+blocked result stays done and is only marked degraded.)
+    decisive: passedCount === 0,
+  };
+}
+
 function targetQueueStateForWorkerResult(result, queueItem = {}) {
-  if (result.status === 'done') return 'done';
+  if (result.status === 'done') {
+    const evidenceBlock = workerResultEvidenceBlock(result);
+    if (evidenceBlock?.decisive) return 'blocked';
+    return 'done';
+  }
   if (result.status === 'queued') return 'queued';
   if (result.status === 'requeued') return 'queued';
   if (result.status === 'approval-required') return 'queued';
@@ -473,6 +506,7 @@ async function applyWorkerResult(runRoot, options = {}) {
   await assertWorkerResultArtifactsRegistered(runRoot, result);
   const nextAction = workerResultNextAction(result, toState);
   const blockedReason = workerResultBlockedReason(result);
+  const evidenceBlock = workerResultEvidenceBlock(result);
   const managedWorkerException = ['blocked', 'failed', 'rejected'].includes(result.status) && !workerResultIsReviewableBlockedPatch(result);
   const managedRetry = managedWorkerException && toState === 'queued';
   const managedFinal = managedWorkerException && toState === 'rejected';
@@ -505,6 +539,7 @@ async function applyWorkerResult(runRoot, options = {}) {
       verification: result.verification || [],
       ...(nextAction ? { nextAction } : {}),
       ...(blockedReason ? { blockedReason } : {}),
+      ...(evidenceBlock ? { evidenceBlock } : {}),
       ...(result.deferredReason ? { deferredReason: result.deferredReason } : {}),
       ...workerResultEvidencePayload(result),
     },
@@ -523,6 +558,8 @@ async function applyWorkerResult(runRoot, options = {}) {
       closedAt: now,
       ...(nextAction ? { nextAction } : {}),
       ...(blockedReason ? { blockedReason } : {}),
+      ...(evidenceBlock?.decisive ? { evidenceBlocked: true } : {}),
+      ...(evidenceBlock && !evidenceBlock.decisive ? { evidenceDegraded: true } : {}),
       ...(managedWorkerException ? {
         managedRetry: true,
         managedFinal,

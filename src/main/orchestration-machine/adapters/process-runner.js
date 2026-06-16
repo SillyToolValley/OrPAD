@@ -83,6 +83,33 @@ function trimOutput(current, chunk, maxBytes) {
   };
 }
 
+function quoteForCmd(value) {
+  const text = String(value);
+  // cmd.exe metacharacters that would break (or be injected through) a verbatim
+  // command line. Allowlisted provision/install args never contain these, but
+  // quote defensively so a future caller can't smuggle a second command in.
+  return /[\s"&|<>^()]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+// Node refuses to spawn a .cmd/.bat directly under shell:false and fails with
+// EINVAL since the CVE-2024-27980 patch (Node 18.20.2+/20.12.2+). Provision's
+// install step resolves npm/pnpm/yarn to their Windows .cmd shims, so without
+// this every Windows install spawn dies before it starts. Re-express the call
+// as `cmd.exe /d /s /c "<command> <args>"` with verbatim args — the /s form
+// strips exactly the outer quote pair, so a quoted command path with spaces
+// (e.g. C:\Program Files\nodejs\npm.cmd) survives intact.
+function windowsBatchSpawnSpec(command, args) {
+  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(command)) {
+    return { command, args, windowsVerbatimArguments: false };
+  }
+  const commandLine = [command, ...args].map(quoteForCmd).join(' ');
+  return {
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', `"${commandLine}"`],
+    windowsVerbatimArguments: true,
+  };
+}
+
 function processPidIsActive(pid) {
   const value = Number(pid);
   if (!Number.isInteger(value) || value <= 0) return false;
@@ -123,11 +150,13 @@ function runMachineProcess(input = {}, spawnImpl = spawn) {
     let startedHookDone = Promise.resolve();
     const streamErrors = [];
 
-    const child = spawnImpl(command, args, {
+    const spawnSpec = windowsBatchSpawnSpec(command, args);
+    const child = spawnImpl(spawnSpec.command, spawnSpec.args, {
       cwd,
       env,
       shell: false,
       windowsHide: true,
+      ...(spawnSpec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     const registryKeys = [runId ? `run:${runId}` : '', processKey ? `process:${processKey}` : ''].filter(Boolean);
     let controller = null;
@@ -317,4 +346,5 @@ module.exports = {
   registeredMachineProcessCount,
   runMachineProcess,
   sanitizeEnvironment,
+  windowsBatchSpawnSpec,
 };

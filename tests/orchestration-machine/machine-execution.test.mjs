@@ -986,6 +986,48 @@ test('visual UX gate criteria pass from explicit worker screenshot and layout ev
   assert.equal(result.evaluations.every(entry => entry.source === 'machine-visual-evidence'), true);
 });
 
+test('work-result-accepted criterion fails when any worker result lacks accepted proof', async () => {
+  const { run } = await makeGraphHarnessWorkspace('run_20260610_worker_proof_per_item');
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'worker',
+    eventType: 'worker.result',
+    itemId: 'item-a',
+    artifactRefs: ['artifacts/work-items/item-a/proof.md'],
+    payload: {
+      status: 'done',
+      verification: [{ command: 'node --test', status: 'passed', summary: 'ok' }],
+    },
+  });
+
+  const afterAccepted = await validateGateNode(run.runRoot, {
+    criteria: ['work result accepted'],
+    onFail: 'warn',
+  });
+  assert.equal(afterAccepted.valid, true);
+
+  // Second item reports done but carries no artifacts and no verification.
+  // The run-wide shortcut used to let the first item's accepted proof cover
+  // every later gate evaluation; the criterion must fail on the unproven item.
+  await appendMachineEvent(run.runRoot, {
+    runId: run.runId,
+    actor: 'worker',
+    eventType: 'worker.result',
+    itemId: 'item-b',
+    payload: { status: 'done', verification: [] },
+  });
+
+  const afterUnproven = await validateGateNode(run.runRoot, {
+    criteria: ['work result accepted'],
+    onFail: 'warn',
+  });
+  assert.equal(afterUnproven.valid, false);
+  const evaluation = afterUnproven.evaluations.find(entry => entry.criterion === 'work result accepted');
+  assert.equal(evaluation.reason, 'worker-proof-unproven');
+  assert.equal(evaluation.resultCount, 2);
+  assert.equal(evaluation.unprovenCount, 1);
+});
+
 test('failed worker patch artifacts are not eligible for patch review auto-apply', () => {
   const failedWithPatch = {
     schemaVersion: 'orpad.machineEvent.v1',

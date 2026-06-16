@@ -1087,6 +1087,7 @@ const WEB_BUILT_IN_ORPAD_NODE_TYPES = new Set([
   'orpad.gate',
   'orpad.patchReview',
   'orpad.probe',
+  'orpad.provision',
   'orpad.rule',
   'orpad.selector',
   'orpad.skill',

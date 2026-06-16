@@ -372,6 +372,271 @@ async function assertGeneratedPackageQuality(result) {
   }
 }
 
+test('media generation prompts use a long-running timeout profile', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-media-timeout-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Media timeout fixture');
+  await fs.mkdir(path.join(workspace, 'assets'), { recursive: true });
+  await fs.writeFile(path.join(workspace, 'assets/Bride.png'), '');
+  await fs.writeFile(path.join(workspace, 'assets/Groom.png'), '');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Generate side-view sprite animation sheets from the bride and groom images for Idle, Run, Jump, Attack, and Die.',
+    workspaceSnapshot: {
+      files: ['README.md', 'package.json', 'assets/Bride.png', 'assets/Groom.png'],
+    },
+    maxAuthoringNodePacks: 0,
+    timestamp: '2026-06-10T00:00:00.000Z',
+  });
+
+  const pipeline = JSON.parse(await fs.readFile(result.pipelinePath, 'utf-8'));
+  assert.equal(pipeline.metadata.orchestrationAuthoring.timeoutProfile.id, 'media-generation');
+  assert.equal(pipeline.run.machineAdapter.timeoutProfile, 'media-generation');
+  assert.equal(pipeline.run.machineAdapter.proposalTimeoutMs, 600000);
+  assert.equal(pipeline.run.machineAdapter.workerTimeoutMs, 1800000);
+  assert.equal(pipeline.run.machineAdapter.claimLeaseMs, 2400000);
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.equal(audit.ok, true, JSON.stringify(audit.diagnostics, null, 2));
+
+  pipeline.run.machineAdapter.workerTimeoutMs = 1800001;
+  await fs.writeFile(result.pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`, 'utf-8');
+  const tooLong = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.equal(tooLong.ok, false);
+  assert.ok(tooLong.diagnostics.some(item => (
+    item.code === 'AUTHORING_WORKER_TIMEOUT_UNBOUNDED'
+      && item.profile === 'media-generation'
+      && item.maxAllowedMs === 1800000
+  )));
+});
+
+test('node-level gate criteria are lifted into config instead of being dropped', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-gate-criteria-lift-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Gate criteria lift fixture');
+
+  const approvalCriteria = [
+    'All external commands are scoped to an OrPAD-managed sandbox under the workspace.',
+    'No credentials, tokens, or unrelated workspace paths are exposed to the upstream repo.',
+    'If approval is not granted, the run records a blocker instead of inventing a quality pass.',
+  ];
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Test the sprite-gen repo quality and generate runner sprite sheets with required animations.',
+    timestamp: '2026-06-10T00:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: {
+      title: 'Gate criteria lift fixture',
+      description: 'Planner emitted gate fields at the node level instead of inside config.',
+      graph: {
+        id: 'gate-criteria-lift-fixture',
+        label: 'Gate criteria lift fixture',
+        start: 'entry',
+        nodes: [
+          { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+          { id: 'context', type: 'orpad.context', label: 'Map sprite scope', config: { summary: 'Map repo capability and reference assets.' } },
+          { id: 'repo-probe', type: 'orpad.probe', label: 'Probe repo capability', config: { lens: 'repo-capability', maxCandidates: 5 } },
+          {
+            id: 'repo-approval-gate',
+            type: 'orpad.gate',
+            label: 'Approve Isolated Repo Execution',
+            // Planner format drift: every gate field sits at the node level.
+            evaluationMode: 'rule-only',
+            onFail: 'block-until-approved',
+            criteria: approvalCriteria,
+            approvalStatePath: 'artifacts/approvals/repo-execution-approval.json',
+          },
+          { id: 'queue', type: 'orpad.workQueue', label: 'Queue sprite work' },
+          { id: 'triage', type: 'orpad.triage', label: 'Triage sprite work' },
+          { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch sprite work' },
+          { id: 'worker', type: 'orpad.workerLoop', label: 'Generate sprite item' },
+          { id: 'patch-review', type: 'orpad.patchReview', label: 'Review sprite patch' },
+          {
+            id: 'acceptance-gate',
+            type: 'orpad.gate',
+            label: 'Gate claimed item evidence',
+            // Config placement must win over the node-level alias.
+            criteria: ['node level loses'],
+            config: { criteria: ['config wins criterion'], onFail: 'warn' },
+          },
+          { id: 'artifact', type: 'orpad.artifactContract', label: 'Record sprite evidence' },
+          { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+        ],
+        transitions: [
+          { from: 'entry', to: 'context' },
+          { from: 'context', to: 'repo-probe' },
+          { from: 'repo-probe', to: 'repo-approval-gate' },
+          { from: 'repo-approval-gate', to: 'queue', condition: 'pass' },
+          { from: 'queue', to: 'triage' },
+          { from: 'triage', to: 'dispatch' },
+          { from: 'dispatch', to: 'worker' },
+          { from: 'worker', to: 'patch-review' },
+          { from: 'patch-review', to: 'worker', condition: 'rejected' },
+          { from: 'patch-review', to: 'acceptance-gate', condition: 'accepted' },
+          { from: 'acceptance-gate', to: 'worker', condition: 'revise' },
+          { from: 'acceptance-gate', to: 'dispatch', condition: 'queue-not-empty' },
+          { from: 'acceptance-gate', to: 'artifact', condition: 'queue-empty' },
+          { from: 'artifact', to: 'exit' },
+        ],
+      },
+    },
+  });
+
+  const mainGraph = await readJson(path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph'));
+  const approvalGate = mainGraph.graph.nodes.find(node => node.id === 'repo-approval-gate');
+  assert.ok(approvalGate, 'expected repo approval gate to survive generation');
+  assert.deepEqual(approvalGate.config.criteria, approvalCriteria);
+  assert.equal(approvalGate.config.evaluationMode, 'rule-only');
+  assert.equal(approvalGate.config.approvalStatePath, 'artifacts/approvals/repo-execution-approval.json');
+  // The coerced "block-until-approved" signals blocking intent, so the
+  // pre-execution approval hardening escalates the canonical policy to block.
+  assert.equal(approvalGate.config.onFail, 'block');
+  assert.equal(approvalGate.config.onFailEscalatedFrom, 'warn');
+  assert.equal(approvalGate.config.preExecutionApprovalGateHardened, true);
+  assert.equal(approvalGate.config.authoredOnFail, 'block-until-approved');
+  assert.ok(approvalGate.config.liftedNodeLevelGateFields.includes('criteria'));
+
+  const acceptanceGate = mainGraph.graph.nodes.find(node => node.id === 'acceptance-gate');
+  assert.ok(acceptanceGate, 'expected acceptance gate to survive generation');
+  assert.deepEqual(acceptanceGate.config.criteria, ['config wins criterion']);
+  assert.ok(!(acceptanceGate.config.liftedNodeLevelGateFields || []).includes('criteria'));
+});
+
+test('explicitly authored canonical onFail on approval gates is respected but audited', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-approval-gate-explicit-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Approval gate explicit onFail fixture');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Stage the external repo capability before generation work begins.',
+    timestamp: '2026-06-10T02:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: {
+      title: 'Approval gate explicit onFail fixture',
+      description: 'Planner deliberately chose a canonical warn for the approval gate.',
+      graph: {
+        id: 'approval-gate-explicit-fixture',
+        label: 'Approval gate explicit fixture',
+        start: 'entry',
+        nodes: [
+          { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+          { id: 'context', type: 'orpad.context', label: 'Map repo scope', config: { summary: 'Map the repo execution scope.' } },
+          {
+            id: 'repo-execution-approval-gate',
+            type: 'orpad.gate',
+            label: 'Approve Isolated Repo Execution',
+            config: {
+              criteria: ['External commands stay inside the OrPAD-managed sandbox.'],
+              onFail: 'warn',
+            },
+          },
+          { id: 'queue', type: 'orpad.workQueue', label: 'Queue repo work' },
+          { id: 'triage', type: 'orpad.triage', label: 'Triage repo work' },
+          { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch repo work' },
+          { id: 'worker', type: 'orpad.workerLoop', label: 'Execute repo item' },
+          { id: 'patch-review', type: 'orpad.patchReview', label: 'Review repo patch' },
+          { id: 'acceptance-gate', type: 'orpad.gate', label: 'Gate repo item evidence', config: { criteria: ['Repo item evidence records the tested revision.'], onFail: 'warn' } },
+          { id: 'artifact', type: 'orpad.artifactContract', label: 'Record repo evidence' },
+          { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+        ],
+        transitions: [
+          { from: 'entry', to: 'context' },
+          { from: 'context', to: 'repo-execution-approval-gate' },
+          { from: 'repo-execution-approval-gate', to: 'queue', condition: 'pass' },
+          { from: 'queue', to: 'triage' },
+          { from: 'triage', to: 'dispatch' },
+          { from: 'dispatch', to: 'worker' },
+          { from: 'worker', to: 'patch-review' },
+          { from: 'patch-review', to: 'worker', condition: 'rejected' },
+          { from: 'patch-review', to: 'acceptance-gate', condition: 'accepted' },
+          { from: 'acceptance-gate', to: 'worker', condition: 'revise' },
+          { from: 'acceptance-gate', to: 'dispatch', condition: 'queue-not-empty' },
+          { from: 'acceptance-gate', to: 'artifact', condition: 'queue-empty' },
+          { from: 'artifact', to: 'exit' },
+        ],
+      },
+    },
+  });
+
+  const mainGraph = await readJson(path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph'));
+  const gate = mainGraph.graph.nodes.find(node => node.id === 'repo-execution-approval-gate');
+  assert.ok(gate, 'expected approval gate to survive generation');
+  assert.equal(gate.config.onFail, 'warn');
+  assert.equal(gate.config.preExecutionApprovalGateHardened, undefined);
+  assert.equal(gate.config.onFailEscalatedFrom, undefined);
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.ok(audit.diagnostics.some(item => (
+    item.code === 'AUTHORING_APPROVAL_GATE_NOT_BLOCKING' && item.nodeId === 'repo-execution-approval-gate'
+  )), JSON.stringify(audit.diagnostics, null, 2));
+});
+
+test('machine-backfilled gate criteria are marked and never branded as quality gates', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-gate-criteria-autofill-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Gate criteria autofill fixture');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Harden the queue drain workflow with reviewable evidence.',
+    timestamp: '2026-06-10T01:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: {
+      title: 'Gate criteria autofill fixture',
+      description: 'Planner authored a quality-looking gate without any criteria.',
+      graph: {
+        id: 'gate-criteria-autofill-fixture',
+        label: 'Gate criteria autofill fixture',
+        start: 'entry',
+        nodes: [
+          { id: 'entry', type: 'orpad.entry', label: 'Entry' },
+          { id: 'context', type: 'orpad.context', label: 'Map scope', config: { summary: 'Map the workflow scope.' } },
+          { id: 'queue', type: 'orpad.workQueue', label: 'Queue work' },
+          { id: 'triage', type: 'orpad.triage', label: 'Triage work' },
+          { id: 'dispatch', type: 'orpad.dispatcher', label: 'Dispatch work' },
+          { id: 'worker', type: 'orpad.workerLoop', label: 'Implement item' },
+          { id: 'patch-review', type: 'orpad.patchReview', label: 'Review patch' },
+          // A gate that LOOKS like a quality gate but carries no criteria at
+          // all — the generator backfills the generic pair.
+          { id: 'final-quality-gate', type: 'orpad.gate', label: 'Validate final delivery quality' },
+          { id: 'artifact', type: 'orpad.artifactContract', label: 'Record evidence' },
+          { id: 'exit', type: 'orpad.exit', label: 'Exit' },
+        ],
+        transitions: [
+          { from: 'entry', to: 'context' },
+          { from: 'context', to: 'queue' },
+          { from: 'queue', to: 'triage' },
+          { from: 'triage', to: 'dispatch' },
+          { from: 'dispatch', to: 'worker' },
+          { from: 'worker', to: 'patch-review' },
+          { from: 'patch-review', to: 'worker', condition: 'rejected' },
+          { from: 'patch-review', to: 'final-quality-gate', condition: 'accepted' },
+          { from: 'final-quality-gate', to: 'worker', condition: 'revise' },
+          { from: 'final-quality-gate', to: 'dispatch', condition: 'queue-not-empty' },
+          { from: 'final-quality-gate', to: 'artifact', condition: 'queue-empty' },
+          { from: 'artifact', to: 'exit' },
+        ],
+      },
+    },
+  });
+
+  const mainGraph = await readJson(path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph'));
+  const gate = mainGraph.graph.nodes.find(node => node.id === 'final-quality-gate');
+  assert.ok(gate, 'expected final quality gate to survive generation');
+  assert.deepEqual(gate.config.criteria, ['work result accepted', 'queue empty']);
+  assert.equal(gate.config.criteriaAutoFilled, true);
+  assert.notEqual(gate.config.qualityGate, true);
+  assert.notEqual(gate.config.qualityGateHardened, true);
+  assert.equal(gate.config.qualityGateHardenSkipped, 'criteria-auto-filled');
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.ok(audit.diagnostics.some(item => (
+    item.code === 'AUTHORING_GATE_CRITERIA_AUTOFILLED' && item.nodeId === 'final-quality-gate'
+  )), JSON.stringify(audit.diagnostics, null, 2));
+});
+
 test('deterministic fallback uses task-shaped discovery topology instead of one repeated graph head', async (t) => {
   const cases = [
     {
@@ -1960,4 +2225,163 @@ test('quality auditor fails generated live adapters with unsafe worker concurren
   assert.equal(audit.ok, false);
   assert.ok(audit.diagnostics.some(item => item.code === 'AUTHORING_WORKER_CONCURRENCY_UNSAFE'));
   assert.ok(audit.diagnostics.some(item => item.code === 'AUTHORING_QUEUE_PROTOCOL_CONCURRENCY_UNSAFE'));
+});
+
+test('node-level provision steps are lifted into config and audit clean', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-provision-lift-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Provision lift fixture');
+
+  const spec = cloneJson(REPLAY_AUTHORING_SPEC);
+  spec.title = 'Provision lift fixture';
+  spec.graph.id = 'provision-lift-fixture';
+  spec.graph.nodes.splice(1, 0, {
+    id: 'provision-sprite-gen',
+    type: 'orpad.provision',
+    label: 'Provision sprite-gen checkout',
+    // Planner format drift: steps authored at node level instead of config.
+    steps: [
+      { kind: 'git-clone', repo: 'https://github.com/example/sprite-gen', targetDir: 'sprite-gen' },
+      { kind: 'install', tool: 'npm', dir: 'sprite-gen' },
+    ],
+  });
+  spec.graph.transitions = [
+    { from: 'entry', to: 'provision-sprite-gen' },
+    { from: 'provision-sprite-gen', to: 'context' },
+    ...spec.graph.transitions.slice(1),
+  ];
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Test https://github.com/example/sprite-gen and generate runner sprite sheets.',
+    timestamp: '2026-06-11T00:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: spec,
+  });
+
+  const mainGraph = JSON.parse(await fs.readFile(path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph'), 'utf-8'));
+  const provision = mainGraph.graph.nodes.find(node => node.id === 'provision-sprite-gen');
+  assert.ok(provision, 'expected provision node to survive generation');
+  assert.equal(provision.config.steps.length, 2);
+  assert.equal(provision.config.steps[0].kind, 'git-clone');
+  assert.deepEqual(provision.config.liftedNodeLevelProvisionFields, ['steps']);
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.ok(!audit.diagnostics.some(item => item.code === 'AUTHORING_PROVISION_CONFIG_INVALID'), JSON.stringify(audit.diagnostics, null, 2));
+  assert.ok(!audit.diagnostics.some(item => item.code === 'AUTHORING_PROVISION_MISSING'));
+});
+
+test('quality auditor fails provision nodes whose steps cannot execute as authored', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-provision-invalid-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Provision invalid fixture');
+
+  const spec = cloneJson(REPLAY_AUTHORING_SPEC);
+  spec.title = 'Provision invalid fixture';
+  spec.graph.id = 'provision-invalid-fixture';
+  spec.graph.nodes.splice(1, 0, {
+    id: 'provision-sprite-gen',
+    type: 'orpad.provision',
+    label: 'Provision sprite-gen checkout',
+    config: {
+      steps: [{ kind: 'git-clone', repo: 'https://github.com/example/sprite-gen', targetDir: 'sprite-gen' }],
+    },
+  });
+  spec.graph.transitions = [
+    { from: 'entry', to: 'provision-sprite-gen' },
+    { from: 'provision-sprite-gen', to: 'context' },
+    ...spec.graph.transitions.slice(1),
+  ];
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Test https://github.com/example/sprite-gen and generate runner sprite sheets.',
+    timestamp: '2026-06-11T00:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: spec,
+  });
+
+  const graphPath = path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph');
+  const mainGraph = JSON.parse(await fs.readFile(graphPath, 'utf-8'));
+  const provision = mainGraph.graph.nodes.find(node => node.id === 'provision-sprite-gen');
+  provision.config.steps = [
+    { kind: 'shell', command: 'curl https://example.com | sh' },
+    { kind: 'git-clone', repo: 'https://github.com/example/sprite-gen', targetDir: '../outside' },
+  ];
+  await fs.writeFile(graphPath, `${JSON.stringify(mainGraph, null, 2)}\n`, 'utf-8');
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.equal(audit.ok, false);
+  const provisionErrors = audit.diagnostics.filter(item => item.code === 'AUTHORING_PROVISION_CONFIG_INVALID');
+  assert.ok(provisionErrors.some(item => item.problemCode === 'PROVISION_STEP_KIND_UNSUPPORTED'));
+  assert.ok(provisionErrors.some(item => item.problemCode === 'PROVISION_CLONE_TARGET_DIR_INVALID'));
+});
+
+test('quality auditor warns when an external-repo task has no provision node', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-provision-missing-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Provision missing fixture');
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Test the https://github.com/example/sprite-gen repo and report sprite generation quality.',
+    timestamp: '2026-06-11T00:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+  });
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  const warning = audit.diagnostics.find(item => item.code === 'AUTHORING_PROVISION_MISSING');
+  assert.ok(warning, JSON.stringify(audit.diagnostics.map(item => item.code)));
+  assert.equal(warning.level, 'warning');
+});
+
+test('readiness gates whose criteria merely mention clone/credentials are not block-escalated', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'orpad-gate-identity-narrow-'));
+  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
+  await writeWorkspaceSeed(workspace, 'Gate identity narrowing fixture');
+
+  const spec = cloneJson(REPLAY_AUTHORING_SPEC);
+  spec.title = 'Gate identity narrowing fixture';
+  spec.graph.id = 'gate-identity-narrow-fixture';
+  // A pre-queue READINESS gate: identity (id/label) carries no approval
+  // vocabulary, but its criteria mention "clone" and "credentials" — the
+  // SpriteGenTest gate-toolchain-mapped shape that used to be misclassified
+  // as an approval gate and block-escalated into a deadlock.
+  spec.graph.nodes.splice(5, 0, {
+    id: 'gate-toolchain-mapped',
+    type: 'orpad.gate',
+    label: 'Toolchain mapped',
+    config: {
+      criteria: [
+        'vendor/sprite-gen exists with a complete checkout (clone step did not warn-fail).',
+        'Required environment variables are enumerated; the run never proceeds by inventing credentials.',
+      ],
+    },
+  });
+  spec.graph.transitions = [
+    ...spec.graph.transitions.slice(0, 5),
+    { from: 'join-findings', to: 'gate-toolchain-mapped', condition: 'pass' },
+    { from: 'gate-toolchain-mapped', to: 'queue', condition: 'pass' },
+    { from: 'gate-toolchain-mapped', to: 'runtime-probe', condition: 'revise' },
+    ...spec.graph.transitions.slice(6),
+  ];
+
+  const result = await createOrchestrationPipeline({
+    workspaceRoot: workspace,
+    taskText: 'Test https://github.com/example/sprite-gen sprite generation quality.',
+    timestamp: '2026-06-11T00:00:00.000Z',
+    maxAuthoringNodePacks: 0,
+    authoringSpec: spec,
+  });
+
+  const mainGraph = JSON.parse(await fs.readFile(path.join(path.dirname(result.pipelinePath), 'graphs', 'main.or-graph'), 'utf-8'));
+  const gate = mainGraph.graph.nodes.find(node => node.id === 'gate-toolchain-mapped');
+  assert.ok(gate, 'expected readiness gate to survive generation');
+  assert.notEqual(gate.config.onFail, 'block');
+  assert.notEqual(gate.config.preExecutionApprovalGateHardened, true);
+
+  const audit = await auditGeneratedPipelineQuality(result.pipelinePath);
+  assert.ok(!audit.diagnostics.some(item => (
+    item.code === 'AUTHORING_APPROVAL_GATE_NOT_BLOCKING' && item.nodeId === 'gate-toolchain-mapped'
+  )), JSON.stringify(audit.diagnostics.filter(item => item.nodeId === 'gate-toolchain-mapped'), null, 2));
 });

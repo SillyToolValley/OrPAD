@@ -29,6 +29,8 @@ const {
   runWorkerLoopOnce,
   registerArtifact,
   runSerialWorkerLoop,
+  summarizeQueueInventory,
+  summaryStatusFromInventory,
   transitionQueueItem,
   writeSetLockPath,
 } = require('../../src/main/orchestration-machine');
@@ -641,6 +643,97 @@ test('worker result closes a claimed item only after proof is accepted', async (
   assert.equal((await readActiveWriteSetLocks(run.runRoot)).length, 0);
   assert.equal((await readMachineEvents(run.runRoot)).filter(event => event.eventType === 'worker.result').length, 1);
   assert.deepEqual((await readJournal(run.runRoot)).map(entry => entry.action), ['ingest', 'triage', 'claim', 'close']);
+});
+
+test('done result whose substantive verification is all blocked closes as blocked, not done', async () => {
+  const run = await makeRun('run_20260610_done_blocked_evidence');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'blocked-evidence-item',
+    fingerprint: 'worker:blocked-evidence-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-blocked-evidence',
+    now: '2026-06-10T00:00:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+  // The worker self-reports done while its own evidence records that every
+  // substantive check was blocked (SpriteGenTest trace: "blocked, not passed"
+  // items used to close as done and the run summarized as done).
+  const result = workerResult(request, {
+    summary: 'Recorded blocker evidence: the quality test is blocked by a missing local checkout.',
+    verification: [
+      { command: 'candidate: git status --short', status: 'blocked', summary: 'fatal: not a git repository', source: 'worker-result' },
+      { command: 'candidate: sprite-gen smoke command', status: 'blocked', summary: 'no source tree is available', source: 'worker-result' },
+      { command: 'node-cli', status: 'done', phase: 'cli-process' },
+    ],
+  });
+  await registerWorkerResultArtifacts(run, result);
+
+  const applied = await applyWorkerResult(run.runRoot, {
+    runId: run.runId,
+    claimId: claimed.claim.claimId,
+    itemId,
+    request,
+    result,
+    now: '2026-06-10T00:00:30.000Z',
+  });
+
+  assert.equal(applied.toState, 'blocked');
+  const entry = await findQueueItem(run.runRoot, itemId);
+  assert.equal(entry.state, 'blocked');
+  const item = entry.item || entry;
+  assert.equal(item.evidenceBlocked, true);
+  const workerEvent = (await readMachineEvents(run.runRoot)).find(event => event.eventType === 'worker.result');
+  assert.equal(workerEvent.payload.toState, 'blocked');
+  assert.equal(workerEvent.payload.evidenceBlock.decisive, true);
+  assert.equal(workerEvent.payload.evidenceBlock.blockedCount, 2);
+  assert.equal(workerEvent.payload.evidenceBlock.passedCount, 0);
+  const inventory = await summarizeQueueInventory(run.runRoot);
+  assert.equal(inventory.blockedCount, 1);
+  assert.equal(summaryStatusFromInventory(inventory), 'partial');
+});
+
+test('done result with mixed passed and blocked verification stays done but is marked degraded', async () => {
+  const run = await makeRun('run_20260610_done_degraded_evidence');
+  const itemId = await queueProposal(run, proposal({
+    suggestedWorkItemId: 'degraded-evidence-item',
+    fingerprint: 'worker:degraded-evidence-item',
+  }));
+  const claimed = await claimNextQueuedItem(run.runRoot, {
+    runId: run.runId,
+    claimId: 'claim-degraded-evidence',
+    now: '2026-06-10T00:01:20.000Z',
+  });
+  const request = workerRequest(run, claimed.claim.claimId);
+  // Workers record not-applicable checks as blocked (the verification status
+  // vocabulary has no skipped value), so one passing check keeps the item done
+  // while the blocked entries are preserved as a degradation marker.
+  const result = workerResult(request, {
+    verification: [
+      { command: 'node --test tests/unit.test.mjs', status: 'passed', summary: 'unit suite green', source: 'worker-result' },
+      { command: 'screenshot inspection', status: 'blocked', summary: 'no UI surface changed; not applicable', source: 'worker-result' },
+    ],
+  });
+  await registerWorkerResultArtifacts(run, result);
+
+  const applied = await applyWorkerResult(run.runRoot, {
+    runId: run.runId,
+    claimId: claimed.claim.claimId,
+    itemId,
+    request,
+    result,
+    now: '2026-06-10T00:01:30.000Z',
+  });
+
+  assert.equal(applied.toState, 'done');
+  const entry = await findQueueItem(run.runRoot, itemId);
+  assert.equal(entry.state, 'done');
+  const item = entry.item || entry;
+  assert.equal(item.evidenceDegraded, true);
+  assert.equal(item.evidenceBlocked, undefined);
+  const workerEvent = (await readMachineEvents(run.runRoot)).find(event => event.eventType === 'worker.result');
+  assert.equal(workerEvent.payload.evidenceBlock.decisive, false);
 });
 
 test('worker blocked result is managed as queued retry instead of terminal blocked work', async () => {
@@ -1456,7 +1549,12 @@ test('serial worker loop processes queued items one at a time until queue-empty'
     fixtureResult: async ({ request, item }) => {
       const result = workerResult(request, {
         artifacts: [`artifacts/work-items/${request.adapterCallId}/proof.md`],
-        changedFiles: item.sourceOfTruthTargets,
+        // A worker may only change files in its write set (the editable `targetFiles`),
+        // never the broader `sourceOfTruthTargets` (which also lists read-only evidence
+        // files the worker may inspect but not edit). serial-work-b's evidence cites
+        // renderer.js while its target is validator.js, so reporting sourceOfTruthTargets
+        // as changed would (correctly) trip WORKER_RESULT_WRITE_SET_VIOLATION.
+        changedFiles: item.targetFiles,
       });
       await registerWorkerResultArtifacts(run, result);
       return result;

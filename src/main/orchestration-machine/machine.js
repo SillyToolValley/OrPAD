@@ -15,6 +15,7 @@ const {
 const { createAdapterRequest } = require('./adapters/proposal-adapter');
 const { summarizeApprovalsFromEvents } = require('./approvals');
 const { assertNoSymlinkInRunPath, registerArtifact, writeArtifactManifest } = require('./artifacts');
+const { executeProvisionSteps } = require('./provision-node');
 const { claimNextQueuedItem } = require('./dispatcher');
 const { createCommandGrant } = require('./command-grants');
 const { SCHEMA_VERSIONS, createContractValidator } = require('./contracts');
@@ -82,6 +83,7 @@ const SUPPORT_NODE_TYPES = new Set([
   'orpad.barrier',
   'orpad.artifactContract',
   'orpad.patchReview',
+  'orpad.provision',
   'orpad.exit',
   'orpad.graph',
   // Fork-Join Phase 1 (Deliverable 5): orpad.tree wrappers used to
@@ -273,6 +275,12 @@ const PIPELINE_ORCHESTRATION_FIELDS = Object.freeze([
   'supportNodePolicy',
 ]);
 
+function ownPositiveMs(object, key) {
+  if (!Object.prototype.hasOwnProperty.call(object || {}, key)) return 0;
+  const parsed = Number(object[key]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function applyAdapterOverridesToPipelineAdapter(adapter, overrides) {
   if (!overrides) return adapter;
   if (!overrides.pipelineDefault) return adapter;
@@ -303,6 +311,11 @@ function applyAdapterOverridesToPipelineAdapter(adapter, overrides) {
       if (adapter.command !== undefined) carried.command = adapter.command;
       if (adapter.commandPrefixArgs !== undefined) carried.commandPrefixArgs = adapter.commandPrefixArgs;
     }
+  }
+  const overrideTimeoutMs = ownPositiveMs(overrides.pipelineDefault, 'timeoutMs');
+  if (overrideTimeoutMs) {
+    carried.proposalTimeoutMs = overrideTimeoutMs;
+    carried.workerTimeoutMs = overrideTimeoutMs;
   }
   return {
     schemaVersion: 'orpad.machineAdapter.v2',
@@ -4726,18 +4739,6 @@ async function validateBarrierNode(runRoot, node, config = {}) {
   return result;
 }
 
-function acceptedWorkerProof(events) {
-  return events.find(event => (
-    event.eventType === 'worker.result'
-    && event.payload?.status === 'done'
-    && (
-      (event.artifactRefs || []).length > 0
-      || Boolean(event.payload?.patchArtifact)
-    )
-    && (event.payload?.verification || []).length > 0
-  )) || null;
-}
-
 function acceptedWorkerProofEvents(events) {
   return (events || []).filter(event => (
     event.eventType === 'worker.result'
@@ -5121,13 +5122,26 @@ function evaluateGateCriterion(criterion, input = {}) {
   const visualUxEvaluation = evaluateVisualUxGateCriterion(criterion, input);
   if (visualUxEvaluation) return visualUxEvaluation;
   if (normalized.includes('worker proof accepted') || normalized.includes('work result accepted')) {
-    const event = acceptedWorkerProof(input.events);
+    // This criterion used to pass on ANY accepted proof, run-wide: the first
+    // accepted item satisfied every later gate evaluation for the rest of the
+    // run, so per-item acceptance gates never re-checked anything
+    // (SpriteGenTest trace root-cause). It now requires every worker result so
+    // far to carry an accepted proof — one unproven item fails this gate and
+    // every later one instead of hiding behind an earlier success.
+    const results = (input.events || []).filter(event => event.eventType === 'worker.result');
+    const acceptedCount = acceptedWorkerProofEvents(input.events).length;
+    const unprovenCount = results.length - acceptedCount;
+    const latest = results[results.length - 1] || null;
     return {
       criterion,
       supported: true,
-      passed: Boolean(event),
-      reason: event ? 'worker-proof-accepted' : 'worker-proof-missing',
-      eventSequence: event?.sequence ?? null,
+      passed: results.length > 0 && unprovenCount === 0,
+      reason: !results.length
+        ? 'worker-proof-missing'
+        : (unprovenCount > 0 ? 'worker-proof-unproven' : 'worker-proof-accepted'),
+      eventSequence: latest?.sequence ?? null,
+      resultCount: results.length,
+      unprovenCount,
     };
   }
   if (normalized.includes('queue empty') || normalized.includes('active queue empty')) {
@@ -5225,10 +5239,25 @@ async function validateGateNode(runRoot, config = {}, options = {}) {
       .filter(entry => entry && entry.supported === false && entry.reason !== 'empty-criterion')
       .map(entry => entry.criterion);
     if (unsupportedCriteria.length) {
+      // Queue items carry the discovery phase's documentation (candidate
+      // titles/summaries/acceptance criteria) — without them a pre-worker
+      // gate is judged against events alone and discovery-documentation
+      // criteria can never pass.
+      let judgeQueueItems = [];
+      try {
+        judgeQueueItems = (await readQueueItems(runRoot)).map(entry => ({
+          itemId: entry.item?.id || '',
+          state: entry.state || '',
+          title: entry.item?.title || '',
+          summary: entry.item?.summary || entry.item?.description || '',
+          acceptanceCriteria: Array.isArray(entry.item?.acceptanceCriteria) ? entry.item.acceptanceCriteria : [],
+        }));
+      } catch {}
       const judged = await judgeUnsupportedGateCriteria({
         criteria: unsupportedCriteria,
         events,
         inventory,
+        queueItems: judgeQueueItems,
         taskText: options.taskText || '',
         judgeAdapter: options.gateJudgeAdapter,
       });
@@ -5347,6 +5376,15 @@ async function executeSupportNode(runRoot, node, options = {}) {
   const { runId, attempt = 1 } = options;
   if (node.nodeType === 'orpad.patchReview') {
     return executePatchReviewNode(runRoot, node, options);
+  }
+  if (node.nodeType === 'orpad.provision') {
+    return executeBlockingSupportNode(runRoot, node, options, () => executeProvisionSteps({
+      runRoot,
+      runId: options.runId,
+      nodePath: node.nodePath,
+      workspaceRoot: options.workspaceRoot,
+      config: node.config || {},
+    }));
   }
   if (node.nodeType === 'orpad.exit') {
     return executeExitNode(runRoot, node, options);
