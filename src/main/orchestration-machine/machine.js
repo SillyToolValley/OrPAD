@@ -5,6 +5,8 @@ const path = require('path');
 const {
   cliOverlayRoot,
   createCliAgentAdapter,
+  normalizeIsolationStrategy,
+  prepareCliWorktreeWorkspace,
 } = require('./adapters/cli-agent');
 const {
   getProviderPlugin,
@@ -1068,6 +1070,24 @@ function configuredWorkerConcurrency(config = {}, claimLimit = 1, env = process.
   const parsed = Number(configured);
   if (Number.isFinite(parsed) && parsed > 0) return Math.max(1, Math.min(max, Math.trunc(parsed)));
   return 1;
+}
+
+// Item 1 (opt-in git-worktree isolation). Resolves the worker isolation backend
+// from worker-node config / claimPolicy / adapter config, defaulting to the
+// overlay backend (today's behavior). `MACHINE_FORCE_OVERLAY_ISOLATION` pins it
+// to overlay regardless (a safety escape hatch mirroring
+// MACHINE_DISABLE_PARALLEL_WORKERS). Unset → 'overlay' → byte-for-byte unchanged.
+function configuredIsolationStrategy(config = {}, nodeConfig = {}, env = process.env) {
+  if (['1', 'true', 'yes'].includes(String(env.MACHINE_FORCE_OVERLAY_ISOLATION || '').trim().toLowerCase())) {
+    return 'overlay';
+  }
+  const claimPolicy = config.claimPolicy && typeof config.claimPolicy === 'object' ? config.claimPolicy : {};
+  const raw = nodeConfig.isolation
+    ?? nodeConfig.isolationStrategy
+    ?? claimPolicy.isolation
+    ?? config.isolation
+    ?? config.isolationStrategy;
+  return normalizeIsolationStrategy(raw);
 }
 
 function queueProtocolClaimPolicyFromPipeline(pipeline) {
@@ -6216,8 +6236,33 @@ async function executeMachineRunStep(options = {}) {
       idempotencyKey: `${adapterCallId}:attempt-1`,
     });
     adapterRequest.expectedChangedFiles = workerExpectedChangedFiles;
+    // Item 1: opt-in worker isolation backend. The dangerous-sandbox-bypass path
+    // keeps its own system-temp overlay invariant, so worktree never overrides it.
+    const workerIsolationStrategy = effectiveAllowDangerousSandboxBypass
+      ? 'overlay'
+      : configuredIsolationStrategy(machineConfig, workerNode?.config || {});
+    adapterRequest.isolationStrategy = workerIsolationStrategy;
     adapterRequest.overlayRootMode = effectiveOverlayRootMode;
     adapterRequest.overlayRoot = overlayRoot || '';
+    // git-worktree isolation: create the real worktree HERE (before the worker
+    // command spec is built) so the spec's cwd points at the checkout. The
+    // prepared workspace is stashed for the adapter to adopt. A non-git
+    // workspace degrades to the overlay backend below.
+    if (!adapterRequest.overlayRoot && workerIsolationStrategy === 'git-worktree') {
+      const preparedWorktree = await prepareCliWorktreeWorkspace({
+        runRoot,
+        request: adapterRequest,
+        workspaceRoot,
+      });
+      if (!preparedWorktree.fallback) {
+        adapterRequest.overlayRoot = preparedWorktree.overlayRoot;
+        adapterRequest.overlayRootMode = 'git-worktree';
+        adapterRequest.preparedWorkspace = preparedWorktree;
+      } else {
+        adapterRequest.isolationStrategy = 'overlay';
+        adapterRequest.isolationFallbackReason = preparedWorktree.reason || 'git-worktree-unavailable';
+      }
+    }
     if (!adapterRequest.overlayRoot) {
       if (adapterRequest.overlayRootMode === 'system-temp') {
         adapterRequest.overlayRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-cli-overlay-'));

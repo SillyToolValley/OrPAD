@@ -340,6 +340,62 @@ async function collectOverlayPatch(options = {}) {
   };
 }
 
+// Patch collection for the opt-in git-worktree isolation backend (Item 1).
+// The worktree is a full clean HEAD checkout, so the set of files the worker
+// actually touched is computed by git (`worktreeChangedPaths`) rather than by
+// walking the whole tree — this keeps the diff independent of any uncommitted
+// state in the canonical workspace (no false out-of-write-set violations from
+// pre-existing dirty files the worker never touched). For each changed path the
+// baseline `before` is read from the CANONICAL workspace (so the patch's
+// apply-base matches the eventual apply target) and `after` from the worktree.
+async function collectWorktreePatch(options = {}) {
+  const {
+    workspaceRoot,
+    worktreeRoot,
+    changedPaths = [],
+    allowedFiles = [],
+    now = new Date().toISOString(),
+  } = options;
+  if (!workspaceRoot) throw new Error('workspaceRoot is required.');
+  if (!worktreeRoot) throw new Error('worktreeRoot is required.');
+
+  const allowed = normalizeWriteSetPaths(allowedFiles);
+  const changes = [];
+  const violations = [];
+  const ignoredGeneratedFiles = [];
+  const normalizedChanged = [...new Set(
+    (Array.isArray(changedPaths) ? changedPaths : []).map(normalizeWriteSetPath).filter(Boolean),
+  )].sort();
+
+  for (const relPath of normalizedChanged) {
+    const allowedPath = isPathAllowedByWriteSet(relPath, allowed);
+    const before = await readWorkspaceFileSnapshotIfExists(workspaceRoot, relPath);
+    const after = await readWorkspaceFileSnapshotIfExists(worktreeRoot, relPath);
+    if (!allowedPath) {
+      const ignoredReason = after === null ? '' : ignoredOverlayGeneratedArtifactReason(relPath);
+      if (ignoredReason) {
+        ignoredGeneratedFiles.push({ path: relPath, reason: ignoredReason });
+        continue;
+      }
+      if ((before?.sha256 || '') !== (after?.sha256 || '')) {
+        violations.push({ path: relPath, reason: 'outside-write-set' });
+      }
+      continue;
+    }
+    if ((before?.sha256 || '') === (after?.sha256 || '')) continue;
+    changes.push(patchChangeFromSnapshots(relPath, before, after));
+  }
+
+  return {
+    schemaVersion: 'orpad.patchArtifact.v1',
+    createdAt: now,
+    allowedFiles: allowed,
+    changes: changes.sort((a, b) => a.path.localeCompare(b.path)),
+    violations: violations.sort((a, b) => a.path.localeCompare(b.path)),
+    ignoredGeneratedFiles: ignoredGeneratedFiles.sort((a, b) => a.path.localeCompare(b.path)),
+  };
+}
+
 function assertPatchWithinWriteSet(patch, allowedFiles = patch?.allowedFiles || []) {
   if (!patch || patch.schemaVersion !== 'orpad.patchArtifact.v1') {
     throw new Error('Invalid OrPAD patch artifact.');
@@ -490,6 +546,7 @@ module.exports = {
   assertNoSymlinkInWorkspacePath,
   assertPatchWithinWriteSet,
   collectOverlayPatch,
+  collectWorktreePatch,
   copyAllowedFilesToOverlay,
   fatalPatchWriteSetViolations,
   ignoredOverlayGeneratedArtifactReason,

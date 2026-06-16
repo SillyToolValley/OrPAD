@@ -9,10 +9,18 @@ const { assertCliProcessContainment } = require('./process-containment');
 const { redactCommandArgs, runMachineProcess } = require('./process-runner');
 const {
   collectOverlayPatch,
+  collectWorktreePatch,
   copyAllowedFilesToOverlay,
   fatalPatchWriteSetViolations,
   registerPatchArtifact,
 } = require('../patches');
+const {
+  addWorktree,
+  isGitRepository,
+  removeWorktree,
+  resolveGitToplevel,
+  worktreeChangedPaths,
+} = require('../git-isolation');
 
 const fsp = fs.promises;
 
@@ -119,7 +127,28 @@ function assertCliOverlayRootAllowed(options = {}) {
   } = options;
   if (!overlayRoot) throw unsafeOverlayRoot('', 'overlay root is required');
   const resolvedOverlayRoot = path.resolve(overlayRoot);
-  const mode = overlayRootMode === 'system-temp' ? 'system-temp' : 'run-root';
+  const mode = overlayRootMode === 'system-temp'
+    ? 'system-temp'
+    : (overlayRootMode === 'git-worktree' ? 'git-worktree' : 'run-root');
+
+  if (mode === 'git-worktree') {
+    // git-worktree isolation checks a real `git worktree add` checkout out into
+    // an isolated orpad-machine-worktree-*/wt temp directory, fully outside the
+    // canonical workspace so the worker gets a full-repo view without touching
+    // canonical. Same safety envelope as system-temp overlays.
+    const tempRoot = path.resolve(os.tmpdir());
+    if (
+      sameResolvedPath(resolvedOverlayRoot, tempRoot)
+      || !isInsideResolvedPath(tempRoot, resolvedOverlayRoot)
+      || !path.basename(path.dirname(resolvedOverlayRoot)).startsWith('orpad-machine-worktree-')
+    ) {
+      throw unsafeOverlayRoot(resolvedOverlayRoot, 'git-worktree isolation must use an isolated orpad-machine-worktree-* temp directory');
+    }
+    if (workspaceRoot && isInsideResolvedPath(workspaceRoot, resolvedOverlayRoot)) {
+      throw unsafeOverlayRoot(resolvedOverlayRoot, 'git-worktree isolation must stay outside the canonical workspace');
+    }
+    return resolvedOverlayRoot;
+  }
 
   if (mode === 'system-temp') {
     const tempRoot = path.resolve(os.tmpdir());
@@ -147,6 +176,61 @@ function assertCliOverlayRootAllowed(options = {}) {
   return resolvedOverlayRoot;
 }
 
+// Opt-in isolation backend selector. 'overlay' (default) is today's write-set
+// sliced overlay; 'git-worktree' gives the worker a full clean HEAD checkout
+// with real git context. Anything unrecognized resolves to 'overlay'.
+function normalizeIsolationStrategy(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (['git-worktree', 'worktree', 'git'].includes(normalized)) return 'git-worktree';
+  return 'overlay';
+}
+
+// Build a real git worktree as the worker workspace. Returns either a prepared
+// workspace descriptor (overlayRootMode: 'git-worktree') or { fallback:true,
+// reason } so the caller can degrade to the overlay backend without failing the
+// run. Only a git repo whose toplevel IS the canonical workspace root qualifies,
+// so worktree-relative paths stay identical to workspace-relative write sets.
+async function prepareCliWorktreeWorkspace(options = {}) {
+  const { runRoot = '', request, workspaceRoot } = options;
+  const resolvedWorkspace = path.resolve(workspaceRoot);
+  if (!(await isGitRepository(resolvedWorkspace, { runId: request.runId }))) {
+    return { fallback: true, reason: 'not-a-git-repo' };
+  }
+  const toplevel = await resolveGitToplevel(resolvedWorkspace, { runId: request.runId });
+  if (!toplevel || !sameResolvedPath(toplevel, resolvedWorkspace)) {
+    return { fallback: true, reason: 'workspace-not-git-toplevel' };
+  }
+  const worktreeParent = await fsp.mkdtemp(path.join(os.tmpdir(), 'orpad-machine-worktree-'));
+  const worktreeRoot = path.join(worktreeParent, 'wt');
+  const added = await addWorktree({
+    repoRoot: toplevel,
+    worktreePath: worktreeRoot,
+    ref: 'HEAD',
+    runId: request.runId,
+    adapterCallId: request.adapterCallId,
+  });
+  if (!added.ok) {
+    await fsp.rm(worktreeParent, { recursive: true, force: true }).catch(() => {});
+    return { fallback: true, reason: added.reason || 'worktree-add-failed', detail: added.stderr || '' };
+  }
+  const overlayRoot = assertCliOverlayRootAllowed({
+    overlayRoot: worktreeRoot,
+    overlayRootMode: 'git-worktree',
+    runRoot,
+    workspaceRoot: resolvedWorkspace,
+  });
+  return {
+    workspaceRoot: resolvedWorkspace,
+    overlayRoot,
+    overlayRootMode: 'git-worktree',
+    worktreeParent,
+    worktreeRepoRoot: toplevel,
+    readOnlyFiles: request.readOnlyFiles || [],
+    copied: [],
+    isolation: { strategy: 'git-worktree', backend: 'git-worktree' },
+  };
+}
+
 async function prepareCliOverlayWorkspace(options = {}) {
   const {
     runRoot = '',
@@ -155,6 +239,17 @@ async function prepareCliOverlayWorkspace(options = {}) {
   } = options;
   if (!request) throw new Error('adapter request is required.');
   if (!workspaceRoot) throw new Error('workspaceRoot is required.');
+  // Adopt a worktree the Machine already prepared (so the pre-built worker
+  // command spec's cwd matches the checkout); fall through otherwise.
+  const preparedWorkspace = options.preparedWorkspace || request.preparedWorkspace;
+  if (preparedWorkspace && !preparedWorkspace.fallback) return preparedWorkspace;
+  const isolationStrategy = normalizeIsolationStrategy(options.isolationStrategy || request.isolationStrategy);
+  let isolationFallbackReason = request.isolationFallbackReason || '';
+  if (isolationStrategy === 'git-worktree') {
+    const worktree = await prepareCliWorktreeWorkspace({ runRoot, request, workspaceRoot });
+    if (!worktree.fallback) return worktree;
+    isolationFallbackReason = worktree.reason || 'git-worktree-unavailable';
+  }
   const requestedOverlayMode = options.overlayRootMode || request.overlayRootMode || 'run-root';
   let overlayRootMode = requestedOverlayMode === 'system-temp' ? 'system-temp' : 'run-root';
   let overlayRoot = options.overlayRoot || request.overlayRoot || '';
@@ -189,6 +284,13 @@ async function prepareCliOverlayWorkspace(options = {}) {
     overlayRootMode,
     readOnlyFiles: request.readOnlyFiles || [],
     copied,
+    isolation: {
+      strategy: 'overlay',
+      backend: 'overlay',
+      ...(isolationFallbackReason
+        ? { requestedStrategy: 'git-worktree', fallbackReason: isolationFallbackReason }
+        : {}),
+    },
   };
 }
 
@@ -642,7 +744,9 @@ function createCliAgentAdapter(options = {}) {
         overlayRoot: options.overlayRoot,
         overlayRootMode: options.overlayRootMode,
       });
+      const isWorktreeBackend = overlay.overlayRootMode === 'git-worktree';
       const cleanupSystemOverlay = overlay.overlayRootMode === 'system-temp' && options.keepOverlay !== true;
+      const cleanupWorktree = isWorktreeBackend && options.keepOverlay !== true;
       try {
         const commandSpec = {
           ...(options.commandSpec || request.commandSpec || {}),
@@ -703,12 +807,29 @@ function createCliAgentAdapter(options = {}) {
           processResult = failedProcessResult(commandSpec, err);
         }
         const outputLastMessage = await readCliOutputLastMessage(commandSpec, overlay.overlayRoot);
-        const patch = await collectOverlayPatch({
-          workspaceRoot: overlay.workspaceRoot,
-          overlayRoot: overlay.overlayRoot,
-          allowedFiles: request.allowedFiles || [],
-          now: options.now,
-        });
+        let worktreeChangedPathsError = '';
+        let patch;
+        if (isWorktreeBackend) {
+          const changed = await worktreeChangedPaths(overlay.overlayRoot, {
+            runId,
+            adapterCallId: request.adapterCallId,
+          });
+          if (!changed.ok) worktreeChangedPathsError = changed.reason || 'git-change-detection-failed';
+          patch = await collectWorktreePatch({
+            workspaceRoot: overlay.workspaceRoot,
+            worktreeRoot: overlay.overlayRoot,
+            changedPaths: changed.ok ? changed.paths : [],
+            allowedFiles: request.allowedFiles || [],
+            now: options.now,
+          });
+        } else {
+          patch = await collectOverlayPatch({
+            workspaceRoot: overlay.workspaceRoot,
+            overlayRoot: overlay.overlayRoot,
+            allowedFiles: request.allowedFiles || [],
+            now: options.now,
+          });
+        }
 
         const artifacts = [];
         const transcriptArtifact = await registerJsonArtifact(runRoot, {
@@ -725,7 +846,9 @@ function createCliAgentAdapter(options = {}) {
             },
             overlay: {
               ...overlay,
-              cleanupPlanned: cleanupSystemOverlay,
+              cleanupPlanned: cleanupSystemOverlay || cleanupWorktree,
+              isolationStrategy: overlay.isolation?.strategy || 'overlay',
+              ...(worktreeChangedPathsError ? { worktreeChangedPathsError } : {}),
               canonicalNodeModulesAvailable: Boolean(processExtraEnv.NODE_PATH),
               playwrightBrowsersPathAvailable: Boolean(
                 processExtraEnv.PLAYWRIGHT_BROWSERS_PATH,
@@ -863,7 +986,17 @@ function createCliAgentAdapter(options = {}) {
           ],
         };
       } finally {
-        if (cleanupSystemOverlay) {
+        if (cleanupWorktree) {
+          await removeWorktree({
+            repoRoot: overlay.worktreeRepoRoot,
+            worktreePath: overlay.overlayRoot,
+            runId,
+            adapterCallId: request.adapterCallId,
+          }).catch(() => {});
+          if (overlay.worktreeParent) {
+            await fsp.rm(overlay.worktreeParent, { recursive: true, force: true }).catch(() => {});
+          }
+        } else if (cleanupSystemOverlay) {
           await fsp.rm(overlay.overlayRoot, { recursive: true, force: true }).catch(() => {});
         }
       }
@@ -883,7 +1016,9 @@ module.exports = {
   canonicalDependencyEnv,
   missingExpectedChangedFiles,
   normalizeExpectedChangedFiles,
+  normalizeIsolationStrategy,
   prepareCliOverlayWorkspace,
+  prepareCliWorktreeWorkspace,
   processLooksApprovalRequired,
   registerJsonArtifact,
   resultStatusForProcess,
