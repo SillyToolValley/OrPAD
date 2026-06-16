@@ -46,6 +46,7 @@ const { normalizeRunLlmApprovalMode, readRunState } = require('./run-store');
 const { readRunControlToken } = require('./run-control');
 const { recordNodeLifecycleEvent } = require('./node-lifecycle');
 const { applyPatchArtifact, loadRunPatchArtifact } = require('./patches');
+const { captureWorkspaceCheckpoint, restoreWorkspaceCheckpoint } = require('./git-isolation');
 const { PATCH_REVIEW_REASONS, shouldRequestPatchReview } = require('./patch-review-classifier');
 const {
   workerResultIsPatchReviewEligible,
@@ -3541,8 +3542,13 @@ async function appendPatchApplyFailureEvent(runRoot, options = {}) {
   }).catch(() => null);
 }
 
+function rollbackOnFailureEnabled(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[_\s]+/g, '-');
+  return value === true || normalized === 'git-checkpoint' || normalized === 'git-revert' || normalized === 'true';
+}
+
 async function applyRoutinePatchReviews(runRoot, options = {}) {
-  const { runId, workspaceRoot, reviews = [] } = options;
+  const { runId, workspaceRoot, reviews = [], rollbackOnFailure = '' } = options;
   if (!workspaceRoot || !reviews.length) {
     return { applied: [], conflicts: [], requested: [] };
   }
@@ -3555,6 +3561,28 @@ async function applyRoutinePatchReviews(runRoot, options = {}) {
     artifactRefs: reviews.map(review => review.patchArtifact),
     payload: { approvedPatchArtifacts: reviews.map(review => review.patchArtifact) },
   }).catch(() => null);
+
+  // Item 3 (opt-in rollback-as-git-revert). Capture a pre-batch checkpoint of
+  // every path the batch may touch so a mid-batch apply failure can be rolled
+  // back atomically. Only activates in a git repo; otherwise it degrades to
+  // today's non-atomic behavior with a recorded reason.
+  let checkpoint = null;
+  if (rollbackOnFailureEnabled(rollbackOnFailure)) {
+    const checkpointPaths = [...new Set(reviews.flatMap(review => (
+      Array.isArray(review.changedFiles) ? review.changedFiles : []
+    )).filter(Boolean))];
+    checkpoint = await captureWorkspaceCheckpoint({ workspaceRoot, paths: checkpointPaths, runId });
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      eventType: checkpoint.ok ? 'patch.checkpoint_captured' : 'patch.rollback_unavailable',
+      reason: 'machine.patch-review.rollback-checkpoint',
+      payload: checkpoint.ok
+        ? { head: checkpoint.head, paths: checkpoint.files.map(file => file.path), strategy: 'git-checkpoint' }
+        : { reason: checkpoint.reason, strategy: 'git-checkpoint' },
+    }).catch(() => null);
+  }
+  const useAtomicRollback = Boolean(checkpoint?.ok);
 
   const applied = [];
   const conflicts = [];
@@ -3647,6 +3675,48 @@ async function applyRoutinePatchReviews(runRoot, options = {}) {
     }
   }
 
+  // Atomic batch: if any apply failed after at least one patch was applied,
+  // restore the checkpoint so the whole batch reverts to its pre-apply state,
+  // and emit a compensating conflict per applied patch (last-event-wins flips
+  // its review status from applied to conflict) plus a patch.rolled_back summary.
+  let rolledBack = [];
+  let rollbackHead = '';
+  if (useAtomicRollback && conflicts.length > 0 && applied.length > 0) {
+    const restore = await restoreWorkspaceCheckpoint({ workspaceRoot, checkpoint });
+    rollbackHead = checkpoint.head || '';
+    for (const entry of applied) {
+      await appendMachineEvent(runRoot, {
+        runId,
+        actor: 'machine',
+        eventType: 'patch.apply_conflict',
+        reason: 'machine.patch-review.atomic-rollback',
+        artifactRefs: [entry.patchArtifact],
+        payload: {
+          patchArtifact: entry.patchArtifact,
+          code: 'MACHINE_PATCH_ATOMIC_ROLLBACK',
+          message: 'Patch was reverted because another patch in the same atomic batch failed.',
+          rolledBack: true,
+        },
+      }).catch(() => null);
+    }
+    await appendMachineEvent(runRoot, {
+      runId,
+      actor: 'machine',
+      eventType: 'patch.rolled_back',
+      reason: 'machine.patch-review.atomic-rollback',
+      artifactRefs: applied.map(entry => entry.patchArtifact),
+      payload: {
+        head: rollbackHead,
+        revertedPatchArtifacts: applied.map(entry => entry.patchArtifact),
+        failedPatchArtifacts: conflicts.map(entry => entry.patchArtifact),
+        restoredPaths: restore.ok ? restore.restored : [],
+        restoreOk: restore.ok === true,
+        strategy: 'git-checkpoint',
+      },
+    }).catch(() => null);
+    rolledBack = applied.splice(0, applied.length);
+  }
+
   await appendMachineEvent(runRoot, {
     runId,
     actor: 'machine',
@@ -3656,11 +3726,12 @@ async function applyRoutinePatchReviews(runRoot, options = {}) {
     payload: {
       appliedCount: applied.length,
       conflictCount: conflicts.length + requested.length,
+      rolledBackCount: rolledBack.length,
       startedEventSequence: startedEvent?.sequence ?? null,
     },
   }).catch(() => null);
 
-  return { applied, conflicts, requested };
+  return { applied, conflicts, requested, rolledBack, rollbackHead };
 }
 
 async function executePatchReviewNode(runRoot, node, options = {}) {
@@ -3673,6 +3744,7 @@ async function executePatchReviewNode(runRoot, node, options = {}) {
         runId: options.runId,
         workspaceRoot: options.workspaceRoot,
         reviews: review.autoApplyPending,
+        rollbackOnFailure: node.config?.rollbackOnFailure || '',
       });
       if (autoApply.requested.length) {
         await appendPatchReviewRequiredEvents(runRoot, options.runId, autoApply.requested);
@@ -7474,6 +7546,7 @@ async function executeMachineRunStep(options = {}) {
             runId,
             workspaceRoot,
             reviews: review.autoApplyPending,
+            rollbackOnFailure: patchReviewNode?.config?.rollbackOnFailure || '',
           })
           : { applied: [], conflicts: [], requested: [] };
         if (autoApply.requested.length) {
@@ -7700,6 +7773,7 @@ module.exports = {
   __test_buildReadySetMaps: buildReadySetMaps,
   __test_auditDiscoveryQueueProvenance: auditDiscoveryQueueProvenance,
   __test_auditRequiredCompletionGates: auditRequiredCompletionGates,
+  __test_applyRoutinePatchReviews: applyRoutinePatchReviews,
   __test_configuredWorkerConcurrency: configuredWorkerConcurrency,
   __test_configuredWorkerClaimLimit: configuredWorkerClaimLimit,
   __test_machineConfigWithQueueProtocolClaimPolicy: machineConfigWithQueueProtocolClaimPolicy,
