@@ -1,0 +1,24 @@
+{
+  "_note": "Phase-1 MANUAL capability map. The core delegates anything ON this map to the capable coding agent (NO node). Nodes/guidance are created ONLY for off-map cross-cutting concerns. Grown/curated over time; not auto-ingested from spec sheets in phase 1.",
+  "agentsCovered": ["claude-code", "codex"],
+  "nativelySupported": [
+    "multi-file read / write / edit",
+    "run shell commands, build, run tests",
+    "code search (grep/glob) and navigation",
+    "git operations (status/diff/commit within sandbox)",
+    "iterative inner loop: try -> observe output -> fix",
+    "task planning / todo tracking",
+    "sub-agents / parallel internal tasks",
+    "tool use and MCP servers",
+    "web search / fetch (claude)"
+  ],
+  "offMapCrossCuttingConcerns_needNodeOrGuidance": [
+    "write-set isolation enforcement (overlay + patchArtifact + out-of-set violations)",
+    "parallel orchestration across genuinely INDEPENDENT work units",
+    "vendor routing / multi-vendor fallback and comparison",
+    "human approval gates (HITL) at risk boundaries",
+    "audit + per-run cost capture across vendors (normalized)",
+    "cross-run repeatability (a versioned, re-runnable pipeline)",
+    "convergence / motion-vs-progress stop signal"
+  ]
+}
