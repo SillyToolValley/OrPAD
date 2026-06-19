@@ -114,14 +114,49 @@ function appendObserverTrace(runRoot, record) {
   fs.appendFileSync(path.join(runRoot, 'observer.jsonl'), JSON.stringify(record) + '\n', 'utf8');
 }
 
+// --- Durable guidance catalog (the part of OrPAD the ralphloop grows) ----------------
+// Standing, generalizable orchestration guidance PROMOTED from observed gaps
+// (guidance-catalog.json). Injected as a hard-shell governance preamble into the
+// soft-core goal of every governed delegation, so a lesson learned on one workload
+// carries forward to all future ones. Missing/invalid catalog => no standing guidance.
+const DEFAULT_GUIDANCE_CATALOG_PATH = path.join(__dirname, 'guidance-catalog.json');
+
+function loadGuidanceCatalog(catalogPath = DEFAULT_GUIDANCE_CATALOG_PATH) {
+  try {
+    const doc = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    const list = Array.isArray(doc) ? doc : (Array.isArray(doc.guidance) ? doc.guidance : []);
+    return list
+      .map(g => (typeof g === 'string' ? { id: null, guidance: g } : g))
+      .filter(g => g && typeof g.guidance === 'string' && g.guidance.trim());
+  } catch (_) {
+    return [];
+  }
+}
+
+// Prepend the standing guidance as a numbered preamble; return the goal unchanged when empty.
+function composeGoalWithGuidance(goal, catalog) {
+  const list = Array.isArray(catalog) ? catalog.filter(g => g && typeof g.guidance === 'string' && g.guidance.trim()) : [];
+  if (!list.length) return goal;
+  const lines = list.map((g, i) => `${i + 1}. ${g.guidance}`).join('\n');
+  return [
+    'Standing guidance (learned from prior OrPAD runs; follow unless the task below explicitly overrides):',
+    lines,
+    '',
+    '--- Task ---',
+    goal,
+  ].join('\n');
+}
+
 // Zero-node governed delegation run.
 // opts: { workspaceRoot, overlayRoot, runRoot?, allowedFiles, readOnlyFiles?, goal,
-//         allowedTools?, agent?, timeoutMs? }
+//         allowedTools?, agent?, timeoutMs?, injectGuidance?=true, guidanceCatalog?, guidanceCatalogPath? }
+// The standing guidance catalog is injected into the goal unless injectGuidance===false.
 async function runGovernedDelegation(opts) {
   const {
     workspaceRoot, overlayRoot, runRoot,
     allowedFiles = [], readOnlyFiles = [],
     goal, allowedTools, agent, timeoutMs = 0,
+    injectGuidance = true, guidanceCatalog: guidanceCatalogOpt, guidanceCatalogPath,
   } = opts;
   if (!workspaceRoot) throw new Error('workspaceRoot is required');
   if (!overlayRoot) throw new Error('overlayRoot is required');
@@ -138,9 +173,19 @@ async function runGovernedDelegation(opts) {
   const seeded = await copyAllowedFilesToOverlay({ workspaceRoot, overlayRoot, allowedFiles, readOnlyFiles });
   appendObserverTrace(runDir, { event: 'overlay_seeded', at: nowIso(), seeded, allowedFiles, readOnlyFiles, timeoutMs });
 
+  // 2.5 inject OrPAD's standing guidance catalog (the grown soft-core guidance) into the goal.
+  const catalog = injectGuidance
+    ? (Array.isArray(guidanceCatalogOpt) ? guidanceCatalogOpt : loadGuidanceCatalog(guidanceCatalogPath))
+    : [];
+  const effectiveGoal = composeGoalWithGuidance(goal, catalog);
+  appendObserverTrace(runDir, {
+    event: 'guidance_injected', at: nowIso(),
+    injected: catalog.map(g => g.id || (g.guidance || '').slice(0, 40)),
+  });
+
   // 3. delegate the whole chunk to the agent (its own inner loop), inside the overlay,
   //    under the motion stop-signal (timeoutMs cap).
-  const agentRun = await delegateToAgent({ overlayRoot, goal, allowedTools, agent, timeoutMs });
+  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools, agent, timeoutMs });
   appendObserverTrace(runDir, {
     event: 'agent_run', at: nowIso(),
     exitCode: agentRun.exitCode, durationMs: agentRun.durationMs,
@@ -186,7 +231,10 @@ module.exports = {
   delegateToAgent,
   killTree,
   runGovernedDelegation,
-  // v0: guidance/soft-node catalog is intentionally EMPTY; grown by the ralphloop.
-  guidanceCatalog: [],
+  loadGuidanceCatalog,
+  composeGoalWithGuidance,
+  // The soft-node guidance catalog is no longer empty: it is grown from observed gaps and
+  // promoted into guidance-catalog.json, then injected into every governed delegation.
+  guidanceCatalog: loadGuidanceCatalog(),
   capabilityMapNote: 'phase1: capability map is a manual list (capability-map.json); nodes only for off-map cross-cutting concerns.',
 };

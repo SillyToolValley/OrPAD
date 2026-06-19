@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "_note": "Durable OrPAD orchestration-core guidance catalog. Per the right-sizing spec it starts EMPTY and grows ONLY from observed gaps: the ralphloop proposes a candidate guidance, and a line is PROMOTED here only after it earns progress under the metric gate (human checkpoint at convergence). The core injects every entry here as STANDING guidance (hard-shell governance) into the soft-core goal of every governed delegation, so a lesson learned on one workload improves OrPAD on all future ones. Each entry records where it was earned so it stays auditable and reversible.",
+  "guidance": [
+    {
+      "id": "regression-guard",
+      "guidance": "Before you finish, verify your output still preserves every feature and requirement that the reference (or your prior best output) already had correct. If a change removes or degrades something that was previously right, reject that change and keep the prior best — never trade one fixed feature for a newly broken one.",
+      "earnedFrom": "pixel-art ralphloop whack-a-mole: each cycle fixed one feature but regressed another (v3 overall regression, v6 erased the ahoge/top-hair, v7b thinned and broke the arms).",
+      "promotedAt": "2026-06-19T00:00:00.000Z"
+    },
+    {
+      "id": "always-ship-current-best",
+      "guidance": "Keep a complete, current-best deliverable written to its final output path at all times and improve it in place. Do not accumulate throwaway debug or experiment artifacts; if you must probe, delete the probe before finishing. Be decisive — ship the best version you have instead of spinning on diagnostics.",
+      "earnedFrom": "pixel-art cycle 2 rabbit-hole: ~18 debug/experiment images and no converged output, until an always-ship-first + no-debug-churn constraint stopped the motion.",
+      "promotedAt": "2026-06-19T00:00:00.000Z"
+    },
+    {
+      "id": "score-against-ground-truth",
+      "guidance": "When a reference, ground truth, or scoring function exists, evaluate your output against it on every iteration and only accept a change that holds or raises the score. Make the comparison explicit rather than judging by eye.",
+      "earnedFrom": "CSV-parser ralphloop: scoring each cycle against the Python csv module took the parser 11/12 -> 12/12 and let the metric gate keep only the guidance that earned the point.",
+      "promotedAt": "2026-06-19T00:00:00.000Z"
+    }
+  ]
+}
