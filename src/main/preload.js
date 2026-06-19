@@ -113,30 +113,6 @@ contextBridge.exposeInMainWorld('orpad', {
     readRunRecord: (workspacePath, runDir) => ipcRenderer.invoke('pipeline-read-run-record', workspacePath, runDir),
     auditRunEvidence: (workspacePath, pipelinePath) => ipcRenderer.invoke('pipeline-audit-run-evidence', workspacePath, pipelinePath),
   },
-  orchestration: {
-    authorHarness: (request) => ipcRenderer.invoke('orchestration-author-harness', request),
-    provisionHarness: (request) => ipcRenderer.invoke('orchestration-provision-harness', request),
-    generatePipeline: (request) => ipcRenderer.invoke('orchestration-generate-pipeline', request),
-    cancelGeneratePipeline: (requestId) => ipcRenderer.invoke('orchestration-cancel-generate-pipeline', requestId),
-    listNodePacks: (request = {}) => ipcRenderer.invoke('orchestration-list-node-packs', request),
-    listNodePackRegistry: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-registry-list', request),
-    searchNodePackRegistry: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-registry-search', request),
-    installNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-install', request),
-    updateNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-update', request),
-    enableNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-enable', request),
-    disableNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-disable', request),
-    removeNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-remove', request),
-    rollbackNodePack: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-rollback', request),
-    exportNodePackList: () => ipcRenderer.invoke('orchestration-node-pack-export-list'),
-    readNodePackWorkspaceLock: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-workspace-lock-read', request),
-    writeNodePackWorkspaceLock: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-workspace-lock-write', request),
-    upsertNodePackWorkspaceLock: (request = {}) => ipcRenderer.invoke('orchestration-node-pack-workspace-lock-upsert', request),
-    onGenerateEvent: (cb) => {
-      const listener = (_event, payload) => cb(payload);
-      ipcRenderer.on('orchestration-generate-pipeline-event', listener);
-      return () => ipcRenderer.removeListener('orchestration-generate-pipeline-event', listener);
-    },
-  },
   orchestrationWindow: {
     open: (request = {}) => ipcRenderer.invoke('orchestration-window-open', request),
     focus: (request = {}) => ipcRenderer.invoke('orchestration-window-focus', request),
@@ -152,43 +128,6 @@ contextBridge.exposeInMainWorld('orpad', {
       const listener = (_event, payload) => cb(payload);
       ipcRenderer.on('orpad-core-trace', listener);
       return () => ipcRenderer.removeListener('orpad-core-trace', listener);
-    },
-  },
-  machine: {
-    status: () => ipcRenderer.invoke('machine-status'),
-    enableSession: () => ipcRenderer.invoke('machine-enable-session'),
-    validatePipeline: (request) => ipcRenderer.invoke('machine-validate-pipeline', request),
-    createRun: (request) => ipcRenderer.invoke('machine-create-run', request),
-    getRun: (request) => ipcRenderer.invoke('machine-get-run', request),
-    listRuns: (request) => ipcRenderer.invoke('machine-list-runs', request),
-    executeRunStep: (request) => ipcRenderer.invoke('machine-execute-run-step', request),
-    resumeRun: (request) => ipcRenderer.invoke('machine-resume-run', request),
-    pauseRun: (request) => ipcRenderer.invoke('machine-pause-run', request),
-    cancelRun: (request) => ipcRenderer.invoke('machine-cancel-run', request),
-    cancelClaim: (request) => ipcRenderer.invoke('machine-cancel-claim', request),
-    decideApproval: (request) => ipcRenderer.invoke('machine-decide-approval', request),
-    exportLatestRun: (request) => ipcRenderer.invoke('machine-export-latest-run', request),
-    applyPatch: (request) => ipcRenderer.invoke('machine-apply-patch', request),
-    approvePatch: (request) => ipcRenderer.invoke('machine-approve-patch', request),
-    applyApprovedPatches: (request) => ipcRenderer.invoke('machine-apply-approved-patches', request),
-    reviewPatch: (request) => ipcRenderer.invoke('machine-review-patch', request),
-    listProviders: (request = {}) => ipcRenderer.invoke('machine-list-providers', request),
-    listModels: (request) => ipcRenderer.invoke('machine-list-models', request),
-    setProviderSelection: (request) => ipcRenderer.invoke('machine-set-provider-selection', request),
-    readBudgetLedger: (request) => ipcRenderer.invoke('machine-read-budget-ledger', request),
-    skipNode: (request) => ipcRenderer.invoke('machine-skip-node', request),
-    retryNode: (request) => ipcRenderer.invoke('machine-retry-node', request),
-    rejectItem: (request) => ipcRenderer.invoke('machine-reject-item', request),
-    reprioritizeItem: (request) => ipcRenderer.invoke('machine-reprioritize-item', request),
-    injectItem: (request) => ipcRenderer.invoke('machine-inject-item', request),
-    editItem: (request) => ipcRenderer.invoke('machine-edit-item', request),
-    // PUSH STREAM: subscribe to main->renderer per-step progress nudges during an
-    // autonomous drive. Returns an unsubscribe function. The payload is advisory
-    // (runId/stepIndex/sequence) — the renderer re-fetches the snapshot via getRun.
-    onRunProgress: (cb) => {
-      const listener = (_event, payload) => cb(payload);
-      ipcRenderer.on('machine-run-progress', listener);
-      return () => ipcRenderer.removeListener('machine-run-progress', listener);
     },
   },
   userSnippets: {
