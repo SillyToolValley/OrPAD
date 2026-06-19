@@ -1,0 +1,107 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+const require = createRequire(import.meta.url);
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const trace = require(path.join(repoRoot, 'src/main/orchestration-core/trace.cjs'));
+
+test('classifyTool maps native agent tools to work-node types', () => {
+  assert.equal(trace.classifyTool('Read'), 'inspect');
+  assert.equal(trace.classifyTool('Grep'), 'inspect');
+  assert.equal(trace.classifyTool('Write'), 'edit');
+  assert.equal(trace.classifyTool('Edit'), 'edit');
+  assert.equal(trace.classifyTool('Bash'), 'exec');
+  assert.equal(trace.classifyTool('WebSearch'), 'research');
+  assert.equal(trace.classifyTool('Task'), 'subagent');
+  assert.equal(trace.classifyTool('TodoWrite'), 'plan');
+  assert.equal(trace.classifyTool('mcp__fs__write_file'), 'tool');
+  assert.equal(trace.classifyTool('SomethingNew'), 'tool');
+});
+
+test('streamEventToTrace turns claude stream-json into node trace events', () => {
+  const toolUse = trace.streamEventToTrace({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: 'src/main/x.js' } }] },
+  });
+  assert.equal(toolUse.length, 1);
+  assert.equal(toolUse[0].ev, 'node');
+  assert.equal(toolUse[0].state, 'active');
+  assert.equal(toolUse[0].type, 'edit');
+  assert.equal(toolUse[0].toolId, 't1');
+  assert.match(toolUse[0].label, /x\.js/);
+
+  const result = trace.streamEventToTrace({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] } });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].ev, 'node');
+  assert.equal(result[0].state, 'done');
+  assert.equal(result[0].toolId, 't1');
+
+  const fin = trace.streamEventToTrace({ type: 'result', total_cost_usd: 0.5, num_turns: 9 });
+  assert.equal(fin[0].ev, 'run');
+  assert.equal(fin[0].state, 'done');
+  assert.equal(fin[0].costUsd, 0.5);
+});
+
+test('buildEmergentGraph grows nodes in execution order and links them', () => {
+  const events = [
+    { ev: 'phase', kind: 'recon', state: 'start' },
+    { ev: 'phase', kind: 'recon', state: 'done' },
+    { ev: 'node', state: 'active', toolId: 'a', type: 'inspect', label: 'Read a.js' },
+    { ev: 'node', state: 'done', toolId: 'a' },
+    { ev: 'node', state: 'active', toolId: 'b', type: 'edit', label: 'Edit a.js' },
+    { ev: 'node', state: 'done', toolId: 'b' },
+  ];
+  const g = trace.buildEmergentGraph(events);
+  assert.equal(g.nodes.length, 3, 'recon + inspect + edit');
+  assert.deepEqual(g.nodes.map(n => n.type), ['recon', 'inspect', 'edit']);
+  assert.equal(g.edges.length, 2, 'sequential edges between the three nodes');
+  assert.deepEqual(g.edges, [{ from: 'n0', to: 'n1' }, { from: 'n1', to: 'n2' }]);
+  assert.equal(g.nodes.every(n => n.state === 'done'), true);
+});
+
+test('the node fed by the still-filling buffer is in-progress (spinner)', () => {
+  // a tool_use with no matching tool_result yet => that node stays active.
+  const events = [
+    { ev: 'node', state: 'active', toolId: 'a', type: 'inspect', label: 'Read' },
+    { ev: 'node', state: 'done', toolId: 'a' },
+    { ev: 'node', state: 'active', toolId: 'b', type: 'exec', label: 'Bash: build' },
+    // no done for b yet -> b is in progress
+  ];
+  const g = trace.buildEmergentGraph(events);
+  assert.equal(g.activeId, 'n1', 'the exec node is the in-progress one');
+  const exec = g.nodes.find(n => n.id === 'n1');
+  assert.equal(exec.state, 'active');
+  assert.equal(trace.isInProgress(exec), true, 'spinner shows on the filling node');
+  assert.equal(g.done, false);
+});
+
+test('run-done closes any still-open nodes', () => {
+  const events = [
+    { ev: 'node', state: 'active', toolId: 'a', type: 'exec', label: 'Bash' },
+    { ev: 'run', state: 'done', costUsd: 1.2 },
+  ];
+  const g = trace.buildEmergentGraph(events);
+  assert.equal(g.done, true);
+  assert.equal(g.activeId, null);
+  assert.equal(g.nodes[0].state, 'done');
+});
+
+test('end-to-end: a raw stream replays into an emergent graph', () => {
+  const stream = [
+    { type: 'system', subtype: 'init' },
+    { type: 'assistant', message: { content: [{ type: 'thinking' }] } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: 'pixelart.py' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r1' }] } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'python pixelart.py' } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'b1' }] } },
+    { type: 'result', total_cost_usd: 0.3, num_turns: 4 },
+  ];
+  const traceEvents = stream.flatMap(o => trace.streamEventToTrace(o));
+  const g = trace.buildEmergentGraph(traceEvents);
+  assert.deepEqual(g.nodes.map(n => n.type), ['reason', 'inspect', 'exec']);
+  assert.equal(g.done, true);
+  assert.equal(g.nodes.every(n => n.state === 'done'), true);
+});
