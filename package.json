@@ -4,9 +4,6 @@
   "productName": "OrPAD",
   "description": "OrPAD (Orchestration Pipeline Authoring & Development) is a local-first multi-format workspace for Markdown, structured data, diagrams, AI actions, MCP tools, terminals, Git status, and web/PWA workflows.",
   "main": "src/main/main.js",
-  "bin": {
-    "orpad": "bin/orpad-cli.mjs"
-  },
   "scripts": {
     "start": "electron .",
     "build:renderer": "node scripts/build-renderer.js",
@@ -33,18 +30,11 @@
     "test:electron:soak": "npm run diagnostics:electron && playwright test --project=electron --workers=1 --repeat-each=2",
     "test:web": "npm run build:web:min && playwright test --project=web-chromium",
     "test:web:compat": "npm run build:web:min && playwright test --project=web-chromium --project=web-firefox --project=web-webkit",
-    "test:machine": "node --test tests/orchestration-machine/*.test.mjs",
-    "registry:validate": "node scripts/validate-node-pack-registry.mjs registry/packages.json",
-    "orpad:generate": "node bin/orpad-cli.mjs generate",
     "debug:electron": "node scripts/debug-electron-ui.mjs",
     "debug:electron:shot": "node scripts/debug-electron-ui.mjs --shot-only",
-    "smoke:packaged-runtime": "node scripts/smoke-packaged-runtime.mjs",
-    "smoke:machine": "node scripts/smoke-orpad-machine-run.mjs",
-    "smoke:machine-fat": "node scripts/smoke-orpad-machine-run-fat.mjs",
     "audit:orpad-node-schemas": "node scripts/audit-orpad-node-schemas.mjs",
     "audit:orpad-queue": "node scripts/audit-orpad-workqueue.mjs",
     "audit:orpad-run": "node scripts/audit-orpad-run.mjs",
-    "audit:orpad-machine-run": "node scripts/audit-orpad-machine-run.mjs",
     "lh": "npx --yes lighthouse http://localhost:4173 --preset=pwa --chrome-flags='--headless=new' --quiet --output=html --output-path=./lighthouse-report.html"
   },
   "author": "",

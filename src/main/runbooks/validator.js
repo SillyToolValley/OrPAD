@@ -4,9 +4,7 @@ const {
   WORK_ITEM_SCHEMA_VERSION,
   WORK_ITEM_STATES,
 } = require('./work-items');
-const {
-  validatePipelineNodePacks,
-} = require('../orchestration-machine/node-packs');
+// node-pack validation removed with the orchestration package (G2); node-packs are no longer a concept.
 
 const BUILT_IN_ORPAD_NODE_TYPES = new Set([
   'orpad.artifactContract',
@@ -1187,7 +1185,7 @@ function validatePipelineObject(pipeline, options, trustLevel, schemaVersion, di
   if (!pipeline.id) diagnostics.push(diagnostic('warning', 'PIPELINE_ID_MISSING', 'Pipeline should include an id field.'));
   if (!entryGraph) diagnostics.push(diagnostic('error', 'PIPELINE_ENTRY_GRAPH_MISSING', 'Pipeline must include an entryGraph file reference.'));
   validatePipelineQueueProtocol(pipeline, diagnostics);
-  const nodePackValidation = validatePipelineNodePacks(pipeline.nodePacks, options);
+  const nodePackValidation = { nodePacks: [], diagnostics: [], nodeTypeMap: {} };
   const nodePackById = new Map((nodePackValidation.nodePacks || [])
     .map(pack => [String(pack.id || pack.packId || ''), pack])
     .filter(([packId]) => packId));
