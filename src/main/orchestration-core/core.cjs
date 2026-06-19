@@ -269,7 +269,7 @@ async function runGroundingResearch(opts) {
   if (!opts || !opts.goal) throw new Error('goal is required');
   if (!opts.overlayRoot) throw new Error('overlayRoot is required');
   const groundingFile = opts.groundingFile || 'grounding.md';
-  const researchTools = opts.researchTools || ['Read', 'WebSearch', 'WebFetch', 'Bash'];
+  const researchTools = opts.researchTools || ['Read', 'Write', 'Edit', 'WebSearch', 'WebFetch', 'Bash'];
   const res = await runGovernedDelegation({
     ...opts,
     goal: composeResearchGoal(opts.goal, { groundingFile }),
