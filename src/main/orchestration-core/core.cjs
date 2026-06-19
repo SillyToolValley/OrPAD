@@ -20,6 +20,8 @@ const {
   collectOverlayPatch,
 } = require('../orchestration-machine/patches');
 
+const trace = require('./trace.cjs');
+
 function nowIso() { return new Date().toISOString(); }
 
 // Recon: cheap, read-only grounding of the workspace before delegating.
@@ -47,11 +49,13 @@ function killTree(child) {
 // Prompt goes via stdin (not argv) so multi-word goals are not mangled by the Windows shell.
 // timeoutMs > 0 enables the motion stop-signal: the agent + its whole tree are killed on cap.
 // Returns a Promise of the run result (stopped:true when the cap fired).
-function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0 }) {
+function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null }) {
   return new Promise((resolve) => {
+    const streamMode = !!traceFile;
     const args = [
       '-p',
-      '--output-format', 'json',
+      '--output-format', streamMode ? 'stream-json' : 'json',
+      ...(streamMode ? ['--verbose'] : []),
       '--no-session-persistence',
       '--permission-mode', 'default',
     ];
@@ -67,7 +71,33 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
     let err = '';
     let stopped = false;
     let stopReason = null;
-    child.stdout.on('data', d => { out += d.toString(); });
+    // stream-json: parse NDJSON lines into trace node events; capture the final result event.
+    let lineBuf = '';
+    let resultEvent = null;
+    const handleStreamLine = (line) => {
+      const s = String(line).trim();
+      if (!s) return;
+      let obj = null;
+      try { obj = JSON.parse(s); } catch (_) { return; }
+      if (obj && obj.type === 'result') resultEvent = obj;
+      try {
+        for (const ev of trace.streamEventToTrace(obj, nowIso())) {
+          fs.appendFileSync(traceFile, JSON.stringify(ev) + '\n', 'utf8');
+        }
+      } catch (_) { /* trace is best-effort */ }
+    };
+    child.stdout.on('data', d => {
+      const chunk = d.toString();
+      out += chunk;
+      if (streamMode) {
+        lineBuf += chunk;
+        let nl;
+        while ((nl = lineBuf.indexOf('\n')) >= 0) {
+          handleStreamLine(lineBuf.slice(0, nl));
+          lineBuf = lineBuf.slice(nl + 1);
+        }
+      }
+    });
     child.stderr.on('data', d => { err += d.toString(); });
     try { child.stdin.write(goal); child.stdin.end(); } catch (_) { /* ignore */ }
 
@@ -82,9 +112,10 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
 
     child.on('close', (code, signal) => {
       if (timer) clearTimeout(timer);
+      if (streamMode && lineBuf.trim()) handleStreamLine(lineBuf);
       const durationMs = Date.now() - t0;
-      let parsed = null;
-      try { parsed = JSON.parse(out || ''); } catch (_) { /* partial/non-json on stop */ }
+      let parsed = resultEvent;
+      if (!streamMode) { try { parsed = JSON.parse(out || ''); } catch (_) { parsed = null; } }
       resolve({
         exitCode: code,
         signal,
@@ -157,23 +188,34 @@ async function runGovernedDelegation(opts) {
     allowedFiles = [], readOnlyFiles = [],
     goal, allowedTools, agent, timeoutMs = 0,
     injectGuidance = true, guidanceCatalog: guidanceCatalogOpt, guidanceCatalogPath,
+    streamTrace = false, traceFile: traceFileOpt,
   } = opts;
   if (!workspaceRoot) throw new Error('workspaceRoot is required');
   if (!overlayRoot) throw new Error('overlayRoot is required');
   if (!goal) throw new Error('goal is required');
   const runDir = runRoot || path.join(path.resolve(overlayRoot), '..', 'run');
+  const traceFile = streamTrace ? (traceFileOpt || path.join(runDir, 'trace.jsonl')) : (traceFileOpt || null);
+  if (traceFile) { fs.mkdirSync(runDir, { recursive: true }); fs.writeFileSync(traceFile, '', 'utf8'); }
+  const phase = (kind, state) => {
+    if (traceFile) fs.appendFileSync(traceFile, JSON.stringify({ ev: 'phase', kind, state, at: nowIso() }) + '\n', 'utf8');
+  };
 
   // 1. recon (grounding)
+  phase('recon', 'start');
   const reconResult = recon(workspaceRoot);
   appendObserverTrace(runDir, { event: 'recon', at: nowIso(), recon: reconResult });
+  phase('recon', 'done');
 
   // 2. isolation moat: seed overlay with ONLY the write-set + read-only context
+  phase('overlay_seeded', 'start');
   fs.rmSync(overlayRoot, { recursive: true, force: true });
   fs.mkdirSync(overlayRoot, { recursive: true });
   const seeded = await copyAllowedFilesToOverlay({ workspaceRoot, overlayRoot, allowedFiles, readOnlyFiles });
   appendObserverTrace(runDir, { event: 'overlay_seeded', at: nowIso(), seeded, allowedFiles, readOnlyFiles, timeoutMs });
+  phase('overlay_seeded', 'done');
 
   // 2.5 inject OrPAD's standing guidance catalog (the grown soft-core guidance) into the goal.
+  phase('guidance_injected', 'start');
   const catalog = injectGuidance
     ? (Array.isArray(guidanceCatalogOpt) ? guidanceCatalogOpt : loadGuidanceCatalog(guidanceCatalogPath))
     : [];
@@ -182,10 +224,13 @@ async function runGovernedDelegation(opts) {
     event: 'guidance_injected', at: nowIso(),
     injected: catalog.map(g => g.id || (g.guidance || '').slice(0, 40)),
   });
+  phase('guidance_injected', 'done');
 
   // 3. delegate the whole chunk to the agent (its own inner loop), inside the overlay,
-  //    under the motion stop-signal (timeoutMs cap).
-  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools, agent, timeoutMs });
+  //    under the motion stop-signal (timeoutMs cap). When streaming, the agent's tool
+  //    use is classified into emergent-graph nodes written to traceFile live.
+  phase('agent_run', 'start');
+  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools, agent, timeoutMs, traceFile });
   appendObserverTrace(runDir, {
     event: 'agent_run', at: nowIso(),
     exitCode: agentRun.exitCode, durationMs: agentRun.durationMs,
@@ -194,9 +239,11 @@ async function runGovernedDelegation(opts) {
     costUsd: agentRun.costUsd, usage: agentRun.usage, numTurns: agentRun.numTurns,
     resultPreview: (agentRun.result || '').slice(0, 200),
   });
+  phase('agent_run', 'done');
 
   // 4. isolation enforcement moat: diff overlay->canonical => patchArtifact (changes + violations).
   //    Runs EVEN WHEN STOPPED so partial work is recovered, not lost.
+  phase('patch_collected', 'start');
   const patch = await collectOverlayPatch({ workspaceRoot, overlayRoot, allowedFiles });
   appendObserverTrace(runDir, {
     event: 'patch_collected', at: nowIso(),
@@ -205,6 +252,7 @@ async function runGovernedDelegation(opts) {
     changes: patch.changes.map(c => c.path),
     violations: patch.violations,
   });
+  phase('patch_collected', 'done');
 
   return {
     recon: reconResult,
