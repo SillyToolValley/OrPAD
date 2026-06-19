@@ -10715,3 +10715,160 @@ body.zen-mode #workspace {
     inset 0 1px 0 var(--orpad-soft-highlight),
     0 -10px 28px color-mix(in srgb, var(--graph-node-shadow) 80%, transparent);
 }
+
+/* ============================================================
+   orchestration-core live-trace Run view (emergent graph)
+   Reuses the .orch-graph-node visual primitives in a simple
+   top-to-bottom emergent flow (no pan/zoom canvas).
+   ============================================================ */
+.core-run-view {
+  display: flex;
+  flex-direction: column;
+  gap: calc(12px * var(--us));
+  padding: calc(18px * var(--us));
+  max-width: 720px;
+  margin: 0 auto;
+}
+.core-run-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(12px * var(--us));
+  flex-wrap: wrap;
+}
+.core-run-title {
+  margin: 0;
+  font-size: calc(15px * var(--us));
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.core-run-status {
+  font-size: calc(12px * var(--us));
+  color: var(--text-secondary, var(--text-tertiary));
+}
+.core-run-status[data-state="running"] { color: var(--accent-color); }
+.core-run-status[data-state="done"] { color: var(--success-color); }
+.core-run-status[data-state="error"] { color: var(--danger-color); }
+.core-run-form {
+  display: flex;
+  flex-direction: column;
+  gap: calc(8px * var(--us));
+  padding: calc(12px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+}
+.core-run-field {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4px * var(--us));
+  font-size: calc(12px * var(--us));
+  color: var(--text-secondary, var(--text-tertiary));
+}
+.core-run-field > span {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.core-run-field > span small {
+  font-weight: 400;
+  margin-left: calc(6px * var(--us));
+  color: var(--text-tertiary);
+}
+.core-run-field textarea,
+.core-run-field input {
+  font: inherit;
+  font-size: calc(12px * var(--us));
+  padding: calc(7px * var(--us)) calc(9px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  resize: vertical;
+}
+.core-run-field textarea:focus,
+.core-run-field input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent-color) 64%, var(--border-color));
+}
+.core-run-form-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: calc(12px * var(--us));
+}
+.core-run-field-inline {
+  flex-direction: column;
+  max-width: calc(120px * var(--us));
+}
+.core-run-field-inline input { width: 100%; }
+.core-run-btn {
+  font: inherit;
+  font-weight: 600;
+  padding: calc(8px * var(--us)) calc(20px * var(--us));
+  border: 1px solid color-mix(in srgb, var(--accent-color) 60%, var(--border-color));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent-color) 18%, transparent);
+  color: var(--accent-color);
+  cursor: pointer;
+}
+.core-run-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-color) 28%, transparent);
+}
+.core-run-btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.core-run-form-note {
+  margin: 0;
+  font-size: calc(10.5px * var(--us));
+  color: var(--text-tertiary);
+}
+.core-run-form-error {
+  margin: 0;
+  font-size: calc(11.5px * var(--us));
+  color: var(--danger-color);
+}
+.core-run-graph {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+/* Override the canvas-absolute positioning so nodes stack in the flow. */
+.core-run-node.orch-graph-node {
+  position: relative;
+  z-index: auto;
+  width: 100%;
+  cursor: default;
+  user-select: text;
+}
+.core-run-edge {
+  align-self: center;
+  width: 0;
+  height: calc(16px * var(--us));
+  border-left: 2px solid color-mix(in srgb, var(--accent-color) 42%, var(--border-color));
+}
+.core-run-node-status {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--us));
+  margin-top: calc(6px * var(--us));
+  font-size: calc(11px * var(--us));
+  color: var(--text-tertiary);
+}
+.core-run-node.runtime-running .core-run-node-status { color: var(--accent-color); }
+.core-run-node.runtime-completed .core-run-node-status { color: var(--success-color); }
+.core-run-spinner {
+  border-color: color-mix(in srgb, var(--accent-color) 28%, transparent);
+  border-top-color: var(--accent-color);
+}
+/* Emergent node-type accents (mirror the trace.cjs taxonomy). */
+.core-run-node.type-recon { border-top-color: var(--syntax-function, #7aa2f7); }
+.core-run-node.type-isolate { border-top-color: var(--syntax-keyword, #bb9af7); }
+.core-run-node.type-guidance { border-top-color: var(--syntax-meta, #e0af68); }
+.core-run-node.type-delegate { border-top-color: var(--accent-color); }
+.core-run-node.type-enforce { border-top-color: var(--success-color); }
+.core-run-node.type-inspect { border-top-color: var(--syntax-string, #9ece6a); }
+.core-run-node.type-edit { border-top-color: var(--syntax-number, #ff9e64); }
+.core-run-node.type-exec { border-top-color: var(--syntax-keyword, #bb9af7); }
+.core-run-node.type-research { border-top-color: var(--syntax-meta, #e0af68); }
+.core-run-node.type-reason { border-top-color: var(--text-tertiary); }

@@ -8,6 +8,7 @@ const { registerAiKeyHandlers } = require('./ai-keys');
 const { registerAiConversationHandlers } = require('./ai-conversations');
 const { registerMcpHandlers } = require('./mcp/ipc');
 const { registerRunbookHandlers } = require('./runbooks/ipc');
+const { registerCoreRunHandlers } = require('./orchestration-core/ipc.cjs');
 const { registerTerminalHandlers } = require('./terminal/ipc');
 const { createAuthorityManager, isInsidePath, normalizeForCompare } = require('./authority');
 
@@ -593,6 +594,7 @@ registerAiKeyHandlers({ ipcMain, app, safeStorage });
 registerAiConversationHandlers({ ipcMain, authority });
 registerMcpHandlers({ ipcMain, app, authority });
 registerRunbookHandlers({ ipcMain, app, authority });
+registerCoreRunHandlers({ ipcMain, app, authority });
 registerTerminalHandlers({ ipcMain, app, authority });
 
 ipcMain.handle('terminal-window-open', async (event, request = {}) => {

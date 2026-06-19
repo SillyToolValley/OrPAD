@@ -1,0 +1,18 @@
+{"ev":"phase","kind":"recon","state":"start","at":"2026-06-19T00:00:00.000Z"}
+{"ev":"phase","kind":"recon","state":"done","at":"2026-06-19T00:00:00.100Z"}
+{"ev":"phase","kind":"overlay_seeded","state":"start","at":"2026-06-19T00:00:00.200Z"}
+{"ev":"phase","kind":"overlay_seeded","state":"done","at":"2026-06-19T00:00:00.300Z"}
+{"ev":"phase","kind":"guidance_injected","state":"start","at":"2026-06-19T00:00:00.400Z"}
+{"ev":"phase","kind":"guidance_injected","state":"done","at":"2026-06-19T00:00:00.500Z"}
+{"ev":"phase","kind":"agent_run","state":"start","at":"2026-06-19T00:00:00.600Z"}
+{"ev":"node","state":"active","toolId":null,"type":"reason","transient":true,"label":"Reason","at":"2026-06-19T00:00:00.700Z"}
+{"ev":"node","state":"active","toolId":"tool-1","type":"edit","label":"Write: out.txt","at":"2026-06-19T00:00:00.800Z"}
+{"ev":"node","state":"done","toolId":"tool-1","at":"2026-06-19T00:00:01.000Z"}
+{"ev":"node","state":"active","toolId":"tool-2","type":"inspect","label":"Read: out.txt","at":"2026-06-19T00:00:01.100Z"}
+{"ev":"node","state":"done","toolId":"tool-2","at":"2026-06-19T00:00:01.300Z"}
+{"ev":"node","state":"active","toolId":"tool-3","type":"exec","label":"Bash: node out.txt","at":"2026-06-19T00:00:01.400Z"}
+{"ev":"node","state":"done","toolId":"tool-3","at":"2026-06-19T00:00:01.700Z"}
+{"ev":"run","state":"done","costUsd":0.14,"numTurns":4,"at":"2026-06-19T00:00:01.800Z"}
+{"ev":"phase","kind":"agent_run","state":"done","at":"2026-06-19T00:00:01.900Z"}
+{"ev":"phase","kind":"patch_collected","state":"start","at":"2026-06-19T00:00:02.000Z"}
+{"ev":"phase","kind":"patch_collected","state":"done","at":"2026-06-19T00:00:02.100Z"}

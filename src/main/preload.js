@@ -142,6 +142,18 @@ contextBridge.exposeInMainWorld('orpad', {
     focus: (request = {}) => ipcRenderer.invoke('orchestration-window-focus', request),
     status: (request = {}) => ipcRenderer.invoke('orchestration-window-status', request),
   },
+  // Right-sized governed-delegation core (orchestration-core). Streams an
+  // emergent-graph trace live on 'orpad-core-trace'; onCoreTrace returns an
+  // unsubscribe function (mirrors the machine/orchestration channel pattern).
+  core: {
+    startRun: (request = {}) => ipcRenderer.invoke('orpad-core-run-start', request),
+    replayTrace: (request = {}) => ipcRenderer.invoke('orpad-core-run-replay', request),
+    onCoreTrace: (cb) => {
+      const listener = (_event, payload) => cb(payload);
+      ipcRenderer.on('orpad-core-trace', listener);
+      return () => ipcRenderer.removeListener('orpad-core-trace', listener);
+    },
+  },
   machine: {
     status: () => ipcRenderer.invoke('machine-status'),
     enableSession: () => ipcRenderer.invoke('machine-enable-session'),

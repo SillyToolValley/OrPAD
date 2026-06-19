@@ -1,6 +1,7 @@
 import { initAnalytics, track, sizeBucket, stackSig } from './analytics.js';
 import { createAdapterPicker } from './orchestration/adapter-picker.js';
 import { createBudgetMeter } from './orchestration/budget-meter.js';
+import { createLiveTraceView } from './orchestration/live-trace-view.js';
 import {
   failedAdapterCallsFromRecord as sharedFailedAdapterCalls,
   gateBlockedNodesFromRecord as sharedGateBlockedNodes,
@@ -274,10 +275,29 @@ const orchestrationRunbarSlotEl = document.getElementById('orchestration-runbar-
 const contextReturnBarEl = document.getElementById('context-return-bar');
 const APP_SEARCH_PARAMS = new URLSearchParams(window.location.search || '');
 const IS_ORCHESTRATION_WINDOW = APP_SEARCH_PARAMS.get('mode') === 'orchestration';
+let coreRunView = null;
 if (IS_ORCHESTRATION_WINDOW) {
   document.body.classList.add('orchestration-window');
   btnOrchestrationEl?.classList.add('active');
   btnOrchestrationEl?.setAttribute('aria-pressed', 'true');
+  setupCoreRunView();
+}
+
+// Live-trace Run view: mount the emergent-graph panel into the orchestration
+// window and forward every core trace event to it. The core streams events on
+// 'orpad-core-trace' (live runs + recorded-trace replays); a 'run/start' event
+// resets the graph so a new run draws fresh.
+function setupCoreRunView() {
+  if (coreRunView || !previewPaneEl || !window.orpad?.core?.onCoreTrace) return;
+  const canRun = typeof window.orpad?.core?.startRun === 'function';
+  coreRunView = createLiveTraceView({
+    onRun: canRun ? (request) => window.orpad.core.startRun(request) : null,
+  });
+  coreRunView.el.id = 'core-run-view';
+  previewPaneEl.appendChild(coreRunView.el);
+  window.orpad.core.onCoreTrace((payload) => {
+    if (coreRunView) coreRunView.applyEvent(payload);
+  });
 }
 
 function setOrchestrationRunbarHtml(html = '') {

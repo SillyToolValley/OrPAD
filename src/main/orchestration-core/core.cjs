@@ -49,9 +49,9 @@ function killTree(child) {
 // Prompt goes via stdin (not argv) so multi-word goals are not mangled by the Windows shell.
 // timeoutMs > 0 enables the motion stop-signal: the agent + its whole tree are killed on cap.
 // Returns a Promise of the run result (stopped:true when the cap fired).
-function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null }) {
+function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null, onTraceEvent = null }) {
   return new Promise((resolve) => {
-    const streamMode = !!traceFile;
+    const streamMode = !!(traceFile || onTraceEvent);
     const args = [
       '-p',
       '--output-format', streamMode ? 'stream-json' : 'json',
@@ -82,7 +82,8 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
       if (obj && obj.type === 'result') resultEvent = obj;
       try {
         for (const ev of trace.streamEventToTrace(obj, nowIso())) {
-          fs.appendFileSync(traceFile, JSON.stringify(ev) + '\n', 'utf8');
+          if (traceFile) fs.appendFileSync(traceFile, JSON.stringify(ev) + '\n', 'utf8');
+          if (onTraceEvent) { try { onTraceEvent(ev); } catch (_) { /* listener is best-effort */ } }
         }
       } catch (_) { /* trace is best-effort */ }
     };
@@ -188,7 +189,7 @@ async function runGovernedDelegation(opts) {
     allowedFiles = [], readOnlyFiles = [],
     goal, allowedTools, agent, timeoutMs = 0,
     injectGuidance = true, guidanceCatalog: guidanceCatalogOpt, guidanceCatalogPath,
-    streamTrace = false, traceFile: traceFileOpt,
+    streamTrace = false, traceFile: traceFileOpt, onTraceEvent = null,
   } = opts;
   if (!workspaceRoot) throw new Error('workspaceRoot is required');
   if (!overlayRoot) throw new Error('overlayRoot is required');
@@ -197,7 +198,9 @@ async function runGovernedDelegation(opts) {
   const traceFile = streamTrace ? (traceFileOpt || path.join(runDir, 'trace.jsonl')) : (traceFileOpt || null);
   if (traceFile) { fs.mkdirSync(runDir, { recursive: true }); fs.writeFileSync(traceFile, '', 'utf8'); }
   const phase = (kind, state) => {
-    if (traceFile) fs.appendFileSync(traceFile, JSON.stringify({ ev: 'phase', kind, state, at: nowIso() }) + '\n', 'utf8');
+    const ev = { ev: 'phase', kind, state, at: nowIso() };
+    if (traceFile) fs.appendFileSync(traceFile, JSON.stringify(ev) + '\n', 'utf8');
+    if (onTraceEvent) { try { onTraceEvent(ev); } catch (_) { /* listener is best-effort */ } }
   };
 
   // 1. recon (grounding)
@@ -230,7 +233,7 @@ async function runGovernedDelegation(opts) {
   //    under the motion stop-signal (timeoutMs cap). When streaming, the agent's tool
   //    use is classified into emergent-graph nodes written to traceFile live.
   phase('agent_run', 'start');
-  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools, agent, timeoutMs, traceFile });
+  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools, agent, timeoutMs, traceFile, onTraceEvent });
   appendObserverTrace(runDir, {
     event: 'agent_run', at: nowIso(),
     exitCode: agentRun.exitCode, durationMs: agentRun.durationMs,
