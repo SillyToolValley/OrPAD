@@ -19,6 +19,12 @@
       "guidance": "When a reference, ground truth, or scoring function exists, evaluate your output against it on every iteration and only accept a change that holds or raises the score. Make the comparison explicit rather than judging by eye.",
       "earnedFrom": "CSV-parser ralphloop: scoring each cycle against the Python csv module took the parser 11/12 -> 12/12 and let the metric gate keep only the guidance that earned the point.",
       "promotedAt": "2026-06-19T00:00:00.000Z"
+    },
+    {
+      "id": "ground-in-prior-art-before-building",
+      "guidance": "Before authoring a capability from scratch, do the basic product-planning research first: survey the existing products, open-source tools, and papers that already solve this; derive the must-have requirements any credible solution needs; study where the existing solutions fall short and how to overcome it; and PREFER reusing or adapting a proven solution over reinventing. Build on that grounding, never from a blank page.",
+      "earnedFrom": "user critique: the orchestration delegated 'build the pixel-art conversion' from scratch with no survey of existing tools (Pyxelate, Gerstner 2012 'Pixelated Image Abstraction', Kopf 2013 content-adaptive downscaling) — skipping the most basic planning step (prior-art + competitor-limitation + requirements research) and reinventing the wheel into avoidable walls.",
+      "promotedAt": "2026-06-19T00:00:00.000Z"
     }
   ]
 }

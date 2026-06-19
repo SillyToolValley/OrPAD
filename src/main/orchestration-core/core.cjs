@@ -226,6 +226,85 @@ async function runGovernedDelegation(opts) {
   };
 }
 
+// --- Grounding (the basic product-planning step before authoring) --------------------
+// A real orchestration must not just delegate "build X"; it must FIRST ground the build:
+// survey existing products/open-source/prior art, derive must-have requirements, study
+// competitor limitations + how to overcome them, and prefer reuse/adaptation over
+// reinventing. The base recon() only lists workspace files; this adds external prior-art
+// research as a read-only delegation whose brief is injected into the build.
+
+// Compose a READ-ONLY prior-art / requirements research goal that grounds a build.
+function composeResearchGoal(buildGoal, opts = {}) {
+  const groundingFile = opts.groundingFile || 'grounding.md';
+  return [
+    'You are doing PRODUCT-PLANNING RESEARCH ONLY. Do NOT build or modify the product or write code. Investigate, then write a grounding brief.',
+    `Write your findings to ${groundingFile} (markdown), specific and concrete for the task below:`,
+    '1. EXISTING SOLUTIONS / PRIOR ART: the real products, open-source tools, libraries and papers that already do this (names, links, how each works). Use web search/fetch.',
+    '2. MUST-HAVE REQUIREMENTS: the capabilities any credible solution to this task MUST implement (derived from how the existing solutions work and what users expect).',
+    '3. COMPETITOR LIMITATIONS + HOW TO OVERCOME: where the existing solutions fall short for THIS task, and a concrete plan to overcome those limits.',
+    '4. RECOMMENDATION: reuse/adapt an existing solution (which one, why) or build new, plus the recommended approach/algorithm with rationale.',
+    'Cite sources. Keep it actionable: the brief is handed to the builder as grounding.',
+    '',
+    '--- Task to ground ---',
+    buildGoal,
+  ].join('\n');
+}
+
+// Prepend a grounding brief to the build goal; return the goal unchanged when there is no brief.
+function composeGoalWithGrounding(goal, briefText) {
+  const brief = (typeof briefText === 'string' ? briefText : '').trim();
+  if (!brief) return goal;
+  return [
+    'Grounding brief (prior-art survey, must-have requirements, competitor limitations + how to overcome). Build ON this; prefer reusing/adapting proven solutions over reinventing:',
+    brief,
+    '',
+    '--- Build task ---',
+    goal,
+  ].join('\n');
+}
+
+// Read-only prior-art/requirements research delegation: produces a grounding brief under the moat.
+// opts: runGovernedDelegation opts, plus { groundingFile?='grounding.md', researchTools? }
+async function runGroundingResearch(opts) {
+  if (!opts || !opts.goal) throw new Error('goal is required');
+  if (!opts.overlayRoot) throw new Error('overlayRoot is required');
+  const groundingFile = opts.groundingFile || 'grounding.md';
+  const researchTools = opts.researchTools || ['Read', 'WebSearch', 'WebFetch', 'Bash'];
+  const res = await runGovernedDelegation({
+    ...opts,
+    goal: composeResearchGoal(opts.goal, { groundingFile }),
+    allowedFiles: [groundingFile],
+    allowedTools: opts.allowedTools || researchTools,
+  });
+  let brief = '';
+  try { brief = fs.readFileSync(path.join(opts.overlayRoot, groundingFile), 'utf8'); } catch (_) { /* none produced */ }
+  return { ...res, brief, groundingFile };
+}
+
+// Grounded governed delegation: research prior art FIRST, then build with the brief injected.
+// opts: runGovernedDelegation opts, plus { ground?=true, groundingBrief?, researchOverlayRoot?,
+//        researchRunRoot?, researchTimeoutMs?, researchTools? }
+async function runGroundedDelegation(opts) {
+  if (!opts || !opts.goal) throw new Error('goal is required');
+  const ground = opts.ground !== false;
+  let brief = (opts.groundingBrief || '').trim();
+  let research = null;
+  if (ground && !brief) {
+    research = await runGroundingResearch({
+      ...opts,
+      overlayRoot: opts.researchOverlayRoot || `${opts.overlayRoot}-research`,
+      runRoot: opts.researchRunRoot || (opts.runRoot ? `${opts.runRoot}-research` : undefined),
+      timeoutMs: opts.researchTimeoutMs || opts.timeoutMs || 0,
+    });
+    brief = (research.brief || '').trim();
+  }
+  const build = await runGovernedDelegation({
+    ...opts,
+    goal: composeGoalWithGrounding(opts.goal, brief),
+  });
+  return { research, brief, build, summary: build.summary };
+}
+
 module.exports = {
   recon,
   delegateToAgent,
@@ -233,6 +312,10 @@ module.exports = {
   runGovernedDelegation,
   loadGuidanceCatalog,
   composeGoalWithGuidance,
+  composeResearchGoal,
+  composeGoalWithGrounding,
+  runGroundingResearch,
+  runGroundedDelegation,
   // The soft-node guidance catalog is no longer empty: it is grown from observed gaps and
   // promoted into guidance-catalog.json, then injected into every governed delegation.
   guidanceCatalog: loadGuidanceCatalog(),
