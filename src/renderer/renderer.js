@@ -1217,7 +1217,7 @@ document.getElementById('btn-theme').addEventListener('click', () => {
     renderThemePanel();
   }
 });
-document.getElementById('btn-package-manager')?.addEventListener('click', () => openOrchNodePackManager());
+
 document.getElementById('theme-panel-close').addEventListener('click', () => themePanel.classList.add('hidden'));
 document.addEventListener('mousedown', (e) => {
   if (!themePanel.classList.contains('hidden') && !themePanel.contains(e.target) && !e.target.closest('#btn-theme')) {
@@ -5638,9 +5638,7 @@ function renderPipelineNodePackSummary(doc, validation, diagnostics = []) {
   }
   const rows = entries.map((entry) => {
     const status = pipelineNodePackStatusForEntry(validation, entry, diagnostics);
-    const action = pipelineNodePackNeedsManager(status)
-      ? '<button data-node-pack-manager-open>Resolve in Package Manager</button>'
-      : '';
+    const action = '';
     return `
       <div class="pipeline-node-pack-row ${status.issues.length ? 'has-inline-diagnostic' : ''}" data-pipeline-node-pack-id="${escapeHtml(pipelineNodePackEntryId(entry))}">
         <div class="pipeline-node-pack-main">
@@ -5680,7 +5678,7 @@ function renderPipelineNodePacksSection(doc, readwrite, validation, diagnostics 
           <p>Built-in and custom packages required by this pipeline. Packages can contribute node types, graphs, skills, and rules.</p>
         </div>
         <span class="runbook-chip ${blocking ? 'danger' : (nodePackDiagnostics.length ? 'warn' : '')}">${entries.length ? machineCountLabel(entries.length, 'package') : 'not set'}</span>
-        <button data-node-pack-manager-open>${blocking ? 'Resolve in Package Manager' : 'Open Package Manager'}</button>
+
       </header>
       <div class="pipeline-node-pack-list">
         ${renderPipelineNodePackSummary(doc, validation, diagnostics)}
@@ -11910,7 +11908,7 @@ function openOrchAddNodeBrowser(path = '', doc = null, baseFilePath = getActiveT
       </div>
       <div class="orch-node-browser-alert-actions">
         <button type="button" data-orch-node-browser-retry>Retry discovery</button>
-        <button type="button" data-node-pack-manager-open>Open Package Manager</button>
+
       </div>
     `;
     alertEl.querySelector('[data-orch-node-browser-retry]')?.addEventListener('click', () => loadCatalog({ forceRefresh: true }));
@@ -12940,7 +12938,7 @@ function renderOrchTreePreview(content) {
       <div class="orch-toolbar">
         <strong>Tree setup</strong>
         <div class="orch-toolbar-actions">
-          ${pipelineContext ? renderNodePackManagerButton() : ''}
+          ${''}
           <div class="jedit-seg">
             <button class="jedit-seg-btn ${readwrite ? '' : 'active'}" data-orch-mode="readonly">View</button>
             <button class="jedit-seg-btn ${readwrite ? 'active' : ''}" data-orch-mode="readwrite" title="${escapeHtml(editLockTitle)}" ${pipelineRunInProgress ? 'disabled' : ''}>Edit</button>
@@ -13867,7 +13865,7 @@ function renderOrchPipelinePreview(content) {
       <div class="orch-toolbar">
         <strong>Pipeline setup</strong>
         <div class="orch-toolbar-actions">
-          ${renderNodePackManagerButton()}
+          ${''}
           <span class="runbook-chip">Details</span>
           <span class="runbook-chip good">${escapeHtml(doc.trustLevel || 'local-authored')}</span>
           <span class="runbook-chip">${escapeHtml(doc.version || 'unversioned')}</span>
@@ -14201,7 +14199,7 @@ function renderOrchGraphPreview(content) {
       <div class="orch-toolbar">
         <strong>${pipelineContext ? 'Pipeline setup' : (linkedGraphLayer || !layerPath ? 'Flow setup' : 'Tree setup')}</strong>
         <div class="orch-toolbar-actions">
-          ${pipelineContext ? renderNodePackManagerButton() : ''}
+          ${''}
           ${pipelineContext ? `<span class="runbook-chip">Flow</span>` : ''}
           <span class="runbook-chip good">${layerKindLabel}</span>
           <span class="runbook-chip">${layerSourceLabel}</span>
