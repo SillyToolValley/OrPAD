@@ -21158,14 +21158,9 @@ function renderRunbooksPanel(options = {}) {
   `;
   runbooksContentEl.innerHTML = `
     <section class="runbook-panel-section">
-      <h3>Describe the work</h3>
-      <textarea class="runbook-task-input" data-runbook-task rows="4" placeholder="Example: improve the OrPAD Pipes panel so I can type a task, generate a pipeline, validate it, and run it.">${escapeHtml(runbookDraftTask)}</textarea>
-      ${renderRunbookExternalResearchWarning(runbookDraftTask)}
       <div class="runbook-action-row">
-        <button class="primary" data-runbook-action="starter" ${generationRunning ? 'disabled' : ''} title="${escapeHtml(generationRunning ? 'Generate is already running for this window.' : 'Generate an OrPAD pipeline with the LLM authoring agent.')}">${generationRunning ? '<span class="runbook-spinner" aria-hidden="true"></span>Generating...' : 'Generate Pipeline'}</button>
         <button data-runbook-action="refresh">Refresh</button>
       </div>
-      <div data-runbook-generate-status-slot>${renderPipelineGenerateStatus()}</div>
       <div class="runbook-workspace-meta" data-runbook-workspace-meta title="${escapeHtml(runbookNormalizePath(workspacePath))}">
         <strong>${escapeHtml(runbookBaseName(workspacePath))}</strong>
         <span class="runbook-chip-row">
@@ -21186,7 +21181,7 @@ function renderRunbooksPanel(options = {}) {
       </section>
     ` : ''}
     ${renderRunRecordPanel(selected ? selectedRunRecord : null)}
-    ${renderMachineRunPanel(selected ? selectedMachineRunRecord : null, selected)}
+
     ${templateItems.length ? `
       <section class="runbook-panel-section" data-runbook-section="templates">
         <div class="runbook-section-heading">
@@ -21198,7 +21193,7 @@ function renderRunbooksPanel(options = {}) {
         </div>
       </section>
     ` : ''}
-    ${selected && inspectedHistoryRecord ? renderMachineHistoryInspectionPanel(inspectedHistoryRecord, selected) : ''}
+
   `;
   // Phase 1.2: stick the live event log to the bottom (auto-scroll on)
   // and snapshot the highest rendered sequence so the next render flags
@@ -25527,9 +25522,9 @@ async function buildOrpadRunbookSkill(taskText) {
 }
 
 const GENERATE_PROVIDER_SELECTION_KEY = 'orpad-generate-provider-selection';
-// Keep this in sync with GENERATE_AUTHORING_SUPPORTED_PROVIDERS in
-// src/main/orchestration-authoring/ipc.js. Adding a provider here without
-// wiring its backend will surface a friendly error from the main process.
+// Legacy generate-pipeline provider gate. The authoring backend
+// (orchestration-authoring) was removed in the G2 rebuild; this only gates
+// stale UI paths pending full removal of the generate flow.
 const GENERATE_PROVIDER_READY_IDS = new Set(['codex-cli', 'claude-code']);
 
 function loadGenerateProviderSelection() {
