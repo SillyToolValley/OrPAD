@@ -1,13 +1,5 @@
 import { initAnalytics, track, sizeBucket, stackSig } from './analytics.js';
-import { createAdapterPicker } from './orchestration/adapter-picker.js';
-import { createBudgetMeter } from './orchestration/budget-meter.js';
 import { createLiveTraceView } from './orchestration/live-trace-view.js';
-import {
-  failedAdapterCallsFromRecord as sharedFailedAdapterCalls,
-  gateBlockedNodesFromRecord as sharedGateBlockedNodes,
-  runArtifactAbsPath as sharedRunArtifactAbsPath,
-  lifecycleSuppressesFallback as sharedLifecycleSuppressesFallback,
-} from '../shared/orchestration/failure-summary.js';
 import { EditorView, basicSetup } from 'codemirror';
 import { Compartment, EditorSelection, EditorState, Prec, Transaction } from '@codemirror/state';
 import { keymap, ViewPlugin } from '@codemirror/view';
@@ -432,7 +424,6 @@ let runbookScanRequestId = 0;
 const RUNBOOK_TASK_STORAGE_KEY = 'orpad-runbook-task';
 let runbookDraftTask = localStorage.getItem(RUNBOOK_TASK_STORAGE_KEY) || '';
 let pipelineGenerateState = null;
-let pipelineGenerateSequence = 0;
 const EXTERNAL_RESEARCH_INTENT_PATTERN = /\b(search|competing products|competitors?|market|benchmarks?|benchmarking|web research|external research|browse|internet|online)\b/i;
 const ORPAD_WORK_ITEM_SCHEMA_VERSION = 'orpad.workItem.v1';
 const ORPAD_WORK_ITEM_STATES = Object.freeze(['candidate', 'queued', 'claimed', 'done', 'blocked', 'rejected']);
@@ -667,7 +658,6 @@ function machineLatestRunEventProjection(record) {
 //   These are renderer-only visual markers + pre-run confirmation - the dispatcher does not halt automatically. A "Bypass once" toggle
 //   lets Continue dispatch despite an active breakpoint.
 const MACHINE_BREAKPOINTS_STORAGE_PREFIX = 'orpad-machine-breakpoints:';
-const machineBreakpointBypass = new Set(); // runId where bypass is armed
 // History-inspection cache is separate from the active run cache so that
 // "user clicked an old run in History" does NOT pollute the Pipeline
 // setup panel's banner / failure cards. To bring an inspected run into
@@ -684,7 +674,6 @@ const machineRunProgressTimers = new Map();
 // PUSH STREAM: state for the main->renderer per-step progress subscription. The
 // push is a nudge to refresh the live surface immediately during a long drive;
 // refreshes are coalesced so a burst of fast steps can't hammer getRun.
-let machineRunProgressSubscribed = false;
 const machineRunProgressRefreshState = new Map();
 // Per-run promise chain so a push-triggered refresh and a poll-tick refresh for
 // the same run never interleave (which could render an older snapshot after a
@@ -702,7 +691,6 @@ const machinePatchReviewShown = new Set();
 const ORCHESTRATION_REFRESH_DEFER_MS = 650;
 const ORCHESTRATION_REFRESH_FLUSH_RETRY_MS = 250;
 let lastMachineRunRecord = null;
-let machineCapabilityToken = '';
 let machineRuntimeStatus = null;
 let machineRuntimeStatusLoading = false;
 let orchestrationUiActivePointers = 0;
@@ -2665,31 +2653,15 @@ function disposeStructuredViewers() {
 
 const FORMAT_BAR_VIEWS = new Set(['markdown', 'csv', 'tsv', 'json', 'jsonl', 'orch-pipeline', 'orch-graph', 'orch-tree', 'yaml', 'toml', 'ini', 'html', 'xml', 'mermaid', 'env']);
 let jsonViewMode = 'tree'; // 'tree' | 'diff'
-let orchTreeGraphMode = 'readonly'; // 'readonly' | 'readwrite'
 let selectedOrchNodePath = '';
-let selectedOrchNodePaths = new Set();
 let selectedOrchEdgeId = '';
 let orchGraphTool = 'select'; // 'select' | 'hand'
 let orchGraphTemporaryTool = '';
 let orchGraphViewport = { x: 0, y: 0, scale: 1 };
-let orchGraphFitAfterRender = true;
-let orchGraphResizeObserver = null;
 let orchGraphResizeFitRaf = 0;
-let orchGraphRenderFitRaf = 0;
-let orchGraphViewportRestoreRaf = 0;
-let orchGraphViewportRestoreSecondRaf = 0;
 let orchGraphResponsiveFitSuppressedUntil = 0;
-const orchGraphObservedFrameSizes = new WeakMap();
 let orchGridSnapEnabled = false;
 let orchTempSnap = false;
-let orchHistoryBatchDepth = 0;
-let orchNodeClickTimer = 0;
-let orchContextMenuDismissHandler = null;
-let suppressOrchContextMenuUntil = 0;
-let suppressOrchContextMenuPoint = null;
-const orchGraphMetaCache = new Map();
-let orchNodePackCatalogCache = null;
-let orchNodePackCatalogMetadataCache = null;
 let currentDiffPanel = null; // { el, recompute } - valid while diff panel is mounted
 // Set when the left diff textarea echoes into CodeMirror - the debounced renderPreview
 // would otherwise trigger a second recompute for the same keystroke.
@@ -3887,8 +3859,6 @@ const NODE_PACK_MANAGER_DETAIL_LABELS = {
 
 
 
-let nodePackManagerDetailModalEl = null;
-let nodePackManagerDetailModalKeyHandler = null;
 
 
 
@@ -6714,15 +6684,11 @@ function clearMachineRunProgressState() {
 // visual side of the lock is the existing `previewRunInProgress` chrome
 // plus a fresh toast on contention; the runtime side is a Set keyed by
 // (runbookKey, runId|'__start__').
-const machineRunMutationLocks = new Set();
-const machineRunCancelPendingKeys = new Set();
 // Supervised-autonomy intent acks. Pause/resume are intent-then-ack (the run
 // only reaches 'paused'/'running' at the driver's next step boundary, which can
 // be a long worker step away), so — exactly like cancel — we record an
 // optimistic "requested" flag synchronously on click and surface it until the
 // durable lifecycle lands. Without this the click looks inert for seconds.
-const machineRunPausePendingKeys = new Set();
-const machineRunResumePendingKeys = new Set();
 
 
 
@@ -6904,7 +6870,6 @@ const MACHINE_PROGRESS_STEP_ORDER = { completed: 0, failed: 1, running: 2, queue
 
 
 
-const machineFailureToastSeen = new Map(); // runId -> Set<failureKey>
 
 
 
@@ -6962,16 +6927,6 @@ const HISTORY_LIFECYCLE_FILTERS = Object.freeze([
 
 
 
-// HUD/VIZ: live cumulative-cost meter for the active run. Mounts the
-// createBudgetMeter DOM component into the Latest Run panel's host element and
-// keeps it across the panel's innerHTML re-renders (re-append + throttled refresh
-// on the render cadence — deliberately NO orphan polling timer to leak). Replaces
-// the long-dead createBudgetMeter import (instantiated 0 times until now).
-let machineBudgetMeterInstance = null;
-let machineBudgetMeterLastRefreshAt = 0;
-const machineBudgetLedgerBridge = {
-  invoke: (_channel, payload) => window.orpad?.machine?.readBudgetLedger?.(payload),
-};
 
 
 

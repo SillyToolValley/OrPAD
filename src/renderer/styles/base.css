@@ -2063,46 +2063,6 @@ body.json-diff-mode #preview-pane {
 .runbook-section-heading .runbook-chip {
   flex: 0 0 auto;
 }
-/* HUD/VIZ: live cumulative-cost meter (createBudgetMeter) mounted in the Latest
-   Run panel. The host is a thin wrapper; the meter builds its own DOM inside. */
-.runbook-budget-meter-host {
-  margin: calc(6px * var(--us)) 0 calc(2px * var(--us));
-}
-.orpad-budget-meter {
-  display: grid;
-  gap: calc(3px * var(--us));
-  padding: calc(6px * var(--us)) calc(8px * var(--us));
-  border: 1px solid var(--border-color);
-  border-radius: calc(7px * var(--us));
-  background: color-mix(in srgb, var(--accent-color) 6%, var(--bg-primary));
-}
-.orpad-budget-meter__label {
-  font-size: calc(11px * var(--us));
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-.orpad-budget-meter__label[data-kind="over"] { color: var(--danger-color); }
-.orpad-budget-meter__label[data-kind="error"] { color: var(--text-tertiary); }
-.orpad-budget-meter__bar {
-  height: calc(6px * var(--us));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-tertiary) 24%, transparent);
-  overflow: hidden;
-}
-.orpad-budget-meter__bar-inner {
-  height: 100%;
-  width: 0;
-  border-radius: 999px;
-  background: var(--accent-color);
-  transition: width 0.3s ease;
-}
-.orpad-budget-meter__label[data-kind="over"] ~ .orpad-budget-meter__bar .orpad-budget-meter__bar-inner {
-  background: var(--danger-color);
-}
-.orpad-budget-meter__detail {
-  font-size: calc(10px * var(--us));
-  color: var(--text-tertiary);
-}
 /* STEER: per-item queue steering list (Reject = "leave this out"). */
 .runbook-steer-queue {
   display: grid;
@@ -10629,7 +10589,6 @@ body.zen-mode #workspace {
 .runbook-latest-run-summary,
 .runbook-run-details,
 .pipe-failed-probe,
-.orpad-budget-meter,
 .terminal-panel,
 .terminal-window-shell,
 .terminal-window-modal,
@@ -10683,8 +10642,7 @@ body.zen-mode #workspace {
   background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-primary));
 }
 
-.tab-item.active::after,
-.orpad-budget-meter__bar-inner {
+.tab-item.active::after {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-color) 28%, transparent);
 }
 
