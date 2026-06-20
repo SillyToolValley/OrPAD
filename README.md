@@ -141,8 +141,8 @@ for CSV, Typora for Markdown, Mermaid Live Editor for diagrams. Five formats
 often means five apps, five clipboards, and several browser tabs.
 
 OrPAD is one desktop and web app where every supported format has a
-first-class editable viewer, plus a Pipes workspace for authoring pipeline
-packages and supervised managed runs.
+first-class editable viewer, plus a Pipes workspace and a governed-delegation
+orchestration runner that draws each run as a live emergent-graph trace.
 
 Every view round-trips through the text editor. Change a cell in the CSV grid
 and the underlying text updates; edit the text and the grid refreshes. Scroll
@@ -203,10 +203,12 @@ the preview follows the editor.
 ### AI, MCP, terminal, and orchestration surfaces
 
 - AI sidebar access through `Ctrl+L` and the command palette
-- Command-palette entries for opening Pipes, creating a new pipeline, starting
-  a managed run, and preparing a handoff
-- Pipeline package editing for `.or-pipeline`, `.or-graph`, and `.or-tree`
-  files, with Flow and Details views for graph structure and node metadata
+- Command-palette entries for opening the Pipes panel and validating or running
+  a local pipeline
+- An orchestration-core **Run** view: a governed delegation streams a live
+  emergent graph (recon → isolate → delegate → enforce) under a write-set
+  isolation moat and a motion stop-signal; legacy `.or-pipeline`, `.or-graph`,
+  and `.or-tree` files open as read-only JSON
 - MCP and terminal-oriented workflow surfaces use supervised prompts and
   approval gates before side-effecting external tools or commands
 
@@ -259,49 +261,26 @@ editor navigation does not steal that binding.
 
 ## Workflows
 
-### Pipes and managed runs
+### Pipes and orchestration
 
-Pipes are OrPAD pipeline packages for turning local files, node definitions,
-and agent handoffs into an inspectable orchestration workflow. Pipeline files
-can be authored as text while the Pipes UI exposes Flow and Details views for
-editing graph layout, node configuration, run metadata, and handoff context.
+The Pipes panel validates OrPAD pipeline files (`.or-pipeline`) and records
+minimal local run evidence under `.orpad/pipelines/<pipeline>/runs/`. Legacy
+`.or-pipeline`, `.or-graph`, and `.or-tree` artifacts open as read-only JSON —
+the static-graph editor, pipeline generator, and node-pack system were removed
+in the orchestration rebuild.
 
-Packages describe reusable orchestration roles such as probes, queues,
-triage, dispatchers, worker loops, and barriers. They can include node
-definitions, reusable graphs, skills, rules, templates, and supporting assets.
-Managed runs use those definitions to launch supervised worker activity from
-explicit local paths, collect evidence, and keep machine-readable run state
-with the package instead of hiding decisions in chat history.
+The active orchestration model is **orchestration-core**: a zero-node governed
+delegation. Given a goal and a write-set it grounds the workspace, seeds an
+isolated overlay, delegates the whole task to a capable CLI agent (Claude Code)
+inside that overlay, then enforces the write-set by diffing overlay → canonical
+(reporting changes and out-of-set violations). A motion/progress stop-signal caps
+a run that spins. The **Run** view draws the run's footprint as a live emergent
+graph — nodes appear in execution order, the active node spins, and the graph
+closes out on completion.
 
-The run controls are intentionally explicit. **Start Run** begins a managed
-run from the current pipeline package, while **Prepare Handoff** gathers the
-context needed for a human or agent handoff before execution. AI-suggested
-shell commands, MCP actions, terminal work, and external browsing are treated
-as supervised surfaces: they may be prepared or documented, but side-effecting
-commands and competitor or market research require approved browsing or
-attached evidence before OrPAD treats them as source material.
-
-### Package registry sharing
-
-OrPAD packages can be shared through Registry metadata. The default public path
-is the official OrPAD Registry, where new package entries are admitted through
-maintainer-reviewed pull requests before Package Manager labels them as
-OrPAD official review metadata.
-
-The official registry index is served from
-`https://raw.githubusercontent.com/OrPAD-Lab/orpad-registry/main/registry/packages.json`,
-with a compatibility alias at `registry/node-packs.json` for already-shipped
-builds. Submissions go through `https://github.com/OrPAD-Lab/orpad-registry/pulls`.
-
-Custom Registry URLs remain supported for teams and experiments, but they are
-shown as custom Registry sources and treated as discovery metadata unless the
-workspace or user explicitly trusts them. Package Manager still checks
-signatures, checksums, review state, declared capabilities, and high-risk
-capabilities before import or update.
-
-Authoring tools can generate checksum-backed Registry entry drafts for a pull
-request, but they do not mark packages approved and do not create official
-Registry signatures by themselves.
+AI-suggested shell commands, MCP actions, terminal work, and external browsing
+stay supervised: they may be prepared or documented, but side-effecting commands
+require approval before execution.
 
 ### Git status
 
