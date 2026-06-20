@@ -1,6 +1,6 @@
 # OrPAD Security Baseline
 
-_Generated during P0-10 security scan on 2026-04-24. Updated through P1-5 template work. Re-run on every major release._
+_Generated during P0-10 security scan on 2026-04-24. Updated through P1-5 template work. Updated 2026-06-19 for the G2 orchestration rebuild (Machine engine + authoring + node-pack registry removed; new orchestration-core governed-delegation IPC). Re-run on every major release._
 
 ## Electron hardening
 
@@ -47,7 +47,7 @@ process is fully sandboxed with no direct Node.js access.
 | `searchFiles(dirPath, query, options)` | workspace search | MEDIUM |
 | `buildLinkIndex` / `resolveWikiLink` / `getBacklinks` / `getFileNames` | wiki-link graph | MEDIUM |
 | `pipelines.*` / `runbooks.*` validation, scan, run-record, and local-run APIs | `.or-pipeline`, `.or-graph`, `.or-tree`, and legacy `.orch-*` validation plus local MVP run evidence | HIGH (future execution substrate) |
-| `machine.*` validation, run-store, readback, listing, resume, run/claim cancellation, approval decision, execute-step adapter, patch-apply, and evidence snapshot APIs | Feature-gated Orchestration Machine IPC for durable run metadata plus deterministic harness and recognized Codex CLI adapter execution | HIGH (execution substrate) |
+| `core.startRun` / `core.replayTrace` / `core.onCoreTrace` | orchestration-core governed-delegation run (spawns the CLI agent inside an isolated overlay), recorded-trace replay, and the outbound `orpad-core-trace` stream | HIGH (execution substrate) |
 | `revealInExplorer(targetPath)` | `shell.showItemInFolder` | LOW |
 | `saveBinary` / `saveText` | save-dialog before write | LOW |
 | `svgToPng(svg, w, h, bg)` | offscreen BrowserWindow render | LOW |
@@ -301,10 +301,10 @@ MCP, URL, or file-write pipeline steps.
   validation. Existing referenced files are checked with realpath-based containment so symlinks
   cannot point a pipeline ref outside its allowed root. Legacy `.orch-*` Skill refs must stay
   inside the legacy runbook directory.
-- `Generate Pipeline` may use the existing configured AI provider to draft the
-  referenced Skill Markdown from the user's typed task. It uses the same
-  `ai-provider-chat` proxy/key-storage rules as the AI sidebar and falls back
-  to a local template when no provider is available.
+- `Generate Pipeline` (the LLM pipeline authoring flow) and the static-graph
+  editor were **removed in the G2 rebuild**. `.or-pipeline` / `.or-graph` /
+  `.or-tree` files now open as read-only JSON; pipeline validation and the
+  local-run backend below remain.
 - Imported or generated trust levels (`imported-review`, `generated-draft`, `unknown`) are
   marked as review-required and are not executable. A file-declared trust level wins over caller
   options so renderer/API defaults cannot promote an imported pipeline to executable.
@@ -324,301 +324,55 @@ MCP, URL, or file-write pipeline steps.
   run evidence, context manifests, or artifacts.
 - AI-suggested commands still cannot run automatically.
 
-## OrPAD Orchestration Machine IPC security model
+## OrPAD orchestration-core security model
 
-The Orchestration Machine IPC surface is a typed, feature-gated bridge for durable run metadata
-and managed execute-step adapters. It does not expose arbitrary adapter execution, terminal
-commands, MCP tools, provider calls, or source workspace edits from the renderer.
+The G2 rebuild **removed** the entire Orchestration Machine engine, the
+`orchestration-authoring` pipeline generator, and the node-pack registry/manager.
+Their renderer UI (static-graph editor, node browser, machine run panels,
+adapter picker, Generate Pipeline, Package Manager) and their IPC surface
+(`machine-*`, `orchestration-author-harness`, `orchestration-provision-harness`,
+`orchestration-generate-pipeline`, `orchestration-*-node-pack*`,
+`orchestration-list-node-packs`) and preload bridges (`window.orpad.machine`,
+`window.orpad.orchestration` authoring) **no longer exist**. The capability-token
+feature gate, managed-run session enable, and node-pack registry install paths
+described in earlier revisions are gone.
 
-- The preload surface exposes one method per action under `window.orpad.machine`; there is no
-  generic Machine `invoke(channel, args)` wrapper.
-- Main process handlers require `event.sender`, `event.senderFrame.url`, and a `file://`
-  renderer frame before doing any path or filesystem work.
-- The feature gate is off by default. Runtime handlers reject until `ORPAD_MACHINE_IPC=1` is
-  present when handlers are registered, or until an unpackaged/dev session explicitly enables
-  managed runs through the typed `machine-enable-session` IPC.
-- `machine-enable-session` is unavailable in packaged builds. In unpackaged/dev sessions it is
-  reached from an explicit renderer confirmation, flips only the in-memory gate for the current
-  process, and generates an in-memory session capability token when no environment token exists.
-  It returns only that generated session token; environment-provided tokens still require user or
-  process-level provisioning and are not reflected back through this IPC.
-- Mutating actions (`machine-create-run`, `machine-execute-run-step`, `machine-resume-run`, `machine-pause-run`, `machine-cancel-run`, `machine-cancel-claim`, `machine-reject-item`, `machine-reprioritize-item`, `machine-inject-item`, `machine-edit-item`, `machine-decide-approval`, `machine-export-latest-run`, `machine-apply-patch`, `machine-review-patch`) require
-  either `ORPAD_MACHINE_IPC_TOKEN` or the generated session token and a matching
-  `capabilityToken` in the request. Read-only validate, list, and get-run actions still require
-  the feature gate and sender/path/schema checks.
-- The mutating capability token is entered, environment-supplied, or generated per desktop
-  session and kept only in renderer process memory, not Web Storage.
-- Requests are typed objects; missing or incorrectly typed fields fail before calling Machine
-  storage helpers.
-- `workspacePath` and `pipelinePath` must stay inside the renderer's approved workspace authority,
-  and Machine execution is limited to `.or-pipeline` files.
-- `runId` is an opaque identifier, not a path. It rejects path separators and resolves only under
-  `<pipelineDir>/runs/<runId>`.
-- `machine-create-run` validates `canMachineExecute` first and writes only the durable Machine run
-  layout under the pipeline's `runs/` directory.
-- `machine-execute-run-step` supports either a local deterministic `run.machineHarness` fixture or
-  a recognized `run.machineAdapter` declaration. Main process loads the pipeline graph, expands
-  inline nested graph containers, selects reachable Probe/Triage/Dispatcher/WorkerLoop nodes,
-  executes Machine-owned support nodes such as WorkQueue/Gate/Barrier/ArtifactContract lifecycle
-  markers, registers a Machine-owned candidate inventory artifact for triage input, claims via the
-  dispatcher, runs one WorkerLoop step, finalizes run status from Machine queue inventory, and
-  constructs the exact CLI overlay command itself. The renderer cannot pass an arbitrary command,
-  args, cwd, or dangerous Codex bypass flag through this channel.
-- The initial live adapter is restricted to declared `codex-cli` adapters. Proposal calls run with
-  Codex `read-only` sandbox and parse only the `--output-last-message` JSON file because CLI
-  stdout/stderr may contain plugin or network noise. Worker calls run from a Machine-owned overlay
-  cwd with Codex `workspace-write`; canonical workspace path arguments are rejected, overlay diffs
-  are collected as patch artifacts, and canonical source files are not written by this step.
-- Runtime node failures return the refreshed durable run snapshot, including post-failure
-  `node.failed` events, rather than trusting a renderer-supplied status or stale pre-run snapshot.
-- `machine-resume-run` repairs derived queue snapshots from canonical Machine events and recovers
-  stale claims through the dispatcher. It refuses terminal runs and pending approval requests, so
-  resume cannot bypass an explicit approval decision. When the run is in the supervised-autonomy
-  `paused` state it first clears the in-process pause intent, records a durable `run.resume-requested`
-  event, and transitions `paused -> waiting` before the standard recovery; the transition is still a
-  Machine-owned event-sourced state change, not a renderer-supplied status.
-- `machine-pause-run` records supervised-autonomy pause intent for a run: it sets an in-process
-  control token and appends a durable `run.pause-requested` event through the Machine event log. It
-  does NOT take the run-lifecycle lock (the autonomous driver may hold it) and never kills a process;
-  the driver observes the intent at its next step boundary and records the `paused` ack itself, so
-  in-flight work always finishes gracefully. Cancel intent (`run.cancel-requested`) is recorded the
-  same way at the front of `machine-cancel-run` before the existing cancelling/cancelled ack.
-- `machine-cancel-claim` accepts only opaque `runId`, `claimId`, and `itemId` identifiers. Main
-  process verifies the active claim lease and queue state before releasing the claim/write-set and
-  moving the item to `blocked` or `queued`.
-- `machine-reject-item` (STEER "leave this out") accepts only opaque `runId` and `itemId`. Main
-  process reads the item's canonical (event-projected) state and rejects ONLY a queued / candidate /
-  blocked item — a claimed/in-progress item must be stopped via `machine-cancel-claim` first. The
-  rejection is one Machine-authored `queue.transition` to `rejected` (the legal-transition whitelist
-  in queue-store gates it), so it is fully replayable from `events.jsonl`. Fail-fast under the
-  lifecycle lock (returns `MACHINE_RUN_BUSY` if a step is in flight) — the supervised flow is pause →
-  reject → resume. The renderer cannot supply an arbitrary target state.
-- `machine-reprioritize-item` (STEER "do this first") accepts only opaque `runId` and `itemId` and
-  acts ONLY on a queued item. It records a durable `queue.reprioritized` event whose sequence the
-  dispatcher reads (via a pure event projection) as the claim-order priority — it does NOT mutate the
-  item snapshot or add a persisted field, so claim order stays a deterministic replay of the log. The
-  renderer supplies no priority value (the Machine derives it from event order) and cannot reorder
-  claimed/in-progress work. Fail-fast under the lifecycle lock, same pause → steer → resume flow.
-- `machine-inject-item` (STEER "add this") accepts a `title` (required) plus optional `targetFiles` /
-  `acceptanceCriteria`. Main process BUILDS the candidate proposal — it derives a unique id and
-  fingerprint (the renderer cannot forge an id collision or set arbitrary item fields), normalizes +
-  schema-validates it via the same path as machine-generated candidates, then runs the standard
-  ingest (`inbox→candidate`) and triage (`candidate→queued`) transitions. So an injected item is an
-  ordinary, fully-replayable queue item. Fail-fast under the lifecycle lock.
-- `machine-edit-item` (STEER "fix this") accepts an `itemId` plus a whitelist of human-meaningful
-  fields (`title`, `targetFiles`, `acceptanceCriteria`) — never `id`, `state`, `claim`, or
-  `fingerprint`. Queued-only (in-flight/claimed work is not editable — stop the claim first). The
-  patched item is re-validated against the `workItem` schema before persisting (a steer edit can
-  never write a malformed item), and the edit is recorded as a durable `queue.edited` event carrying
-  the patch (audit + replay-of-intent). The edited content lives in the queue snapshot, which the
-  resume repair path (`repairDerivedQueueFilesFromEvents`) preserves, so the edit survives replay.
-  Fail-fast under the lifecycle lock.
-- `machine-run-progress` (PUSH STREAM) is the only main→renderer **push** in the Machine surface: a
-  one-way `webContents.send` fired after each completed step of an autonomous drive so the live
-  graph/panel refreshes immediately instead of waiting for the renderer's ~2s poll. It is bound to
-  the requesting `event.sender` (the renderer that initiated, and was authorized for, the run) and
-  guarded against a destroyed/closed window, so a dead frame can never abort the drive. The payload
-  is advisory only — `runId`, `stepIndex`, `sequence`, `lifecycleStatus` — and deliberately carries
-  NO events, run state, or secrets: on receipt the renderer re-fetches the snapshot through the gated
-  `machine-get-run` handler, so `events.jsonl` remains the single source of truth and the poll stays
-  as a reconciling fallback. There is no renderer→main attack surface and no capability token (it is
-  a notification, not an action).
-- `machine-cancel-run` aborts Machine-registered adapter processes for the requested run and then
-  routes active claimed work through the same claim cancellation path. If no claim exists yet, it
-  records a cancelled partial run state without touching workspace files.
-- `machine-decide-approval` can only decide an approval that is currently pending in Machine
-  events for the requested run. Approved decisions record Machine-owned grants; denied decisions
-  cancel the run through lifecycle guards. The renderer cannot mint arbitrary grants for a
-  non-pending approval.
-- `machine-export-latest-run` copies a trusted evidence snapshot to the legacy latest-run directory
-  for compatibility. It does not apply patches, edit source files, or call external tools.
-- `machine-apply-patch` applies user-selected files from a Machine-owned patch artifact only after
-  validating the run artifact path, patch schema, write-set membership, and pre-image SHA for each
-  selected workspace file. Selected files are preflighted as a batch before any canonical write, so
-  an overlapping or stale patch cannot partially apply earlier files before a later base mismatch.
-  Failed applications are recorded as Machine events and return a refreshed durable run snapshot to
-  the renderer. The renderer exposes this through a supervised review modal rather than automatic
-  canonical workspace mutation.
-- `machine-review-patch` records a renderer-supervised decision to keep a Machine-owned patch
-  artifact as review-only evidence. It validates the same run-relative patch artifact path and schema
-  but does not write workspace files or execute external tools.
+The replacement is `src/main/orchestration-core/` (`core.cjs`, `trace.cjs`,
+`ralphloop.cjs`): a zero-node **governed delegation** core. It grounds a goal,
+seeds an isolated overlay containing only the declared write-set, delegates the
+whole task to a capable CLI agent (`claude`) running inside that overlay, and
+enforces the write-set by diffing overlay→canonical via the preserved isolation
+moat (`orchestration-machine/patches.js` — write-set overlay + `patchArtifact`).
+A motion/progress stop-signal (time cap + process-tree kill + partial recovery)
+bounds each delegation.
 
-## OrPAD Orchestration Machine adapter security model
+Renderer-facing IPC is `registerCoreRunHandlers` in
+`src/main/orchestration-core/ipc.cjs`, wired in `main.js`, exposed as
+`window.orpad.core` in preload:
 
-The first CLI adapter kernel remains disabled unless a main-process caller constructs it with
-`enabled: true`. The Machine UI execute-step path can reach it only through a deterministic
-harness command assembled by main process.
+- `orpad-core-run-start` (invoke) — runs a REAL governed delegation. It resolves
+  the run's workspace from the main-process authority (`authority.getWorkspaceRoot`)
+  and refuses when no workspace is approved. It spawns the configured agent
+  (`claude`) **inside an isolated overlay** under `<workspace>/.orpad/core-runs/<runId>/`
+  seeded with only the caller-declared write-set; the moat diffs the overlay back
+  to canonical and reports changes + out-of-write-set violations. This is the one
+  renderer-reachable channel that launches a child agent process — by design,
+  contained to the overlay and the workspace, like Command Runner / PTY but scoped
+  to the governed-delegation moat. It streams trace events back via `orpad-core-trace`.
+- `orpad-core-run-replay` (invoke) — replays a RECORDED `trace.jsonl` through the
+  same `orpad-core-trace` channel for the live-trace GUI and CI (no paid agent
+  run). The trace path is validated with `authority.assertWorkspacePath`, so the
+  renderer cannot ask the main process to read a trace file outside the approved
+  workspace. It spawns nothing and writes nothing.
+- `orpad-core-trace` (send, main→renderer) — outbound-only push stream of
+  emergent-graph trace events (phase / classified work node / run-done) to the
+  initiating `event.sender`, guarded against destroyed senders. Advisory render
+  data only; no secrets, no renderer→main attack surface, no capability token.
 
-- CLI adapter execution uses `read-only-plus-overlay` workspaces. Allowed files are copied to an
-  adapter-local overlay under the durable run root, or to a system temp overlay when an explicit
-  dangerous Codex sandbox bypass approval is present.
-  System temp overlays are removed after transcript and patch collection unless the caller
-  explicitly opts into keeping them for debugging.
-- The child process cwd is the overlay, not the canonical workspace. Direct writes to canonical
-  queue/state/run files are therefore impossible through the adapter process.
-- Commands are represented as `{ command, args[] }` and launched with `spawn(shell:false)`. Shell
-  operators and direct shell executables such as `cmd.exe`, PowerShell, and POSIX shells are
-  rejected by the command grant layer.
-- Each process launch must match an exact command grant, including command, args, and cwd. A
-  mismatched or expired grant blocks before process launch.
-- The adapter containment gate requires command cwd to be exactly the overlay root and rejects
-  command args that reference the canonical workspace root. This is a guardrail against accidental
-  direct workspace targeting; it is not a substitute for OS-level sandboxing.
-- `--dangerously-bypass-approvals-and-sandbox` is treated as a high-risk Codex CLI flag. It is
-  blocked unless the adapter caller enables dangerous bypass, the exact command grant has
-  `allowDangerousSandboxBypass: true`, the adapter request carries an explicit approval reason,
-  and the overlay root is outside the canonical workspace in a system temp directory.
-- The dangerous-bypass check is plugin-driven, not codex-specific. Each CLI provider plugin
-  registered in `src/main/orchestration-machine/providers/registry.js` declares its own
-  `dangerousArgs: string[]` metadata, and the adapter caller threads that list into
-  `assertCliProcessContainment`. The codex bypass flag remains the default fallback when no
-  plugin supplies a list, but any new CLI provider plugin (claude-code, generic) must declare
-  its own dangerous args to receive the same enforcement.
-- The shared provider catalog at `src/shared/ai/provider-catalog.js` is metadata-only. It must
-  never embed ciphertext, raw API keys, or any other secret material. Renderer
-  (`src/renderer/ai/providers/index.js`) and the Machine plugin registry both read this catalog
-  for display name, models, default model, costs, family, and `needsKey`; ciphertext continues
-  to live exclusively under safeStorage in `ai-keys.json`. Catalog entries declared with
-  `needsKey: false` (codex-cli, ollama, openai-compatible) cannot be assigned a stored key
-  through the `ai-key-set` IPC, and `validateProvider` rejects any provider id that is not
-  registered in the catalog.
-- API provider plugins (`src/main/orchestration-machine/providers/plugins/anthropic.js` and any
-  future `openai.js`, `openrouter.js`, `ollama.js`) must perform all HTTP calls through Node
-  `fetch`/`undici` only. SDK dependencies are forbidden. Raw provider HTTP responses and
-  streaming chunks are *never* recorded in `events.jsonl`. Only the parsed `result`, the
-  `usage` envelope, and an optional non-authoritative `apiTrace` (provider request id) are
-  attached to the adapter result; the upstream byte stream is discarded after parsing. API
-  keys are passed exclusively as a function argument (`providerKey`) to the plugin's
-  `invokeApi`; the plugin must read no global state (`process.env`, `localStorage`) for keys
-  and must put the key only in the appropriate authentication header (`x-api-key` for
-  Anthropic). The provider key MUST NOT be serialized into the request body, the adapter
-  request envelope, the adapter result envelope, or any artifact written under
-  `runs/<runId>/`.
-- The renderer-facing IPC channels added in PR M9 (`machine-list-providers`,
-  `machine-list-models`, `machine-set-provider-selection`, `machine-read-budget-ledger`)
-  enforce the same invariants as the rest of the Machine IPC surface: feature gate, sender
-  frame validation, and a mutating capability token for the only mutating channel
-  (`machine-set-provider-selection`). The mutating handler re-validates every renderer-
-  supplied provider id against the in-process plugin registry — a renderer compromise
-  cannot inject an unregistered provider id into a pipeline graph because
-  `MACHINE_IPC_PROVIDER_NOT_REGISTERED` rejects the request before any state mutation.
-  `machine-read-budget-ledger` runs through the authority's `assertWorkspaceContains` so
-  the renderer cannot ask the main process to read ledger files outside the active
-  workspace. The budget-meter and adapter-picker renderer modules go through these
-  channels exclusively; neither module reads disk or computes selections on the renderer
-  side.
-- CLI provider plugins added in PR M8 (`claude-code.js`, generic CLI factory) follow the same
-  M1 process-containment, M1 dangerous-arg metadata, and M0 lift-to-v2 contracts that
-  `codex-cli.js` does. `claude-code` declares `--dangerously-skip-permissions` as its
-  dangerous arg so the M1 containment gate refuses to spawn a Claude Code child process with
-  that flag unless an explicit Machine grant + approval is in place. Generic CLI plugin
-  registration (`createGenericCliPlugin`) is **rejected** at registration time when either
-  `commandAllowlist` (non-empty array of `{ command, argsPrefix? }`) or
-  `outputContractParser` (function) is missing — there is no path that lets a caller register
-  an unbounded "run anything" CLI provider. Each generic plugin's `assertCommandAllowed`
-  blocks any commandSpec whose command is not in the allowlist, with optional `argsPrefix`
-  enforcement, before the M1 process-containment runs.
-- The router fallback chain (`router/error-classifier.js`) does not weaken the approval and
-  containment boundary applied to any single attempt. Each fallback target goes through the
-  same `assertProviderKeySourceAllowed` / `assertCommandGranted` / `assertCliProcessContainment`
-  gates that M1–M3 enforce. Specifically:
-  - `KEY_MISSING` only falls back to a `needsKey: false` provider in the candidate chain;
-    a key-required provider further down the chain is silently skipped, never invoked.
-  - `RATE_LIMIT` and `RETRYABLE` (after the per-call retry budget is exhausted) fall back to
-    the next candidate exactly once each.
-  - `OUTPUT_VIOLATES_CONTRACT` performs at most one self-repair retry against the same
-    candidate before falling back; this prevents a runaway accept-anything loop and bounds
-    the cost of malformed responses.
-  - `BUDGET_EXCEEDED` and `FATAL` short-circuit the chain — no further candidate is invoked.
-  Cross-family fallback (api → cli) does NOT widen the workspace mode: every CLI candidate
-  still receives `read-only-plus-overlay`, the same exact command grants, and the same
-  dangerous-arg metadata its plugin declares.
-- The response cache at `runs/<runId>/cache/<sha256>.json` is opt-in via the v2
-  `pipeline.run.machineAdapter.cache.mode` value (`off` | `deterministic` | `idempotent-only`).
-  Cache files store only the SHA-256 of the prompt and the parsed adapter result envelope —
-  never the raw prompt text — so an inadvertent secret in a prompt does not become a long-lived
-  cache leak. `apiSession` and `apiTrace` are stripped from the result before write.
-  `deterministic` mode rejects prompts that match ISO timestamps, UUIDs, OrPAD run ids, or
-  attempt ids; `idempotent-only` mode requires a non-empty `idempotencyKey` and only hits when
-  the same key has been seen before. Cache hits are recorded in events.jsonl as `cache.hit`
-  (so audit/replay can recompute cost without a network call) and the budget ledger entry
-  for a cache hit always reports `costEstimateUsd: 0` and `cacheHit: true`. Plugin authors are
-  responsible for sanitizing prompts before they reach the cache key path; OrPAD's threat
-  model assumes cache files are inside the local-first run directory and not exported.
-- The budget ledger at `runs/<runId>/budget-ledger.json` is a derived view, not authoritative.
-  Cost values are plugin-reported *estimates* drawn from the provider catalog's per-model
-  rates; provider invoice reconcile is out of scope. Any UI that surfaces a hard budget
-  limit must communicate this provenance and rely on the catalog's costPerMTokens fields
-  staying current. The ledger writer (`router/budget-ledger.js`) only copies a fixed set of
-  usage fields (promptTokens, completionTokens, totalTokens, costEstimateUsd, currency,
-  cacheHit), so a buggy or hostile plugin cannot smuggle additional fields (e.g. an API key)
-  into the ledger by tucking them into `result.usage`. When `pipeline.run.machineAdapter.budget.hardStop`
-  is `true`, the router refuses to invoke the plugin once `assertWithinBudget` reports a
-  per-call or per-run violation; when `false`, the router emits a `budget.warning` event and
-  proceeds. `BUDGET_EXCEEDED` is one of the standard router error classes
-  (`router/adapter-router.js#ERROR_CLASSES`).
-- The inherited environment is sanitized before spawn. `SENTRY_DSN`, `GITHUB_TOKEN`, `PASSWORD`,
-  and `*_KEY`, `*_TOKEN`, or `*_SECRET` variables are removed from the adapter environment.
-- Stdout/stderr are captured with output limits and written only as Machine artifacts when a
-  run root is supplied. Secret-looking command arguments are redacted before transcript and
-  verification metadata are written.
-- Overlay diffs become Machine patch artifacts. The adapter does not apply them to the canonical
-  workspace.
-- Machine patch application checks the active write set and preflights selected file pre-image hashes
-  before writing. Out-of-write-set changes and duplicate/base-mismatched patch applications are
-  rejected without partial canonical writes.
-- Worker results that claim `changedFiles` outside the claim write set are rejected before
-  `worker.result` and queue close events are recorded.
-- The API adapter kernel is provider-neutral and disabled by default. A provider response is
-  parsed as a structured adapter result only; it cannot write queue, run, or artifact state
-  directly.
-- API provider keys are policy-checked before use. Desktop access must route through the
-  safeStorage-backed key path (or explicit in-memory tests), web access requires an IndexedDB
-  risk-consent source, and `localStorage` key reads are always rejected.
-- API tracing and telemetry export are off unless exact capability grants include
-  `use.tracing` or `export.telemetry`. Trace IDs and provider session IDs are non-authoritative
-  adapter metadata, never canonical Machine state.
-- Approval requests are Machine artifacts plus `approval.requested` events. Approval decisions
-  are explicit `approval.decided` events; renderer/UI approval state must project from Machine
-  state rather than becoming a second source of truth.
-- Resume repair uses Machine events as canonical metadata and only repairs derived queue files
-  when an item snapshot is still available. Artifact presence alone is never treated as proof
-  that claimed work completed.
-- Package compatibility is metadata-only in this phase. Normal install validation rejects npm
-  lifecycle scripts, executable handlers, community overrides of the reserved `orpad.*`
-  namespace, incompatible package formats, unsafe package-relative paths, and user-node type
-  conflicts before activation. Untrusted, capability-denied, and review-required packages may
-  be present on disk for inspection, but Machine execution keeps them non-runnable until
-  OrPAD-owned trust evidence, review evidence, and exact capability grants resolve them.
-- Package sharing installs use a main-process safe transaction. Local installs pre-audit the
-  source folder, copy only manifest-declared files into a staging directory, re-run Machine
-  discovery/validation, then atomically activate under `<userData>/nodes/<package-id>/` and update
-  `<userData>/nodes/orpad-node-packs.lock.json`. Registry installs fetch the manifest plus
-  declared raw files only; normal install does not run git, npm, archive extraction, lifecycle
-  scripts, native builds, or package-provided commands.
-- Registry signatures are verified only when OrPAD-owned trusted registry public keys are
-  configured. A verified registry signature can turn registry-declared version signature,
-  checksum, and approved review metadata into Machine-owned trust evidence; unsigned or
-  untrusted registries do not. Registry installs compare the fetched manifest and declared
-  asset bytes against registry SHA-256 checksums before activation, and checksum mismatches
-  fail closed without replacing the active package.
-- Registry governance separates official OrPAD Registry metadata from custom Registry
-  discovery. Official entries use the `orpad-pr-reviewed` review model and are accepted through
-  maintainer-reviewed Registry pull requests in `OrPAD-Lab/orpad-registry`; custom or
-  third-party Registry sources are labeled separately in Package Manager and their review claims
-  do not become OrPAD-owned approval evidence.
-- Package updates reuse the same safe install transaction. Pinned installs are skipped by
-  default, failed updates leave the active package untouched, and successful replacements store
-  the previous lock entry plus backup path for an explicit rollback command.
-- Package authoring tools are validation and metadata-generation tools only. `packages
-  registry-entry create` computes SHA-256 checksums from manifest-declared files but never
-  claims verified trust, never creates a registry signature, and never marks review status as
-  approved. Publishing remains a manual registry pull request and review flow.
-- Workspace-local package locks are metadata-only sharing state. Workspaces can declare
-  required packages, but install state remains user-level app data and restore/install still routes
-  through the Machine safe transaction instead of trusting workspace files as authority.
-- Missing or incompatible community nodes are represented as lossless placeholders for graph
-  round-trip; placeholder metadata is not executable.
+The legacy `.or-pipeline` / `.or-graph` / `.or-tree` files now open as read-only
+JSON (the static-graph editor was removed); their pipeline **validation** and
+local-run **backend** remain (see the Pipeline MVP section). Provider/adapter,
+terminal, MCP, and arbitrary CLI execution remain out of scope for renderer IPC.
 
 ## URL handling
 
@@ -690,26 +444,9 @@ features that intentionally launch configured/user-requested child processes.
 | `pipeline-create-run-record` / `runbook-create-run-record` | handle | Create minimal run evidence under `.orpad/pipelines/<pipeline>/runs/{runId}` or legacy `.orch-runs/{runId}` | — | Authority guard / workspace only |
 | `pipeline-start-local-run` / `runbook-start-local-run` | handle | Create a local MVP run record, context manifest, approval events, and claim artifact under the target run directory | — | Authority guard / workspace only |
 | `pipeline-read-run-record` / `runbook-read-run-record` | handle | Read `run.or-run` or legacy `run.json` plus `events.jsonl` from allowed run directories | — | Authority guard / `.orpad/pipelines/*/runs`, recorded workspace-local `.or-pipeline` sibling `runs`, or `.orch-runs` only |
-| `machine-status` | handle | Report managed-run IPC gate and mutating capability readiness | Yes, requires `event.senderFrame.url` `file://` | No filesystem path |
-| `machine-enable-session` | handle | Enable managed runs for the current unpackaged/dev process and return an in-memory session capability token | Yes, requires `event.senderFrame.url` `file://`; unavailable in packaged builds | No filesystem path |
-| `machine-validate-pipeline` | handle | Validate an `.or-pipeline` and report Machine execution compatibility | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / workspace `.or-pipeline` only |
-| `machine-create-run` | handle | Create a durable Machine run root after `canMachineExecute` validation | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
-| `machine-get-run` | handle | Read `run-state.json` and `events.jsonl` for one Machine run | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/<runId>` only |
-| `machine-list-runs` | handle | List durable Machine run summaries for one pipeline | Yes, requires `event.senderFrame.url` `file://` plus feature gate | Authority guard / `.orpad/pipelines/*/runs/` only |
-| `machine-execute-run-step` | handle | Run one managed step through deterministic harness or recognized Codex CLI adapter: candidate ingest, dispatcher claim, WorkerLoop, Machine-assembled overlay adapter, optional evidence snapshot export | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, proposal read-only, worker overlay-only process cwd |
-| `machine-resume-run` | handle | Repair derived queue snapshots, recover stale claims, mark a non-terminal non-approval-pending run waiting, and optionally export latest-run; a `paused` run additionally clears pause intent and records `run.resume-requested` before transitioning `paused -> waiting` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
-| `machine-pause-run` | handle | Record supervised-autonomy pause intent (in-process token + durable `run.pause-requested` event) so the autonomous driver suspends to `paused` at its next step boundary; lock-free and never kills a process | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
-| `machine-cancel-run` | handle | Record `run.cancel-requested` intent, then abort Machine-registered adapter processes for a run and cancel active claimed work when present | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root only |
-| `machine-cancel-claim` | handle | Cancel an active Machine-owned claim, release its write-set, block or requeue the item, and optionally export latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque claim/item ids only |
-| `machine-reject-item` | handle | STEER "leave this out": reject a still-pending (queued/candidate/blocked) work item via a single replayable `queue.transition` to `rejected`; fail-fast if a step is in flight; never touches a claimed/in-progress item | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque item id only |
-| `machine-reprioritize-item` | handle | STEER "do this first": pull a queued item to the front of the dispatcher claim order via a durable `queue.reprioritized` event (its sequence is the priority); no item-field mutation, fully replayable; queued-only; fail-fast if a step is in flight | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque item id only |
-| `machine-inject-item` | handle | STEER "add this": inject a human work item — build a candidate from a title (+ optional target files / acceptance criteria), then run the standard ingest (inbox→candidate) + triage (candidate→queued) transitions; Machine derives a unique id/fingerprint; fail-fast if a step is in flight | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root; candidate normalized + schema-validated (renderer cannot forge id/state) |
-| `machine-edit-item` | handle | STEER "fix this": edit a queued item's title / target files / acceptance criteria in place via a durable `queue.edited` event carrying the patch; re-validates the patched item against the `workItem` schema before persisting; never edits id/state/claim/fingerprint; queued-only; fail-fast if a step is in flight | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, opaque item id only; whitelisted fields + schema re-validation (renderer cannot persist a malformed item) |
-| `machine-decide-approval` | handle | Record a Machine-owned approval decision for a pending approval, optionally exporting latest-run | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, pending approval event only |
-| `machine-export-latest-run` | handle | Export durable Machine run evidence and queue metadata to `harness/generated/latest-run` | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / pipeline evidence snapshot export only |
-| `machine-apply-patch` | handle | Apply selected files from a Machine patch artifact to the canonical workspace after write-set and base-SHA checks | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, run-relative patch artifact, selected workspace files only |
-| `machine-review-patch` | handle | Record a supervised review-only decision for one Machine patch artifact without applying it | Yes, requires `event.senderFrame.url` `file://` plus feature gate and capability token | Authority guard / workspace `.or-pipeline`, durable run root, run-relative patch artifact only |
-| `machine-run-progress` | send (main→renderer) | PUSH STREAM: one-way per-step progress nudge sent to the requesting renderer after each completed step of an autonomous drive; advisory payload (`runId`/`stepIndex`/`sequence`) carrying no run state or secrets | Outbound ONLY to the initiating `event.sender` webContents, guarded against destroyed senders; no renderer→main surface, no capability token (not an action) | **None** — the renderer re-fetches via the gated `machine-get-run`; `events.jsonl` stays the source of truth |
+| `orpad-core-run-start` | handle | Run a governed delegation: spawn the configured CLI agent (`claude`) inside an isolated overlay seeded with the declared write-set, then diff overlay→canonical for changes + violations; streams trace via `orpad-core-trace` | reads `event.sender` | Authority guard / workspace; overlay + run dirs under `<workspace>/.orpad/core-runs/<runId>/` only |
+| `orpad-core-run-replay` | handle | Replay a recorded `trace.jsonl` through `orpad-core-trace` for the live-trace GUI / CI (spawns nothing, writes nothing) | reads `event.sender` | Authority guard / trace file must be inside the approved workspace |
+| `orpad-core-trace` | send (main→renderer) | PUSH STREAM: outbound-only emergent-graph trace events (phase / classified work node / run-done) to the initiating sender | Outbound ONLY to the initiating `event.sender`, guarded against destroyed senders; no renderer→main surface, no capability token | **None** — advisory render data only, no secrets |
 | `save-binary` | handle | Save dialog then binary write | reads `event.sender` | Dialog enforces |
 | `svg-to-png` | handle | Offscreen BrowserWindow render | reads `event.sender` | Validates dimensions |
 | `save-text` | handle | Save dialog then text write | reads `event.sender` | Dialog enforces |
@@ -744,22 +481,17 @@ allowed outside the workspace because the dialog is the user approval surface.
 Residual risk: newly added IPC handlers must keep using the authority manager. Any future
 pipeline/runbook write or execution surface must treat path authority tests as release-blocking.
 
-**Machine IPC update:** Orchestration Machine handlers also route through the authority manager
-and add `senderFrame`, feature-gate, typed request, `runId`, and mutating capability-token
-checks before touching storage. In unpackaged/dev sessions, `machine-enable-session` can open the
-feature gate only for the current process and only with an in-memory session capability token.
-`machine-decide-approval` projects pending approvals from Machine
-events before recording a decision and grant. `machine-resume-run` projects approval state from
-Machine events before repairing derived queue files or recovering claims. `machine-cancel-run`
-can only abort processes registered by Machine for that run id. `machine-cancel-claim` requires
-an active Machine claim lease before it releases claim/write-set ownership.
-`machine-execute-run-step` reaches CLI adapters only through Machine-selected harness commands or
-recognized `run.machineAdapter` declarations. Worker execution remains overlay-cwd contained,
-proposal execution is read-only, and arbitrary adapter execution, provider calls, terminal
-commands, and MCP tools remain out of scope for renderer IPC. Source workspace writes are limited
-to explicit `machine-apply-patch` review selections from Machine-owned patch artifacts with
-write-set and pre-image hash checks; review-only patch decisions are event-only through
-`machine-review-patch`.
+**orchestration-core IPC update:** the `orpad-core-*` handlers route through the
+authority manager. `orpad-core-run-start` resolves the run workspace from the
+authority (refusing when none is approved) and spawns the CLI agent only inside an
+isolated overlay under `<workspace>/.orpad/core-runs/<runId>/`; the moat diffs the
+overlay back to canonical and reports out-of-write-set violations, so the agent
+cannot write canonical source outside the declared write-set. `orpad-core-run-replay`
+validates the trace-file path with `authority.assertWorkspacePath` and spawns/writes
+nothing. `orpad-core-trace` is an outbound-only push to the initiating sender with
+no renderer→main surface. The removed Machine engine's capability-token gate,
+managed-run session enable, durable run-store, adapter execution, and patch-apply
+IPC no longer exist.
 
 **Command execution boundaries:** General filesystem/editor IPC still does not expose arbitrary
 shell execution. P1-3 MCP uses the official SDK `StdioClientTransport`, which spawns the
