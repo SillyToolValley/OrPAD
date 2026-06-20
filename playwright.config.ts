@@ -19,17 +19,6 @@ export default defineConfig({
       },
     },
     {
-      name: 'electron-visual-smoke',
-      testMatch: '**/ux-visual-smoke.spec.ts',
-      outputDir: 'test-results/electron-visual-smoke',
-      workers: 1,
-      use: {
-        trace: 'retain-on-failure',
-        screenshot: 'on',
-        video: 'retain-on-failure',
-      },
-    },
-    {
       name: 'web-chromium',
       use: { ...devices['Desktop Chrome'] },
       testMatch: 'tests/e2e/web/*.spec.ts',

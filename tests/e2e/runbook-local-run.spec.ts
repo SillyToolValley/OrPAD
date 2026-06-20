@@ -101,57 +101,6 @@ function writeFixtureWorkspace(options: { canonicalNodeTypes?: boolean; trustLev
   return workspace;
 }
 
-test('pipeline local MVP run records context, approval, replay, and claim artifact', async () => {
-  const workspace = writeFixtureWorkspace();
-  const app = await launchElectron();
-  const win = await app.firstWindow();
-  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
-  writeApprovedWorkspace(userData, workspace);
-
-  await win.reload();
-  await win.waitForLoadState('domcontentloaded');
-  await win.waitForSelector('.cm-editor');
-  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-
-  await win.evaluate(async () => {
-    await (window as any).orpadCommands.runCommand('view.runbooks');
-  });
-
-  await expect(win.locator('#runbooks-content')).toContainText('Release audit');
-  await expect(win.locator('#runbooks-content')).not.toContainText('pipeline.or-pipeline');
-  await win.locator('.runbook-item[data-runbook-format="or-pipeline"]').click();
-  await expect(win.locator('[data-pipeline-preview-runbar]')).toBeVisible();
-  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for local run.');
-
-  await win.locator('[data-pipeline-run-menu]').click();
-  await win.locator('button[data-pipeline-run-action="local"]').click();
-  await expect(win.locator('#fmt-modal')).toContainText('Allow Local Run');
-  await expect(win.locator('#fmt-modal')).toContainText('scope: this run only');
-  await expect(win.locator('#fmt-modal')).toContainText('skills/release-claim-audit.md');
-  await expect(win.locator('#fmt-modal')).toContainText('.env');
-  await win.getByRole('button', { name: 'Allow Once' }).click();
-
-  await expect(win.locator('#runbooks-content')).toContainText('Replay');
-  await expect(win.locator('#runbooks-content')).toContainText('context.bundle.created');
-  await expect(win.locator('#runbooks-content')).toContainText('approval.allowed');
-  await expect(win.locator('#runbooks-content')).toContainText('artifact.created');
-  await expect(win.locator('#runbooks-content')).toContainText('run.completed');
-
-  const runRoot = path.join(workspace, '.orpad', 'pipelines', 'release-audit', 'runs');
-  const runDirs = fs.readdirSync(runRoot);
-  expect(runDirs.length).toBe(1);
-  const runDir = path.join(runRoot, runDirs[0]);
-  expect(fs.existsSync(path.join(runDir, 'run.or-run'))).toBe(true);
-  expect(fs.existsSync(path.join(runDir, 'context', 'context-manifest.json'))).toBe(true);
-  expect(fs.existsSync(path.join(runDir, 'artifacts', 'claim-register.md'))).toBe(true);
-  expect(fs.readFileSync(path.join(runDir, 'artifacts', 'claim-register.md'), 'utf-8')).toContain('mismatch');
-  const contextManifest = JSON.parse(fs.readFileSync(path.join(runDir, 'context', 'context-manifest.json'), 'utf-8'));
-  expect(contextManifest.included.some((item: { role: string; path: string }) => item.role === 'tree' && item.path.endsWith('trees/implementation.or-tree'))).toBe(true);
-  expect(contextManifest.included.some((item: { role: string; path: string }) => item.role === 'skill' && item.path.endsWith('skills/release-claim-audit.md'))).toBe(true);
-
-  await app.close();
-  fs.rmSync(workspace, { recursive: true, force: true });
-});
 
 test('pipeline local MVP run follows canonical orpad tree and skill nodes', async () => {
   const workspace = writeFixtureWorkspace({ canonicalNodeTypes: true });
@@ -189,36 +138,11 @@ test('pipeline local MVP run follows canonical orpad tree and skill nodes', asyn
   fs.rmSync(workspace, { recursive: true, force: true });
 });
 
-test('denying local run approval does not create a run directory', async () => {
-  const workspace = writeFixtureWorkspace();
-  const app = await launchElectron();
-  const win = await app.firstWindow();
-  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
-  writeApprovedWorkspace(userData, workspace);
-
-  await win.reload();
-  await win.waitForLoadState('domcontentloaded');
-  await win.waitForSelector('.cm-editor');
-  await win.waitForFunction(() => !!(window as any).orpadCommands?.runCommand);
-
-  await win.evaluate(async () => {
-    await (window as any).orpadCommands.runCommand('view.runbooks');
-  });
-
-  await win.locator('.runbook-item[data-runbook-format="or-pipeline"]').click();
-  await expect(win.locator('[data-pipeline-preview-runbar]')).toContainText('Ready for local run.');
-  await win.locator('[data-pipeline-run-menu]').click();
-  await win.locator('button[data-pipeline-run-action="local"]').click();
-  await expect(win.locator('#fmt-modal')).toContainText('Allow Local Run');
-  await win.getByRole('button', { name: 'Decline' }).click();
-  await expect(win.locator('#fmt-modal')).toBeHidden();
-
-  const runRoot = path.join(workspace, '.orpad', 'pipelines', 'release-audit', 'runs');
-  expect(fs.existsSync(runRoot) ? fs.readdirSync(runRoot).length : 0).toBe(0);
-
-  await app.close();
-  fs.rmSync(workspace, { recursive: true, force: true });
-});
+// NOTE: the pipeline-preview-runbar UI flow tests ('records context, approval,
+// replay, and claim artifact' + 'denying local run approval...') were removed
+// in the G2 stage-2.4 static-graph editor amputation: .or-pipeline opens as a
+// read-only JSON view, so there is no in-preview run bar. Local-run BACKEND
+// coverage stays via the canonical-tree run + API-denial + imported-review tests.
 
 test('pipeline local MVP run API denial does not create run evidence', async () => {
   const workspace = writeFixtureWorkspace();
