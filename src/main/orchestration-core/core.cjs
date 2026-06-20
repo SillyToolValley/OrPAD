@@ -24,6 +24,18 @@ const trace = require('./trace.cjs');
 
 function nowIso() { return new Date().toISOString(); }
 
+// Default agent toolset for an autonomous (non-interactive `claude -p`) delegation.
+// The isolation moat (write-set overlay + overlay->canonical diff) is the sandbox,
+// NOT claude's interactive permission prompts — so a governed delegation must grant
+// the agent a capable toolset up front, otherwise `claude -p` (which cannot prompt)
+// stalls on the first tool that needs permission and the stop-signal kills it with
+// no work done. Callers can still pass an explicit narrower allowedTools.
+const DEFAULT_ALLOWED_TOOLS = [
+  'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+  'Bash', 'Grep', 'Glob', 'LS', 'TodoWrite',
+  'WebSearch', 'WebFetch', 'Task',
+];
+
 // Recon: cheap, read-only grounding of the workspace before delegating.
 function recon(workspaceRoot) {
   let entries = [];
@@ -233,7 +245,8 @@ async function runGovernedDelegation(opts) {
   //    under the motion stop-signal (timeoutMs cap). When streaming, the agent's tool
   //    use is classified into emergent-graph nodes written to traceFile live.
   phase('agent_run', 'start');
-  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools, agent, timeoutMs, traceFile, onTraceEvent });
+  const effectiveAllowedTools = (Array.isArray(allowedTools) && allowedTools.length) ? allowedTools : DEFAULT_ALLOWED_TOOLS;
+  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools: effectiveAllowedTools, agent, timeoutMs, traceFile, onTraceEvent });
   appendObserverTrace(runDir, {
     event: 'agent_run', at: nowIso(),
     exitCode: agentRun.exitCode, durationMs: agentRun.durationMs,
