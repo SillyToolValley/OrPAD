@@ -1548,13 +1548,16 @@ function getViewType(filePath) {
   if (/\.(md|markdown|mkd|mdx)$/.test(name)) return 'markdown';
   if (/\.mmd$/.test(name)) return 'mermaid';
   if (/\.(jsonl|ndjson)$/.test(name)) return 'jsonl';
-  if (/\.or-pipeline$/.test(name)) return 'orch-pipeline';
-  if (/\.or-graph$/.test(name)) return 'orch-graph';
-  if (/\.or-tree$/.test(name)) return 'orch-tree';
+  // Legacy OrPAD orchestration artifacts (.or-graph/.or-tree/.or-pipeline/.orch*)
+  // open as read-only JSON after the static-graph editor was removed in the G2
+  // rebuild; the new surface is the live-trace Run view.
+  if (/\.or-pipeline$/.test(name)) return 'json';
+  if (/\.or-graph$/.test(name)) return 'json';
+  if (/\.or-tree$/.test(name)) return 'json';
   if (/\.(or-rule|or-run)$/.test(name)) return 'json';
-  if (/\.orch-graph\.json$/.test(name)) return 'orch-graph';
-  if (/\.orch-tree\.json$/.test(name)) return 'orch-tree';
-  if (/\.orch$/.test(name)) return 'orch-tree';
+  if (/\.orch-graph\.json$/.test(name)) return 'json';
+  if (/\.orch-tree\.json$/.test(name)) return 'json';
+  if (/\.orch$/.test(name)) return 'json';
   if (/\.json$/.test(name)) return 'json';
   if (/\.ya?ml$/.test(name)) return 'yaml';
   if (/\.(html?|htm)$/.test(name)) return 'html';

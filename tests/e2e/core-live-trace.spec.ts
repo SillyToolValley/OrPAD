@@ -135,3 +135,25 @@ test('replayTrace refuses a trace file outside the approved workspace', async ()
     fs.rmSync(outside, { recursive: true, force: true });
   }
 });
+
+test('legacy .or-graph artifacts open as a read-only JSON tree (static-graph editor removed)', async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orpad-or-graph-'));
+  const graphPath = path.join(workspace, 'sample.or-graph');
+  fs.writeFileSync(graphPath, JSON.stringify({
+    schemaVersion: '1.0',
+    start: 'a',
+    graph: { nodes: [{ id: 'a', type: 'orpad.context' }], transitions: [] },
+  }, null, 2), 'utf-8');
+  const app = await launchElectron();
+  try {
+    const win = await app.firstWindow();
+    await win.evaluate((p: string) => (window as any).orpad.dropFile(p), graphPath);
+    // Renders via the generic JSON viewer, NOT the old orch graph editor.
+    await expect(win.locator('.jedit-tree')).toBeVisible({ timeout: 8000 });
+    await expect(win.locator('.orch-graph-node')).toHaveCount(0);
+    await expect(win.locator('[data-node-pack-manager-open]')).toHaveCount(0);
+  } finally {
+    await closeElectronApp(app);
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
