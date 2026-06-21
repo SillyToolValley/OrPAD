@@ -114,7 +114,7 @@ function makeNodeSprite(node) {
 
 // onRun: optional async (request) => summary (hides the form when omitted).
 // onLinkGraph: optional async () => { ok, nodes, edges } for the workspace link graph.
-export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
+export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop = null } = {}) {
   const el = document.createElement('section');
   el.className = 'core-run-view';
   el.innerHTML = `
@@ -150,6 +150,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
             <input type="number" data-core-run-timeout min="0" step="1" value="0" inputmode="numeric" />
           </label>
           <button type="submit" class="core-run-btn" data-core-run-submit>Run</button>
+          <button type="button" class="core-run-btn core-run-btn-stop" data-core-run-stop hidden>Stop</button>
         </div>
         <div class="core-run-form-row core-run-form-opts">
           <label class="core-run-check"><input type="checkbox" data-core-run-ground checked /> Research prior art first (grounding)</label>
@@ -183,6 +184,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   const readonlyEl = el.querySelector('[data-core-run-readonly]');
   const timeoutEl = el.querySelector('[data-core-run-timeout]');
   const submitEl = el.querySelector('[data-core-run-submit]');
+  const stopEl = el.querySelector('[data-core-run-stop]');
   const errorEl = el.querySelector('[data-core-run-error]');
   const resultEl = el.querySelector('[data-core-run-result]');
   const groundEl = el.querySelector('[data-core-run-ground]');
@@ -195,6 +197,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   const fitBtn = el.querySelector('[data-core-run-fit]');
 
   let events = [];
+  let currentRunId = null;
   let errorMessage = '';
   let busy = false;
 
@@ -207,21 +210,35 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   let fg = null;
   const fgNodeById = new Map();
   let lastSig = '';
+  let hadNodes = false;
+  let lastFlyId = null;
 
   function showFormError(message) { errorEl.textContent = message; errorEl.hidden = !message; }
   function showFormResult(message) { if (!resultEl) return; resultEl.textContent = message || ''; resultEl.hidden = !message; }
   function setBusy(next) {
     busy = next;
     if (submitEl) { submitEl.disabled = next; submitEl.textContent = next ? 'Running…' : 'Run'; }
+    if (stopEl) stopEl.hidden = !next;
   }
 
-  function reset() { events = []; errorMessage = ''; render(); }
+  function reset() { events = []; errorMessage = ''; lastFlyId = null; render(); }
   function applyEvent(ev) {
     if (!ev || typeof ev !== 'object') return;
+    if (ev.runId) currentRunId = ev.runId;
     if (ev.ev === 'run' && ev.state === 'start') { reset(); return; }
     if (ev.ev === 'run' && ev.state === 'error') errorMessage = String(ev.error || 'Run failed.');
     events.push(ev);
     render();
+  }
+
+  if (stopEl) {
+    stopEl.addEventListener('click', () => {
+      if (!currentRunId) return;
+      stopEl.disabled = true;
+      statusEl.textContent = 'Stopping…';
+      statusEl.dataset.state = 'running';
+      Promise.resolve(onStop ? onStop(currentRunId) : null).finally(() => { stopEl.disabled = false; });
+    });
   }
 
   function loadLinkGraph(force) {
@@ -238,6 +255,14 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     }).catch(() => { linkGraphLoading = false; });
   }
 
+  // Fly the camera to frame a single node (click-to-focus / follow-active).
+  function flyTo(node, ms = 700) {
+    if (!fg || !node) return;
+    const dist = 70;
+    const hyp = Math.hypot(node.x || 1, node.y || 1, node.z || 1) || 1;
+    const r = 1 + dist / hyp;
+    fg.cameraPosition({ x: (node.x || 0) * r, y: (node.y || 0) * r, z: (node.z || 0) * r }, node, ms);
+  }
   // --- 3D graph ----------------------------------------------------------------
   function ensureFG() {
     if (fg) return fg;
@@ -267,11 +292,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
       .linkDirectionalParticleSpeed(0.012)
       .linkDirectionalParticleWidth(2)
       .linkDirectionalParticleColor((l) => linkColor(l))
-      .onNodeClick((node) => {
-        const d = 90;
-        const r = 1 + d / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
-        fg.cameraPosition({ x: (node.x || 0) * r, y: (node.y || 0) * r, z: (node.z || 0) * r }, node, 700);
-      });
+      .onNodeClick((node) => flyTo(node));
     if (typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver(() => { if (fg && graph3dEl.clientWidth) fg.width(graph3dEl.clientWidth).height(graph3dEl.clientHeight); });
       ro.observe(graph3dEl);
@@ -349,6 +370,16 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     if (graph) {
       const sig = `${data.nodes.length}:${data.links.length}:${activeId || ''}:${linkGraph ? linkGraph.nodes.length : 0}`;
       if (sig !== lastSig) { lastSig = sig; graph.graphData(data); } // activeId is in the sig, so chips refresh on change
+      // Frame the graph when it first appears and when the run finishes (so it is
+      // never a tiny speck); follow the active node while the run is live so the
+      // current work stays focused even as the graph grows.
+      if (!hadNodes && data.nodes.length) { hadNodes = true; setTimeout(() => { if (fg) fg.zoomToFit(600, 70); }, 450); }
+      if (done && data.nodes.length) setTimeout(() => { if (fg) fg.zoomToFit(600, 70); }, 350);
+      if (busy && activeId && activeId !== lastFlyId) {
+        lastFlyId = activeId;
+        const obj = fgNodeById.get(`r:${activeId}`);
+        if (obj) setTimeout(() => flyTo(obj), 400);
+      }
     }
   }
 

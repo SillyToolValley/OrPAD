@@ -89,7 +89,7 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     send({ ev: 'run', state: 'start', at: nowIso() });
     try {
       const baseOpts = {
-        workspaceRoot, overlayRoot, runRoot,
+        workspaceRoot, overlayRoot, runRoot, runId,
         allowedFiles, readOnlyFiles, goal, allowedTools, agent, timeoutMs,
         parallelResearch, researchQueries,
         streamTrace: true,
@@ -165,7 +165,19 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
       const message = String(err?.message || err);
       send({ ev: 'run', state: 'error', error: message, at: nowIso() });
       return { ok: false, runId, error: message };
+    } finally {
+      core.clearCancelled(runId);
     }
+  });
+
+  // --- Stop a running governed delegation ------------------------------------
+  // Kills the agent child process tree for the run so it stops occupying
+  // resources. The in-flight run-start resolves as stopped:cancelled.
+  ipcMain.handle('orpad-core-run-stop', async (event, request = {}) => {
+    const runId = request && request.runId ? String(request.runId) : null;
+    if (!runId) return { ok: false, error: 'runId is required.' };
+    const cancelled = core.cancelRun(runId);
+    return { ok: true, cancelled };
   });
 
   // --- Replay a recorded trace.jsonl -----------------------------------------

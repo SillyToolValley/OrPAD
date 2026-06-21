@@ -57,11 +57,45 @@ function killTree(child) {
   } catch (_) { /* best effort */ }
 }
 
+// --- Run cancellation registry -------------------------------------------------
+// Tracks the live agent child process(es) per runId so a run can be STOPPED on
+// demand (user "Stop" button) and so EVERY agent is killed when the app quits
+// (otherwise a closed OrPAD leaves claude children running, holding resources).
+const ACTIVE_CHILDREN = new Map(); // runId -> Set<child>
+const CANCELLED_RUNS = new Set();  // runIds asked to stop
+
+function registerChild(runId, child) {
+  if (!runId) return;
+  if (!ACTIVE_CHILDREN.has(runId)) ACTIVE_CHILDREN.set(runId, new Set());
+  ACTIVE_CHILDREN.get(runId).add(child);
+}
+function unregisterChild(runId, child) {
+  const set = ACTIVE_CHILDREN.get(runId);
+  if (!set) return;
+  set.delete(child);
+  if (!set.size) ACTIVE_CHILDREN.delete(runId);
+}
+function isRunCancelled(runId) { return !!runId && CANCELLED_RUNS.has(runId); }
+function cancelRun(runId) {
+  if (!runId) return false;
+  CANCELLED_RUNS.add(runId);
+  const set = ACTIVE_CHILDREN.get(runId);
+  if (set) for (const c of set) killTree(c);
+  return !!(set && set.size);
+}
+function clearCancelled(runId) { if (runId) CANCELLED_RUNS.delete(runId); }
+function cancelAllRuns() {
+  for (const [runId, set] of ACTIVE_CHILDREN) {
+    CANCELLED_RUNS.add(runId);
+    for (const c of set) killTree(c);
+  }
+}
+
 // Delegate the whole goal to a capable CLI agent, running INSIDE the isolated overlay.
 // Prompt goes via stdin (not argv) so multi-word goals are not mangled by the Windows shell.
 // timeoutMs > 0 enables the motion stop-signal: the agent + its whole tree are killed on cap.
 // Returns a Promise of the run result (stopped:true when the cap fired).
-function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null, onTraceEvent = null }) {
+function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null, onTraceEvent = null, runId = null }) {
   return new Promise((resolve) => {
     const streamMode = !!(traceFile || onTraceEvent);
     const args = [
@@ -79,6 +113,8 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
       cwd: overlayRoot,
       shell: true, // Windows: claude is a .cmd shim
     });
+    registerChild(runId, child);
+    if (isRunCancelled(runId)) killTree(child); // already asked to stop before we spawned
     let out = '';
     let err = '';
     let stopped = false;
@@ -125,6 +161,8 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
 
     child.on('close', (code, signal) => {
       if (timer) clearTimeout(timer);
+      unregisterChild(runId, child);
+      if (isRunCancelled(runId)) { stopped = true; stopReason = stopReason || 'cancelled'; }
       if (streamMode && lineBuf.trim()) handleStreamLine(lineBuf);
       const durationMs = Date.now() - t0;
       let parsed = resultEvent;
@@ -148,6 +186,7 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
     });
     child.on('error', (e) => {
       if (timer) clearTimeout(timer);
+      unregisterChild(runId, child);
       resolve({ exitCode: null, stopped, stopReason, durationMs: Date.now() - t0, raw: out, stderr: String(e), result: null, isError: true });
     });
   });
@@ -254,7 +293,7 @@ async function runGovernedDelegation(opts) {
   //    use is classified into emergent-graph nodes written to traceFile live.
   phase('agent_run', 'start');
   const effectiveAllowedTools = (Array.isArray(allowedTools) && allowedTools.length) ? allowedTools : DEFAULT_ALLOWED_TOOLS;
-  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools: effectiveAllowedTools, agent, timeoutMs, traceFile, onTraceEvent });
+  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools: effectiveAllowedTools, agent, timeoutMs, traceFile, onTraceEvent, runId: opts.runId });
   appendObserverTrace(runDir, {
     event: 'agent_run', at: nowIso(),
     exitCode: agentRun.exitCode, durationMs: agentRun.durationMs,
@@ -396,6 +435,7 @@ async function runParallelResearch(opts) {
       agent: opts.agent,
       timeoutMs: opts.timeoutMs || 0,
       onTraceEvent: tag,
+      runId: opts.runId,
     });
     let brief = '';
     try { brief = fs.readFileSync(path.join(branchOverlay, groundingFile), 'utf8'); } catch (_) { /* none produced */ }
@@ -445,6 +485,9 @@ async function runGroundedDelegation(opts) {
       });
       brief = (research.brief || '').trim();
     }
+  }
+  if (isRunCancelled(opts.runId)) {
+    return { research, brief, build: { stopped: true, stopReason: 'cancelled', patch: { changes: [], violations: [] }, summary: { stopped: true, stopReason: 'cancelled' } }, summary: { stopped: true, stopReason: 'cancelled' } };
   }
   const build = await runGovernedDelegation({
     ...opts,
@@ -527,6 +570,10 @@ module.exports = {
   recon,
   delegateToAgent,
   killTree,
+  cancelRun,
+  cancelAllRuns,
+  clearCancelled,
+  isRunCancelled,
   runGovernedDelegation,
   loadGuidanceCatalog,
   composeGoalWithGuidance,

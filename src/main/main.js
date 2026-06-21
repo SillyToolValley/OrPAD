@@ -1723,6 +1723,12 @@ ipcMain.on('update-action', (event, action) => {
 });
 
 app.on('window-all-closed', () => app.quit());
+
+// Closing OrPAD must STOP any in-flight orchestration run — kill the agent child
+// process tree so it stops occupying resources (it does not survive the app).
+app.on('before-quit', () => {
+  try { require('./orchestration-core/core.cjs').cancelAllRuns(); } catch (_) { /* best effort */ }
+});
 app.on('activate', () => {
   if (windows.size === 0) createWindow(null);
 });

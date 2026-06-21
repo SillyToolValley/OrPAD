@@ -10791,6 +10791,14 @@ body.zen-mode #workspace {
   opacity: 0.6;
   cursor: progress;
 }
+.core-run-btn-stop {
+  border-color: color-mix(in srgb, var(--danger-color, #f7768e) 60%, var(--border-color));
+  background: color-mix(in srgb, var(--danger-color, #f7768e) 16%, transparent);
+  color: var(--danger-color, #f7768e);
+}
+.core-run-btn-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-color, #f7768e) 26%, transparent);
+}
 .core-run-form-note {
   margin: 0;
   font-size: calc(10.5px * var(--us));

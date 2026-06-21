@@ -124,6 +124,7 @@ contextBridge.exposeInMainWorld('orpad', {
   // unsubscribe function (mirrors the machine/orchestration channel pattern).
   core: {
     startRun: (request = {}) => ipcRenderer.invoke('orpad-core-run-start', request),
+    stopRun: (runId) => ipcRenderer.invoke('orpad-core-run-stop', { runId }),
     replayTrace: (request = {}) => ipcRenderer.invoke('orpad-core-run-replay', request),
     onCoreTrace: (cb) => {
       const listener = (_event, payload) => cb(payload);

@@ -287,6 +287,9 @@ function setupCoreRunView() {
     onLinkGraph: typeof window.orpad?.getLinkGraph === 'function'
       ? () => window.orpad.getLinkGraph()
       : null,
+    onStop: typeof window.orpad?.core?.stopRun === 'function'
+      ? (runId) => window.orpad.core.stopRun(runId)
+      : null,
   });
   coreRunView.el.id = 'core-run-view';
   previewPaneEl.appendChild(coreRunView.el);
