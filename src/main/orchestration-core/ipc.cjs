@@ -20,6 +20,28 @@ function newRunId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Copy the agent's overlay output into the canonical workspace. Without this the
+// governed delegation only COLLECTS a patch and the result stays trapped in the
+// run overlay (the observed "my repo didn't change" / output-buried-in-.orpad
+// problem). Each target is contained to the workspace (no path escape).
+async function applyOverlayToWorkspace(workspaceRoot, overlayRoot, relPaths) {
+  const root = path.resolve(workspaceRoot);
+  const applied = [];
+  for (const rel of relPaths) {
+    const norm = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!norm || norm.split('/').includes('..')) continue;
+    const dest = path.resolve(root, norm);
+    const relCheck = path.relative(root, dest);
+    if (relCheck.startsWith('..') || path.isAbsolute(relCheck)) continue;
+    try {
+      await fsp.mkdir(path.dirname(dest), { recursive: true });
+      await fsp.copyFile(path.resolve(overlayRoot, norm), dest);
+      applied.push(norm);
+    } catch (_) { /* skip files that vanished/unreadable */ }
+  }
+  return applied.sort();
+}
+
 function registerCoreRunHandlers({ ipcMain, app, authority }) {
   void app; // reserved for parity with the other handler registrars
 
@@ -41,6 +63,9 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const allowedTools = Array.isArray(request?.allowedTools) ? request.allowedTools.map(String) : undefined;
     const timeoutMs = Number.isFinite(request?.timeoutMs) ? Math.max(0, request.timeoutMs) : 0;
     const agent = request?.agent ? String(request.agent) : undefined;
+    const ground = request?.ground !== false;     // default ON: research prior art first
+    const apply = request?.apply !== false;       // default ON: write the result into the workspace
+    const greenfield = allowedFiles.length === 0; // no write-set -> unconstrained build, apply everything
 
     const runId = newRunId('core');
     const runBase = path.join(workspaceRoot, '.orpad', 'core-runs', runId);
@@ -50,21 +75,42 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const send = sender(event, runId);
     send({ ev: 'run', state: 'start', at: nowIso() });
     try {
-      const result = await core.runGovernedDelegation({
+      const runner = ground ? core.runGroundedDelegation : core.runGovernedDelegation;
+      const result = await runner({
         workspaceRoot, overlayRoot, runRoot,
         allowedFiles, readOnlyFiles, goal, allowedTools, agent, timeoutMs,
         streamTrace: true,
         onTraceEvent: send,
       });
-      // runGovernedDelegation emits the 'run/done' event itself only when the
-      // agent stream carried a result event; ensure the GUI always closes out.
+      // grounded delegation returns { research, brief, build, summary }; plain
+      // delegation returns the run result directly.
+      const build = result.build || result;
+      const patch = build.patch || { changes: [], violations: [] };
+      const summary = result.summary || build.summary || {};
       send({ ev: 'run', state: 'done', at: nowIso() });
+
+      // Apply the agent's overlay output into the canonical workspace so the
+      // result actually lands. Greenfield (no write-set): apply everything the
+      // agent produced. Constrained: apply only the in-write-set changes.
+      let applied = [];
+      if (apply && !build.stopped) {
+        const applySet = greenfield
+          ? [...patch.changes.map((c) => c.path), ...patch.violations.map((v) => v.path)]
+          : patch.changes.map((c) => c.path);
+        applied = await applyOverlayToWorkspace(workspaceRoot, overlayRoot, applySet);
+      }
+
       return {
         ok: true,
         runId,
-        ...result.summary,
-        changes: (result.patch?.changes || []).map((c) => c.path),
-        violations: result.patch?.violations || [],
+        ...summary,
+        grounded: ground,
+        groundingBrief: !!(result.brief && String(result.brief).trim()),
+        greenfield,
+        applied,
+        appliedCount: applied.length,
+        changes: patch.changes.map((c) => c.path),
+        violations: patch.violations,
       };
     } catch (err) {
       const message = String(err?.message || err);

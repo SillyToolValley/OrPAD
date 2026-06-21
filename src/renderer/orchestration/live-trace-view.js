@@ -57,7 +57,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
         <textarea data-core-run-goal rows="3" placeholder="Describe the task to delegate to the agent…"></textarea>
       </label>
       <label class="core-run-field">
-        <span>Write-set <small>files the agent may change — one path per line, relative to the workspace</small></span>
+        <span>Write-set <small>optional — files the agent may change. Leave empty to build freely; the whole result is applied to the workspace.</small></span>
         <textarea data-core-run-writeset rows="2" placeholder="src/feature.js"></textarea>
       </label>
       <label class="core-run-field">
@@ -71,8 +71,13 @@ export function createLiveTraceView({ onRun = null } = {}) {
         </label>
         <button type="submit" class="core-run-btn" data-core-run-submit>Run</button>
       </div>
+      <div class="core-run-form-row core-run-form-opts">
+        <label class="core-run-check"><input type="checkbox" data-core-run-ground checked /> Research prior art first (grounding)</label>
+        <label class="core-run-check"><input type="checkbox" data-core-run-apply checked /> Apply result to workspace</label>
+      </div>
       <p class="core-run-form-note">Spawns the configured agent (claude) under the isolation moat. A real run — it may take minutes and incur cost. Time cap 0 = no stop-signal.</p>
       <p class="core-run-form-error" data-core-run-error hidden></p>
+      <p class="core-run-form-result" data-core-run-result hidden></p>
     </form>
     <div class="core-run-graph" data-core-run-graph aria-live="polite"></div>
   `;
@@ -85,6 +90,9 @@ export function createLiveTraceView({ onRun = null } = {}) {
   const timeoutEl = el.querySelector('[data-core-run-timeout]');
   const submitEl = el.querySelector('[data-core-run-submit]');
   const errorEl = el.querySelector('[data-core-run-error]');
+  const resultEl = el.querySelector('[data-core-run-result]');
+  const groundEl = el.querySelector('[data-core-run-ground]');
+  const applyEl = el.querySelector('[data-core-run-apply]');
 
   let events = [];
   let errorMessage = '';
@@ -111,6 +119,12 @@ export function createLiveTraceView({ onRun = null } = {}) {
     errorEl.hidden = !message;
   }
 
+  function showFormResult(message) {
+    if (!resultEl) return;
+    resultEl.textContent = message || '';
+    resultEl.hidden = !message;
+  }
+
   function setBusy(next) {
     busy = next;
     if (submitEl) {
@@ -124,6 +138,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
       e.preventDefault();
       if (busy) return;
       showFormError('');
+      showFormResult('');
       const goal = (goalEl?.value || '').trim();
       if (!goal) { showFormError('Enter a goal first.'); goalEl?.focus(); return; }
       const allowedFiles = parseLines(writesetEl?.value);
@@ -134,11 +149,22 @@ export function createLiveTraceView({ onRun = null } = {}) {
         allowedFiles,
         readOnlyFiles,
         timeoutMs: timeoutMin > 0 ? Math.round(timeoutMin * 60000) : 0,
+        ground: groundEl ? groundEl.checked : true,
+        apply: applyEl ? applyEl.checked : true,
       };
       setBusy(true);
       try {
         const res = await onRun(request);
-        if (res && res.ok === false) showFormError(res.error || 'Run failed.');
+        if (res && res.ok === false) {
+          showFormError(res.error || 'Run failed.');
+        } else if (res) {
+          const parts = [];
+          parts.push(res.appliedCount ? `Applied ${res.appliedCount} file${res.appliedCount === 1 ? '' : 's'} to the workspace` : 'No files applied');
+          if (res.grounded) parts.push(res.groundingBrief ? 'grounded (prior-art brief produced)' : 'grounding requested');
+          if (res.violationCount) parts.push(`${res.violationCount} out-of-write-set violation${res.violationCount === 1 ? '' : 's'}`);
+          if (res.stopped) parts.push(`stopped: ${res.stopReason || 'time-cap'}`);
+          showFormResult(parts.join(' · '));
+        }
       } catch (err) {
         showFormError(String(err?.message || err));
       } finally {

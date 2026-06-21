@@ -10786,6 +10786,24 @@ body.zen-mode #workspace {
   font-size: calc(11.5px * var(--us));
   color: var(--danger-color);
 }
+.core-run-form-opts {
+  flex-wrap: wrap;
+  gap: calc(14px * var(--us));
+  justify-content: flex-start;
+}
+.core-run-check {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(6px * var(--us));
+  font-size: calc(11.5px * var(--us));
+  color: var(--text-secondary, var(--text-tertiary));
+  cursor: pointer;
+}
+.core-run-form-result {
+  margin: 0;
+  font-size: calc(11.5px * var(--us));
+  color: var(--success-color);
+}
 .core-run-graph {
   display: flex;
   flex-direction: column;
