@@ -367,6 +367,12 @@ Renderer-facing IPC is `registerCoreRunHandlers` in
   renderer-reachable channel that launches a child agent process — by design,
   contained to the overlay and the workspace, like Command Runner / PTY but scoped
   to the governed-delegation moat. It streams trace events back via `orpad-core-trace`.
+  **Parallel research (fan-out):** when `parallelResearch` is set, the grounding
+  step spawns several READ-ONLY research subagents concurrently, each in its own
+  sibling overlay `<workspace>/.orpad/core-runs/<runId>/overlay-r{n}/` under the
+  same run dir and the same moat; only the single build writer applies to canonical
+  (writes are never parallelized). Each subagent is the same contained `claude`
+  child process as a normal delegation — more processes, no new capability.
 - `orpad-core-run-replay` (invoke) — replays a RECORDED `trace.jsonl` through the
   same `orpad-core-trace` channel for the live-trace GUI and CI (no paid agent
   run). The trace path is validated with `authority.assertWorkspacePath`, so the
