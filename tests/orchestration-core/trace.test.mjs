@@ -144,3 +144,38 @@ test('a grounded dual-agent stream stays running until the build closes', () => 
   assert.equal(g2.activeId, null);
   assert.equal(g2.nodes.every(n => n.state === 'done'), true);
 });
+
+test('streamEventToTrace captures the touched file from tool input (data layer)', () => {
+  const evs = trace.streamEventToTrace({ type: 'assistant', message: { content: [
+    { type: 'tool_use', id: 'w', name: 'Write', input: { file_path: 'src/x.js' } },
+    { type: 'tool_use', id: 'b', name: 'Bash', input: { command: 'ls' } },
+    { type: 'tool_use', id: 'g', name: 'Grep', input: { pattern: 'foo' } },
+  ] } });
+  assert.equal(evs.find((e) => e.toolId === 'w').file, 'src/x.js', 'Write target is captured');
+  assert.equal(evs.find((e) => e.toolId === 'b').file, null, 'Bash command is not a file');
+  assert.equal(evs.find((e) => e.toolId === 'g').file, null, 'Grep pattern is not a file');
+});
+
+test('buildEmergentGraph builds a file-access layer (reads/writes per file)', () => {
+  const events = [
+    { ev: 'node', state: 'active', toolId: 'r1', type: 'inspect', label: 'Read a', file: 'src/a.js' },
+    { ev: 'node', state: 'done', toolId: 'r1' },
+    { ev: 'node', state: 'active', toolId: 'w1', type: 'edit', label: 'Write a', file: 'src/a.js' },
+    { ev: 'node', state: 'done', toolId: 'w1' },
+    { ev: 'node', state: 'active', toolId: 'w2', type: 'edit', label: 'Write b', file: 'src/b.js' },
+    { ev: 'node', state: 'done', toolId: 'w2' },
+    { ev: 'node', state: 'active', toolId: 'x1', type: 'exec', label: 'Bash' },
+    { ev: 'run', state: 'done' },
+  ];
+  const g = trace.buildEmergentGraph(events);
+  const byFile = Object.fromEntries(g.files.map((f) => [f.path, f]));
+  assert.equal(g.files.length, 2, 'two distinct files touched');
+  assert.equal(byFile['src/a.js'].reads, 1, 'a.js read once');
+  assert.equal(byFile['src/a.js'].writes, 1, 'a.js written once');
+  assert.equal(byFile['src/a.js'].nodes.length, 2, 'a.js touched by two nodes (a star, not a line)');
+  assert.equal(byFile['src/b.js'].writes, 1);
+  // nodes carry their file + access; non-file tools (exec) carry neither.
+  assert.equal(g.nodes.find((n) => n.label === 'Write a').access, 'write');
+  assert.equal(g.nodes.find((n) => n.label === 'Read a').access, 'read');
+  assert.equal(g.nodes.find((n) => n.type === 'exec').file, undefined);
+});

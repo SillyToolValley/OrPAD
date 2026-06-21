@@ -42,6 +42,7 @@ export function buildEmergentGraph(traceEvents) {
   const nodes = [];
   const edges = [];
   const byTool = new Map();
+  const files = new Map();
   let prevId = null;
   let seq = 0;
   let runDone = false;
@@ -76,7 +77,18 @@ export function buildEmergentGraph(traceEvents) {
       for (let i = nodes.length - 1; i >= 0; i -= 1) {
         if (nodes[i].phase) { if (nodes[i].state === 'active') nodes[i].state = 'done'; break; }
       }
-      openNode(e.type || 'tool', e.label, e.toolId, e.at, e.transient);
+      const work = openNode(e.type || 'tool', e.label, e.toolId, e.at, e.transient);
+      if (e.file) {
+        // File-access layer: record which work node touches which file (the data
+        // layer behind the live graph — reads vs writes per file).
+        const access = work.type === 'edit' ? 'write' : (work.type === 'inspect' ? 'read' : 'touch');
+        work.file = e.file;
+        work.access = access;
+        const rec = files.get(e.file) || { path: e.file, reads: 0, writes: 0, nodes: [] };
+        if (access === 'write') rec.writes += 1; else if (access === 'read') rec.reads += 1;
+        rec.nodes.push(work.id);
+        files.set(e.file, rec);
+      }
     } else if (e.ev === 'node' && e.state === 'done') {
       const id = e.toolId && byTool.get(e.toolId);
       const node = id ? nodes.find((n) => n.id === id) : lastActive(nodes);
@@ -95,7 +107,7 @@ export function buildEmergentGraph(traceEvents) {
   // agent's result emits an intermediate run-done, so requiring all nodes closed
   // prevents that from flipping the graph to "complete" while the build runs on.
   const done = runDone && nodes.every((n) => n.state === 'done');
-  return { nodes, edges, activeId: active ? active.id : null, done };
+  return { nodes, edges, activeId: active ? active.id : null, done, files: [...files.values()] };
 }
 
 function lastActive(nodes) {

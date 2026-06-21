@@ -54,7 +54,7 @@ function streamEventToTrace(obj, at) {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'tool_use') {
         out.push({ ev: 'node', state: 'active', toolId: block.id || null,
-          type: classifyTool(block.name), label: toolLabel(block), at: ts });
+          type: classifyTool(block.name), label: toolLabel(block), file: toolFile(block), at: ts });
       } else if (block.type === 'thinking' || block.type === 'text') {
         out.push({ ev: 'node', state: 'active', toolId: null, type: 'reason', transient: true,
           label: block.type === 'thinking' ? 'Reason' : 'Respond', at: ts });
@@ -81,6 +81,14 @@ function toolLabel(block) {
   return short ? `${name}: ${short}` : String(name);
 }
 
+// The file a tool touches (read/write targets only — not patterns/commands/queries).
+// Full path so the live file-access layer can dedupe and link files. null otherwise.
+function toolFile(block) {
+  const input = (block && block.input) || {};
+  const f = input.file_path || input.path || input.notebook_path;
+  return f ? String(f) : null;
+}
+
 // Build an emergent graph from an ordered list of trace events. Each 'node'
 // active event opens a node (in-progress spinner); the matching done event (by
 // toolId, else the most recent open node of any) closes it. Nodes are linked in
@@ -89,6 +97,7 @@ function buildEmergentGraph(traceEvents) {
   const nodes = [];
   const edges = [];
   const byTool = new Map();
+  const files = new Map();
   let prevId = null;
   let seq = 0;
   let runDone = false;
@@ -123,7 +132,18 @@ function buildEmergentGraph(traceEvents) {
       for (let i = nodes.length - 1; i >= 0; i -= 1) {
         if (nodes[i].phase) { if (nodes[i].state === 'active') nodes[i].state = 'done'; break; }
       }
-      openNode(e.type || 'tool', e.label, e.toolId, e.at, e.transient);
+      const work = openNode(e.type || 'tool', e.label, e.toolId, e.at, e.transient);
+      if (e.file) {
+        // File-access layer: record which work node touches which file (the data
+        // layer behind the live graph — reads vs writes per file).
+        const access = work.type === 'edit' ? 'write' : (work.type === 'inspect' ? 'read' : 'touch');
+        work.file = e.file;
+        work.access = access;
+        const rec = files.get(e.file) || { path: e.file, reads: 0, writes: 0, nodes: [] };
+        if (access === 'write') rec.writes += 1; else if (access === 'read') rec.reads += 1;
+        rec.nodes.push(work.id);
+        files.set(e.file, rec);
+      }
     } else if (e.ev === 'node' && e.state === 'done') {
       const id = e.toolId && byTool.get(e.toolId);
       const node = id ? nodes.find(n => n.id === id) : lastActive(nodes);
@@ -142,7 +162,7 @@ function buildEmergentGraph(traceEvents) {
   // agent's result emits an intermediate run-done, so requiring all nodes closed
   // prevents that from flipping the graph to "complete" while the build runs on.
   const done = runDone && nodes.every(n => n.state === 'done');
-  return { nodes, edges, activeId: active ? active.id : null, done };
+  return { nodes, edges, activeId: active ? active.id : null, done, files: [...files.values()] };
 }
 
 function lastActive(nodes) {

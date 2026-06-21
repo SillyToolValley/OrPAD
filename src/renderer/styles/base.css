@@ -10910,3 +10910,42 @@ body.zen-mode #workspace {
 .core-run-node.type-exec { border-top-color: var(--syntax-keyword, #bb9af7); }
 .core-run-node.type-research { border-top-color: var(--syntax-meta, #e0af68); }
 .core-run-node.type-reason { border-top-color: var(--text-tertiary); }
+/* File-access chip: which file a work node reads/writes (the data layer). */
+.core-run-node-file {
+  display: flex;
+  align-items: center;
+  gap: calc(6px * var(--us));
+  margin-top: calc(6px * var(--us));
+  font-size: calc(10.5px * var(--us));
+  min-width: 0;
+}
+.core-run-file-tag {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  font-size: calc(9px * var(--us));
+  padding: calc(1px * var(--us)) calc(5px * var(--us));
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+  color: var(--text-tertiary);
+}
+.core-run-node-file.access-read .core-run-file-tag {
+  color: var(--syntax-string, #9ece6a);
+  border-color: color-mix(in srgb, var(--syntax-string, #9ece6a) 50%, var(--border-color));
+}
+.core-run-node-file.access-write .core-run-file-tag {
+  color: var(--syntax-number, #ff9e64);
+  border-color: color-mix(in srgb, var(--syntax-number, #ff9e64) 50%, var(--border-color));
+}
+.core-run-file-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-family: var(--mono-font, ui-monospace, monospace);
+  color: var(--text-secondary, var(--text-tertiary));
+}

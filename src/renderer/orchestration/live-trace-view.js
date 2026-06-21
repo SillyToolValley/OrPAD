@@ -312,6 +312,21 @@ export function createLiveTraceView({ onRun = null } = {}) {
     badge.textContent = typeLabel(node.type);
     top.append(strong, badge);
 
+    // File-access chip: which file this node reads/writes (the data layer).
+    let fileEl = null;
+    if (node.file) {
+      fileEl = document.createElement('div');
+      fileEl.className = `core-run-node-file access-${node.access || 'touch'}`;
+      const tag = document.createElement('span');
+      tag.className = 'core-run-file-tag';
+      tag.textContent = node.access || 'touch';
+      const pathEl = document.createElement('span');
+      pathEl.className = 'core-run-file-path';
+      pathEl.textContent = node.file;
+      pathEl.title = node.file;
+      fileEl.append(tag, pathEl);
+    }
+
     const status = document.createElement('div');
     status.className = 'core-run-node-status';
     if (node.state === 'active') {
@@ -323,7 +338,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
       status.textContent = 'Done';
     }
 
-    node$.append(top, status);
+    node$.append(top, ...(fileEl ? [fileEl] : []), status);
     return node$;
   }
 
