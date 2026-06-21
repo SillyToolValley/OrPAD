@@ -116,6 +116,12 @@ function buildEmergentGraph(traceEvents) {
       const target = phaseNodeOf(nodes, e) || lastActive(nodes);
       if (target) target.state = 'done';
     } else if (e.ev === 'node' && e.state === 'active') {
+      // The enclosing phase (e.g. agent_run "Delegate to agent") has handed off
+      // once real work streams in — close it so only the work frontier spins,
+      // not an earlier phase node sitting above its finished children.
+      for (let i = nodes.length - 1; i >= 0; i -= 1) {
+        if (nodes[i].phase) { if (nodes[i].state === 'active') nodes[i].state = 'done'; break; }
+      }
       openNode(e.type || 'tool', e.label, e.toolId, e.at, e.transient);
     } else if (e.ev === 'node' && e.state === 'done') {
       const id = e.toolId && byTool.get(e.toolId);
@@ -130,7 +136,12 @@ function buildEmergentGraph(traceEvents) {
   // The in-progress node is the most recent active WORK node (prefer non-phase).
   const activeWork = [...nodes].reverse().find(n => n.state === 'active' && !n.phase);
   const active = activeWork || nodes.find(n => n.state === 'active') || null;
-  return { nodes, edges, activeId: active ? active.id : null, done: runDone };
+  // A run is complete only when the terminal run-done arrived AND every node is
+  // closed. A grounded run streams TWO agents (research, then build); the first
+  // agent's result emits an intermediate run-done, so requiring all nodes closed
+  // prevents that from flipping the graph to "complete" while the build runs on.
+  const done = runDone && nodes.every(n => n.state === 'done');
+  return { nodes, edges, activeId: active ? active.id : null, done };
 }
 
 function lastActive(nodes) {

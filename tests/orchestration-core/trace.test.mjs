@@ -105,3 +105,42 @@ test('end-to-end: a raw stream replays into an emergent graph', () => {
   assert.equal(g.done, true);
   assert.equal(g.nodes.every(n => n.state === 'done'), true);
 });
+
+test('a grounded dual-agent stream stays running until the build closes', () => {
+  // A grounded run delegates TWICE (research, then build). Each agent's CLI
+  // result emits an intermediate run-done; the build's nodes open AFTER it. The
+  // graph must not read "complete" until the build itself closes, and a phase
+  // node must not keep spinning above its already-finished child work nodes.
+  const upToBuildInFlight = [
+    // research agent
+    { ev: 'phase', kind: 'agent_run', state: 'start' }, // "Delegate to agent"
+    { ev: 'node', state: 'active', toolId: 'r1', type: 'inspect', label: 'Read' },
+    { ev: 'node', state: 'done', toolId: 'r1' },
+    { ev: 'run', state: 'done' },                        // research result -> intermediate run-done
+    { ev: 'phase', kind: 'agent_run', state: 'done' },
+    // build agent begins AFTER the intermediate run-done
+    { ev: 'phase', kind: 'agent_run', state: 'start' },  // second "Delegate to agent"
+    { ev: 'node', state: 'active', toolId: 'w1', type: 'edit', label: 'Write index.html' },
+    { ev: 'node', state: 'done', toolId: 'w1' },
+    { ev: 'node', state: 'active', toolId: 'b1', type: 'exec', label: 'Bash: test' }, // still running
+  ];
+  const g = trace.buildEmergentGraph(upToBuildInFlight);
+  assert.equal(g.done, false, 'an intermediate agent run-done must not complete the graph');
+  const delegates = g.nodes.filter(n => n.phase && n.type === 'delegate');
+  assert.equal(delegates.length, 2, 'one delegate phase node per agent');
+  assert.equal(delegates.every(n => n.state === 'done'), true, 'phase nodes do not spin over finished children');
+  const exec = g.nodes.find(n => n.label === 'Bash: test');
+  assert.equal(exec.state, 'active');
+  assert.equal(g.activeId, exec.id, 'the spinner is the work frontier, not the delegate phase');
+
+  // build agent finishes -> only now is the whole run complete.
+  const g2 = trace.buildEmergentGraph([
+    ...upToBuildInFlight,
+    { ev: 'node', state: 'done', toolId: 'b1' },
+    { ev: 'phase', kind: 'agent_run', state: 'done' },
+    { ev: 'run', state: 'done' },
+  ]);
+  assert.equal(g2.done, true);
+  assert.equal(g2.activeId, null);
+  assert.equal(g2.nodes.every(n => n.state === 'done'), true);
+});

@@ -316,6 +316,15 @@ export function createLiveTraceView({ onRun = null } = {}) {
     if (errorMessage) {
       statusEl.textContent = `Error — ${errorMessage}`;
       statusEl.dataset.state = 'error';
+    } else if (busy) {
+      // A live run is in flight — the IPC promise is authoritative over any
+      // intermediate trace run-done (a grounded run streams research THEN build,
+      // plus a post-run apply step), so never show "complete" until it resolves.
+      const active = nodes.find((n) => n.id === activeId);
+      statusEl.textContent = !nodes.length
+        ? 'Starting run…'
+        : `Running — ${active ? (active.label || typeLabel(active.type)) : 'working'}…`;
+      statusEl.dataset.state = 'running';
     } else if (!nodes.length) {
       statusEl.textContent = 'Idle — no run yet.';
       statusEl.dataset.state = 'idle';
