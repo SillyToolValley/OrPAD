@@ -133,15 +133,28 @@ export function createLiveTraceView({ onRun = null } = {}) {
   let dragStartY = 0;
   let panBaseX = 0;
   let panBaseY = 0;
+  let userAdjusted = false;
 
   function applyTransform() {
     if (canvasEl) canvasEl.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
   }
-  function resetView() {
-    panX = 0;
-    panY = 0;
-    scale = 1;
+  // Fit the whole 2-lane graph into the viewport (default view), 1:1 if it already fits.
+  function fitView() {
+    if (!viewportEl || !canvasEl) return;
+    const gw = graphEl.scrollWidth || 1;
+    const gh = graphEl.scrollHeight || 1;
+    const vw = viewportEl.clientWidth || 1;
+    const vh = viewportEl.clientHeight || 1;
+    const pad = 56;
+    const s = Math.min(1, (vw - pad) / gw, (vh - pad) / gh);
+    scale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s || 1));
+    panX = Math.max(8, (vw - gw * scale) / 2);
+    panY = 16;
     applyTransform();
+  }
+  function resetView() {
+    userAdjusted = false;
+    fitView();
   }
   function zoomAt(nextScaleRaw, cx, cy) {
     const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, nextScaleRaw));
@@ -158,6 +171,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
       // Let node text stay selectable; only pan from the empty background.
       if (e.target.closest && e.target.closest('.core-run-node, .core-run-graph-controls')) return;
       dragging = true;
+      userAdjusted = true;
       dragStartX = e.clientX;
       dragStartY = e.clientY;
       panBaseX = panX;
@@ -181,14 +195,17 @@ export function createLiveTraceView({ onRun = null } = {}) {
     viewportEl.addEventListener('pointercancel', endDrag);
     viewportEl.addEventListener('wheel', (e) => {
       e.preventDefault();
+      userAdjusted = true;
       const rect = viewportEl.getBoundingClientRect();
       const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
       zoomAt(scale * factor, e.clientX - rect.left, e.clientY - rect.top);
     }, { passive: false });
     const centerZoom = (factor) => {
+      userAdjusted = true;
       const rect = viewportEl.getBoundingClientRect();
       zoomAt(scale * factor, rect.width / 2, rect.height / 2);
     };
+
     zoomInEl?.addEventListener('click', () => centerZoom(1.2));
     zoomOutEl?.addEventListener('click', () => centerZoom(1 / 1.2));
     zoomResetEl?.addEventListener('click', resetView);
@@ -342,19 +359,98 @@ export function createLiveTraceView({ onRun = null } = {}) {
     return node$;
   }
 
+  const SVGNS = 'http://www.w3.org/2000/svg';
+
+  // Layer-2 node: a file the run reads/writes (the Obsidian-style file graph).
+  function fileNodeEl(f, isActive) {
+    const el = document.createElement('div');
+    el.className = `core-run-file-node${isActive ? ' is-active' : ''}`;
+    el.dataset.file = f.path;
+    const name = document.createElement('div');
+    name.className = 'core-run-file-node-name';
+    name.textContent = f.path.split(/[\\/]/).pop();
+    name.title = f.path;
+    const meta = document.createElement('div');
+    meta.className = 'core-run-file-node-meta';
+    const parts = [];
+    if (f.reads) parts.push(`R×${f.reads}`);
+    if (f.writes) parts.push(`W×${f.writes}`);
+    meta.textContent = parts.join('  ') || 'touch';
+    el.append(name, meta);
+    return el;
+  }
+
+  // Draw node→file edges (read=green inbound, write=orange outbound) after layout.
+  // offset* are layout coords relative to the position:relative graph container, so
+  // they are unaffected by the canvas pan/zoom transform.
+  function drawEdges(svg, nodes, activeId, nodeEls, fileEls) {
+    const w = graphEl.scrollWidth;
+    const h = graphEl.scrollHeight;
+    svg.setAttribute('width', String(w));
+    svg.setAttribute('height', String(h));
+    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    for (const node of nodes) {
+      if (!node.file) continue;
+      const a = nodeEls.get(node.id);
+      const f = fileEls.get(node.file);
+      if (!a || !f) continue;
+      const x1 = a.offsetLeft + a.offsetWidth;
+      const y1 = a.offsetTop + a.offsetHeight / 2;
+      const x2 = f.offsetLeft;
+      const y2 = f.offsetTop + f.offsetHeight / 2;
+      const dx = Math.max(40, (x2 - x1) / 2);
+      const path = document.createElementNS(SVGNS, 'path');
+      path.setAttribute('d', `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`);
+      path.setAttribute('class', `core-run-edge-line access-${node.access || 'touch'}${node.id === activeId ? ' is-active' : ''}`);
+      svg.appendChild(path);
+    }
+  }
   function render() {
-    const { nodes, activeId, done } = buildEmergentGraph(events);
+    const { nodes, activeId, done, files } = buildEmergentGraph(events);
     graphEl.replaceChildren();
 
+    // SVG edge overlay (behind the cards).
+    const svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('class', 'core-run-edges');
+    graphEl.appendChild(svg);
+
+    const lanes = document.createElement('div');
+    lanes.className = 'core-run-lanes';
+
+    // Layer 1: agent lane (phases + work nodes in execution order).
+    const agentLane = document.createElement('div');
+    agentLane.className = 'core-run-agent-lane';
+    const nodeEls = new Map();
     nodes.forEach((node, i) => {
       if (i > 0) {
         const edge = document.createElement('div');
         edge.className = 'core-run-edge';
         edge.setAttribute('aria-hidden', 'true');
-        graphEl.appendChild(edge);
+        agentLane.appendChild(edge);
       }
-      graphEl.appendChild(nodeEl(node, node.id === activeId));
+      const cardEl = nodeEl(node, node.id === activeId);
+      agentLane.appendChild(cardEl);
+      nodeEls.set(node.id, cardEl);
     });
+    lanes.appendChild(agentLane);
+
+    // Layer 2: file lane (distinct files, the one the active node touches highlighted).
+    const activeFile = (nodes.find((n) => n.id === activeId) || {}).file || null;
+    const fileEls = new Map();
+    if (files.length) {
+      const fileLane = document.createElement('div');
+      fileLane.className = 'core-run-file-lane';
+      files.forEach((f) => {
+        const fe = fileNodeEl(f, f.path === activeFile);
+        fileLane.appendChild(fe);
+        fileEls.set(f.path, fe);
+      });
+      lanes.appendChild(fileLane);
+    }
+    graphEl.appendChild(lanes);
+    drawEdges(svg, nodes, activeId, nodeEls, fileEls);
+    // Auto-fit the whole 2-lane graph by default; yield once the user pans/zooms.
+    if (!userAdjusted) fitView();
 
     if (errorMessage) {
       statusEl.textContent = `Error — ${errorMessage}`;

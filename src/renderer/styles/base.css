@@ -10846,10 +10846,79 @@ body.zen-mode #workspace {
   will-change: transform;
 }
 .core-run-graph {
+  position: relative;
+  width: max-content;
+}
+.core-run-lanes {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(110px * var(--us));
+}
+.core-run-agent-lane {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   width: calc(280px * var(--us));
+  position: relative;
+  z-index: 1;
+}
+.core-run-file-lane {
+  display: flex;
+  flex-direction: column;
+  gap: calc(12px * var(--us));
+  width: calc(190px * var(--us));
+  padding-top: calc(40px * var(--us));
+  position: relative;
+  z-index: 1;
+}
+/* SVG node→file edge overlay (behind the cards). */
+.core-run-edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;
+}
+.core-run-edge-line {
+  fill: none;
+  stroke-width: 2;
+  opacity: 0.45;
+}
+.core-run-edge-line.access-read { stroke: var(--syntax-string, #9ece6a); }
+.core-run-edge-line.access-write { stroke: var(--syntax-number, #ff9e64); }
+.core-run-edge-line.access-touch { stroke: var(--border-color); }
+.core-run-edge-line.is-active {
+  opacity: 1;
+  stroke-width: 3;
+  stroke-dasharray: 6 4;
+  animation: core-run-dash 0.6s linear infinite;
+}
+@keyframes core-run-dash { to { stroke-dashoffset: -10; } }
+/* Layer-2 file node (the Obsidian-style file graph). */
+.core-run-file-node {
+  border: 1px solid var(--border-color);
+  border-left: 3px solid color-mix(in srgb, var(--accent-color) 50%, var(--border-color));
+  border-radius: 8px;
+  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+}
+.core-run-file-node.is-active {
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-color) 28%, transparent);
+}
+.core-run-file-node-name {
+  font-size: calc(12px * var(--us));
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.core-run-file-node-meta {
+  margin-top: calc(3px * var(--us));
+  font-size: calc(10px * var(--us));
+  letter-spacing: 0.03em;
+  color: var(--text-tertiary);
 }
 .core-run-graph-controls {
   position: absolute;
