@@ -11,6 +11,7 @@
 
 import { buildEmergentGraph } from './emergent-trace.js';
 import ForceGraph3D from '3d-force-graph';
+import * as THREE from 'three';
 
 const TYPE_LABEL = {
   recon: 'Recon', isolate: 'Isolate', guidance: 'Guidance', delegate: 'Delegate',
@@ -43,6 +44,72 @@ function linkColor(l) {
   if (l.kind === 'access') return l.access === 'write' ? '#ff9e64' : l.access === 'read' ? '#9ece6a' : '#9aa5ce';
   if (l.kind === 'flow') return '#7dcfff';
   return '#444a66';
+}
+
+function cssVar(name, fallback) {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch (_) { return fallback; }
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// Build a billboarded "chip" sprite for a node — a flat rounded pill (OrPAD art
+// style: theme bg, type-accent border + dot, app font) with the node's name always
+// visible. Canvas texture, so no extra dependency beyond three.
+function makeNodeSprite(node) {
+  const accent = nodeColor(node);
+  const bg = cssVar('--bg-secondary', '#16161e');
+  const fg = cssVar('--text-primary', '#c0caf5');
+  const dpr = 2;
+  const fontPx = 13 * dpr;
+  const font = `600 ${fontPx}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+  const raw = String(node.name || node.id || 'node');
+  const text = raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
+  const measure = document.createElement('canvas').getContext('2d');
+  measure.font = font;
+  const padX = 13 * dpr;
+  const dotR = 5 * dpr;
+  const gap = 8 * dpr;
+  const textW = measure.measureText(text).width;
+  const w = Math.ceil(padX + dotR * 2 + gap + textW + padX);
+  const h = Math.ceil(30 * dpr);
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.font = font;
+  // pill
+  roundRectPath(ctx, 1.5 * dpr, 1.5 * dpr, w - 3 * dpr, h - 3 * dpr, 11 * dpr);
+  ctx.fillStyle = bg; ctx.globalAlpha = 0.94; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.lineWidth = (node.active ? 3 : 1.6) * dpr;
+  ctx.strokeStyle = accent;
+  ctx.stroke();
+  // type/file dot (write/touched files get a ring)
+  ctx.beginPath();
+  ctx.arc(padX + dotR, h / 2, dotR, 0, Math.PI * 2);
+  ctx.fillStyle = accent; ctx.fill();
+  // label
+  ctx.fillStyle = fg;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, padX + dotR * 2 + gap, h / 2 + dpr * 0.5);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.minFilter = THREE.LinearFilter;
+  tex.anisotropy = 4;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+  const sprite = new THREE.Sprite(mat);
+  const S = 8; // world height
+  sprite.scale.set(S * (w / h), S, 1);
+  return sprite;
 }
 
 // onRun: optional async (request) => summary (hides the form when omitted).
@@ -180,10 +247,19 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
       .width(graph3dEl.clientWidth)
       .height(graph3dEl.clientHeight)
       .showNavInfo(false)
-      .nodeLabel((n) => (n.kind === 'file' ? `📄 ${n.path}` : `${typeLabel(n.ntype)} — ${n.name}`))
-      .nodeColor(nodeColor)
-      .nodeVal((n) => (n.kind === 'file' ? Math.max(1.5, (n.deg || 0) + 1) : (n.phase ? 3 : 2)))
-      .nodeOpacity(0.92)
+      .nodeLabel((n) => (n.kind === 'file' ? n.path : `${typeLabel(n.ntype)} — ${n.name}`))
+      .nodeThreeObject((n) => {
+        const sig = `${n.name}|${nodeColor(n)}|${n.active ? 1 : 0}`;
+        if (n.__sig === sig && n.__obj) return n.__obj;
+        if (n.__obj && n.__obj.material) {
+          if (n.__obj.material.map) n.__obj.material.map.dispose();
+          n.__obj.material.dispose();
+        }
+        n.__sig = sig;
+        n.__obj = makeNodeSprite(n);
+        return n.__obj;
+      })
+      .nodeThreeObjectExtend(false)
       .linkColor(linkColor)
       .linkWidth((l) => (l.kind === 'access' ? 1.2 : 0.5))
       .linkOpacity(0.35)
@@ -272,8 +348,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     const graph = ensureFG();
     if (graph) {
       const sig = `${data.nodes.length}:${data.links.length}:${activeId || ''}:${linkGraph ? linkGraph.nodes.length : 0}`;
-      if (sig !== lastSig) { lastSig = sig; graph.graphData(data); }
-      else { graph.nodeColor(nodeColor); } // refresh colours (e.g. active node) without reheating
+      if (sig !== lastSig) { lastSig = sig; graph.graphData(data); } // activeId is in the sig, so chips refresh on change
     }
   }
 
