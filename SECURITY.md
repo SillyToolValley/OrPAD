@@ -451,6 +451,7 @@ features that intentionally launch configured/user-requested child processes.
 | `resolve-wiki-link` | handle | Path lookup within dirPath | — | **None** |
 | `get-backlinks` | handle | Read ≤1000 .md files | — | **None** |
 | `get-file-names` | handle | List .md names in dirPath | — | **None** |
+| `get-link-graph` | handle | Build the workspace markdown link graph (notes + wiki/md-link edges) from the read-only link index; resolves the workspace from the authority when no dirPath given | reads `event.sender` | Authority guard / workspace; read-only, reuses the link index |
 | `pipeline-validate-text` / `runbook-validate-text` | handle | Validate in-memory pipeline, graph, tree, or legacy runbook text | — | No filesystem path |
 | `pipeline-validate-file` / `runbook-validate-file` | handle | Read and validate a pipeline, graph, tree, or legacy runbook file | — | Authority guard / workspace or approved file |
 | `pipeline-scan-workspace` / `runbook-scan-workspace` | handle | Scan approved workspace metadata for pipelines, legacy runbooks, vault markers, and redaction candidates | — | Authority guard / workspace only |

@@ -44,7 +44,7 @@ function parseLines(value) {
 
 // onRun: optional async (request) => summary. When omitted the Run form is hidden
 // (e.g. read-only/replay-only surfaces).
-export function createLiveTraceView({ onRun = null } = {}) {
+export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   const el = document.createElement('section');
   el.className = 'core-run-view';
   el.innerHTML = `
@@ -92,6 +92,10 @@ export function createLiveTraceView({ onRun = null } = {}) {
       </form>
     </div>
     <div class="core-run-graph-viewport" data-core-run-viewport>
+      <div class="core-run-mode-toggle">
+        <button type="button" class="core-run-mode-btn is-active" data-core-run-mode="run">Run</button>
+        <button type="button" class="core-run-mode-btn" data-core-run-mode="project">Project graph</button>
+      </div>
       <div class="core-run-graph-canvas" data-core-run-canvas>
         <div class="core-run-graph" data-core-run-graph aria-live="polite"></div>
       </div>
@@ -122,6 +126,15 @@ export function createLiveTraceView({ onRun = null } = {}) {
   const zoomInEl = el.querySelector('[data-core-run-zoom-in]');
   const zoomOutEl = el.querySelector('[data-core-run-zoom-out]');
   const zoomResetEl = el.querySelector('[data-core-run-zoom-reset]');
+  const modeBtns = [...el.querySelectorAll('[data-core-run-mode]')];
+
+  // View mode: 'run' (the live emergent graph) or 'project' (the Obsidian-style
+  // workspace link graph). Project graph is fetched lazily via onLinkGraph.
+  let viewMode = 'run';
+  let linkGraph = null;
+  let linkGraphError = null;
+  let linkGraphLoading = false;
+  let lastRunFiles = [];
 
   // Pan/zoom canvas — drag the empty graph background to pan, wheel to zoom
   // (zoom anchored at the cursor), zoom buttons step around the viewport center.
@@ -171,7 +184,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
     viewportEl.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       // Let node text stay selectable; only pan from the empty background.
-      if (e.target.closest && e.target.closest('.core-run-node, .core-run-graph-controls')) return;
+      if (e.target.closest && e.target.closest('.core-run-node, .core-run-graph-controls, .core-run-mode-toggle, .core-run-file-graph-node')) return;
       dragging = true;
       userAdjusted = true;
       dragStartX = e.clientX;
@@ -434,8 +447,122 @@ export function createLiveTraceView({ onRun = null } = {}) {
       svg.appendChild(path);
     }
   }
+  function setMode(mode) {
+    viewMode = mode === 'project' ? 'project' : 'run';
+    modeBtns.forEach((b) => b.classList.toggle('is-active', b.dataset.coreRunMode === viewMode));
+    userAdjusted = false;
+    if (viewMode === 'project' && !linkGraph && !linkGraphLoading && onLinkGraph) {
+      linkGraphLoading = true;
+      linkGraphError = null;
+      render();
+      Promise.resolve(onLinkGraph()).then((res) => {
+        linkGraphLoading = false;
+        if (res && res.ok) { linkGraph = res; linkGraphError = null; } else { linkGraphError = (res && res.error) || 'No project link graph.'; }
+        render();
+      }).catch((e) => { linkGraphLoading = false; linkGraphError = String(e && e.message || e); render(); });
+      return;
+    }
+    render();
+  }
+  modeBtns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.coreRunMode)));
+
+  // Deterministic force-directed layout for the project link graph (Obsidian-style).
+  function layoutForce(nodes, edges) {
+    const n = nodes.length;
+    if (!n) return { pos: [], w: 1, h: 1 };
+    const R = Math.max(140, n * 16);
+    const pos = nodes.map((_, i) => ({ x: R * Math.cos((2 * Math.PI * i) / n), y: R * Math.sin((2 * Math.PI * i) / n) }));
+    const idx = new Map(nodes.map((nd, i) => [nd.path, i]));
+    const E = edges.map((e) => [idx.get(e.from), idx.get(e.to)]).filter(([a, b]) => a != null && b != null && a !== b);
+    const iters = Math.min(260, 90 + n);
+    for (let it = 0; it < iters; it++) {
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          let dx = pos[i].x - pos[j].x; let dy = pos[i].y - pos[j].y;
+          const d2 = dx * dx + dy * dy + 0.01; const d = Math.sqrt(d2);
+          const f = 2600 / d2; dx /= d; dy /= d;
+          pos[i].x += dx * f; pos[i].y += dy * f; pos[j].x -= dx * f; pos[j].y -= dy * f;
+        }
+      }
+      for (const [a, b] of E) {
+        let dx = pos[b].x - pos[a].x; let dy = pos[b].y - pos[a].y;
+        const d = Math.sqrt(dx * dx + dy * dy) + 0.01; const f = (d - 96) * 0.018;
+        dx /= d; dy /= d;
+        pos[a].x += dx * f; pos[a].y += dy * f; pos[b].x -= dx * f; pos[b].y -= dy * f;
+      }
+    }
+    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+    for (const p of pos) { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); }
+    const pad = 70;
+    for (const p of pos) { p.x = p.x - minX + pad; p.y = p.y - minY + pad; }
+    return { pos, w: (maxX - minX) + pad * 2, h: (maxY - minY) + pad * 2 };
+  }
+
+  function fileGraphNodeEl(node, touched) {
+    const fg = document.createElement('div');
+    fg.className = `core-run-file-graph-node${touched ? ' is-touched' : ''}`;
+    fg.dataset.file = node.path;
+    const deg = (node.out || 0) + (node.in || 0);
+    const dot = document.createElement('span');
+    dot.className = 'core-run-fg-dot';
+    const r = Math.max(8, Math.min(22, 8 + deg * 2));
+    dot.style.width = `${r}px`;
+    dot.style.height = `${r}px`;
+    const label = document.createElement('span');
+    label.className = 'core-run-fg-label';
+    label.textContent = node.name;
+    label.title = node.path;
+    fg.append(dot, label);
+    return fg;
+  }
+
+  function renderProjectGraph() {
+    graphEl.replaceChildren();
+    graphEl.style.width = '';
+    graphEl.style.height = '';
+    if (linkGraphLoading) { statusEl.textContent = 'Loading project graph…'; statusEl.dataset.state = 'running'; return; }
+    if (linkGraphError) { statusEl.textContent = `Project graph — ${linkGraphError}`; statusEl.dataset.state = 'error'; return; }
+    const g = linkGraph;
+    if (!g || !Array.isArray(g.nodes) || !g.nodes.length) {
+      statusEl.textContent = 'Project graph — no notes found.'; statusEl.dataset.state = 'idle'; return;
+    }
+    const nodes = g.nodes.slice(0, 400);
+    const { pos, w, h } = layoutForce(nodes, g.edges || []);
+    graphEl.style.width = `${Math.ceil(w)}px`;
+    graphEl.style.height = `${Math.ceil(h)}px`;
+    const svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('class', 'core-run-edges');
+    svg.setAttribute('width', String(Math.ceil(w)));
+    svg.setAttribute('height', String(Math.ceil(h)));
+    svg.setAttribute('viewBox', `0 0 ${Math.ceil(w)} ${Math.ceil(h)}`);
+    graphEl.appendChild(svg);
+    const idx = new Map(nodes.map((nd, i) => [nd.path, i]));
+    for (const e of (g.edges || [])) {
+      const a = idx.get(e.from); const b = idx.get(e.to);
+      if (a == null || b == null || a === b) continue;
+      const line = document.createElementNS(SVGNS, 'path');
+      line.setAttribute('d', `M${pos[a].x},${pos[a].y} L${pos[b].x},${pos[b].y}`);
+      line.setAttribute('class', 'core-run-link-edge');
+      svg.appendChild(line);
+    }
+    const touched = new Set((lastRunFiles || []).map((f) => f.path));
+    nodes.forEach((nd, i) => {
+      const fg = fileGraphNodeEl(nd, touched.has(nd.path));
+      fg.style.left = `${pos[i].x}px`;
+      fg.style.top = `${pos[i].y}px`;
+      graphEl.appendChild(fg);
+    });
+    const edgeCount = (g.edges || []).length;
+    statusEl.textContent = `Project graph — ${g.nodes.length} note${g.nodes.length === 1 ? '' : 's'}, ${edgeCount} link${edgeCount === 1 ? '' : 's'}`;
+    statusEl.dataset.state = 'done';
+    if (!userAdjusted) fitView();
+  }
   function render() {
+    if (viewMode === 'project') { renderProjectGraph(); return; }
+    graphEl.style.width = '';
+    graphEl.style.height = '';
     const { nodes, edges, activeId, done, files, segments } = buildEmergentGraph(events);
+    lastRunFiles = files;
     graphEl.replaceChildren();
 
     // SVG edge overlay (behind the cards).

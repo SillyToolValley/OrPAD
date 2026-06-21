@@ -284,6 +284,9 @@ function setupCoreRunView() {
   const canRun = typeof window.orpad?.core?.startRun === 'function';
   coreRunView = createLiveTraceView({
     onRun: canRun ? (request) => window.orpad.core.startRun(request) : null,
+    onLinkGraph: typeof window.orpad?.getLinkGraph === 'function'
+      ? () => window.orpad.getLinkGraph()
+      : null,
   });
   coreRunView.el.id = 'core-run-view';
   previewPaneEl.appendChild(coreRunView.el);

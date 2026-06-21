@@ -11044,3 +11044,71 @@ body.zen-mode #workspace {
   font-family: var(--mono-font, ui-monospace, monospace);
   color: var(--text-secondary, var(--text-tertiary));
 }
+/* Run/Project mode toggle (top-left of the graph viewport). */
+.core-run-mode-toggle {
+  position: absolute;
+  left: calc(12px * var(--us));
+  top: calc(12px * var(--us));
+  z-index: 6;
+  display: flex;
+  gap: calc(2px * var(--us));
+  padding: calc(2px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+}
+.core-run-mode-btn {
+  font: inherit;
+  font-size: calc(11px * var(--us));
+  padding: calc(3px * var(--us)) calc(10px * var(--us));
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary, var(--text-tertiary));
+  cursor: pointer;
+}
+.core-run-mode-btn.is-active {
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  color: var(--accent-color);
+  font-weight: 600;
+}
+/* Project link graph (Obsidian-style): file nodes + file↔file link edges. */
+.core-run-link-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--border-color) 80%, transparent);
+  stroke-width: 1.5;
+  opacity: 0.6;
+}
+.core-run-file-graph-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(3px * var(--us));
+  cursor: default;
+  user-select: text;
+}
+.core-run-fg-dot {
+  display: block;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent-color) 55%, var(--bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--accent-color) 70%, var(--border-color));
+}
+.core-run-file-graph-node.is-touched .core-run-fg-dot {
+  background: var(--syntax-number, #ff9e64);
+  border-color: var(--syntax-number, #ff9e64);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--syntax-number, #ff9e64) 30%, transparent);
+}
+.core-run-fg-label {
+  font-size: calc(10px * var(--us));
+  color: var(--text-secondary, var(--text-tertiary));
+  max-width: calc(120px * var(--us));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.core-run-file-graph-node.is-touched .core-run-fg-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}

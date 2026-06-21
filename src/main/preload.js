@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld('orpad', {
   buildLinkIndex: (dirPath) => ipcRenderer.invoke('build-link-index', dirPath),
   resolveWikiLink: (dirPath, target) => ipcRenderer.invoke('resolve-wiki-link', dirPath, target),
   getBacklinks: (dirPath, filePath) => ipcRenderer.invoke('get-backlinks', dirPath, filePath),
+  getLinkGraph: (dirPath) => ipcRenderer.invoke('get-link-graph', dirPath),
   getFileNames: (dirPath) => ipcRenderer.invoke('get-file-names', dirPath),
   runbooks: {
     validateText: (source, options) => ipcRenderer.invoke('runbook-validate-text', source, options),

@@ -1526,6 +1526,42 @@ ipcMain.handle('get-file-names', async (event, dirPath) => {
   return names;
 });
 
+// Full workspace link graph (Obsidian-style): every markdown note as a node, each
+// resolved wiki/markdown link as a file→file edge. Read-only; reuses the link index.
+// Resolves the workspace from the authority when no dirPath is given (orchestration window).
+ipcMain.handle('get-link-graph', async (event, dirPath) => {
+  let root;
+  try {
+    root = dirPath
+      ? await allowedReadPath(event, dirPath, 'Link graph workspace')
+      : (authority.getWorkspaceRoot(event.sender) || await readApprovedWorkspace());
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+  if (!root) return { ok: false, error: 'Open a project folder first.' };
+  if (linkIndex.workspacePath !== root) await buildFullIndex(root);
+
+  const rel = (p) => path.relative(root, p).split(path.sep).join('/');
+  const nodes = new Map(); // abs -> { path, name, out, in }
+  const ensure = (abs) => {
+    let n = nodes.get(abs);
+    if (!n) { n = { path: rel(abs), name: path.basename(abs, path.extname(abs)), out: 0, in: 0 }; nodes.set(abs, n); }
+    return n;
+  };
+  for (const [, abs] of linkIndex.fileNames) ensure(abs);
+  const edges = [];
+  for (const [src, links] of linkIndex.forward) {
+    const s = ensure(src);
+    for (const l of links) {
+      if (!l.resolvedTarget) continue;
+      const t = ensure(l.resolvedTarget);
+      edges.push({ from: s.path, to: t.path });
+      s.out += 1; t.in += 1;
+    }
+  }
+  return { ok: true, root: rel(root) || '.', nodes: [...nodes.values()], edges };
+});
+
 // --- Save arbitrary binary / text payload from renderer via save dialog ---
 ipcMain.handle('save-binary', async (event, defaultName, buffer) => {
   const win = BrowserWindow.fromWebContents(event.sender);
