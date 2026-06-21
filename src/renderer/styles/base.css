@@ -11128,3 +11128,26 @@ body.zen-mode #workspace {
 }
 .core-run-link-edge.is-hot { stroke: var(--accent-color); opacity: 1; stroke-width: 2.5; }
 .core-run-link-edge.is-dim { opacity: 0.1; }
+/* 3D unified scene (three.js / 3d-force-graph). */
+.core-run-graph3d {
+  position: absolute;
+  inset: 0;
+}
+.core-run-graph3d canvas { display: block; outline: none; }
+.core-run-legend {
+  position: absolute;
+  left: calc(12px * var(--us));
+  bottom: calc(12px * var(--us));
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(12px * var(--us));
+  font-size: calc(10.5px * var(--us));
+  color: var(--text-tertiary);
+  padding: calc(4px * var(--us)) calc(9px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+}
+.core-run-legend span { display: inline-flex; align-items: center; gap: calc(5px * var(--us)); }
+.core-run-legend .dot { width: calc(9px * var(--us)); height: calc(9px * var(--us)); border-radius: 50%; display: inline-block; }

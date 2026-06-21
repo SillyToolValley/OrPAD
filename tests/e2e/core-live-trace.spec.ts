@@ -52,54 +52,30 @@ test('orchestration-core live-trace Run view replays a recorded trace', async ()
 
     const orchestrationWin = await openOrchestrationWindow(app, win);
 
-    // The Run view starts idle with no nodes, and the Run form is present.
+    // The Run view starts idle and the Run form is present.
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-status]'))
       .toHaveText(/Idle/);
-    await expect(orchestrationWin.locator('#core-run-view .core-run-node')).toHaveCount(0);
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-form]')).toBeVisible();
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-submit]')).toBeEnabled();
 
     // Submitting an empty goal is rejected client-side (no run, inline error).
     await orchestrationWin.locator('#core-run-view [data-core-run-submit]').click();
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-error]')).toBeVisible();
-    await expect(orchestrationWin.locator('#core-run-view .core-run-node')).toHaveCount(0);
 
-    // Kick off the replay WITHOUT awaiting so we can observe the live spinner
-    // mid-flight (the handler streams events with a per-event delay).
-    const replayPromise = orchestrationWin.evaluate(async (p: string) => {
-      return await (window as any).orpad.core.replayTrace({ traceFile: p, intervalMs: 70 });
+    // Replay the recorded trace through the real IPC. The graph renders in a 3D
+    // scene (three.js / 3d-force-graph), so we assert the run lifecycle via the
+    // status + the mounted WebGL canvas rather than per-node DOM.
+    const summary = await orchestrationWin.evaluate(async (p: string) => {
+      return await (window as any).orpad.core.replayTrace({ traceFile: p, intervalMs: 8 });
     }, tracePath);
-
-    // Nodes appear in execution order as the trace streams in.
-    await expect(orchestrationWin.locator('#core-run-view .core-run-node').first())
-      .toBeVisible({ timeout: 8000 });
-
-    // The in-progress node carries the running state + a spinner while filling.
-    const runningNode = orchestrationWin.locator('#core-run-view .core-run-node.runtime-running');
-    await expect(runningNode.first()).toBeVisible({ timeout: 8000 });
-    await expect(runningNode.first().locator('.core-run-spinner')).toBeVisible();
-    await expect(orchestrationWin.locator('#core-run-view [data-core-run-status]'))
-      .toHaveText(/Running/, { timeout: 8000 });
-
-    // Replay completes: returns a summary, and the graph closes out.
-    const summary = await replayPromise;
     expect(summary.ok).toBe(true);
     expect(summary.events).toBeGreaterThan(0);
     expect(summary.done).toBe(true);
 
-    // run-done leaves every node completed and no spinner.
+    // run-done drives the status to complete and the 3D scene is live.
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-status]'))
       .toHaveText(/Run complete/, { timeout: 8000 });
-    await expect(orchestrationWin.locator('#core-run-view .core-run-node.runtime-running')).toHaveCount(0);
-    await expect(orchestrationWin.locator('#core-run-view .core-run-spinner')).toHaveCount(0);
-
-    const completed = await orchestrationWin.locator('#core-run-view .core-run-node.runtime-completed').count();
-    expect(completed).toBeGreaterThanOrEqual(5);
-
-    // The classified work nodes are present (edit/inspect/exec from the agent stream).
-    await expect(orchestrationWin.locator('#core-run-view .core-run-node.type-edit')).toHaveCount(1);
-    await expect(orchestrationWin.locator('#core-run-view .core-run-node.type-exec')).toHaveCount(1);
-    await expect(orchestrationWin.locator('#core-run-view .core-run-node.type-delegate')).toHaveCount(1);
+    await expect(orchestrationWin.locator('#core-run-view .core-run-graph3d canvas')).toHaveCount(1, { timeout: 8000 });
   } finally {
     await closeElectronApp(app);
     fs.rmSync(workspace, { recursive: true, force: true });

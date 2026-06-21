@@ -1,49 +1,52 @@
-// OrPAD orchestration-core — live-trace Run view.
+// OrPAD orchestration-core — live-trace Run view (3D).
 //
-// Renders the EMERGENT graph of a governed-delegation run as it streams in:
-// each forwarded trace event ({ev:'phase'|'node'|'run'}) is accumulated and the
-// graph is rebuilt via buildEmergentGraph. There is NO pre-authored node graph —
-// the footprint grows in execution order, the still-filling node shows a spinner,
-// and every node closes out when the run completes. Reuses the preserved
-// orch-graph node visual primitives (.orch-graph-node + type/runtime classes).
+// One unified 3D scene (three.js via 3d-force-graph): the governed-delegation run
+// graph AND the workspace link graph (the Obsidian-style file layer) together.
+// Run work-nodes connect to the file nodes they read/write with directional
+// PARTICLE edges — data physically moving along the link. Orbit/zoom/drag are
+// built in; click a node to fly to it. The Run form lives in the left sidebar.
 //
-// When given an `onRun` callback the view also renders a Run form (goal +
-// write-set + grounding/apply toggles + time cap) in a LEFT sidebar that
-// launches a REAL grounded/governed delegation; the emergent graph fills the
-// right pane on a drag-to-pan / wheel-to-zoom canvas as trace events stream in.
+// Data: buildEmergentGraph(events) gives the run nodes/edges/files; onLinkGraph()
+// gives the vault note↔note link graph. Both feed one { nodes, links } graph.
 
 import { buildEmergentGraph } from './emergent-trace.js';
+import ForceGraph3D from '3d-force-graph';
 
 const TYPE_LABEL = {
-  recon: 'Recon',
-  isolate: 'Isolate',
-  guidance: 'Guidance',
-  delegate: 'Delegate',
-  enforce: 'Enforce',
-  inspect: 'Inspect',
-  edit: 'Edit',
-  exec: 'Exec',
-  research: 'Research',
-  subagent: 'Subagent',
-  plan: 'Plan',
-  reason: 'Reason',
-  tool: 'Tool',
-  phase: 'Phase',
+  recon: 'Recon', isolate: 'Isolate', guidance: 'Guidance', delegate: 'Delegate',
+  enforce: 'Enforce', inspect: 'Inspect', edit: 'Edit', exec: 'Exec',
+  research: 'Research', subagent: 'Subagent', plan: 'Plan', reason: 'Reason',
+  tool: 'Tool', phase: 'Phase',
 };
-
-function typeLabel(type) {
-  return TYPE_LABEL[type] || (type ? String(type) : 'Node');
-}
+function typeLabel(type) { return TYPE_LABEL[type] || (type ? String(type) : 'Node'); }
 
 function parseLines(value) {
-  return String(value || '')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+  return String(value || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
-// onRun: optional async (request) => summary. When omitted the Run form is hidden
-// (e.g. read-only/replay-only surfaces).
+// Node-type colours (mirror the 2D type accents).
+const TYPE_COLOR = {
+  recon: '#7aa2f7', isolate: '#bb9af7', guidance: '#e0af68', delegate: '#7dcfff',
+  enforce: '#9ece6a', inspect: '#9ece6a', edit: '#ff9e64', exec: '#bb9af7',
+  research: '#e0af68', subagent: '#7dcfff', plan: '#7aa2f7', reason: '#9aa5ce', tool: '#9aa5ce',
+};
+const FILE_COLOR = '#6b7194';
+const FILE_TOUCHED_COLOR = '#ff9e64';
+const ACTIVE_COLOR = '#ffffff';
+
+function nodeColor(n) {
+  if (n.kind === 'file') return n.touched ? FILE_TOUCHED_COLOR : FILE_COLOR;
+  if (n.active) return ACTIVE_COLOR;
+  return TYPE_COLOR[n.ntype] || '#9aa5ce';
+}
+function linkColor(l) {
+  if (l.kind === 'access') return l.access === 'write' ? '#ff9e64' : l.access === 'read' ? '#9ece6a' : '#9aa5ce';
+  if (l.kind === 'flow') return '#7dcfff';
+  return '#444a66';
+}
+
+// onRun: optional async (request) => summary (hides the form when omitted).
+// onLinkGraph: optional async () => { ok, nodes, edges } for the workspace link graph.
 export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   const el = document.createElement('section');
   el.className = 'core-run-view';
@@ -92,21 +95,21 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
       </form>
     </div>
     <div class="core-run-graph-viewport" data-core-run-viewport>
-      <div class="core-run-mode-toggle">
-        <button type="button" class="core-run-mode-btn" data-core-run-refresh title="Re-scan the workspace link graph">↻ Graph</button>
-      </div>
-      <div class="core-run-graph-canvas" data-core-run-canvas>
-        <div class="core-run-graph" data-core-run-graph aria-live="polite"></div>
-      </div>
+      <div class="core-run-graph3d" data-core-run-graph3d></div>
       <div class="core-run-graph-controls">
-        <button type="button" class="core-run-zoom-btn" data-core-run-zoom-out title="Zoom out" aria-label="Zoom out">−</button>
-        <button type="button" class="core-run-zoom-btn" data-core-run-zoom-reset title="Reset view">Reset view</button>
-        <button type="button" class="core-run-zoom-btn" data-core-run-zoom-in title="Zoom in" aria-label="Zoom in">+</button>
+        <button type="button" class="core-run-zoom-btn" data-core-run-refresh title="Re-scan the workspace link graph">↻ Graph</button>
+        <button type="button" class="core-run-zoom-btn" data-core-run-fit title="Frame the whole graph">Reset view</button>
+      </div>
+      <div class="core-run-legend" aria-hidden="true">
+        <span><i class="dot" style="background:#7dcfff"></i>agent</span>
+        <span><i class="dot" style="background:#6b7194"></i>file</span>
+        <span><i class="dot" style="background:#ff9e64"></i>touched / write</span>
+        <span><i class="dot" style="background:#9ece6a"></i>read</span>
       </div>
     </div>
   `;
+
   const statusEl = el.querySelector('[data-core-run-status]');
-  const graphEl = el.querySelector('[data-core-run-graph]');
   const formEl = el.querySelector('[data-core-run-form]');
   const goalEl = el.querySelector('[data-core-run-goal]');
   const writesetEl = el.querySelector('[data-core-run-writeset]');
@@ -120,149 +123,157 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   const parallelEl = el.querySelector('[data-core-run-parallel]');
   const gatesEl = el.querySelector('[data-core-run-gates]');
   const verifyCyclesEl = el.querySelector('[data-core-run-verify-cycles]');
-  const viewportEl = el.querySelector('[data-core-run-viewport]');
-  const canvasEl = el.querySelector('[data-core-run-canvas]');
-  const zoomInEl = el.querySelector('[data-core-run-zoom-in]');
-  const zoomOutEl = el.querySelector('[data-core-run-zoom-out]');
-  const zoomResetEl = el.querySelector('[data-core-run-zoom-reset]');
+  const graph3dEl = el.querySelector('[data-core-run-graph3d]');
   const refreshBtn = el.querySelector('[data-core-run-refresh]');
-
-  // Unified view: the live run graph (left) + the workspace link graph (right, the
-  // Obsidian-style file layer). The link graph is fetched lazily once via onLinkGraph;
-  // run work-nodes connect to its file nodes with animated data-flow edges.
-  let linkGraph = null;
-  let linkGraphLoading = false;
-  let linkGraphTried = false;
-  let lastRunFiles = [];
-  let draggingNode = null;
-
-  // Pan/zoom canvas — drag the empty graph background to pan, wheel to zoom
-  // (zoom anchored at the cursor), zoom buttons step around the viewport center.
-  const ZOOM_MIN = 0.3;
-  const ZOOM_MAX = 2.5;
-  let panX = 0;
-  let panY = 0;
-  let scale = 1;
-  let dragging = false;
-  let dragStartX = 0;
-  let dragStartY = 0;
-  let panBaseX = 0;
-  let panBaseY = 0;
-  let userAdjusted = false;
-
-  function applyTransform() {
-    if (canvasEl) canvasEl.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
-  }
-  // Fit the whole 2-lane graph into the viewport (default view), 1:1 if it already fits.
-  function fitView() {
-    if (!viewportEl || !canvasEl) return;
-    const gw = graphEl.scrollWidth || 1;
-    const gh = graphEl.scrollHeight || 1;
-    const vw = viewportEl.clientWidth || 1;
-    const vh = viewportEl.clientHeight || 1;
-    const pad = 56;
-    const s = Math.min(1, (vw - pad) / gw, (vh - pad) / gh);
-    scale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s || 1));
-    panX = Math.max(8, (vw - gw * scale) / 2);
-    panY = 16;
-    applyTransform();
-  }
-  function resetView() {
-    userAdjusted = false;
-    fitView();
-  }
-  function zoomAt(nextScaleRaw, cx, cy) {
-    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, nextScaleRaw));
-    if (next === scale) return;
-    // Keep the point under (cx, cy) stationary while scaling.
-    panX = cx - (cx - panX) * (next / scale);
-    panY = cy - (cy - panY) * (next / scale);
-    scale = next;
-    applyTransform();
-  }
-  if (viewportEl && canvasEl) {
-    viewportEl.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      // Let node text stay selectable; only pan from the empty background.
-      if (e.target.closest && e.target.closest('.core-run-node, .core-run-graph-controls, .core-run-mode-toggle, .core-run-file-graph-node')) return;
-      dragging = true;
-      userAdjusted = true;
-      dragStartX = e.clientX;
-      dragStartY = e.clientY;
-      panBaseX = panX;
-      panBaseY = panY;
-      viewportEl.classList.add('is-panning');
-      try { viewportEl.setPointerCapture(e.pointerId); } catch (_) {}
-    });
-    viewportEl.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      panX = panBaseX + (e.clientX - dragStartX);
-      panY = panBaseY + (e.clientY - dragStartY);
-      applyTransform();
-    });
-    const endDrag = (e) => {
-      if (!dragging) return;
-      dragging = false;
-      viewportEl.classList.remove('is-panning');
-      try { viewportEl.releasePointerCapture(e.pointerId); } catch (_) {}
-    };
-    viewportEl.addEventListener('pointerup', endDrag);
-    viewportEl.addEventListener('pointercancel', endDrag);
-    viewportEl.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      userAdjusted = true;
-      const rect = viewportEl.getBoundingClientRect();
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-      zoomAt(scale * factor, e.clientX - rect.left, e.clientY - rect.top);
-    }, { passive: false });
-    const centerZoom = (factor) => {
-      userAdjusted = true;
-      const rect = viewportEl.getBoundingClientRect();
-      zoomAt(scale * factor, rect.width / 2, rect.height / 2);
-    };
-
-    zoomInEl?.addEventListener('click', () => centerZoom(1.2));
-    zoomOutEl?.addEventListener('click', () => centerZoom(1 / 1.2));
-    zoomResetEl?.addEventListener('click', resetView);
-  }
+  const fitBtn = el.querySelector('[data-core-run-fit]');
 
   let events = [];
   let errorMessage = '';
   let busy = false;
 
-  function reset() {
-    events = [];
-    errorMessage = '';
-    resetView();
-    render();
+  // Workspace link graph (lazy-loaded once via onLinkGraph; "↻ Graph" re-scans).
+  let linkGraph = null;
+  let linkGraphLoading = false;
+  let linkGraphTried = false;
+
+  // 3D graph instance + persistent node objects (so positions survive re-feeds).
+  let fg = null;
+  const fgNodeById = new Map();
+  let lastSig = '';
+
+  function showFormError(message) { errorEl.textContent = message; errorEl.hidden = !message; }
+  function showFormResult(message) { if (!resultEl) return; resultEl.textContent = message || ''; resultEl.hidden = !message; }
+  function setBusy(next) {
+    busy = next;
+    if (submitEl) { submitEl.disabled = next; submitEl.textContent = next ? 'Running…' : 'Run'; }
   }
 
+  function reset() { events = []; errorMessage = ''; render(); }
   function applyEvent(ev) {
     if (!ev || typeof ev !== 'object') return;
     if (ev.ev === 'run' && ev.state === 'start') { reset(); return; }
-    if (ev.ev === 'run' && ev.state === 'error') {
-      errorMessage = String(ev.error || 'Run failed.');
-    }
+    if (ev.ev === 'run' && ev.state === 'error') errorMessage = String(ev.error || 'Run failed.');
     events.push(ev);
     render();
   }
 
-  function showFormError(message) {
-    errorEl.textContent = message;
-    errorEl.hidden = !message;
+  function loadLinkGraph(force) {
+    if (!onLinkGraph) return;
+    if (force) { linkGraph = null; linkGraphTried = false; }
+    if (linkGraph || linkGraphLoading || linkGraphTried) return;
+    linkGraphTried = true;
+    linkGraphLoading = true;
+    Promise.resolve(onLinkGraph()).then((res) => {
+      linkGraphLoading = false;
+      if (res && res.ok) linkGraph = res;
+      lastSig = '';
+      render();
+    }).catch(() => { linkGraphLoading = false; });
   }
 
-  function showFormResult(message) {
-    if (!resultEl) return;
-    resultEl.textContent = message || '';
-    resultEl.hidden = !message;
+  // --- 3D graph ----------------------------------------------------------------
+  function ensureFG() {
+    if (fg) return fg;
+    if (!graph3dEl || !graph3dEl.clientWidth) return null;
+    fg = ForceGraph3D()(graph3dEl)
+      .backgroundColor('rgba(0,0,0,0)')
+      .width(graph3dEl.clientWidth)
+      .height(graph3dEl.clientHeight)
+      .showNavInfo(false)
+      .nodeLabel((n) => (n.kind === 'file' ? `📄 ${n.path}` : `${typeLabel(n.ntype)} — ${n.name}`))
+      .nodeColor(nodeColor)
+      .nodeVal((n) => (n.kind === 'file' ? Math.max(1.5, (n.deg || 0) + 1) : (n.phase ? 3 : 2)))
+      .nodeOpacity(0.92)
+      .linkColor(linkColor)
+      .linkWidth((l) => (l.kind === 'access' ? 1.2 : 0.5))
+      .linkOpacity(0.35)
+      .linkDirectionalParticles((l) => (l.kind === 'access' ? 3 : l.kind === 'flow' ? 1 : 0))
+      .linkDirectionalParticleSpeed(0.012)
+      .linkDirectionalParticleWidth(2)
+      .linkDirectionalParticleColor((l) => linkColor(l))
+      .onNodeClick((node) => {
+        const d = 90;
+        const r = 1 + d / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
+        fg.cameraPosition({ x: (node.x || 0) * r, y: (node.y || 0) * r, z: (node.z || 0) * r }, node, 700);
+      });
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => { if (fg && graph3dEl.clientWidth) fg.width(graph3dEl.clientWidth).height(graph3dEl.clientHeight); });
+      ro.observe(graph3dEl);
+    }
+    return fg;
   }
 
-  function setBusy(next) {
-    busy = next;
-    if (submitEl) {
-      submitEl.disabled = next;
-      submitEl.textContent = next ? 'Running…' : 'Run';
+  // Build the unified { nodes, links } graph, reusing node objects so the 3D layout
+  // is stable as the run streams in.
+  function buildGraphData(runNodes, runEdges, files, activeId) {
+    const wanted = new Set();
+    const nodes = [];
+    const ensure = (id, init) => {
+      let o = fgNodeById.get(id);
+      if (!o) { o = { id }; fgNodeById.set(id, o); }
+      Object.assign(o, init);
+      wanted.add(id);
+      nodes.push(o);
+      return o;
+    };
+    for (const n of runNodes) {
+      ensure(`r:${n.id}`, { kind: 'run', ntype: n.type, name: n.label || n.type, phase: !!n.phase, active: n.id === activeId });
+    }
+    const vault = (linkGraph && linkGraph.ok && Array.isArray(linkGraph.nodes)) ? linkGraph.nodes : [];
+    const vaultPaths = new Set(vault.map((v) => v.path));
+    for (const v of vault.slice(0, 600)) {
+      ensure(`f:${v.path}`, { kind: 'file', path: v.path, name: v.name, deg: (v.out || 0) + (v.in || 0), touched: false });
+    }
+    const touched = new Set((files || []).map((f) => f.path));
+    for (const f of (files || [])) {
+      if (!vaultPaths.has(f.path)) ensure(`f:${f.path}`, { kind: 'file', path: f.path, name: f.path.split(/[\\/]/).pop(), deg: (f.reads || 0) + (f.writes || 0), touched: true });
+    }
+    // mark touched on vault nodes too
+    for (const o of nodes) if (o.kind === 'file' && touched.has(o.path)) o.touched = true;
+
+    // drop stale nodes
+    for (const id of [...fgNodeById.keys()]) if (!wanted.has(id)) fgNodeById.delete(id);
+
+    const links = [];
+    for (const e of (runEdges || [])) links.push({ source: `r:${e.from}`, target: `r:${e.to}`, kind: 'flow' });
+    for (const n of runNodes) {
+      if (n.file && fgNodeById.has(`f:${n.file}`)) links.push({ source: `r:${n.id}`, target: `f:${n.file}`, kind: 'access', access: n.access || 'touch' });
+    }
+    const vedges = (linkGraph && Array.isArray(linkGraph.edges)) ? linkGraph.edges : [];
+    for (const e of vedges) {
+      if (fgNodeById.has(`f:${e.from}`) && fgNodeById.has(`f:${e.to}`)) links.push({ source: `f:${e.from}`, target: `f:${e.to}`, kind: 'link' });
+    }
+    return { nodes, links };
+  }
+
+  function setStatus(runNodes, done) {
+    if (errorMessage) { statusEl.textContent = `Error — ${errorMessage}`; statusEl.dataset.state = 'error'; return; }
+    if (busy) {
+      const active = runNodes.find((n) => n.active);
+      statusEl.textContent = !runNodes.length ? 'Starting run…' : `Running — ${active ? (active.name || typeLabel(active.ntype)) : 'working'}…`;
+      statusEl.dataset.state = 'running';
+      return;
+    }
+    if (!runNodes.length) { statusEl.textContent = 'Idle — no run yet.'; statusEl.dataset.state = 'idle'; return; }
+    if (done) { statusEl.textContent = `Run complete — ${runNodes.length} node${runNodes.length === 1 ? '' : 's'}.`; statusEl.dataset.state = 'done'; return; }
+    statusEl.textContent = `Running — ${runNodes.length} node${runNodes.length === 1 ? '' : 's'}…`;
+    statusEl.dataset.state = 'running';
+  }
+
+  function render() {
+    loadLinkGraph(false);
+    const { nodes, edges, activeId, done, files } = buildEmergentGraph(events);
+    const runNodes = nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, phase: n.phase, file: n.file, access: n.access, active: n.id === activeId }));
+    const data = buildGraphData(runNodes, edges, files, activeId);
+    // active flag for status
+    const statNodes = data.nodes.filter((n) => n.kind === 'run');
+    setStatus(statNodes, done);
+
+    const graph = ensureFG();
+    if (graph) {
+      const sig = `${data.nodes.length}:${data.links.length}:${activeId || ''}:${linkGraph ? linkGraph.nodes.length : 0}`;
+      if (sig !== lastSig) { lastSig = sig; graph.graphData(data); }
+      else { graph.nodeColor(nodeColor); } // refresh colours (e.g. active node) without reheating
     }
   }
 
@@ -313,8 +324,6 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
           if (vCount) parts.push(`${vCount} out-of-write-set violation${vCount === 1 ? '' : 's'}`);
           if (res.stopped) parts.push(`stopped: ${res.stopReason || 'time-cap'}`);
           const summary = parts.join(' · ');
-          // A blocked apply (gate failed) is shown in the attention/error style so
-          // it reads as "output rejected", not "run succeeded".
           if (res.met === false) { showFormError(summary); } else { showFormResult(summary); }
         }
       } catch (err) {
@@ -327,361 +336,15 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     formEl.remove();
   }
 
-  function nodeEl(node, isActive) {
-    const node$ = document.createElement('div');
-    const runtime = node.state === 'active' ? 'runtime-running' : 'runtime-completed';
-    node$.className = `orch-graph-node core-run-node type-${node.type || 'tool'} ${runtime}`;
-    node$.dataset.nodeId = node.id;
-    node$.dataset.nodeType = node.type || 'tool';
-    node$.dataset.nodeState = node.state;
-    if (node.phase) node$.dataset.phase = 'true';
-    if (isActive) node$.dataset.active = 'true';
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { loadLinkGraph(true); });
+  if (fitBtn) fitBtn.addEventListener('click', () => { if (fg) fg.zoomToFit(600, 60); });
 
-    const top = document.createElement('div');
-    top.className = 'orch-graph-node-top';
-    const strong = document.createElement('strong');
-    strong.textContent = node.label || node.type || 'node';
-    const badge = document.createElement('span');
-    badge.textContent = typeLabel(node.type);
-    top.append(strong, badge);
-
-    // File-access chip: which file this node reads/writes (the data layer).
-    let fileEl = null;
-    if (node.file) {
-      fileEl = document.createElement('div');
-      fileEl.className = `core-run-node-file access-${node.access || 'touch'}`;
-      const tag = document.createElement('span');
-      tag.className = 'core-run-file-tag';
-      tag.textContent = node.access || 'touch';
-      const pathEl = document.createElement('span');
-      pathEl.className = 'core-run-file-path';
-      pathEl.textContent = node.file;
-      pathEl.title = node.file;
-      fileEl.append(tag, pathEl);
-    }
-
-    const status = document.createElement('div');
-    status.className = 'core-run-node-status';
-    if (node.state === 'active') {
-      const spinner = document.createElement('span');
-      spinner.className = 'runbook-spinner core-run-spinner';
-      spinner.setAttribute('aria-hidden', 'true');
-      status.append(spinner, document.createTextNode('Working…'));
-    } else {
-      status.textContent = 'Done';
-    }
-
-    node$.append(top, ...(fileEl ? [fileEl] : []), status);
-    return node$;
-  }
-
-  const SVGNS = 'http://www.w3.org/2000/svg';
-
-
-  // Draw the DAG edges after layout. Coords are accumulated up the offsetParent
-  // chain to the graph container, so they're correct whatever the lane positioning
-  // and unaffected by the canvas pan/zoom transform.
-  function drawEdges(svg, nodes, edges, activeId, nodeEls, fileEls) {
-    const w = graphEl.scrollWidth;
-    const h = graphEl.scrollHeight;
-    svg.setAttribute('width', String(w));
-    svg.setAttribute('height', String(h));
-    svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    const at = (el) => {
-      let x = 0; let y = 0; let cur = el;
-      while (cur && cur !== graphEl) { x += cur.offsetLeft; y += cur.offsetTop; cur = cur.offsetParent; }
-      return { x, y, w: el.offsetWidth, h: el.offsetHeight };
-    };
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    // Cross-branch DAG edges (fork/join) — the structure that vertical stacking
-    // can't show: a fan-out splits here and re-converges there.
-    for (const e of (edges || [])) {
-      const fn = byId.get(e.from);
-      const tn = byId.get(e.to);
-      if (!fn || !tn || fn.branch === tn.branch) continue;
-      const a = nodeEls.get(e.from);
-      const b = nodeEls.get(e.to);
-      if (!a || !b) continue;
-      const ra = at(a);
-      const rb = at(b);
-      const x1 = ra.x + ra.w / 2; const y1 = ra.y + ra.h;
-      const x2 = rb.x + rb.w / 2; const y2 = rb.y;
-      const dy = Math.max(20, (y2 - y1) / 2);
-      const p = document.createElementNS(SVGNS, 'path');
-      p.setAttribute('d', `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2}`);
-      p.setAttribute('class', 'core-run-branch-edge');
-      svg.appendChild(p);
-    }
-    // node→file edges (read=green inbound, write=orange outbound).
-    for (const node of nodes) {
-      if (!node.file) continue;
-      const a = nodeEls.get(node.id);
-      const f = fileEls.get(node.file);
-      if (!a || !f) continue;
-      const ra = at(a);
-      const rf = at(f);
-      const x1 = ra.x + ra.w; const y1 = ra.y + ra.h / 2;
-      const x2 = rf.x; const y2 = rf.y; // file-graph nodes are centered (translate -50%)
-      const dx = Math.max(40, (x2 - x1) / 2);
-      const path = document.createElementNS(SVGNS, 'path');
-      path.setAttribute('d', `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`);
-      path.setAttribute('class', `core-run-edge-line access-${node.access || 'touch'}${node.id === activeId ? ' is-active' : ''}`);
-      svg.appendChild(path);
-    }
-  }
-  function loadLinkGraph(force) {
-    if (!onLinkGraph) return;
-    if (force) { linkGraph = null; linkGraphTried = false; }
-    if (linkGraph || linkGraphLoading || linkGraphTried) return;
-    linkGraphTried = true;
-    linkGraphLoading = true;
-    Promise.resolve(onLinkGraph()).then((res) => {
-      linkGraphLoading = false;
-      if (res && res.ok) linkGraph = res;
-      render();
-    }).catch(() => { linkGraphLoading = false; render(); });
-  }
-  if (refreshBtn) refreshBtn.addEventListener('click', () => { userAdjusted = false; loadLinkGraph(true); render(); });
-
-  // Deterministic force-directed layout for the project link graph (Obsidian-style).
-  function layoutForce(nodes, edges) {
-    const n = nodes.length;
-    if (!n) return { pos: [], w: 1, h: 1 };
-    const R = Math.max(140, n * 16);
-    const pos = nodes.map((_, i) => ({ x: R * Math.cos((2 * Math.PI * i) / n), y: R * Math.sin((2 * Math.PI * i) / n) }));
-    const idx = new Map(nodes.map((nd, i) => [nd.path, i]));
-    const E = edges.map((e) => [idx.get(e.from), idx.get(e.to)]).filter(([a, b]) => a != null && b != null && a !== b);
-    const iters = Math.min(260, 90 + n);
-    for (let it = 0; it < iters; it++) {
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          let dx = pos[i].x - pos[j].x; let dy = pos[i].y - pos[j].y;
-          const d2 = dx * dx + dy * dy + 0.01; const d = Math.sqrt(d2);
-          const f = 2600 / d2; dx /= d; dy /= d;
-          pos[i].x += dx * f; pos[i].y += dy * f; pos[j].x -= dx * f; pos[j].y -= dy * f;
-        }
-      }
-      for (const [a, b] of E) {
-        let dx = pos[b].x - pos[a].x; let dy = pos[b].y - pos[a].y;
-        const d = Math.sqrt(dx * dx + dy * dy) + 0.01; const f = (d - 96) * 0.018;
-        dx /= d; dy /= d;
-        pos[a].x += dx * f; pos[a].y += dy * f; pos[b].x -= dx * f; pos[b].y -= dy * f;
-      }
-    }
-    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
-    for (const p of pos) { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); }
-    const pad = 70;
-    for (const p of pos) { p.x = p.x - minX + pad; p.y = p.y - minY + pad; }
-    return { pos, w: (maxX - minX) + pad * 2, h: (maxY - minY) + pad * 2 };
-  }
-
-  function fileGraphNodeEl(node, touched) {
-    const fg = document.createElement('div');
-    fg.className = `core-run-file-graph-node${touched ? ' is-touched' : ''}`;
-    fg.dataset.file = node.path;
-    const deg = (node.out || 0) + (node.in || 0);
-    const dot = document.createElement('span');
-    dot.className = 'core-run-fg-dot';
-    const r = Math.max(8, Math.min(22, 8 + deg * 2));
-    dot.style.width = `${r}px`;
-    dot.style.height = `${r}px`;
-    const label = document.createElement('span');
-    label.className = 'core-run-fg-label';
-    label.textContent = node.name;
-    label.title = node.path;
-    fg.append(dot, label);
-    return fg;
-  }
-
-  // Obsidian-style interaction on a file-graph node: drag to reposition (its link
-  // edges follow), hover to lift the node + its neighbours.
-  function wireFileNodeInteraction(fg, i, pos, edgeRecords, updateEdge, adj, nodeEls) {
-    fg.addEventListener('pointerenter', () => {
-      if (draggingNode != null) return;
-      nodeEls.forEach((el, j) => {
-        const hot = j === i || adj[i].has(j);
-        el.classList.toggle('is-hot', hot);
-        el.classList.toggle('is-dim', !hot);
-      });
-      edgeRecords.forEach((r) => {
-        const hot = r.a === i || r.b === i;
-        r.el.classList.toggle('is-hot', hot);
-        r.el.classList.toggle('is-dim', !hot);
-      });
-    });
-    fg.addEventListener('pointerleave', () => {
-      if (draggingNode != null) return;
-      nodeEls.forEach((el) => el.classList.remove('is-hot', 'is-dim'));
-      edgeRecords.forEach((r) => r.el.classList.remove('is-hot', 'is-dim'));
-    });
-    fg.addEventListener('pointerdown', (ev) => {
-      if (ev.button !== 0) return;
-      ev.stopPropagation();
-      userAdjusted = true;
-      draggingNode = i;
-      fg.classList.add('is-dragging');
-      let lastX = ev.clientX; let lastY = ev.clientY;
-      try { fg.setPointerCapture(ev.pointerId); } catch (_) {}
-      const move = (m) => {
-        pos[i].x += (m.clientX - lastX) / scale;
-        pos[i].y += (m.clientY - lastY) / scale;
-        lastX = m.clientX; lastY = m.clientY;
-        fg.style.left = `${pos[i].x}px`;
-        fg.style.top = `${pos[i].y}px`;
-        edgeRecords.forEach((r) => { if (r.a === i || r.b === i) updateEdge(r); });
-      };
-      const up = (u) => {
-        draggingNode = null;
-        fg.classList.remove('is-dragging');
-        fg.removeEventListener('pointermove', move);
-        fg.removeEventListener('pointerup', up);
-        try { fg.releasePointerCapture(u.pointerId); } catch (_) {}
-      };
-      fg.addEventListener('pointermove', move);
-      fg.addEventListener('pointerup', up);
-    });
-  }
-  function render() {
-    loadLinkGraph(false);
-    graphEl.style.width = '';
-    graphEl.style.height = '';
-    const { nodes, edges, activeId, done, files, segments } = buildEmergentGraph(events);
-    lastRunFiles = files;
-    graphEl.replaceChildren();
-
-    // SVG edge overlay (behind the cards).
-    const svg = document.createElementNS(SVGNS, 'svg');
-    svg.setAttribute('class', 'core-run-edges');
-    graphEl.appendChild(svg);
-
-    const lanes = document.createElement('div');
-    lanes.className = 'core-run-lanes';
-
-    // Layer 1: agent lane (phases + work nodes in execution order).
-    const agentLane = document.createElement('div');
-    agentLane.className = 'core-run-agent-lane';
-    const nodeEls = new Map();
-    const nodeById = new Map(nodes.map((n) => [n.id, n]));
-    const makeCard = (id) => {
-      const n = nodeById.get(id);
-      const c = nodeEl(n, n.id === activeId);
-      nodeEls.set(id, c);
-      return c;
-    };
-    const connector = () => {
-      const edge = document.createElement('div');
-      edge.className = 'core-run-edge';
-      edge.setAttribute('aria-hidden', 'true');
-      return edge;
-    };
-    (segments || []).forEach((seg, si) => {
-      if (seg.kind === 'parallel') {
-        if (si > 0) agentLane.appendChild(connector());
-        const row = document.createElement('div');
-        row.className = 'core-run-parallel-row';
-        seg.branches.forEach((b) => {
-          const col = document.createElement('div');
-          col.className = 'core-run-branch-col';
-          const head = document.createElement('div');
-          head.className = 'core-run-branch-head';
-          head.textContent = b.label;
-          col.appendChild(head);
-          b.nodeIds.forEach((id, i) => {
-            if (i > 0) col.appendChild(connector());
-            col.appendChild(makeCard(id));
-          });
-          row.appendChild(col);
-        });
-        agentLane.appendChild(row);
-      } else {
-        seg.nodeIds.forEach((id, i) => {
-          if (si > 0 || i > 0) agentLane.appendChild(connector());
-          agentLane.appendChild(makeCard(id));
-        });
-      }
-    });
-    lanes.appendChild(agentLane);
-
-    // Layer 2: the project file graph (Obsidian-style) IS the file layer. Its node
-    // set = the vault's linked notes ∪ the files this run touches; run work-nodes
-    // connect to these nodes with animated data-flow edges (drawn in drawEdges).
-    const fileEls = new Map();
-    const vault = (linkGraph && linkGraph.ok && Array.isArray(linkGraph.nodes)) ? linkGraph.nodes : [];
-    const vaultPaths = new Set(vault.map((n) => n.path));
-    const fnodes = vault.slice(0, 400);
-    for (const f of files) {
-      if (!vaultPaths.has(f.path)) fnodes.push({ path: f.path, name: f.path.split(/[\\/]/).pop(), out: 0, in: 0, loose: true });
-    }
-    if (fnodes.length) {
-      const region = document.createElement('div');
-      region.className = 'core-run-file-region';
-      const fedges = (linkGraph && Array.isArray(linkGraph.edges)) ? linkGraph.edges : [];
-      const { pos, w, h } = layoutForce(fnodes, fedges);
-      region.style.width = `${Math.ceil(w)}px`;
-      region.style.height = `${Math.ceil(h)}px`;
-      const fsvg = document.createElementNS(SVGNS, 'svg');
-      fsvg.setAttribute('class', 'core-run-edges');
-      fsvg.setAttribute('width', String(Math.ceil(w)));
-      fsvg.setAttribute('height', String(Math.ceil(h)));
-      fsvg.setAttribute('viewBox', `0 0 ${Math.ceil(w)} ${Math.ceil(h)}`);
-      region.appendChild(fsvg);
-      const fidx = new Map(fnodes.map((nd, i) => [nd.path, i]));
-      const edgeRecords = [];
-      for (const e of fedges) {
-        const a = fidx.get(e.from); const b = fidx.get(e.to);
-        if (a == null || b == null || a === b) continue;
-        const line = document.createElementNS(SVGNS, 'path');
-        line.setAttribute('class', 'core-run-link-edge');
-        fsvg.appendChild(line);
-        edgeRecords.push({ el: line, a, b });
-      }
-      const updateEdge = (rec) => rec.el.setAttribute('d', `M${pos[rec.a].x},${pos[rec.a].y} L${pos[rec.b].x},${pos[rec.b].y}`);
-      edgeRecords.forEach(updateEdge);
-      const adj = fnodes.map(() => new Set());
-      edgeRecords.forEach((r) => { adj[r.a].add(r.b); adj[r.b].add(r.a); });
-      const touchedSet = new Set(files.map((f) => f.path));
-      const fgEls = [];
-      fnodes.forEach((nd, i) => {
-        const fg = fileGraphNodeEl(nd, touchedSet.has(nd.path));
-        fg.style.left = `${pos[i].x}px`;
-        fg.style.top = `${pos[i].y}px`;
-        wireFileNodeInteraction(fg, i, pos, edgeRecords, updateEdge, adj, fgEls);
-        region.appendChild(fg);
-        fgEls.push(fg);
-        fileEls.set(nd.path, fg);
-      });
-      lanes.appendChild(region);
-    }
-    graphEl.appendChild(lanes);
-    drawEdges(svg, nodes, edges, activeId, nodeEls, fileEls);
-    // Auto-fit the whole 2-lane graph by default; yield once the user pans/zooms.
-    if (!userAdjusted) fitView();
-
-    if (errorMessage) {
-      statusEl.textContent = `Error — ${errorMessage}`;
-      statusEl.dataset.state = 'error';
-    } else if (busy) {
-      // A live run is in flight — the IPC promise is authoritative over any
-      // intermediate trace run-done (a grounded run streams research THEN build,
-      // plus a post-run apply step), so never show "complete" until it resolves.
-      const active = nodes.find((n) => n.id === activeId);
-      statusEl.textContent = !nodes.length
-        ? 'Starting run…'
-        : `Running — ${active ? (active.label || typeLabel(active.type)) : 'working'}…`;
-      statusEl.dataset.state = 'running';
-    } else if (!nodes.length) {
-      statusEl.textContent = 'Idle — no run yet.';
-      statusEl.dataset.state = 'idle';
-    } else if (done) {
-      statusEl.textContent = `Run complete — ${nodes.length} node${nodes.length === 1 ? '' : 's'}.`;
-      statusEl.dataset.state = 'done';
-    } else {
-      const active = nodes.find((n) => n.id === activeId);
-      statusEl.textContent = `Running — ${active ? (active.label || typeLabel(active.type)) : 'working'}…`;
-      statusEl.dataset.state = 'running';
-    }
-  }
-
+  // First paint may run before the element is laid out (clientWidth 0); retry once
+  // the viewport has size so the 3D scene initialises.
   render();
+  if (graph3dEl && !graph3dEl.clientWidth && typeof requestAnimationFrame !== 'undefined') {
+    const tryInit = () => { if (graph3dEl.clientWidth) { render(); } else { requestAnimationFrame(tryInit); } };
+    requestAnimationFrame(tryInit);
+  }
   return { el, applyEvent, reset };
 }
