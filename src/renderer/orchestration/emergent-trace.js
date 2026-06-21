@@ -43,21 +43,51 @@ export function buildEmergentGraph(traceEvents) {
   const edges = [];
   const byTool = new Map();
   const files = new Map();
-  let prevId = null;
+  const lastByBranch = new Map();   // branch -> last node id (sequential within a branch)
+  const forkAnchor = new Map();     // branch -> the node id it forked from
+  const branchLabels = new Map();   // branch -> display label
+  let pendingJoin = null;           // { into, from:[nodeIds] } — next 'into' node links from these
   let seq = 0;
   let runDone = false;
 
-  const openNode = (type, label, toolId, at, transient) => {
-    // a transient node (reason/respond) has no async result; close it when the next opens.
+  // Segments drive the layout: a run is a vertical stack of linear runs and
+  // parallel (fork/join) sections; a parallel section lays its branches side by side.
+  const segments = [];
+  let parallel = null; // active parallel section: { branches:[{id,label,nodeIds}], byId:Map }
+
+  const segPush = (branch, id) => {
+    if (parallel && branch !== 'main') {
+      let b = parallel.byId.get(branch);
+      if (!b) { b = { id: branch, label: branchLabels.get(branch) || branch, nodeIds: [] }; parallel.byId.set(branch, b); parallel.branches.push(b); }
+      b.nodeIds.push(id);
+      return;
+    }
+    let last = segments[segments.length - 1];
+    if (!last || last.kind !== 'linear') { last = { kind: 'linear', nodeIds: [] }; segments.push(last); }
+    last.nodeIds.push(id);
+  };
+
+  const openNode = (type, label, toolId, at, transient, branch) => {
+    const br = branch || 'main';
+    // a transient node (reason/respond) closes when the next node in its branch opens.
+    const prevId = lastByBranch.get(br);
     const prev = prevId ? nodes.find((n) => n.id === prevId) : null;
     if (prev && prev.state === 'active' && prev.transient) prev.state = 'done';
     const id = `n${seq++}`;
-    const node = { id, type, label: label || type, state: 'active', at: at || null };
+    const node = { id, type, label: label || type, state: 'active', at: at || null, branch: br };
     if (transient) node.transient = true;
     nodes.push(node);
-    if (prevId) edges.push({ from: prevId, to: id });
-    prevId = id;
+    let parents;
+    if (pendingJoin && br === pendingJoin.into) { parents = pendingJoin.from.slice(); pendingJoin = null; }
+    else {
+      const p = lastByBranch.has(br) ? lastByBranch.get(br)
+        : (forkAnchor.has(br) ? forkAnchor.get(br) : lastByBranch.get('main'));
+      parents = p ? [p] : [];
+    }
+    for (const pid of parents) if (pid) edges.push({ from: pid, to: id });
+    lastByBranch.set(br, id);
     if (toolId) byTool.set(toolId, id);
+    segPush(br, id);
     return node;
   };
 
@@ -65,22 +95,43 @@ export function buildEmergentGraph(traceEvents) {
     if (!e || typeof e !== 'object') continue;
     if (e.ev === 'phase' && e.state === 'start') {
       const meta = PHASE_NODE[e.kind] || { type: e.type || 'phase', label: e.label || e.kind };
-      const node = openNode(meta.type, e.label || meta.label, e.id || null, e.at);
+      const node = openNode(meta.type, e.label || meta.label, e.id || null, e.at, false, 'main');
       node.phase = true;
     } else if (e.ev === 'phase' && e.state === 'done') {
       const target = phaseNodeOf(nodes, e) || lastActive(nodes);
       if (target) target.state = 'done';
-    } else if (e.ev === 'node' && e.state === 'active') {
-      // The enclosing phase (e.g. agent_run "Delegate to agent") has handed off
-      // once real work streams in — close it so only the work frontier spins,
-      // not an earlier phase node sitting above its finished children.
-      for (let i = nodes.length - 1; i >= 0; i -= 1) {
-        if (nodes[i].phase) { if (nodes[i].state === 'active') nodes[i].state = 'done'; break; }
+    } else if (e.ev === 'fork') {
+      // Fan-out: parallel branches all spring from the current frontier of `from`.
+      const anchor = lastByBranch.get(e.from || 'main') || null;
+      parallel = { branches: [], byId: new Map() };
+      for (const b of (Array.isArray(e.branches) ? e.branches : [])) {
+        const bid = typeof b === 'string' ? b : (b && b.id);
+        if (!bid) continue;
+        const label = typeof b === 'string' ? b : (b.label || b.id);
+        forkAnchor.set(bid, anchor);
+        branchLabels.set(bid, label);
+        const bucket = { id: bid, label, nodeIds: [] };
+        parallel.byId.set(bid, bucket);
+        parallel.branches.push(bucket);
       }
-      const work = openNode(e.type || 'tool', e.label, e.toolId, e.at, e.transient);
+      segments.push({ kind: 'parallel', anchor, branches: parallel.branches });
+    } else if (e.ev === 'join') {
+      const from = Array.isArray(e.from) ? e.from : [...(parallel ? parallel.byId.keys() : [])];
+      pendingJoin = { into: e.into || 'main', from: from.map((b) => lastByBranch.get(b)).filter(Boolean) };
+      parallel = null;
+    } else if (e.ev === 'node' && e.state === 'active') {
+      const br = e.branch || 'main';
+      // A main-branch work node means the enclosing phase (agent_run "Delegate to
+      // agent") has handed off — close it so only the work frontier spins. Branch
+      // (subagent) nodes never close a main phase.
+      if (br === 'main') {
+        for (let i = nodes.length - 1; i >= 0; i -= 1) {
+          if (nodes[i].phase) { if (nodes[i].state === 'active') nodes[i].state = 'done'; break; }
+        }
+      }
+      const work = openNode(e.type || 'tool', e.label, e.toolId, e.at, e.transient, br);
       if (e.file) {
-        // File-access layer: record which work node touches which file (the data
-        // layer behind the live graph — reads vs writes per file).
+        // File-access layer: which work node touches which file (reads vs writes).
         const access = work.type === 'edit' ? 'write' : (work.type === 'inspect' ? 'read' : 'touch');
         work.file = e.file;
         work.access = access;
@@ -107,7 +158,7 @@ export function buildEmergentGraph(traceEvents) {
   // agent's result emits an intermediate run-done, so requiring all nodes closed
   // prevents that from flipping the graph to "complete" while the build runs on.
   const done = runDone && nodes.every((n) => n.state === 'done');
-  return { nodes, edges, activeId: active ? active.id : null, done, files: [...files.values()] };
+  return { nodes, edges, activeId: active ? active.id : null, done, files: [...files.values()], segments };
 }
 
 function lastActive(nodes) {

@@ -380,24 +380,50 @@ export function createLiveTraceView({ onRun = null } = {}) {
     return el;
   }
 
-  // Draw node→file edges (read=green inbound, write=orange outbound) after layout.
-  // offset* are layout coords relative to the position:relative graph container, so
-  // they are unaffected by the canvas pan/zoom transform.
-  function drawEdges(svg, nodes, activeId, nodeEls, fileEls) {
+  // Draw the DAG edges after layout. Coords are accumulated up the offsetParent
+  // chain to the graph container, so they're correct whatever the lane positioning
+  // and unaffected by the canvas pan/zoom transform.
+  function drawEdges(svg, nodes, edges, activeId, nodeEls, fileEls) {
     const w = graphEl.scrollWidth;
     const h = graphEl.scrollHeight;
     svg.setAttribute('width', String(w));
     svg.setAttribute('height', String(h));
     svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    const at = (el) => {
+      let x = 0; let y = 0; let cur = el;
+      while (cur && cur !== graphEl) { x += cur.offsetLeft; y += cur.offsetTop; cur = cur.offsetParent; }
+      return { x, y, w: el.offsetWidth, h: el.offsetHeight };
+    };
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    // Cross-branch DAG edges (fork/join) — the structure that vertical stacking
+    // can't show: a fan-out splits here and re-converges there.
+    for (const e of (edges || [])) {
+      const fn = byId.get(e.from);
+      const tn = byId.get(e.to);
+      if (!fn || !tn || fn.branch === tn.branch) continue;
+      const a = nodeEls.get(e.from);
+      const b = nodeEls.get(e.to);
+      if (!a || !b) continue;
+      const ra = at(a);
+      const rb = at(b);
+      const x1 = ra.x + ra.w / 2; const y1 = ra.y + ra.h;
+      const x2 = rb.x + rb.w / 2; const y2 = rb.y;
+      const dy = Math.max(20, (y2 - y1) / 2);
+      const p = document.createElementNS(SVGNS, 'path');
+      p.setAttribute('d', `M${x1},${y1} C${x1},${y1 + dy} ${x2},${y2 - dy} ${x2},${y2}`);
+      p.setAttribute('class', 'core-run-branch-edge');
+      svg.appendChild(p);
+    }
+    // node→file edges (read=green inbound, write=orange outbound).
     for (const node of nodes) {
       if (!node.file) continue;
       const a = nodeEls.get(node.id);
       const f = fileEls.get(node.file);
       if (!a || !f) continue;
-      const x1 = a.offsetLeft + a.offsetWidth;
-      const y1 = a.offsetTop + a.offsetHeight / 2;
-      const x2 = f.offsetLeft;
-      const y2 = f.offsetTop + f.offsetHeight / 2;
+      const ra = at(a);
+      const rf = at(f);
+      const x1 = ra.x + ra.w; const y1 = ra.y + ra.h / 2;
+      const x2 = rf.x; const y2 = rf.y + rf.h / 2;
       const dx = Math.max(40, (x2 - x1) / 2);
       const path = document.createElementNS(SVGNS, 'path');
       path.setAttribute('d', `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`);
@@ -406,7 +432,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
     }
   }
   function render() {
-    const { nodes, activeId, done, files } = buildEmergentGraph(events);
+    const { nodes, edges, activeId, done, files, segments } = buildEmergentGraph(events);
     graphEl.replaceChildren();
 
     // SVG edge overlay (behind the cards).
@@ -421,16 +447,44 @@ export function createLiveTraceView({ onRun = null } = {}) {
     const agentLane = document.createElement('div');
     agentLane.className = 'core-run-agent-lane';
     const nodeEls = new Map();
-    nodes.forEach((node, i) => {
-      if (i > 0) {
-        const edge = document.createElement('div');
-        edge.className = 'core-run-edge';
-        edge.setAttribute('aria-hidden', 'true');
-        agentLane.appendChild(edge);
+    const nodeById = new Map(nodes.map((n) => [n.id, n]));
+    const makeCard = (id) => {
+      const n = nodeById.get(id);
+      const c = nodeEl(n, n.id === activeId);
+      nodeEls.set(id, c);
+      return c;
+    };
+    const connector = () => {
+      const edge = document.createElement('div');
+      edge.className = 'core-run-edge';
+      edge.setAttribute('aria-hidden', 'true');
+      return edge;
+    };
+    (segments || []).forEach((seg, si) => {
+      if (seg.kind === 'parallel') {
+        if (si > 0) agentLane.appendChild(connector());
+        const row = document.createElement('div');
+        row.className = 'core-run-parallel-row';
+        seg.branches.forEach((b) => {
+          const col = document.createElement('div');
+          col.className = 'core-run-branch-col';
+          const head = document.createElement('div');
+          head.className = 'core-run-branch-head';
+          head.textContent = b.label;
+          col.appendChild(head);
+          b.nodeIds.forEach((id, i) => {
+            if (i > 0) col.appendChild(connector());
+            col.appendChild(makeCard(id));
+          });
+          row.appendChild(col);
+        });
+        agentLane.appendChild(row);
+      } else {
+        seg.nodeIds.forEach((id, i) => {
+          if (si > 0 || i > 0) agentLane.appendChild(connector());
+          agentLane.appendChild(makeCard(id));
+        });
       }
-      const cardEl = nodeEl(node, node.id === activeId);
-      agentLane.appendChild(cardEl);
-      nodeEls.set(node.id, cardEl);
     });
     lanes.appendChild(agentLane);
 
@@ -448,7 +502,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
       lanes.appendChild(fileLane);
     }
     graphEl.appendChild(lanes);
-    drawEdges(svg, nodes, activeId, nodeEls, fileEls);
+    drawEdges(svg, nodes, edges, activeId, nodeEls, fileEls);
     // Auto-fit the whole 2-lane graph by default; yield once the user pans/zooms.
     if (!userAdjusted) fitView();
 

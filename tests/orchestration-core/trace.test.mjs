@@ -179,3 +179,40 @@ test('buildEmergentGraph builds a file-access layer (reads/writes per file)', ()
   assert.equal(g.nodes.find((n) => n.label === 'Read a').access, 'read');
   assert.equal(g.nodes.find((n) => n.type === 'exec').file, undefined);
 });
+
+test('buildEmergentGraph builds a fork/join DAG with parallel branches + segments', () => {
+  const events = [
+    { ev: 'phase', kind: 'recon', state: 'start' }, { ev: 'phase', kind: 'recon', state: 'done' },
+    { ev: 'fork', from: 'main', branches: [{ id: 'r1', label: 'Research A' }, { id: 'r2', label: 'Research B' }] },
+    { ev: 'node', state: 'active', toolId: 'a1', type: 'research', label: 'Search A', branch: 'r1' },
+    { ev: 'node', state: 'done', toolId: 'a1' },
+    { ev: 'node', state: 'active', toolId: 'b1', type: 'research', label: 'Search B', branch: 'r2' },
+    { ev: 'node', state: 'done', toolId: 'b1' },
+    { ev: 'join', into: 'main', from: ['r1', 'r2'] },
+    { ev: 'phase', kind: 'agent_run', state: 'start' },
+    { ev: 'node', state: 'active', toolId: 'w1', type: 'edit', label: 'Write', file: 'out.js' },
+    { ev: 'node', state: 'done', toolId: 'w1' },
+    { ev: 'run', state: 'done' },
+  ];
+  const g = trace.buildEmergentGraph(events);
+  const a = g.nodes.find((n) => n.label === 'Search A');
+  const b = g.nodes.find((n) => n.label === 'Search B');
+  const recon = g.nodes.find((n) => n.type === 'recon');
+  const agent = g.nodes.find((n) => n.label === 'Delegate to agent');
+  assert.equal(a.branch, 'r1');
+  assert.equal(b.branch, 'r2');
+  // both branches fork from the frontier at fork time (recon)
+  assert.ok(g.edges.some((e) => e.from === recon.id && e.to === a.id), 'r1 forks from recon');
+  assert.ok(g.edges.some((e) => e.from === recon.id && e.to === b.id), 'r2 forks from recon');
+  // join: the post-join agent_run node links from BOTH branch tips
+  const parentsOfAgent = g.edges.filter((e) => e.to === agent.id).map((e) => e.from).sort();
+  assert.deepEqual(parentsOfAgent, [a.id, b.id].sort(), 'join links from both branch tips');
+  // segments: linear(recon) -> parallel(r1,r2) -> linear(agent_run, write)
+  assert.equal(g.segments[0].kind, 'linear');
+  assert.equal(g.segments[1].kind, 'parallel');
+  assert.equal(g.segments[1].branches.length, 2);
+  assert.equal(g.segments[1].branches[0].label, 'Research A');
+  assert.equal(g.segments[1].branches[1].nodeIds[0], b.id);
+  assert.equal(g.segments[2].kind, 'linear');
+  assert.equal(g.done, true);
+});

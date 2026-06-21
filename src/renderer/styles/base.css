@@ -10857,10 +10857,36 @@ body.zen-mode #workspace {
 .core-run-agent-lane {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  width: calc(280px * var(--us));
+  align-items: flex-start;
+  width: max-content;
   position: relative;
   z-index: 1;
+}
+.core-run-parallel-row {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(26px * var(--us));
+}
+.core-run-branch-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.core-run-branch-head {
+  font-size: calc(10.5px * var(--us));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+  margin-bottom: calc(6px * var(--us));
+  padding: calc(2px * var(--us)) calc(8px * var(--us));
+  border-radius: 999px;
+  border: 1px dashed color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
+}
+.core-run-branch-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent-color) 55%, var(--border-color));
+  stroke-width: 2;
+  opacity: 0.6;
 }
 .core-run-file-lane {
   display: flex;
@@ -10944,7 +10970,7 @@ body.zen-mode #workspace {
 .core-run-node.orch-graph-node {
   position: relative;
   z-index: auto;
-  width: 100%;
+  width: calc(260px * var(--us));
   cursor: default;
   user-select: text;
 }
