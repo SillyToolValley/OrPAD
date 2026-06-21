@@ -62,9 +62,9 @@ test('orchestration-core live-trace Run view replays a recorded trace', async ()
     await orchestrationWin.locator('#core-run-view [data-core-run-submit]').click();
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-error]')).toBeVisible();
 
-    // Replay the recorded trace through the real IPC. The graph renders in a 3D
-    // scene (three.js / 3d-force-graph), so we assert the run lifecycle via the
-    // status + the mounted WebGL canvas rather than per-node DOM.
+    // Replay the recorded trace through the real IPC. The graph renders in a 2D
+    // SVG data-flow scene (file circles + agent chips + flowing access edges), so
+    // we assert the run lifecycle via the status + the mounted SVG scene + nodes.
     const summary = await orchestrationWin.evaluate(async (p: string) => {
       return await (window as any).orpad.core.replayTrace({ traceFile: p, intervalMs: 8 });
     }, tracePath);
@@ -72,10 +72,11 @@ test('orchestration-core live-trace Run view replays a recorded trace', async ()
     expect(summary.events).toBeGreaterThan(0);
     expect(summary.done).toBe(true);
 
-    // run-done drives the status to complete and the 3D scene is live.
+    // run-done drives the status to complete and the 2D scene has rendered nodes.
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-status]'))
       .toHaveText(/Run complete/, { timeout: 8000 });
-    await expect(orchestrationWin.locator('#core-run-view .core-run-graph3d canvas')).toHaveCount(1, { timeout: 8000 });
+    await expect(orchestrationWin.locator('#core-run-view .core-run-graph2d')).toHaveCount(1, { timeout: 8000 });
+    await expect(orchestrationWin.locator('#core-run-view .core-run-nodes .crn-run').first()).toBeVisible({ timeout: 8000 });
   } finally {
     await closeElectronApp(app);
     fs.rmSync(workspace, { recursive: true, force: true });

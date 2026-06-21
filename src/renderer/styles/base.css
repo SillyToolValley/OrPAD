@@ -11137,11 +11137,62 @@ body.zen-mode #workspace {
 .core-run-link-edge.is-hot { stroke: var(--accent-color); opacity: 1; stroke-width: 2.5; }
 .core-run-link-edge.is-dim { opacity: 0.1; }
 /* 3D unified scene (three.js / 3d-force-graph). */
-.core-run-graph3d {
+.core-run-graph2d {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  outline: none;
+  cursor: grab;
 }
-.core-run-graph3d canvas { display: block; outline: none; }
+.core-run-graph-viewport.is-panning .core-run-graph2d { cursor: grabbing; }
+/* file circles (Obsidian-style vault layer) */
+.crn-file circle {
+  stroke-width: 1.2;
+  transition: opacity 0.15s ease;
+  cursor: pointer;
+}
+.crn-file-label {
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 9px;
+  fill: var(--text-tertiary);
+  paint-order: stroke;
+  stroke: var(--bg-primary);
+  stroke-width: 2.5px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.crn-file:hover .crn-file-label,
+.crn-file.is-hot .crn-file-label { opacity: 1; }
+/* agent chips (the run tree) */
+.crn-run rect {
+  transition: opacity 0.15s ease;
+  cursor: pointer;
+}
+.crn-run.is-active rect { filter: drop-shadow(0 0 5px color-mix(in srgb, #ffffff 55%, transparent)); }
+.crn-run-label {
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+/* edges */
+.crn-edge { fill: none; stroke-width: 1.3; opacity: 0.5; }
+.crn-edge-flow { stroke-width: 1.6; opacity: 0.6; }
+.crn-edge-access {
+  stroke-width: 2;
+  opacity: 0.85;
+  stroke-dasharray: 6 6;
+  animation: crn-flow 0.9s linear infinite;
+}
+.crn-edge-access.is-active { stroke-width: 2.6; opacity: 1; animation-duration: 0.5s; }
+@keyframes crn-flow { to { stroke-dashoffset: -24; } }
+/* hover focus */
+.core-run-nodes.has-hover .crn-run:not(.is-hot) rect,
+.core-run-nodes.has-hover .crn-file.is-dim circle { opacity: 0.2; }
+.crn-edge.is-dim { opacity: 0.08; }
 .core-run-legend {
   position: absolute;
   left: calc(12px * var(--us));

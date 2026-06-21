@@ -1,23 +1,25 @@
-// OrPAD orchestration-core — live-trace Run view (3D).
+// OrPAD orchestration-core — live-trace Run view (2D data-flow).
 //
-// One unified 3D scene (three.js via 3d-force-graph): the governed-delegation run
-// graph AND the workspace link graph (the Obsidian-style file layer) together.
-// Run work-nodes connect to the file nodes they read/write with directional
-// PARTICLE edges — data physically moving along the link. Orbit/zoom/drag are
-// built in; click a node to fly to it. The Run form lives in the left sidebar.
+// One flat 2D scene that reads like the OrPAD sketch: the workspace link graph
+// (Obsidian-style) is a force-directed cluster of round FILE nodes on the left;
+// the governed-delegation run is a small tree of rounded-rect AGENT chips on the
+// right; and the files a run reads/writes are joined to it by blue, flowing
+// data-flow curves bridging the two. Pan (drag bg), zoom (wheel), drag a node,
+// click a node to focus it, Reset view to frame everything. The Run form lives in
+// the left sidebar.
 //
 // Data: buildEmergentGraph(events) gives the run nodes/edges/files; onLinkGraph()
-// gives the vault note↔note link graph. Both feed one { nodes, links } graph.
+// gives the vault note↔note link graph. A tiny built-in force simulation lays the
+// unified graph out (no graph dependency) and runs incrementally so the layout
+// stays stable as the run streams in.
 
 import { buildEmergentGraph } from './emergent-trace.js';
-import ForceGraph3D from '3d-force-graph';
-import * as THREE from 'three';
+
+const SVGNS = 'http://www.w3.org/2000/svg';
 
 const TYPE_LABEL = {
-  recon: 'Recon', isolate: 'Isolate', guidance: 'Guidance', delegate: 'Delegate',
-  enforce: 'Enforce', inspect: 'Inspect', edit: 'Edit', exec: 'Exec',
-  research: 'Research', subagent: 'Subagent', plan: 'Plan', reason: 'Reason',
-  tool: 'Tool', phase: 'Phase',
+  recon: 'Recon', research: 'Research', plan: 'Plan', build: 'Build',
+  verify: 'Verify', apply: 'Apply', delegate: 'Delegate', agent: 'Agent',
 };
 function typeLabel(type) { return TYPE_LABEL[type] || (type ? String(type) : 'Node'); }
 
@@ -25,95 +27,35 @@ function parseLines(value) {
   return String(value || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
-// Node-type colours (mirror the 2D type accents).
-const TYPE_COLOR = {
-  recon: '#7aa2f7', isolate: '#bb9af7', guidance: '#e0af68', delegate: '#7dcfff',
-  enforce: '#9ece6a', inspect: '#9ece6a', edit: '#ff9e64', exec: '#bb9af7',
-  research: '#e0af68', subagent: '#7dcfff', plan: '#7aa2f7', reason: '#9aa5ce', tool: '#9aa5ce',
-};
-const FILE_COLOR = '#6b7194';
-const FILE_TOUCHED_COLOR = '#ff9e64';
-const ACTIVE_COLOR = '#ffffff';
-
-function nodeColor(n) {
-  if (n.kind === 'file') return n.touched ? FILE_TOUCHED_COLOR : FILE_COLOR;
-  if (n.active) return ACTIVE_COLOR;
-  return TYPE_COLOR[n.ntype] || '#9aa5ce';
-}
-function linkColor(l) {
-  if (l.kind === 'access') return l.access === 'write' ? '#ff9e64' : l.access === 'read' ? '#9ece6a' : '#9aa5ce';
-  if (l.kind === 'flow') return '#7dcfff';
-  return '#444a66';
-}
-
 function cssVar(name, fallback) {
   try {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    return v || fallback;
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+    return (v && v.trim()) || fallback;
   } catch (_) { return fallback; }
 }
 
-function roundRectPath(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
+// Node-type accent colours for the agent chips.
+const TYPE_COLOR = {
+  recon: '#7dcfff', research: '#bb9af7', plan: '#7aa2f7', build: '#9ece6a',
+  verify: '#e0af68', apply: '#73daca', delegate: '#7dcfff', agent: '#7dcfff',
+};
+function runColor(n) { return n.active ? '#ffffff' : (TYPE_COLOR[n.ntype] || '#7dcfff'); }
 
-// Build a billboarded "chip" sprite for a node — a flat rounded pill (OrPAD art
-// style: theme bg, type-accent border + dot, app font) with the node's name always
-// visible. Canvas texture, so no extra dependency beyond three.
-function makeNodeSprite(node) {
-  const accent = nodeColor(node);
-  const bg = cssVar('--bg-secondary', '#16161e');
-  const fg = cssVar('--text-primary', '#c0caf5');
-  const dpr = 2;
-  const fontPx = 13 * dpr;
-  const font = `600 ${fontPx}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
-  const raw = String(node.name || node.id || 'node');
-  const text = raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
-  const measure = document.createElement('canvas').getContext('2d');
-  measure.font = font;
-  const padX = 13 * dpr;
-  const dotR = 5 * dpr;
-  const gap = 8 * dpr;
-  const textW = measure.measureText(text).width;
-  const w = Math.ceil(padX + dotR * 2 + gap + textW + padX);
-  const h = Math.ceil(30 * dpr);
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.font = font;
-  // pill
-  roundRectPath(ctx, 1.5 * dpr, 1.5 * dpr, w - 3 * dpr, h - 3 * dpr, 11 * dpr);
-  ctx.fillStyle = bg; ctx.globalAlpha = 0.94; ctx.fill(); ctx.globalAlpha = 1;
-  ctx.lineWidth = (node.active ? 3 : 1.6) * dpr;
-  ctx.strokeStyle = accent;
-  ctx.stroke();
-  // type/file dot (write/touched files get a ring)
-  ctx.beginPath();
-  ctx.arc(padX + dotR, h / 2, dotR, 0, Math.PI * 2);
-  ctx.fillStyle = accent; ctx.fill();
-  // label
-  ctx.fillStyle = fg;
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, padX + dotR * 2 + gap, h / 2 + dpr * 0.5);
+// --- force-simulation parameters ----------------------------------------------
+// Only the FILE nodes are force-laid-out (the Obsidian-style cluster). The agent
+// chips get a deterministic tree layout (layoutRunNodes) and are pinned, so the
+// run reads as a tidy tree on the right and the vault as an organic web on the left.
+const REPULSE = 6500;        // file-file repulsion strength (spreads the cluster)
+const CENTER_PULL = 0.006;   // gentle pull toward centre
+const SIDE_PULL = 0.06;      // pull the file cluster left of centre
+const VELOCITY_DECAY = 0.82;
+const ALPHA_DECAY = 0.992;   // slow cool-down so the cluster has time to spread
+const LINK = {
+  link:   { dist: 70,  k: 0.06 },  // vault note↔note
+  flow:   { dist: 78,  k: 0.10 },  // agent→agent (the run tree — pinned, advisory)
+  access: { dist: 150, k: 0.02 },  // agent→file (the data-flow bridge — weak + long)
+};
 
-  const tex = new THREE.CanvasTexture(c);
-  tex.minFilter = THREE.LinearFilter;
-  tex.anisotropy = 4;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const sprite = new THREE.Sprite(mat);
-  const S = 8; // world height
-  sprite.scale.set(S * (w / h), S, 1);
-  return sprite;
-}
-
-// onRun: optional async (request) => summary (hides the form when omitted).
-// onLinkGraph: optional async () => { ok, nodes, edges } for the workspace link graph.
 export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop = null } = {}) {
   const el = document.createElement('section');
   el.className = 'core-run-view';
@@ -163,10 +105,17 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
       </form>
     </div>
     <div class="core-run-graph-viewport" data-core-run-viewport>
-      <div class="core-run-graph3d" data-core-run-graph3d></div>
+      <svg class="core-run-graph2d" data-core-run-svg>
+        <g data-core-run-scene>
+          <g data-core-run-edges class="core-run-edges"></g>
+          <g data-core-run-nodes class="core-run-nodes"></g>
+        </g>
+      </svg>
       <div class="core-run-graph-controls">
         <button type="button" class="core-run-zoom-btn" data-core-run-refresh title="Re-scan the workspace link graph">↻ Graph</button>
+        <button type="button" class="core-run-zoom-btn" data-core-run-zoomout title="Zoom out">−</button>
         <button type="button" class="core-run-zoom-btn" data-core-run-fit title="Frame the whole graph">Reset view</button>
+        <button type="button" class="core-run-zoom-btn" data-core-run-zoomin title="Zoom in">+</button>
       </div>
       <div class="core-run-legend" aria-hidden="true">
         <span><i class="dot" style="background:#7dcfff"></i>agent</span>
@@ -192,9 +141,15 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   const parallelEl = el.querySelector('[data-core-run-parallel]');
   const gatesEl = el.querySelector('[data-core-run-gates]');
   const verifyCyclesEl = el.querySelector('[data-core-run-verify-cycles]');
-  const graph3dEl = el.querySelector('[data-core-run-graph3d]');
+  const viewportEl = el.querySelector('[data-core-run-viewport]');
+  const svgEl = el.querySelector('[data-core-run-svg]');
+  const sceneEl = el.querySelector('[data-core-run-scene]');
+  const edgesEl = el.querySelector('[data-core-run-edges]');
+  const nodesEl = el.querySelector('[data-core-run-nodes]');
   const refreshBtn = el.querySelector('[data-core-run-refresh]');
   const fitBtn = el.querySelector('[data-core-run-fit]');
+  const zoomInBtn = el.querySelector('[data-core-run-zoomin]');
+  const zoomOutBtn = el.querySelector('[data-core-run-zoomout]');
 
   let events = [];
   let currentRunId = null;
@@ -206,12 +161,18 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   let linkGraphLoading = false;
   let linkGraphTried = false;
 
-  // 3D graph instance + persistent node objects (so positions survive re-feeds).
-  let fg = null;
-  const fgNodeById = new Map();
-  let lastSig = '';
+  // Persistent graph model (positions survive re-feeds so the layout is stable).
+  const nodeById = new Map();   // id -> node object (x, y, vx, vy, kind, __el, …)
+  let links = [];
+  let alpha = 0;                // simulation "heat"; >0 means keep ticking
   let hadNodes = false;
   let lastFlyId = null;
+  let hoverId = null;
+  let dragNode = null;
+
+  // View transform (scene = translate(view.x,view.y) scale(view.k)).
+  const view = { x: 0, y: 0, k: 1 };
+  const viewTarget = { x: 0, y: 0, k: 1, active: false };
 
   function showFormError(message) { errorEl.textContent = message; errorEl.hidden = !message; }
   function showFormResult(message) { if (!resultEl) return; resultEl.textContent = message || ''; resultEl.hidden = !message; }
@@ -250,99 +211,441 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     Promise.resolve(onLinkGraph()).then((res) => {
       linkGraphLoading = false;
       if (res && res.ok) linkGraph = res;
-      lastSig = '';
       render();
     }).catch(() => { linkGraphLoading = false; });
   }
 
-  // Fly the camera to frame a single node (click-to-focus / follow-active).
-  function flyTo(node, ms = 700) {
-    if (!fg || !node) return;
-    const dist = 70;
-    const hyp = Math.hypot(node.x || 1, node.y || 1, node.z || 1) || 1;
-    const r = 1 + dist / hyp;
-    fg.cameraPosition({ x: (node.x || 0) * r, y: (node.y || 0) * r, z: (node.z || 0) * r }, node, ms);
-  }
-  // --- 3D graph ----------------------------------------------------------------
-  function ensureFG() {
-    if (fg) return fg;
-    if (!graph3dEl || !graph3dEl.clientWidth) return null;
-    fg = ForceGraph3D()(graph3dEl)
-      .backgroundColor('rgba(0,0,0,0)')
-      .width(graph3dEl.clientWidth)
-      .height(graph3dEl.clientHeight)
-      .showNavInfo(false)
-      .nodeLabel((n) => (n.kind === 'file' ? n.path : `${typeLabel(n.ntype)} — ${n.name}`))
-      .nodeThreeObject((n) => {
-        const sig = `${n.name}|${nodeColor(n)}|${n.active ? 1 : 0}`;
-        if (n.__sig === sig && n.__obj) return n.__obj;
-        if (n.__obj && n.__obj.material) {
-          if (n.__obj.material.map) n.__obj.material.map.dispose();
-          n.__obj.material.dispose();
-        }
-        n.__sig = sig;
-        n.__obj = makeNodeSprite(n);
-        return n.__obj;
-      })
-      .nodeThreeObjectExtend(false)
-      .linkColor(linkColor)
-      .linkWidth((l) => (l.kind === 'access' ? 1.2 : 0.5))
-      .linkOpacity(0.35)
-      .linkDirectionalParticles((l) => (l.kind === 'access' ? 3 : l.kind === 'flow' ? 1 : 0))
-      .linkDirectionalParticleSpeed(0.012)
-      .linkDirectionalParticleWidth(2)
-      .linkDirectionalParticleColor((l) => linkColor(l))
-      .onNodeClick((node) => flyTo(node));
-    if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(() => { if (fg && graph3dEl.clientWidth) fg.width(graph3dEl.clientWidth).height(graph3dEl.clientHeight); });
-      ro.observe(graph3dEl);
-    }
-    return fg;
+  // ---- graph model build ------------------------------------------------------
+  function fileRadius(deg) { return Math.max(5, Math.min(22, 5 + Math.sqrt(deg || 0) * 3.4)); }
+  function chipSize(name) {
+    const w = Math.max(64, Math.min(230, 26 + String(name || '').length * 7.4));
+    return { w, h: 30 };
   }
 
-  // Build the unified { nodes, links } graph, reusing node objects so the 3D layout
-  // is stable as the run streams in.
-  function buildGraphData(runNodes, runEdges, files, activeId) {
+  // Deterministic tree layout for the agent run nodes: depth from the flow DAG
+  // gives the row, siblings spread across the column. Pinned (fixed) so the run
+  // reads as a tidy tree on the right while the file cluster floats free.
+  function layoutRunNodes(runNodes, runEdges) {
+    if (!runNodes.length) return;
+    const vw = svgEl.clientWidth || 800;
+    const vh = svgEl.clientHeight || 600;
+    const idIndex = new Map(runNodes.map((n, i) => [n.id, i]));
+    const depth = new Map(runNodes.map((n) => [n.id, 0]));
+    const edges = (runEdges || []).filter((e) => idIndex.has(e.from) && idIndex.has(e.to));
+    for (let pass = 0; pass < runNodes.length; pass++) {
+      let changed = false;
+      for (const e of edges) {
+        const nd = depth.get(e.from) + 1;
+        if (nd > depth.get(e.to)) { depth.set(e.to, nd); changed = true; }
+      }
+      if (!changed) break;
+    }
+    const levels = new Map();
+    for (const n of runNodes) {
+      const d = depth.get(n.id);
+      if (!levels.has(d)) levels.set(d, []);
+      levels.get(d).push(n.id);
+    }
+    const colX = vw * 0.72;
+    const topY = 64;
+    const rowGap = Math.max(46, Math.min(66, (vh - 128) / Math.max(1, levels.size)));
+    for (const [d, list] of levels) {
+      list.forEach((id, i) => {
+        const o = nodeById.get(`r:${id}`);
+        if (!o) return;
+        o.x = colX + (i - (list.length - 1) / 2) * 190;
+        o.y = topY + d * rowGap;
+        o.fixed = true;
+        o.__rr = Math.max(o.w, o.h) / 2 + 8;
+      });
+    }
+  }
+
+  function buildModel(runNodes, runEdges, files, activeId) {
     const wanted = new Set();
-    const nodes = [];
-    const ensure = (id, init) => {
-      let o = fgNodeById.get(id);
-      if (!o) { o = { id }; fgNodeById.set(id, o); }
+    const vw = svgEl.clientWidth || 800;
+    const vh = svgEl.clientHeight || 600;
+
+    const ensure = (id, init, seed) => {
+      let o = nodeById.get(id);
+      if (!o) {
+        o = { id, x: seed.x, y: seed.y, vx: 0, vy: 0, fixed: false, __el: null };
+        nodeById.set(id, o);
+        alpha = Math.max(alpha, 0.9); // reheat when topology grows
+      }
       Object.assign(o, init);
       wanted.add(id);
-      nodes.push(o);
       return o;
     };
-    for (const n of runNodes) {
-      ensure(`r:${n.id}`, { kind: 'run', ntype: n.type, name: n.label || n.type, phase: !!n.phase, active: n.id === activeId });
-    }
+
+    // Agent/run chips — created here; positioned by the deterministic tree layout below.
+    runNodes.forEach((n) => {
+      ensure(`r:${n.id}`, {
+        kind: 'run', ntype: n.type, name: n.label || typeLabel(n.type),
+        phase: !!n.phase, active: n.id === activeId,
+        ...chipSize(n.label || typeLabel(n.type)),
+      }, { x: vw * 0.72, y: vh * 0.5 });
+    });
+    layoutRunNodes(runNodes, runEdges);
+
+    // File circles — vault notes (left cluster) ∪ run-touched files.
     const vault = (linkGraph && linkGraph.ok && Array.isArray(linkGraph.nodes)) ? linkGraph.nodes : [];
     const vaultPaths = new Set(vault.map((v) => v.path));
-    for (const v of vault.slice(0, 600)) {
-      ensure(`f:${v.path}`, { kind: 'file', path: v.path, name: v.name, deg: (v.out || 0) + (v.in || 0), touched: false });
-    }
+    vault.slice(0, 400).forEach((v) => {
+      ensure(`f:${v.path}`, { kind: 'file', path: v.path, name: v.name, deg: (v.out || 0) + (v.in || 0), touched: false, r: fileRadius((v.out || 0) + (v.in || 0)) },
+        { x: vw * 0.3 + (Math.random() - 0.5) * vw * 0.4, y: vh * 0.5 + (Math.random() - 0.5) * vh * 0.6 });
+    });
     const touched = new Set((files || []).map((f) => f.path));
-    for (const f of (files || [])) {
-      if (!vaultPaths.has(f.path)) ensure(`f:${f.path}`, { kind: 'file', path: f.path, name: f.path.split(/[\\/]/).pop(), deg: (f.reads || 0) + (f.writes || 0), touched: true });
+    (files || []).forEach((f) => {
+      if (vaultPaths.has(f.path)) return;
+      ensure(`f:${f.path}`, { kind: 'file', path: f.path, name: f.path.split(/[\\/]/).pop(), deg: (f.reads || 0) + (f.writes || 0), touched: true, r: fileRadius((f.reads || 0) + (f.writes || 0)) },
+        { x: vw * 0.45 + (Math.random() - 0.5) * 60, y: vh * 0.5 + (Math.random() - 0.5) * 60 });
+    });
+    for (const o of nodeById.values()) if (o.kind === 'file' && touched.has(o.path)) o.touched = true;
+
+    // Drop stale nodes (and their DOM).
+    for (const id of [...nodeById.keys()]) {
+      if (wanted.has(id)) continue;
+      const o = nodeById.get(id);
+      if (o.__el && o.__el.parentNode) o.__el.parentNode.removeChild(o.__el);
+      nodeById.delete(id);
     }
-    // mark touched on vault nodes too
-    for (const o of nodes) if (o.kind === 'file' && touched.has(o.path)) o.touched = true;
 
-    // drop stale nodes
-    for (const id of [...fgNodeById.keys()]) if (!wanted.has(id)) fgNodeById.delete(id);
-
-    const links = [];
-    for (const e of (runEdges || [])) links.push({ source: `r:${e.from}`, target: `r:${e.to}`, kind: 'flow' });
+    // Links.
+    const next = [];
+    for (const e of (runEdges || [])) {
+      const s = nodeById.get(`r:${e.from}`), t = nodeById.get(`r:${e.to}`);
+      if (s && t) next.push({ source: s, target: t, kind: 'flow' });
+    }
     for (const n of runNodes) {
-      if (n.file && fgNodeById.has(`f:${n.file}`)) links.push({ source: `r:${n.id}`, target: `f:${n.file}`, kind: 'access', access: n.access || 'touch' });
+      const f = n.file && nodeById.get(`f:${n.file}`);
+      const s = nodeById.get(`r:${n.id}`);
+      if (f && s) next.push({ source: s, target: f, kind: 'access', access: n.access || 'touch', active: n.id === activeId });
     }
     const vedges = (linkGraph && Array.isArray(linkGraph.edges)) ? linkGraph.edges : [];
     for (const e of vedges) {
-      if (fgNodeById.has(`f:${e.from}`) && fgNodeById.has(`f:${e.to}`)) links.push({ source: `f:${e.from}`, target: `f:${e.to}`, kind: 'link' });
+      const s = nodeById.get(`f:${e.from}`), t = nodeById.get(`f:${e.to}`);
+      if (s && t) next.push({ source: s, target: t, kind: 'link' });
     }
-    return { nodes, links };
+    links = next;
   }
 
+  // ---- force simulation (incremental) ----------------------------------------
+  function step() {
+    const nodes = [...nodeById.values()];
+    const n = nodes.length;
+    if (!n) return;
+    const vw = svgEl.clientWidth || 800;
+    const vh = svgEl.clientHeight || 600;
+    const cx = vw / 2, cy = vh / 2;
+    const a = alpha;
+
+    // Radius (used for soft collision so dense clusters spread, chips never overlap files).
+    const rOf = (p) => p.__rr || (p.kind === 'file' ? (p.r || 6) + 8 : Math.max(p.w || 80, p.h || 30) / 2 + 8);
+    // Pairwise repulsion (capped node count keeps this cheap).
+    for (let i = 0; i < n; i++) {
+      const p = nodes[i];
+      for (let j = i + 1; j < n; j++) {
+        const q = nodes[j];
+        let dx = p.x - q.x, dy = p.y - q.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 0.01) { dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); d2 = 0.25; }
+        const d = Math.sqrt(d2);
+        let f = (REPULSE * a) / d2;
+        // Hard-ish floor when overlapping radii so nodes never stack.
+        const minD = rOf(p) + rOf(q);
+        if (d < minD) f += (minD - d) * 0.5;
+        const fx = (dx / d) * f, fy = (dy / d) * f;
+        p.vx += fx; p.vy += fy; q.vx -= fx; q.vy -= fy;
+      }
+    }
+    // Link springs.
+    for (const l of links) {
+      const cfg = LINK[l.kind] || LINK.link;
+      const s = l.source, t = l.target;
+      let dx = t.x - s.x, dy = t.y - s.y;
+      let d = Math.hypot(dx, dy) || 0.01;
+      const f = (d - cfg.dist) * cfg.k * a;
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      s.vx += fx; s.vy += fy; t.vx -= fx; t.vy -= fy;
+    }
+    // Centering + leftward bias — files only (agent chips are pinned by layout).
+    const fileTargetX = cx - vw * 0.24;
+    for (const p of nodes) {
+      if (p.kind !== 'file') continue;
+      p.vy += (cy - p.y) * CENTER_PULL * a;
+      p.vx += (fileTargetX - p.x) * SIDE_PULL * a;
+    }
+    // Integrate.
+    for (const p of nodes) {
+      if (p.fixed) { p.vx = 0; p.vy = 0; continue; }
+      p.vx *= VELOCITY_DECAY; p.vy *= VELOCITY_DECAY;
+      p.x += p.vx; p.y += p.vy;
+    }
+    alpha *= ALPHA_DECAY;
+    if (alpha < 0.004) alpha = 0;
+  }
+
+  // ---- rendering --------------------------------------------------------------
+  function edgeColor(l) {
+    if (l.kind === 'access') {
+      if (l.access === 'write') return cssVar('--syntax-number', '#ff9e64');
+      if (l.access === 'read') return cssVar('--syntax-string', '#9ece6a');
+      return cssVar('--accent-color', '#7dcfff');
+    }
+    if (l.kind === 'flow') return cssVar('--text-tertiary', '#7a8194');
+    return cssVar('--border-color', '#444a66');
+  }
+
+  function ensureNodeEl(node) {
+    if (node.__el) return node.__el;
+    if (node.kind === 'file') {
+      const g = document.createElementNS(SVGNS, 'g');
+      g.setAttribute('class', 'crn-file');
+      const c = document.createElementNS(SVGNS, 'circle');
+      g.appendChild(c);
+      const t = document.createElementNS(SVGNS, 'text');
+      t.setAttribute('class', 'crn-file-label');
+      t.setAttribute('text-anchor', 'middle');
+      g.appendChild(t);
+      node.__circle = c; node.__label = t;
+      g.addEventListener('pointerenter', () => { hoverId = node.id; paintHighlight(); });
+      g.addEventListener('pointerleave', () => { if (hoverId === node.id) { hoverId = null; paintHighlight(); } });
+      attachDrag(g, node);
+      nodesEl.appendChild(g);
+      node.__el = g;
+    } else {
+      const g = document.createElementNS(SVGNS, 'g');
+      g.setAttribute('class', 'crn-run');
+      const r = document.createElementNS(SVGNS, 'rect');
+      r.setAttribute('rx', '8'); r.setAttribute('ry', '8');
+      g.appendChild(r);
+      const t = document.createElementNS(SVGNS, 'text');
+      t.setAttribute('class', 'crn-run-label');
+      t.setAttribute('text-anchor', 'middle');
+      t.setAttribute('dominant-baseline', 'central');
+      g.appendChild(t);
+      node.__rect = r; node.__label = t;
+      g.addEventListener('pointerenter', () => { hoverId = node.id; paintHighlight(); });
+      g.addEventListener('pointerleave', () => { if (hoverId === node.id) { hoverId = null; paintHighlight(); } });
+      g.addEventListener('click', (e) => { e.stopPropagation(); focusNode(node); });
+      attachDrag(g, node);
+      nodesEl.appendChild(g);
+      node.__el = g;
+    }
+    return node.__el;
+  }
+
+  function paintNode(node) {
+    const g = ensureNodeEl(node);
+    if (node.kind === 'file') {
+      const r = node.r || 6;
+      node.__circle.setAttribute('cx', node.x);
+      node.__circle.setAttribute('cy', node.y);
+      node.__circle.setAttribute('r', r);
+      node.__circle.setAttribute('fill', node.touched ? cssVar('--syntax-number', '#ff9e64') : cssVar('--text-tertiary', '#6b7194'));
+      node.__circle.setAttribute('stroke', node.touched ? cssVar('--syntax-number', '#ff9e64') : cssVar('--border-color', '#444a66'));
+      node.__label.textContent = node.name || '';
+      node.__label.setAttribute('x', node.x);
+      node.__label.setAttribute('y', node.y + r + 11);
+    } else {
+      const { w, h } = node;
+      node.__rect.setAttribute('x', node.x - w / 2);
+      node.__rect.setAttribute('y', node.y - h / 2);
+      node.__rect.setAttribute('width', w);
+      node.__rect.setAttribute('height', h);
+      node.__rect.setAttribute('fill', cssVar('--bg-secondary', '#1f2335'));
+      node.__rect.setAttribute('stroke', runColor(node));
+      node.__rect.setAttribute('stroke-width', node.active ? 2.4 : 1.4);
+      node.__el.classList.toggle('is-active', !!node.active);
+      node.__el.classList.toggle('is-phase', !!node.phase);
+      node.__label.textContent = node.name || '';
+      node.__label.setAttribute('x', node.x);
+      node.__label.setAttribute('y', node.y);
+      node.__label.setAttribute('fill', cssVar('--text-primary', '#c0caf5'));
+    }
+  }
+
+  function paintEdges() {
+    // Reconcile edge <path> elements (rebuild — edges are few and cheap).
+    while (edgesEl.firstChild) edgesEl.removeChild(edgesEl.firstChild);
+    for (const l of links) {
+      const s = l.source, t = l.target;
+      const path = document.createElementNS(SVGNS, 'path');
+      let cls = 'crn-edge crn-edge-' + l.kind;
+      if (l.kind === 'access') {
+        cls += ' access-' + (l.access || 'touch');
+        if (l.active) cls += ' is-active';
+        // Curved bridge for the data-flow.
+        const mx = (s.x + t.x) / 2;
+        const dy = (t.y - s.y) * 0.2;
+        path.setAttribute('d', `M ${s.x} ${s.y} C ${mx} ${s.y + dy} ${mx} ${t.y - dy} ${t.x} ${t.y}`);
+      } else {
+        path.setAttribute('d', `M ${s.x} ${s.y} L ${t.x} ${t.y}`);
+      }
+      path.setAttribute('class', cls);
+      path.setAttribute('stroke', edgeColor(l));
+      l.__el = path;
+      l.__s = s; l.__t = t;
+      edgesEl.appendChild(path);
+    }
+  }
+
+  function paintHighlight() {
+    if (!hoverId) {
+      nodesEl.classList.remove('has-hover');
+      for (const n of nodeById.values()) { if (n.__el) { n.__el.classList.remove('is-hot', 'is-dim'); } }
+      for (const l of links) if (l.__el) l.__el.classList.remove('is-dim');
+      return;
+    }
+    nodesEl.classList.add('has-hover');
+    const hot = new Set([hoverId]);
+    for (const l of links) {
+      if (l.source.id === hoverId) hot.add(l.target.id);
+      if (l.target.id === hoverId) hot.add(l.source.id);
+    }
+    for (const n of nodeById.values()) {
+      if (!n.__el) continue;
+      n.__el.classList.toggle('is-hot', hot.has(n.id));
+      n.__el.classList.toggle('is-dim', !hot.has(n.id));
+    }
+    for (const l of links) {
+      if (!l.__el) continue;
+      l.__el.classList.toggle('is-dim', !(l.source.id === hoverId || l.target.id === hoverId));
+    }
+  }
+
+  function paintPositions() {
+    for (const n of nodeById.values()) if (n.__el) paintNode(n);
+    for (const l of links) {
+      if (!l.__el) continue;
+      const s = l.__s, t = l.__t;
+      if (l.kind === 'access') {
+        const mx = (s.x + t.x) / 2;
+        const dy = (t.y - s.y) * 0.2;
+        l.__el.setAttribute('d', `M ${s.x} ${s.y} C ${mx} ${s.y + dy} ${mx} ${t.y - dy} ${t.x} ${t.y}`);
+      } else {
+        l.__el.setAttribute('d', `M ${s.x} ${s.y} L ${t.x} ${t.y}`);
+      }
+    }
+  }
+
+  function applyTransform() {
+    sceneEl.setAttribute('transform', `translate(${view.x} ${view.y}) scale(${view.k})`);
+  }
+
+  // ---- camera (fit / focus / follow) -----------------------------------------
+  function nodeBBox() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+    for (const n of nodeById.values()) {
+      any = true;
+      const pad = n.kind === 'file' ? (n.r || 6) + 14 : (n.w || 80) / 2 + 6;
+      const padY = n.kind === 'file' ? (n.r || 6) + 14 : (n.h || 30) / 2 + 6;
+      minX = Math.min(minX, n.x - pad); maxX = Math.max(maxX, n.x + pad);
+      minY = Math.min(minY, n.y - padY); maxY = Math.max(maxY, n.y + padY);
+    }
+    return any ? { minX, minY, maxX, maxY } : null;
+  }
+  function zoomToFit(pad = 40) {
+    const bb = nodeBBox();
+    if (!bb) return;
+    const vw = svgEl.clientWidth || 800, vh = svgEl.clientHeight || 600;
+    const bw = Math.max(1, bb.maxX - bb.minX), bh = Math.max(1, bb.maxY - bb.minY);
+    const k = Math.max(0.2, Math.min(1.6, Math.min((vw - pad * 2) / bw, (vh - pad * 2) / bh)));
+    const cx = (bb.minX + bb.maxX) / 2, cy = (bb.minY + bb.maxY) / 2;
+    setViewTarget(vw / 2 - cx * k, vh / 2 - cy * k, k);
+  }
+  function focusNode(node) {
+    if (!node) return;
+    const vw = svgEl.clientWidth || 800, vh = svgEl.clientHeight || 600;
+    const k = Math.max(view.k, 1.1);
+    setViewTarget(vw / 2 - node.x * k, vh / 2 - node.y * k, k);
+  }
+  function setViewTarget(x, y, k) { viewTarget.x = x; viewTarget.y = y; viewTarget.k = k; viewTarget.active = true; }
+  function setViewNow(x, y, k) { view.x = x; view.y = y; view.k = k; viewTarget.active = false; applyTransform(); }
+
+  // ---- animation loop ---------------------------------------------------------
+  let rafId = null;
+  function loop() {
+    rafId = null;
+    if (alpha > 0) { step(); paintPositions(); }
+    if (viewTarget.active) {
+      view.x += (viewTarget.x - view.x) * 0.18;
+      view.y += (viewTarget.y - view.y) * 0.18;
+      view.k += (viewTarget.k - view.k) * 0.18;
+      applyTransform();
+      if (Math.abs(viewTarget.x - view.x) < 0.4 && Math.abs(viewTarget.y - view.y) < 0.4 && Math.abs(viewTarget.k - view.k) < 0.002) {
+        view.x = viewTarget.x; view.y = viewTarget.y; view.k = viewTarget.k; viewTarget.active = false; applyTransform();
+      }
+    }
+    if (alpha > 0 || viewTarget.active || dragNode) schedule();
+  }
+  function schedule() { if (rafId == null && typeof requestAnimationFrame !== 'undefined') rafId = requestAnimationFrame(loop); }
+
+  // ---- interaction ------------------------------------------------------------
+  function screenToGraph(clientX, clientY) {
+    const rect = svgEl.getBoundingClientRect();
+    return { x: (clientX - rect.left - view.x) / view.k, y: (clientY - rect.top - view.y) / view.k };
+  }
+  function attachDrag(g, node) {
+    g.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      dragNode = node;
+      node.fixed = true;
+      const p = screenToGraph(e.clientX, e.clientY);
+      node.__dx = node.x - p.x; node.__dy = node.y - p.y;
+      g.setPointerCapture && g.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        const q = screenToGraph(ev.clientX, ev.clientY);
+        node.x = q.x + node.__dx; node.y = q.y + node.__dy;
+        paintPositions();
+      };
+      const up = (ev) => {
+        node.fixed = false;
+        dragNode = null;
+        alpha = Math.max(alpha, 0.4); schedule();
+        g.releasePointerCapture && g.releasePointerCapture(ev.pointerId);
+        g.removeEventListener('pointermove', move);
+        g.removeEventListener('pointerup', up);
+      };
+      g.addEventListener('pointermove', move);
+      g.addEventListener('pointerup', up);
+    });
+  }
+  // Pan by dragging the background.
+  let panning = null;
+  svgEl.addEventListener('pointerdown', (e) => {
+    if (e.target !== svgEl && e.target.tagName !== 'svg') return;
+    panning = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+    viewportEl.classList.add('is-panning');
+    svgEl.setPointerCapture && svgEl.setPointerCapture(e.pointerId);
+  });
+  svgEl.addEventListener('pointermove', (e) => {
+    if (!panning) return;
+    view.x = panning.vx + (e.clientX - panning.x);
+    view.y = panning.vy + (e.clientY - panning.y);
+    viewTarget.active = false;
+    applyTransform();
+  });
+  const endPan = () => { panning = null; viewportEl.classList.remove('is-panning'); };
+  svgEl.addEventListener('pointerup', endPan);
+  svgEl.addEventListener('pointerleave', endPan);
+  // Wheel zoom anchored at the cursor.
+  svgEl.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = svgEl.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const k = Math.max(0.2, Math.min(2.5, view.k * factor));
+    // keep the graph point under the cursor fixed
+    view.x = mx - ((mx - view.x) / view.k) * k;
+    view.y = my - ((my - view.y) / view.k) * k;
+    view.k = k;
+    viewTarget.active = false;
+    applyTransform();
+  }, { passive: false });
+
+  // ---- status -----------------------------------------------------------------
   function setStatus(runNodes, done) {
     if (errorMessage) { statusEl.textContent = `Error — ${errorMessage}`; statusEl.dataset.state = 'error'; return; }
     if (busy) {
@@ -361,25 +664,23 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     loadLinkGraph(false);
     const { nodes, edges, activeId, done, files } = buildEmergentGraph(events);
     const runNodes = nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, phase: n.phase, file: n.file, access: n.access, active: n.id === activeId }));
-    const data = buildGraphData(runNodes, edges, files, activeId);
-    // active flag for status
-    const statNodes = data.nodes.filter((n) => n.kind === 'run');
+    buildModel(runNodes, edges, files, activeId);
+
+    const statNodes = [...nodeById.values()].filter((n) => n.kind === 'run');
     setStatus(statNodes, done);
 
-    const graph = ensureFG();
-    if (graph) {
-      const sig = `${data.nodes.length}:${data.links.length}:${activeId || ''}:${linkGraph ? linkGraph.nodes.length : 0}`;
-      if (sig !== lastSig) { lastSig = sig; graph.graphData(data); } // activeId is in the sig, so chips refresh on change
-      // Frame the graph when it first appears and when the run finishes (so it is
-      // never a tiny speck); follow the active node while the run is live so the
-      // current work stays focused even as the graph grows.
-      if (!hadNodes && data.nodes.length) { hadNodes = true; setTimeout(() => { if (fg) fg.zoomToFit(600, 70); }, 450); }
-      if (done && data.nodes.length) setTimeout(() => { if (fg) fg.zoomToFit(600, 70); }, 350);
-      if (busy && activeId && activeId !== lastFlyId) {
-        lastFlyId = activeId;
-        const obj = fgNodeById.get(`r:${activeId}`);
-        if (obj) setTimeout(() => flyTo(obj), 400);
-      }
+    paintEdges();
+    for (const n of nodeById.values()) paintNode(n);
+    paintHighlight();
+    schedule();
+
+    // Frame on first appearance and on completion; follow the active node live.
+    if (!hadNodes && nodeById.size) { hadNodes = true; setTimeout(() => zoomToFit(50), 500); }
+    if (done && nodeById.size) setTimeout(() => zoomToFit(50), 400);
+    if (busy && activeId && activeId !== lastFlyId) {
+      lastFlyId = activeId;
+      const obj = nodeById.get(`r:${activeId}`);
+      if (obj) setTimeout(() => focusNode(obj), 350);
     }
   }
 
@@ -443,14 +744,23 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   }
 
   if (refreshBtn) refreshBtn.addEventListener('click', () => { loadLinkGraph(true); });
-  if (fitBtn) fitBtn.addEventListener('click', () => { if (fg) fg.zoomToFit(600, 60); });
+  if (fitBtn) fitBtn.addEventListener('click', () => zoomToFit(50));
+  if (zoomInBtn) zoomInBtn.addEventListener('click', () => {
+    const vw = svgEl.clientWidth / 2, vh = svgEl.clientHeight / 2;
+    const k = Math.min(2.5, view.k * 1.2);
+    view.x = vw - ((vw - view.x) / view.k) * k; view.y = vh - ((vh - view.y) / view.k) * k; view.k = k; applyTransform();
+  });
+  if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => {
+    const vw = svgEl.clientWidth / 2, vh = svgEl.clientHeight / 2;
+    const k = Math.max(0.2, view.k / 1.2);
+    view.x = vw - ((vw - view.x) / view.k) * k; view.y = vh - ((vh - view.y) / view.k) * k; view.k = k; applyTransform();
+  });
 
-  // First paint may run before the element is laid out (clientWidth 0); retry once
-  // the viewport has size so the 3D scene initialises.
-  render();
-  if (graph3dEl && !graph3dEl.clientWidth && typeof requestAnimationFrame !== 'undefined') {
-    const tryInit = () => { if (graph3dEl.clientWidth) { render(); } else { requestAnimationFrame(tryInit); } };
-    requestAnimationFrame(tryInit);
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => { schedule(); });
+    ro.observe(viewportEl);
   }
+
+  render();
   return { el, applyEvent, reset };
 }
