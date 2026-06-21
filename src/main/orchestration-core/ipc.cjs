@@ -65,6 +65,8 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const agent = request?.agent ? String(request.agent) : undefined;
     const ground = request?.ground !== false;     // default ON: research prior art first
     const apply = request?.apply !== false;       // default ON: write the result into the workspace
+    const parallelResearch = request?.parallelResearch === true; // fan-out: parallel research subagents
+    const researchQueries = Array.isArray(request?.researchQueries) ? request.researchQueries : undefined;
     const greenfield = allowedFiles.length === 0; // no write-set -> unconstrained build, apply everything
 
     // Verification gates (the TRUST boundary): deterministic checks run against the
@@ -89,6 +91,7 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
       const baseOpts = {
         workspaceRoot, overlayRoot, runRoot,
         allowedFiles, readOnlyFiles, goal, allowedTools, agent, timeoutMs,
+        parallelResearch, researchQueries,
         streamTrace: true,
         onTraceEvent: send,
       };

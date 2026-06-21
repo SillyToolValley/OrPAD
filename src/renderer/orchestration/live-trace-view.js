@@ -84,6 +84,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
         <div class="core-run-form-row core-run-form-opts">
           <label class="core-run-check"><input type="checkbox" data-core-run-ground checked /> Research prior art first (grounding)</label>
           <label class="core-run-check"><input type="checkbox" data-core-run-apply checked /> Apply result to workspace</label>
+          <label class="core-run-check"><input type="checkbox" data-core-run-parallel /> Parallel research (fan-out)</label>
         </div>
         <p class="core-run-form-note">Spawns the configured agent (claude) under the isolation moat. A real run — it may take minutes and incur cost. Time cap 0 = no stop-signal.</p>
         <p class="core-run-form-error" data-core-run-error hidden></p>
@@ -113,6 +114,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
   const resultEl = el.querySelector('[data-core-run-result]');
   const groundEl = el.querySelector('[data-core-run-ground]');
   const applyEl = el.querySelector('[data-core-run-apply]');
+  const parallelEl = el.querySelector('[data-core-run-parallel]');
   const gatesEl = el.querySelector('[data-core-run-gates]');
   const verifyCyclesEl = el.querySelector('[data-core-run-verify-cycles]');
   const viewportEl = el.querySelector('[data-core-run-viewport]');
@@ -271,6 +273,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
         timeoutMs: timeoutMin > 0 ? Math.round(timeoutMin * 60000) : 0,
         ground: groundEl ? groundEl.checked : true,
         apply: applyEl ? applyEl.checked : true,
+        parallelResearch: parallelEl ? parallelEl.checked : false,
         verifyCommands,
         verifyCycles,
       };

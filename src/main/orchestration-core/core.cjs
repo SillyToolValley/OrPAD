@@ -353,6 +353,72 @@ async function runGroundingResearch(opts) {
   return { ...res, brief, groundingFile };
 }
 
+// Default fan-out angles when parallel research is requested without explicit queries.
+const DEFAULT_RESEARCH_QUERIES = [
+  { label: 'Prior art', prompt: 'Survey the real products, open-source tools, libraries and papers that already do this — names, links, how each works.' },
+  { label: 'Requirements', prompt: 'Derive the must-have capabilities any credible solution to this task MUST implement.' },
+  { label: 'Pitfalls', prompt: 'Where existing solutions fall short for THIS task, the common failure modes, and how to overcome them.' },
+];
+
+// Parallel read-only research fan-out: run N research subagents CONCURRENTLY, each
+// in its own overlay and tagged with a branch id so the live graph shows them as
+// parallel branches (fork → branches → join). Read-only by design — writes are never
+// parallelized (the context-merge failure mode). Returns { briefs, combinedBrief }.
+// opts: { workspaceRoot, overlayRoot, runRoot, goal, agent, timeoutMs, onTraceEvent,
+//         queries?, researchTools?, delegate? (injectable for tests) }
+async function runParallelResearch(opts) {
+  if (!opts || !opts.goal) throw new Error('goal is required');
+  if (!opts.overlayRoot) throw new Error('overlayRoot is required');
+  const delegate = opts.delegate || delegateToAgent;
+  const queries = (Array.isArray(opts.queries) && opts.queries.length) ? opts.queries : DEFAULT_RESEARCH_QUERIES;
+  const researchTools = opts.researchTools || ['Read', 'Write', 'WebSearch', 'WebFetch', 'Bash'];
+  const onTraceEvent = opts.onTraceEvent || null;
+  const runDir = opts.runRoot || path.join(path.resolve(opts.overlayRoot), '..', 'run');
+  const branches = queries.map((q, i) => ({ id: `r${i + 1}`, label: q.label || `Research ${i + 1}` }));
+
+  if (onTraceEvent) { try { onTraceEvent({ ev: 'fork', from: 'main', branches, at: nowIso() }); } catch (_) { /* best effort */ } }
+
+  const runBranch = async (q, branch) => {
+    const branchOverlay = `${opts.overlayRoot}-${branch.id}`;
+    fs.rmSync(branchOverlay, { recursive: true, force: true });
+    fs.mkdirSync(branchOverlay, { recursive: true });
+    // Tag every event with this branch; swallow the subagent's run lifecycle (the
+    // orchestrator owns the overall run-done, so a branch finishing must not flip it).
+    const tag = onTraceEvent ? (ev) => {
+      if (!ev || ev.ev === 'run') return;
+      try { onTraceEvent({ ...ev, branch: ev.branch || branch.id }); } catch (_) { /* best effort */ }
+    } : null;
+    const groundingFile = `${branch.id}.md`;
+    const res = await delegate({
+      overlayRoot: branchOverlay,
+      goal: composeResearchGoal(`${opts.goal}\n\nFocus this research specifically on: ${q.label}. ${q.prompt || ''}`, { groundingFile }),
+      allowedTools: researchTools,
+      agent: opts.agent,
+      timeoutMs: opts.timeoutMs || 0,
+      onTraceEvent: tag,
+    });
+    let brief = '';
+    try { brief = fs.readFileSync(path.join(branchOverlay, groundingFile), 'utf8'); } catch (_) { /* none produced */ }
+    return { branch: branch.id, label: q.label, brief, stopped: !!res.stopped, costUsd: res.costUsd };
+  };
+
+  const briefs = await Promise.all(queries.map((q, i) => runBranch(q, branches[i])));
+
+  if (onTraceEvent) { try { onTraceEvent({ ev: 'join', into: 'main', from: branches.map((b) => b.id), at: nowIso() }); } catch (_) { /* best effort */ } }
+
+  const combinedBrief = briefs
+    .filter((b) => (b.brief || '').trim())
+    .map((b) => `## ${b.label}\n${b.brief.trim()}`)
+    .join('\n\n');
+  try {
+    appendObserverTrace(runDir, {
+      event: 'parallel_research', at: nowIso(),
+      branches: briefs.map((b) => ({ branch: b.branch, label: b.label, hasBrief: !!(b.brief || '').trim(), stopped: b.stopped })),
+    });
+  } catch (_) { /* observer is best-effort */ }
+  return { briefs, combinedBrief };
+}
+
 // Grounded governed delegation: research prior art FIRST, then build with the brief injected.
 // opts: runGovernedDelegation opts, plus { ground?=true, groundingBrief?, researchOverlayRoot?,
 //        researchRunRoot?, researchTimeoutMs?, researchTools? }
@@ -362,13 +428,23 @@ async function runGroundedDelegation(opts) {
   let brief = (opts.groundingBrief || '').trim();
   let research = null;
   if (ground && !brief) {
-    research = await runGroundingResearch({
-      ...opts,
-      overlayRoot: opts.researchOverlayRoot || `${opts.overlayRoot}-research`,
-      runRoot: opts.researchRunRoot || (opts.runRoot ? `${opts.runRoot}-research` : undefined),
-      timeoutMs: opts.researchTimeoutMs || opts.timeoutMs || 0,
-    });
-    brief = (research.brief || '').trim();
+    if (opts.parallelResearch) {
+      // Fan-out: parallel read-only research subagents → combined brief.
+      research = await runParallelResearch({
+        ...opts,
+        queries: opts.researchQueries,
+        timeoutMs: opts.researchTimeoutMs || opts.timeoutMs || 0,
+      });
+      brief = (research.combinedBrief || '').trim();
+    } else {
+      research = await runGroundingResearch({
+        ...opts,
+        overlayRoot: opts.researchOverlayRoot || `${opts.overlayRoot}-research`,
+        runRoot: opts.researchRunRoot || (opts.runRoot ? `${opts.runRoot}-research` : undefined),
+        timeoutMs: opts.researchTimeoutMs || opts.timeoutMs || 0,
+      });
+      brief = (research.brief || '').trim();
+    }
   }
   const build = await runGovernedDelegation({
     ...opts,
@@ -457,6 +533,8 @@ module.exports = {
   composeResearchGoal,
   composeGoalWithGrounding,
   runGroundingResearch,
+  runParallelResearch,
+  DEFAULT_RESEARCH_QUERIES,
   runGroundedDelegation,
   runVerificationGates,
   runVerifiedBuildLoop,
