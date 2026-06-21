@@ -93,8 +93,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     </div>
     <div class="core-run-graph-viewport" data-core-run-viewport>
       <div class="core-run-mode-toggle">
-        <button type="button" class="core-run-mode-btn is-active" data-core-run-mode="run">Run</button>
-        <button type="button" class="core-run-mode-btn" data-core-run-mode="project">Project graph</button>
+        <button type="button" class="core-run-mode-btn" data-core-run-refresh title="Re-scan the workspace link graph">↻ Graph</button>
       </div>
       <div class="core-run-graph-canvas" data-core-run-canvas>
         <div class="core-run-graph" data-core-run-graph aria-live="polite"></div>
@@ -126,14 +125,14 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   const zoomInEl = el.querySelector('[data-core-run-zoom-in]');
   const zoomOutEl = el.querySelector('[data-core-run-zoom-out]');
   const zoomResetEl = el.querySelector('[data-core-run-zoom-reset]');
-  const modeBtns = [...el.querySelectorAll('[data-core-run-mode]')];
+  const refreshBtn = el.querySelector('[data-core-run-refresh]');
 
-  // View mode: 'run' (the live emergent graph) or 'project' (the Obsidian-style
-  // workspace link graph). Project graph is fetched lazily via onLinkGraph.
-  let viewMode = 'run';
+  // Unified view: the live run graph (left) + the workspace link graph (right, the
+  // Obsidian-style file layer). The link graph is fetched lazily once via onLinkGraph;
+  // run work-nodes connect to its file nodes with animated data-flow edges.
   let linkGraph = null;
-  let linkGraphError = null;
   let linkGraphLoading = false;
+  let linkGraphTried = false;
   let lastRunFiles = [];
   let draggingNode = null;
 
@@ -378,24 +377,6 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
 
   const SVGNS = 'http://www.w3.org/2000/svg';
 
-  // Layer-2 node: a file the run reads/writes (the Obsidian-style file graph).
-  function fileNodeEl(f, isActive) {
-    const el = document.createElement('div');
-    el.className = `core-run-file-node${isActive ? ' is-active' : ''}`;
-    el.dataset.file = f.path;
-    const name = document.createElement('div');
-    name.className = 'core-run-file-node-name';
-    name.textContent = f.path.split(/[\\/]/).pop();
-    name.title = f.path;
-    const meta = document.createElement('div');
-    meta.className = 'core-run-file-node-meta';
-    const parts = [];
-    if (f.reads) parts.push(`R×${f.reads}`);
-    if (f.writes) parts.push(`W×${f.writes}`);
-    meta.textContent = parts.join('  ') || 'touch';
-    el.append(name, meta);
-    return el;
-  }
 
   // Draw the DAG edges after layout. Coords are accumulated up the offsetParent
   // chain to the graph container, so they're correct whatever the lane positioning
@@ -440,7 +421,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
       const ra = at(a);
       const rf = at(f);
       const x1 = ra.x + ra.w; const y1 = ra.y + ra.h / 2;
-      const x2 = rf.x; const y2 = rf.y + rf.h / 2;
+      const x2 = rf.x; const y2 = rf.y; // file-graph nodes are centered (translate -50%)
       const dx = Math.max(40, (x2 - x1) / 2);
       const path = document.createElementNS(SVGNS, 'path');
       path.setAttribute('d', `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`);
@@ -448,24 +429,19 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
       svg.appendChild(path);
     }
   }
-  function setMode(mode) {
-    viewMode = mode === 'project' ? 'project' : 'run';
-    modeBtns.forEach((b) => b.classList.toggle('is-active', b.dataset.coreRunMode === viewMode));
-    userAdjusted = false;
-    if (viewMode === 'project' && !linkGraph && !linkGraphLoading && onLinkGraph) {
-      linkGraphLoading = true;
-      linkGraphError = null;
+  function loadLinkGraph(force) {
+    if (!onLinkGraph) return;
+    if (force) { linkGraph = null; linkGraphTried = false; }
+    if (linkGraph || linkGraphLoading || linkGraphTried) return;
+    linkGraphTried = true;
+    linkGraphLoading = true;
+    Promise.resolve(onLinkGraph()).then((res) => {
+      linkGraphLoading = false;
+      if (res && res.ok) linkGraph = res;
       render();
-      Promise.resolve(onLinkGraph()).then((res) => {
-        linkGraphLoading = false;
-        if (res && res.ok) { linkGraph = res; linkGraphError = null; } else { linkGraphError = (res && res.error) || 'No project link graph.'; }
-        render();
-      }).catch((e) => { linkGraphLoading = false; linkGraphError = String(e && e.message || e); render(); });
-      return;
-    }
-    render();
+    }).catch(() => { linkGraphLoading = false; render(); });
   }
-  modeBtns.forEach((b) => b.addEventListener('click', () => setMode(b.dataset.coreRunMode)));
+  if (refreshBtn) refreshBtn.addEventListener('click', () => { userAdjusted = false; loadLinkGraph(true); render(); });
 
   // Deterministic force-directed layout for the project link graph (Obsidian-style).
   function layoutForce(nodes, edges) {
@@ -517,104 +493,56 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     return fg;
   }
 
-  function renderProjectGraph() {
-    graphEl.replaceChildren();
-    graphEl.style.width = '';
-    graphEl.style.height = '';
-    if (linkGraphLoading) { statusEl.textContent = 'Loading project graph…'; statusEl.dataset.state = 'running'; return; }
-    if (linkGraphError) { statusEl.textContent = `Project graph — ${linkGraphError}`; statusEl.dataset.state = 'error'; return; }
-    const g = linkGraph;
-    if (!g || !Array.isArray(g.nodes) || !g.nodes.length) {
-      statusEl.textContent = 'Project graph — no notes found.'; statusEl.dataset.state = 'idle'; return;
-    }
-    const nodes = g.nodes.slice(0, 400);
-    const { pos, w, h } = layoutForce(nodes, g.edges || []);
-    graphEl.style.width = `${Math.ceil(w)}px`;
-    graphEl.style.height = `${Math.ceil(h)}px`;
-    const svg = document.createElementNS(SVGNS, 'svg');
-    svg.setAttribute('class', 'core-run-edges');
-    svg.setAttribute('width', String(Math.ceil(w)));
-    svg.setAttribute('height', String(Math.ceil(h)));
-    svg.setAttribute('viewBox', `0 0 ${Math.ceil(w)} ${Math.ceil(h)}`);
-    graphEl.appendChild(svg);
-    const idx = new Map(nodes.map((nd, i) => [nd.path, i]));
-    const edgeRecords = [];
-    for (const e of (g.edges || [])) {
-      const a = idx.get(e.from); const b = idx.get(e.to);
-      if (a == null || b == null || a === b) continue;
-      const line = document.createElementNS(SVGNS, 'path');
-      line.setAttribute('class', 'core-run-link-edge');
-      svg.appendChild(line);
-      edgeRecords.push({ el: line, a, b });
-    }
-    const updateEdge = (rec) => rec.el.setAttribute('d', `M${pos[rec.a].x},${pos[rec.a].y} L${pos[rec.b].x},${pos[rec.b].y}`);
-    edgeRecords.forEach(updateEdge);
-
-    // Adjacency for hover-highlight (Obsidian-style: lift a node + its neighbours).
-    const adj = nodes.map(() => new Set());
-    edgeRecords.forEach((r) => { adj[r.a].add(r.b); adj[r.b].add(r.a); });
-
-    const touched = new Set((lastRunFiles || []).map((f) => f.path));
-    const nodeEls = [];
-    nodes.forEach((nd, i) => {
-      const fg = fileGraphNodeEl(nd, touched.has(nd.path));
-      fg.style.left = `${pos[i].x}px`;
-      fg.style.top = `${pos[i].y}px`;
-      fg.addEventListener('pointerenter', () => {
-        if (draggingNode != null) return;
-        nodeEls.forEach((el, j) => {
-          const hot = j === i || adj[i].has(j);
-          el.classList.toggle('is-hot', hot);
-          el.classList.toggle('is-dim', !hot);
-        });
-        edgeRecords.forEach((r) => {
-          const hot = r.a === i || r.b === i;
-          r.el.classList.toggle('is-hot', hot);
-          r.el.classList.toggle('is-dim', !hot);
-        });
+  // Obsidian-style interaction on a file-graph node: drag to reposition (its link
+  // edges follow), hover to lift the node + its neighbours.
+  function wireFileNodeInteraction(fg, i, pos, edgeRecords, updateEdge, adj, nodeEls) {
+    fg.addEventListener('pointerenter', () => {
+      if (draggingNode != null) return;
+      nodeEls.forEach((el, j) => {
+        const hot = j === i || adj[i].has(j);
+        el.classList.toggle('is-hot', hot);
+        el.classList.toggle('is-dim', !hot);
       });
-      fg.addEventListener('pointerleave', () => {
-        if (draggingNode != null) return;
-        nodeEls.forEach((el) => el.classList.remove('is-hot', 'is-dim'));
-        edgeRecords.forEach((r) => r.el.classList.remove('is-hot', 'is-dim'));
+      edgeRecords.forEach((r) => {
+        const hot = r.a === i || r.b === i;
+        r.el.classList.toggle('is-hot', hot);
+        r.el.classList.toggle('is-dim', !hot);
       });
-      // Drag to reposition (screen delta → graph coords via the current zoom scale).
-      fg.addEventListener('pointerdown', (ev) => {
-        if (ev.button !== 0) return;
-        ev.stopPropagation();
-        userAdjusted = true;
-        draggingNode = i;
-        fg.classList.add('is-dragging');
-        let lastX = ev.clientX; let lastY = ev.clientY;
-        try { fg.setPointerCapture(ev.pointerId); } catch (_) {}
-        const move = (m) => {
-          pos[i].x += (m.clientX - lastX) / scale;
-          pos[i].y += (m.clientY - lastY) / scale;
-          lastX = m.clientX; lastY = m.clientY;
-          fg.style.left = `${pos[i].x}px`;
-          fg.style.top = `${pos[i].y}px`;
-          edgeRecords.forEach((r) => { if (r.a === i || r.b === i) updateEdge(r); });
-        };
-        const up = (u) => {
-          draggingNode = null;
-          fg.classList.remove('is-dragging');
-          fg.removeEventListener('pointermove', move);
-          fg.removeEventListener('pointerup', up);
-          try { fg.releasePointerCapture(u.pointerId); } catch (_) {}
-        };
-        fg.addEventListener('pointermove', move);
-        fg.addEventListener('pointerup', up);
-      });
-      graphEl.appendChild(fg);
-      nodeEls.push(fg);
     });
-    const edgeCount = (g.edges || []).length;
-    statusEl.textContent = `Project graph — ${g.nodes.length} note${g.nodes.length === 1 ? '' : 's'}, ${edgeCount} link${edgeCount === 1 ? '' : 's'}`;
-    statusEl.dataset.state = 'done';
-    if (!userAdjusted) fitView();
+    fg.addEventListener('pointerleave', () => {
+      if (draggingNode != null) return;
+      nodeEls.forEach((el) => el.classList.remove('is-hot', 'is-dim'));
+      edgeRecords.forEach((r) => r.el.classList.remove('is-hot', 'is-dim'));
+    });
+    fg.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      ev.stopPropagation();
+      userAdjusted = true;
+      draggingNode = i;
+      fg.classList.add('is-dragging');
+      let lastX = ev.clientX; let lastY = ev.clientY;
+      try { fg.setPointerCapture(ev.pointerId); } catch (_) {}
+      const move = (m) => {
+        pos[i].x += (m.clientX - lastX) / scale;
+        pos[i].y += (m.clientY - lastY) / scale;
+        lastX = m.clientX; lastY = m.clientY;
+        fg.style.left = `${pos[i].x}px`;
+        fg.style.top = `${pos[i].y}px`;
+        edgeRecords.forEach((r) => { if (r.a === i || r.b === i) updateEdge(r); });
+      };
+      const up = (u) => {
+        draggingNode = null;
+        fg.classList.remove('is-dragging');
+        fg.removeEventListener('pointermove', move);
+        fg.removeEventListener('pointerup', up);
+        try { fg.releasePointerCapture(u.pointerId); } catch (_) {}
+      };
+      fg.addEventListener('pointermove', move);
+      fg.addEventListener('pointerup', up);
+    });
   }
   function render() {
-    if (viewMode === 'project') { renderProjectGraph(); return; }
+    loadLinkGraph(false);
     graphEl.style.width = '';
     graphEl.style.height = '';
     const { nodes, edges, activeId, done, files, segments } = buildEmergentGraph(events);
@@ -674,18 +602,55 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     });
     lanes.appendChild(agentLane);
 
-    // Layer 2: file lane (distinct files, the one the active node touches highlighted).
-    const activeFile = (nodes.find((n) => n.id === activeId) || {}).file || null;
+    // Layer 2: the project file graph (Obsidian-style) IS the file layer. Its node
+    // set = the vault's linked notes ∪ the files this run touches; run work-nodes
+    // connect to these nodes with animated data-flow edges (drawn in drawEdges).
     const fileEls = new Map();
-    if (files.length) {
-      const fileLane = document.createElement('div');
-      fileLane.className = 'core-run-file-lane';
-      files.forEach((f) => {
-        const fe = fileNodeEl(f, f.path === activeFile);
-        fileLane.appendChild(fe);
-        fileEls.set(f.path, fe);
+    const vault = (linkGraph && linkGraph.ok && Array.isArray(linkGraph.nodes)) ? linkGraph.nodes : [];
+    const vaultPaths = new Set(vault.map((n) => n.path));
+    const fnodes = vault.slice(0, 400);
+    for (const f of files) {
+      if (!vaultPaths.has(f.path)) fnodes.push({ path: f.path, name: f.path.split(/[\\/]/).pop(), out: 0, in: 0, loose: true });
+    }
+    if (fnodes.length) {
+      const region = document.createElement('div');
+      region.className = 'core-run-file-region';
+      const fedges = (linkGraph && Array.isArray(linkGraph.edges)) ? linkGraph.edges : [];
+      const { pos, w, h } = layoutForce(fnodes, fedges);
+      region.style.width = `${Math.ceil(w)}px`;
+      region.style.height = `${Math.ceil(h)}px`;
+      const fsvg = document.createElementNS(SVGNS, 'svg');
+      fsvg.setAttribute('class', 'core-run-edges');
+      fsvg.setAttribute('width', String(Math.ceil(w)));
+      fsvg.setAttribute('height', String(Math.ceil(h)));
+      fsvg.setAttribute('viewBox', `0 0 ${Math.ceil(w)} ${Math.ceil(h)}`);
+      region.appendChild(fsvg);
+      const fidx = new Map(fnodes.map((nd, i) => [nd.path, i]));
+      const edgeRecords = [];
+      for (const e of fedges) {
+        const a = fidx.get(e.from); const b = fidx.get(e.to);
+        if (a == null || b == null || a === b) continue;
+        const line = document.createElementNS(SVGNS, 'path');
+        line.setAttribute('class', 'core-run-link-edge');
+        fsvg.appendChild(line);
+        edgeRecords.push({ el: line, a, b });
+      }
+      const updateEdge = (rec) => rec.el.setAttribute('d', `M${pos[rec.a].x},${pos[rec.a].y} L${pos[rec.b].x},${pos[rec.b].y}`);
+      edgeRecords.forEach(updateEdge);
+      const adj = fnodes.map(() => new Set());
+      edgeRecords.forEach((r) => { adj[r.a].add(r.b); adj[r.b].add(r.a); });
+      const touchedSet = new Set(files.map((f) => f.path));
+      const fgEls = [];
+      fnodes.forEach((nd, i) => {
+        const fg = fileGraphNodeEl(nd, touchedSet.has(nd.path));
+        fg.style.left = `${pos[i].x}px`;
+        fg.style.top = `${pos[i].y}px`;
+        wireFileNodeInteraction(fg, i, pos, edgeRecords, updateEdge, adj, fgEls);
+        region.appendChild(fg);
+        fgEls.push(fg);
+        fileEls.set(nd.path, fg);
       });
-      lanes.appendChild(fileLane);
+      lanes.appendChild(region);
     }
     graphEl.appendChild(lanes);
     drawEdges(svg, nodes, edges, activeId, nodeEls, fileEls);

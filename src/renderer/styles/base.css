@@ -10908,8 +10908,11 @@ body.zen-mode #workspace {
 .core-run-edge-line {
   fill: none;
   stroke-width: 2;
-  opacity: 0.45;
+  opacity: 0.5;
+  stroke-dasharray: 5 5;
+  animation: core-run-dash 1.1s linear infinite;
 }
+.core-run-file-region { position: relative; }
 .core-run-edge-line.access-read { stroke: var(--syntax-string, #9ece6a); }
 .core-run-edge-line.access-write { stroke: var(--syntax-number, #ff9e64); }
 .core-run-edge-line.access-touch { stroke: var(--border-color); }
