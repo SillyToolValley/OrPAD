@@ -11112,3 +11112,16 @@ body.zen-mode #workspace {
   color: var(--text-primary);
   font-weight: 600;
 }
+/* Interactive project graph (drag nodes, hover to lift a node + its neighbours). */
+.core-run-file-graph-node { cursor: grab; }
+.core-run-file-graph-node.is-dragging { cursor: grabbing; }
+.core-run-file-graph-node.is-dim { opacity: 0.22; }
+.core-run-file-graph-node.is-hot .core-run-fg-dot {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-color) 32%, transparent);
+}
+.core-run-file-graph-node.is-hot .core-run-fg-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.core-run-link-edge.is-hot { stroke: var(--accent-color); opacity: 1; stroke-width: 2.5; }
+.core-run-link-edge.is-dim { opacity: 0.1; }

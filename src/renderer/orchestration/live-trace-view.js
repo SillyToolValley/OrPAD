@@ -135,6 +135,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
   let linkGraphError = null;
   let linkGraphLoading = false;
   let lastRunFiles = [];
+  let draggingNode = null;
 
   // Pan/zoom canvas — drag the empty graph background to pan, wheel to zoom
   // (zoom anchored at the cursor), zoom buttons step around the viewport center.
@@ -537,20 +538,75 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null } = {}) {
     svg.setAttribute('viewBox', `0 0 ${Math.ceil(w)} ${Math.ceil(h)}`);
     graphEl.appendChild(svg);
     const idx = new Map(nodes.map((nd, i) => [nd.path, i]));
+    const edgeRecords = [];
     for (const e of (g.edges || [])) {
       const a = idx.get(e.from); const b = idx.get(e.to);
       if (a == null || b == null || a === b) continue;
       const line = document.createElementNS(SVGNS, 'path');
-      line.setAttribute('d', `M${pos[a].x},${pos[a].y} L${pos[b].x},${pos[b].y}`);
       line.setAttribute('class', 'core-run-link-edge');
       svg.appendChild(line);
+      edgeRecords.push({ el: line, a, b });
     }
+    const updateEdge = (rec) => rec.el.setAttribute('d', `M${pos[rec.a].x},${pos[rec.a].y} L${pos[rec.b].x},${pos[rec.b].y}`);
+    edgeRecords.forEach(updateEdge);
+
+    // Adjacency for hover-highlight (Obsidian-style: lift a node + its neighbours).
+    const adj = nodes.map(() => new Set());
+    edgeRecords.forEach((r) => { adj[r.a].add(r.b); adj[r.b].add(r.a); });
+
     const touched = new Set((lastRunFiles || []).map((f) => f.path));
+    const nodeEls = [];
     nodes.forEach((nd, i) => {
       const fg = fileGraphNodeEl(nd, touched.has(nd.path));
       fg.style.left = `${pos[i].x}px`;
       fg.style.top = `${pos[i].y}px`;
+      fg.addEventListener('pointerenter', () => {
+        if (draggingNode != null) return;
+        nodeEls.forEach((el, j) => {
+          const hot = j === i || adj[i].has(j);
+          el.classList.toggle('is-hot', hot);
+          el.classList.toggle('is-dim', !hot);
+        });
+        edgeRecords.forEach((r) => {
+          const hot = r.a === i || r.b === i;
+          r.el.classList.toggle('is-hot', hot);
+          r.el.classList.toggle('is-dim', !hot);
+        });
+      });
+      fg.addEventListener('pointerleave', () => {
+        if (draggingNode != null) return;
+        nodeEls.forEach((el) => el.classList.remove('is-hot', 'is-dim'));
+        edgeRecords.forEach((r) => r.el.classList.remove('is-hot', 'is-dim'));
+      });
+      // Drag to reposition (screen delta → graph coords via the current zoom scale).
+      fg.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        ev.stopPropagation();
+        userAdjusted = true;
+        draggingNode = i;
+        fg.classList.add('is-dragging');
+        let lastX = ev.clientX; let lastY = ev.clientY;
+        try { fg.setPointerCapture(ev.pointerId); } catch (_) {}
+        const move = (m) => {
+          pos[i].x += (m.clientX - lastX) / scale;
+          pos[i].y += (m.clientY - lastY) / scale;
+          lastX = m.clientX; lastY = m.clientY;
+          fg.style.left = `${pos[i].x}px`;
+          fg.style.top = `${pos[i].y}px`;
+          edgeRecords.forEach((r) => { if (r.a === i || r.b === i) updateEdge(r); });
+        };
+        const up = (u) => {
+          draggingNode = null;
+          fg.classList.remove('is-dragging');
+          fg.removeEventListener('pointermove', move);
+          fg.removeEventListener('pointerup', up);
+          try { fg.releasePointerCapture(u.pointerId); } catch (_) {}
+        };
+        fg.addEventListener('pointermove', move);
+        fg.addEventListener('pointerup', up);
+      });
       graphEl.appendChild(fg);
+      nodeEls.push(fg);
     });
     const edgeCount = (g.edges || []).length;
     statusEl.textContent = `Project graph — ${g.nodes.length} note${g.nodes.length === 1 ? '' : 's'}, ${edgeCount} link${edgeCount === 1 ? '' : 's'}`;
