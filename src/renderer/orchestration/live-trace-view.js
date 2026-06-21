@@ -7,9 +7,10 @@
 // and every node closes out when the run completes. Reuses the preserved
 // orch-graph node visual primitives (.orch-graph-node + type/runtime classes).
 //
-// When given an `onRun(request)` callback the view also renders a Run form (goal +
-// write-set + time cap) that launches a REAL governed delegation; trace events
-// then stream back in and drive the graph live.
+// When given an `onRun` callback the view also renders a Run form (goal +
+// write-set + grounding/apply toggles + time cap) in a LEFT sidebar that
+// launches a REAL grounded/governed delegation; the emergent graph fills the
+// right pane on a drag-to-pan / wheel-to-zoom canvas as trace events stream in.
 
 import { buildEmergentGraph } from './emergent-trace.js';
 
@@ -47,39 +48,50 @@ export function createLiveTraceView({ onRun = null } = {}) {
   const el = document.createElement('section');
   el.className = 'core-run-view';
   el.innerHTML = `
-    <header class="core-run-header">
-      <h2 class="core-run-title">Live run</h2>
-      <div class="core-run-status" data-core-run-status role="status">Idle — no run yet.</div>
-    </header>
-    <form class="core-run-form" data-core-run-form>
-      <label class="core-run-field">
-        <span>Goal</span>
-        <textarea data-core-run-goal rows="3" placeholder="Describe the task to delegate to the agent…"></textarea>
-      </label>
-      <label class="core-run-field">
-        <span>Write-set <small>optional — files the agent may change. Leave empty to build freely; the whole result is applied to the workspace.</small></span>
-        <textarea data-core-run-writeset rows="2" placeholder="src/feature.js"></textarea>
-      </label>
-      <label class="core-run-field">
-        <span>Read-only context <small>optional — extra files seeded read-only, one per line</small></span>
-        <textarea data-core-run-readonly rows="1" placeholder="src/types.ts"></textarea>
-      </label>
-      <div class="core-run-form-row">
-        <label class="core-run-field core-run-field-inline">
-          <span>Time cap (min)</span>
-          <input type="number" data-core-run-timeout min="0" step="1" value="0" inputmode="numeric" />
+    <div class="core-run-side">
+      <header class="core-run-header">
+        <h2 class="core-run-title">Live run</h2>
+        <div class="core-run-status" data-core-run-status role="status">Idle — no run yet.</div>
+      </header>
+      <form class="core-run-form" data-core-run-form>
+        <label class="core-run-field">
+          <span>Goal</span>
+          <textarea data-core-run-goal rows="3" placeholder="Describe the task to delegate to the agent…"></textarea>
         </label>
-        <button type="submit" class="core-run-btn" data-core-run-submit>Run</button>
+        <label class="core-run-field">
+          <span>Write-set <small>optional — files the agent may change. Leave empty to build freely; the whole result is applied to the workspace.</small></span>
+          <textarea data-core-run-writeset rows="2" placeholder="src/feature.js"></textarea>
+        </label>
+        <label class="core-run-field">
+          <span>Read-only context <small>optional — extra files seeded read-only, one per line</small></span>
+          <textarea data-core-run-readonly rows="1" placeholder="src/types.ts"></textarea>
+        </label>
+        <div class="core-run-form-row">
+          <label class="core-run-field core-run-field-inline">
+            <span>Time cap (min)</span>
+            <input type="number" data-core-run-timeout min="0" step="1" value="0" inputmode="numeric" />
+          </label>
+          <button type="submit" class="core-run-btn" data-core-run-submit>Run</button>
+        </div>
+        <div class="core-run-form-row core-run-form-opts">
+          <label class="core-run-check"><input type="checkbox" data-core-run-ground checked /> Research prior art first (grounding)</label>
+          <label class="core-run-check"><input type="checkbox" data-core-run-apply checked /> Apply result to workspace</label>
+        </div>
+        <p class="core-run-form-note">Spawns the configured agent (claude) under the isolation moat. A real run — it may take minutes and incur cost. Time cap 0 = no stop-signal.</p>
+        <p class="core-run-form-error" data-core-run-error hidden></p>
+        <p class="core-run-form-result" data-core-run-result hidden></p>
+      </form>
+    </div>
+    <div class="core-run-graph-viewport" data-core-run-viewport>
+      <div class="core-run-graph-canvas" data-core-run-canvas>
+        <div class="core-run-graph" data-core-run-graph aria-live="polite"></div>
       </div>
-      <div class="core-run-form-row core-run-form-opts">
-        <label class="core-run-check"><input type="checkbox" data-core-run-ground checked /> Research prior art first (grounding)</label>
-        <label class="core-run-check"><input type="checkbox" data-core-run-apply checked /> Apply result to workspace</label>
+      <div class="core-run-graph-controls">
+        <button type="button" class="core-run-zoom-btn" data-core-run-zoom-out title="Zoom out" aria-label="Zoom out">−</button>
+        <button type="button" class="core-run-zoom-btn" data-core-run-zoom-reset title="Reset view">Reset view</button>
+        <button type="button" class="core-run-zoom-btn" data-core-run-zoom-in title="Zoom in" aria-label="Zoom in">+</button>
       </div>
-      <p class="core-run-form-note">Spawns the configured agent (claude) under the isolation moat. A real run — it may take minutes and incur cost. Time cap 0 = no stop-signal.</p>
-      <p class="core-run-form-error" data-core-run-error hidden></p>
-      <p class="core-run-form-result" data-core-run-result hidden></p>
-    </form>
-    <div class="core-run-graph" data-core-run-graph aria-live="polite"></div>
+    </div>
   `;
   const statusEl = el.querySelector('[data-core-run-status]');
   const graphEl = el.querySelector('[data-core-run-graph]');
@@ -93,6 +105,84 @@ export function createLiveTraceView({ onRun = null } = {}) {
   const resultEl = el.querySelector('[data-core-run-result]');
   const groundEl = el.querySelector('[data-core-run-ground]');
   const applyEl = el.querySelector('[data-core-run-apply]');
+  const viewportEl = el.querySelector('[data-core-run-viewport]');
+  const canvasEl = el.querySelector('[data-core-run-canvas]');
+  const zoomInEl = el.querySelector('[data-core-run-zoom-in]');
+  const zoomOutEl = el.querySelector('[data-core-run-zoom-out]');
+  const zoomResetEl = el.querySelector('[data-core-run-zoom-reset]');
+
+  // Pan/zoom canvas — drag the empty graph background to pan, wheel to zoom
+  // (zoom anchored at the cursor), zoom buttons step around the viewport center.
+  const ZOOM_MIN = 0.3;
+  const ZOOM_MAX = 2.5;
+  let panX = 0;
+  let panY = 0;
+  let scale = 1;
+  let dragging = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
+  let panBaseX = 0;
+  let panBaseY = 0;
+
+  function applyTransform() {
+    if (canvasEl) canvasEl.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+  }
+  function resetView() {
+    panX = 0;
+    panY = 0;
+    scale = 1;
+    applyTransform();
+  }
+  function zoomAt(nextScaleRaw, cx, cy) {
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, nextScaleRaw));
+    if (next === scale) return;
+    // Keep the point under (cx, cy) stationary while scaling.
+    panX = cx - (cx - panX) * (next / scale);
+    panY = cy - (cy - panY) * (next / scale);
+    scale = next;
+    applyTransform();
+  }
+  if (viewportEl && canvasEl) {
+    viewportEl.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      // Let node text stay selectable; only pan from the empty background.
+      if (e.target.closest && e.target.closest('.core-run-node, .core-run-graph-controls')) return;
+      dragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      panBaseX = panX;
+      panBaseY = panY;
+      viewportEl.classList.add('is-panning');
+      try { viewportEl.setPointerCapture(e.pointerId); } catch (_) {}
+    });
+    viewportEl.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      panX = panBaseX + (e.clientX - dragStartX);
+      panY = panBaseY + (e.clientY - dragStartY);
+      applyTransform();
+    });
+    const endDrag = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      viewportEl.classList.remove('is-panning');
+      try { viewportEl.releasePointerCapture(e.pointerId); } catch (_) {}
+    };
+    viewportEl.addEventListener('pointerup', endDrag);
+    viewportEl.addEventListener('pointercancel', endDrag);
+    viewportEl.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = viewportEl.getBoundingClientRect();
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      zoomAt(scale * factor, e.clientX - rect.left, e.clientY - rect.top);
+    }, { passive: false });
+    const centerZoom = (factor) => {
+      const rect = viewportEl.getBoundingClientRect();
+      zoomAt(scale * factor, rect.width / 2, rect.height / 2);
+    };
+    zoomInEl?.addEventListener('click', () => centerZoom(1.2));
+    zoomOutEl?.addEventListener('click', () => centerZoom(1 / 1.2));
+    zoomResetEl?.addEventListener('click', resetView);
+  }
 
   let events = [];
   let errorMessage = '';
@@ -101,6 +191,7 @@ export function createLiveTraceView({ onRun = null } = {}) {
   function reset() {
     events = [];
     errorMessage = '';
+    resetView();
     render();
   }
 

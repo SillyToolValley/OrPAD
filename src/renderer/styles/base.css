@@ -10676,16 +10676,31 @@ body.zen-mode #workspace {
 
 /* ============================================================
    orchestration-core live-trace Run view (emergent graph)
-   Reuses the .orch-graph-node visual primitives in a simple
-   top-to-bottom emergent flow (no pan/zoom canvas).
+   Reuses the .orch-graph-node visual primitives in a top-to-bottom
+   emergent flow on a drag-to-pan / wheel-to-zoom canvas, with the
+   Run form docked in a left sidebar.
    ============================================================ */
 .core-run-view {
   display: flex;
+  flex-direction: row;
+  gap: calc(14px * var(--us));
+  padding: calc(14px * var(--us));
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
+  align-items: stretch;
+}
+.core-run-side {
+  display: flex;
   flex-direction: column;
   gap: calc(12px * var(--us));
-  padding: calc(18px * var(--us));
-  max-width: 720px;
-  margin: 0 auto;
+  flex: 0 0 auto;
+  width: calc(340px * var(--us));
+  min-width: calc(260px * var(--us));
+  max-width: 44%;
+  overflow-y: auto;
+  padding-right: calc(2px * var(--us));
 }
 .core-run-header {
   display: flex;
@@ -10804,11 +10819,58 @@ body.zen-mode #workspace {
   font-size: calc(11.5px * var(--us));
   color: var(--success-color);
 }
+.core-run-graph-viewport {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background-color: var(--bg-primary);
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--border-color) 70%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: calc(22px * var(--us)) calc(22px * var(--us));
+  cursor: grab;
+  touch-action: none;
+}
+.core-run-graph-viewport.is-panning { cursor: grabbing; }
+.core-run-graph-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  padding: calc(18px * var(--us));
+  will-change: transform;
+}
 .core-run-graph {
   display: flex;
   flex-direction: column;
   align-items: stretch;
+  width: calc(280px * var(--us));
 }
+.core-run-graph-controls {
+  position: absolute;
+  right: calc(12px * var(--us));
+  bottom: calc(12px * var(--us));
+  display: flex;
+  gap: calc(6px * var(--us));
+  z-index: 5;
+}
+.core-run-zoom-btn {
+  font: inherit;
+  min-width: calc(30px * var(--us));
+  height: calc(30px * var(--us));
+  padding: 0 calc(9px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.core-run-zoom-btn:hover { background: var(--bg-secondary); }
 /* Override the canvas-absolute positioning so nodes stack in the flow. */
 .core-run-node.orch-graph-node {
   position: relative;
