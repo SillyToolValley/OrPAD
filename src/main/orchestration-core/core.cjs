@@ -202,6 +202,7 @@ async function runGovernedDelegation(opts) {
     goal, allowedTools, agent, timeoutMs = 0,
     injectGuidance = true, guidanceCatalog: guidanceCatalogOpt, guidanceCatalogPath,
     streamTrace = false, traceFile: traceFileOpt, onTraceEvent = null,
+    seedOverlay = true,
   } = opts;
   if (!workspaceRoot) throw new Error('workspaceRoot is required');
   if (!overlayRoot) throw new Error('overlayRoot is required');
@@ -221,12 +222,19 @@ async function runGovernedDelegation(opts) {
   appendObserverTrace(runDir, { event: 'recon', at: nowIso(), recon: reconResult });
   phase('recon', 'done');
 
-  // 2. isolation moat: seed overlay with ONLY the write-set + read-only context
+  // 2. isolation moat: seed overlay with ONLY the write-set + read-only context.
+  //    On a verification RETRY (seedOverlay=false) the existing overlay is REUSED
+  //    so the agent fixes its own prior output instead of starting from scratch.
   phase('overlay_seeded', 'start');
-  fs.rmSync(overlayRoot, { recursive: true, force: true });
-  fs.mkdirSync(overlayRoot, { recursive: true });
-  const seeded = await copyAllowedFilesToOverlay({ workspaceRoot, overlayRoot, allowedFiles, readOnlyFiles });
-  appendObserverTrace(runDir, { event: 'overlay_seeded', at: nowIso(), seeded, allowedFiles, readOnlyFiles, timeoutMs });
+  let seeded = [];
+  if (seedOverlay) {
+    fs.rmSync(overlayRoot, { recursive: true, force: true });
+    fs.mkdirSync(overlayRoot, { recursive: true });
+    seeded = await copyAllowedFilesToOverlay({ workspaceRoot, overlayRoot, allowedFiles, readOnlyFiles });
+  } else {
+    fs.mkdirSync(overlayRoot, { recursive: true });
+  }
+  appendObserverTrace(runDir, { event: 'overlay_seeded', at: nowIso(), seeded, allowedFiles, readOnlyFiles, timeoutMs, reused: !seedOverlay });
   phase('overlay_seeded', 'done');
 
   // 2.5 inject OrPAD's standing guidance catalog (the grown soft-core guidance) into the goal.
@@ -369,6 +377,76 @@ async function runGroundedDelegation(opts) {
   return { research, brief, build, summary: build.summary };
 }
 
+// --- Verification gates (the TRUST boundary) -----------------------------------
+// Deterministic, EXTERNAL checks run against the agent's overlay output BEFORE it
+// is allowed to touch the canonical workspace. External verification is the only
+// signal that reliably improves agent output (a model grading itself does not);
+// here it serves the stronger purpose of a TRUST gate: nothing unverified ships.
+// Gate kinds:
+//   { kind:'command', id?, cmd, expectExit?=0 } -> run cmd in overlay; pass iff exit===expectExit
+//   { kind:'file-exists', id?, path }           -> pass iff overlay/path exists
+//   { kind:'file-absent',  id?, path }          -> pass iff overlay/path missing
+// Returns { passed, results:[{id,kind,passed,detail}] }. No network of its own;
+// each command is bounded by perGateTimeoutMs and run with the overlay as cwd.
+function runVerificationGates(overlayRoot, gates, opts = {}) {
+  const perGateTimeoutMs = opts.perGateTimeoutMs || 120000;
+  const results = [];
+  for (const g of (Array.isArray(gates) ? gates : [])) {
+    if (!g || typeof g !== 'object') continue;
+    const id = String(g.id || g.cmd || g.path || g.kind || 'gate');
+    let passed = false;
+    let detail = '';
+    try {
+      if (g.kind === 'command' && g.cmd) {
+        const expect = Number.isInteger(g.expectExit) ? g.expectExit : 0;
+        const r = spawnSync(String(g.cmd), { cwd: overlayRoot, shell: true, timeout: perGateTimeoutMs, encoding: 'utf8' });
+        const code = r.status;
+        passed = code === expect && !r.error;
+        const tail = String(r.stderr || r.stdout || '').trim().slice(-400);
+        detail = `exit=${code === null ? 'null' : code}${r.error ? ` err=${r.error.message}` : ''}${passed ? '' : (tail ? ` :: ${tail}` : '')}`;
+      } else if (g.kind === 'file-exists' && g.path) {
+        passed = fs.existsSync(path.join(overlayRoot, String(g.path)));
+        detail = passed ? 'present' : 'missing';
+      } else if (g.kind === 'file-absent' && g.path) {
+        passed = !fs.existsSync(path.join(overlayRoot, String(g.path)));
+        detail = passed ? 'absent' : 'present';
+      } else {
+        detail = 'unknown-gate-kind';
+      }
+    } catch (e) {
+      detail = `gate-error: ${(e && e.message) || e}`;
+    }
+    results.push({ id, kind: g.kind, passed, detail });
+  }
+  // Vacuously true for an empty gate set; callers decide whether to run gates at all.
+  const passed = results.every((r) => r.passed);
+  return { passed, results };
+}
+
+// build -> verify -> (retry-with-failure-feedback) loop. Pure orchestration: the
+// build is `buildFn(feedback|null)` (null on the first attempt), verification is
+// `verifyFn()` (returns {passed,results}). On failure with cycles remaining the
+// failing gate details are handed back to buildFn so the agent fixes its own work.
+// Injectable fns make this unit-testable with no live agent. Returns
+// { build, gate, met, cycles }.
+async function runVerifiedBuildLoop({ buildFn, verifyFn, maxCycles = 0 }) {
+  if (typeof buildFn !== 'function' || typeof verifyFn !== 'function') {
+    throw new Error('runVerifiedBuildLoop requires buildFn and verifyFn');
+  }
+  let cycle = 0;
+  let build = await buildFn(null);
+  let gate = verifyFn();
+  while (!gate.passed && cycle < maxCycles && !(build && build.stopped)) {
+    cycle += 1;
+    const failures = gate.results.filter((r) => !r.passed)
+      .map((r) => `- [${r.id}] ${r.detail}`).join('\n');
+    const feedback = `The previous attempt FAILED these verification checks:\n${failures}\nFix them. Do not change unrelated behavior.`;
+    build = await buildFn(feedback);
+    gate = verifyFn();
+  }
+  return { build, gate, met: gate.passed, cycles: cycle };
+}
+
 module.exports = {
   recon,
   delegateToAgent,
@@ -380,6 +458,8 @@ module.exports = {
   composeGoalWithGrounding,
   runGroundingResearch,
   runGroundedDelegation,
+  runVerificationGates,
+  runVerifiedBuildLoop,
   // The soft-node guidance catalog is no longer empty: it is grown from observed gaps and
   // promoted into guidance-catalog.json, then injected into every governed delegation.
   guidanceCatalog: loadGuidanceCatalog(),

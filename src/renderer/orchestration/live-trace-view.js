@@ -66,6 +66,14 @@ export function createLiveTraceView({ onRun = null } = {}) {
           <span>Read-only context <small>optional — extra files seeded read-only, one per line</small></span>
           <textarea data-core-run-readonly rows="1" placeholder="src/types.ts"></textarea>
         </label>
+        <label class="core-run-field">
+          <span>Verification gates <small>optional — shell checks, one per line; exit 0 = pass. The trust gate: a failing check BLOCKS apply, so nothing unverified reaches your workspace.</small></span>
+          <textarea data-core-run-gates rows="2" placeholder="npm test"></textarea>
+        </label>
+        <label class="core-run-field core-run-field-inline">
+          <span>Auto-fix cycles <small>retries on gate failure</small></span>
+          <input type="number" data-core-run-verify-cycles min="0" max="5" step="1" value="0" inputmode="numeric" />
+        </label>
         <div class="core-run-form-row">
           <label class="core-run-field core-run-field-inline">
             <span>Time cap (min)</span>
@@ -105,6 +113,8 @@ export function createLiveTraceView({ onRun = null } = {}) {
   const resultEl = el.querySelector('[data-core-run-result]');
   const groundEl = el.querySelector('[data-core-run-ground]');
   const applyEl = el.querySelector('[data-core-run-apply]');
+  const gatesEl = el.querySelector('[data-core-run-gates]');
+  const verifyCyclesEl = el.querySelector('[data-core-run-verify-cycles]');
   const viewportEl = el.querySelector('[data-core-run-viewport]');
   const canvasEl = el.querySelector('[data-core-run-canvas]');
   const zoomInEl = el.querySelector('[data-core-run-zoom-in]');
@@ -235,6 +245,8 @@ export function createLiveTraceView({ onRun = null } = {}) {
       const allowedFiles = parseLines(writesetEl?.value);
       const readOnlyFiles = parseLines(readonlyEl?.value);
       const timeoutMin = Math.max(0, Number(timeoutEl?.value) || 0);
+      const verifyCommands = parseLines(gatesEl?.value);
+      const verifyCycles = Math.max(0, Math.min(5, Number(verifyCyclesEl?.value) || 0));
       const request = {
         goal,
         allowedFiles,
@@ -242,6 +254,8 @@ export function createLiveTraceView({ onRun = null } = {}) {
         timeoutMs: timeoutMin > 0 ? Math.round(timeoutMin * 60000) : 0,
         ground: groundEl ? groundEl.checked : true,
         apply: applyEl ? applyEl.checked : true,
+        verifyCommands,
+        verifyCycles,
       };
       setBusy(true);
       try {
@@ -250,11 +264,25 @@ export function createLiveTraceView({ onRun = null } = {}) {
           showFormError(res.error || 'Run failed.');
         } else if (res) {
           const parts = [];
-          parts.push(res.appliedCount ? `Applied ${res.appliedCount} file${res.appliedCount === 1 ? '' : 's'} to the workspace` : 'No files applied');
-          if (res.grounded) parts.push(res.groundingBrief ? 'grounded (prior-art brief produced)' : 'grounding requested');
-          if (res.violationCount) parts.push(`${res.violationCount} out-of-write-set violation${res.violationCount === 1 ? '' : 's'}`);
+          const gateList = Array.isArray(res.gates) ? res.gates : [];
+          if (res.gated) {
+            const passedN = gateList.filter((g) => g.passed).length;
+            parts.push(res.met
+              ? `Verified ✓ ${passedN}/${gateList.length} checks passed`
+              : `Verification FAILED ✗ ${passedN}/${gateList.length} — NOT applied (nothing unverified reaches your workspace)`);
+            if (res.verifyCycles) parts.push(`${res.verifyCycles} fix cycle${res.verifyCycles === 1 ? '' : 's'}`);
+          }
+          if (res.met !== false) {
+            parts.push(res.appliedCount ? `Applied ${res.appliedCount} file${res.appliedCount === 1 ? '' : 's'} to the workspace` : 'No files applied');
+          }
+          if (res.grounded) parts.push(res.groundingBrief ? 'grounded (prior-art brief)' : 'grounding requested');
+          const vCount = Array.isArray(res.violations) ? res.violations.length : 0;
+          if (vCount) parts.push(`${vCount} out-of-write-set violation${vCount === 1 ? '' : 's'}`);
           if (res.stopped) parts.push(`stopped: ${res.stopReason || 'time-cap'}`);
-          showFormResult(parts.join(' · '));
+          const summary = parts.join(' · ');
+          // A blocked apply (gate failed) is shown in the attention/error style so
+          // it reads as "output rejected", not "run succeeded".
+          if (res.met === false) { showFormError(summary); } else { showFormResult(summary); }
         }
       } catch (err) {
         showFormError(String(err?.message || err));

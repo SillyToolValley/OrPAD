@@ -15,6 +15,7 @@ export const PHASE_NODE = {
   guidance_injected: { type: 'guidance', label: 'Inject standing guidance' },
   agent_run: { type: 'delegate', label: 'Delegate to agent' },
   patch_collected: { type: 'enforce', label: 'Enforce write-set' },
+  verify: { type: 'enforce', label: 'Verify gates' },
 };
 
 // Map an agent tool name to a work-node type.

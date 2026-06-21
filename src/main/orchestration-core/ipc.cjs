@@ -67,6 +67,17 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const apply = request?.apply !== false;       // default ON: write the result into the workspace
     const greenfield = allowedFiles.length === 0; // no write-set -> unconstrained build, apply everything
 
+    // Verification gates (the TRUST boundary): deterministic checks run against the
+    // overlay before anything is applied. `gates` are explicit gate objects;
+    // `verifyCommands` is a convenience (shell strings -> command gates).
+    const rawGates = Array.isArray(request?.gates) ? request.gates : [];
+    const cmdGates = Array.isArray(request?.verifyCommands)
+      ? request.verifyCommands.map(String).map((s) => s.trim()).filter(Boolean).map((cmd) => ({ kind: 'command', cmd }))
+      : [];
+    const gates = [...rawGates.filter((g) => g && typeof g === 'object' && g.kind), ...cmdGates];
+    const gated = gates.length > 0;
+    const maxVerifyCycles = Number.isInteger(request?.verifyCycles) ? Math.max(0, Math.min(5, request.verifyCycles)) : 0;
+
     const runId = newRunId('core');
     const runBase = path.join(workspaceRoot, '.orpad', 'core-runs', runId);
     const overlayRoot = path.join(runBase, 'overlay');
@@ -75,25 +86,56 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const send = sender(event, runId);
     send({ ev: 'run', state: 'start', at: nowIso() });
     try {
-      const runner = ground ? core.runGroundedDelegation : core.runGovernedDelegation;
-      const result = await runner({
+      const baseOpts = {
         workspaceRoot, overlayRoot, runRoot,
         allowedFiles, readOnlyFiles, goal, allowedTools, agent, timeoutMs,
         streamTrace: true,
         onTraceEvent: send,
-      });
+      };
+      const runner = ground ? core.runGroundedDelegation : core.runGovernedDelegation;
+
+      let result;
+      let gate = { passed: true, results: [] };
+      let verifyCycles = 0;
+      if (gated) {
+        // Trust gate: build -> verify deterministic gates against the overlay; on
+        // failure, re-delegate REUSING the overlay (seedOverlay:false) with the
+        // failure logs injected, up to maxVerifyCycles times.
+        const tracedVerify = () => {
+          send({ ev: 'phase', kind: 'verify', state: 'start', at: nowIso() });
+          const g = core.runVerificationGates(overlayRoot, gates);
+          send({ ev: 'phase', kind: 'verify', state: 'done', at: nowIso() });
+          return g;
+        };
+        let firstDone = false;
+        const buildFn = async (feedback) => {
+          if (!firstDone) { firstDone = true; return await runner(baseOpts); }
+          return await core.runGovernedDelegation({ ...baseOpts, goal: `${goal}\n\n${feedback}`, seedOverlay: false });
+        };
+        const loop = await core.runVerifiedBuildLoop({ buildFn, verifyFn: tracedVerify, maxCycles: maxVerifyCycles });
+        result = loop.build;
+        gate = loop.gate;
+        verifyCycles = loop.cycles;
+      } else {
+        result = await runner(baseOpts);
+      }
+
       // grounded delegation returns { research, brief, build, summary }; plain
       // delegation returns the run result directly.
       const build = result.build || result;
       const patch = build.patch || { changes: [], violations: [] };
       const summary = result.summary || build.summary || {};
+      const met = gated ? gate.passed : null; // null = ungated (applied unverified)
       send({ ev: 'run', state: 'done', at: nowIso() });
 
-      // Apply the agent's overlay output into the canonical workspace so the
-      // result actually lands. Greenfield (no write-set): apply everything the
-      // agent produced. Constrained: apply only the in-write-set changes.
+      // Trust boundary: apply the agent's overlay output into the canonical
+      // workspace ONLY when not blocked. Gated-and-failed (met===false) is NEVER
+      // applied — the whole point is that nothing unverified reaches the repo.
+      // Ungated (met===null) applies as before (unverified). Greenfield applies
+      // everything the agent produced; constrained applies only in-write-set changes.
       let applied = [];
-      if (apply && !build.stopped) {
+      const applyEligible = apply && !build.stopped && met !== false;
+      if (applyEligible) {
         const applySet = greenfield
           ? [...patch.changes.map((c) => c.path), ...patch.violations.map((v) => v.path)]
           : patch.changes.map((c) => c.path);
@@ -107,6 +149,10 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
         grounded: ground,
         groundingBrief: !!(result.brief && String(result.brief).trim()),
         greenfield,
+        gated,
+        met,
+        verifyCycles,
+        gates: gate.results,
         applied,
         appliedCount: applied.length,
         changes: patch.changes.map((c) => c.path),

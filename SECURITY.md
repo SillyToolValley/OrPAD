@@ -355,7 +355,15 @@ Renderer-facing IPC is `registerCoreRunHandlers` in
   and refuses when no workspace is approved. It spawns the configured agent
   (`claude`) **inside an isolated overlay** under `<workspace>/.orpad/core-runs/<runId>/`
   seeded with only the caller-declared write-set; the moat diffs the overlay back
-  to canonical and reports changes + out-of-write-set violations. This is the one
+  to canonical and reports changes + out-of-write-set violations. **Verification
+  gate (trust boundary):** when the caller supplies `verifyCommands` / `gates`,
+  the handler runs those deterministic checks (shell commands, `cwd` = the run
+  overlay) BEFORE applying any result; a failing gate **blocks the apply** so
+  nothing unverified reaches the canonical workspace (optionally re-delegating up
+  to `verifyCycles` times, reusing the overlay, with the failure logs injected).
+  Gate commands execute under the same overlay containment as the agent's own
+  Bash — scoped to `<workspace>/.orpad/core-runs/<runId>/overlay/`, no new
+  capability beyond what the delegation already has. This is the one
   renderer-reachable channel that launches a child agent process — by design,
   contained to the overlay and the workspace, like Command Runner / PTY but scoped
   to the governed-delegation moat. It streams trace events back via `orpad-core-trace`.
@@ -444,7 +452,7 @@ features that intentionally launch configured/user-requested child processes.
 | `pipeline-create-run-record` / `runbook-create-run-record` | handle | Create minimal run evidence under `.orpad/pipelines/<pipeline>/runs/{runId}` or legacy `.orch-runs/{runId}` | — | Authority guard / workspace only |
 | `pipeline-start-local-run` / `runbook-start-local-run` | handle | Create a local MVP run record, context manifest, approval events, and claim artifact under the target run directory | — | Authority guard / workspace only |
 | `pipeline-read-run-record` / `runbook-read-run-record` | handle | Read `run.or-run` or legacy `run.json` plus `events.jsonl` from allowed run directories | — | Authority guard / `.orpad/pipelines/*/runs`, recorded workspace-local `.or-pipeline` sibling `runs`, or `.orch-runs` only |
-| `orpad-core-run-start` | handle | Run a governed delegation: spawn the configured CLI agent (`claude`) inside an isolated overlay seeded with the declared write-set, then diff overlay→canonical for changes + violations; streams trace via `orpad-core-trace` | reads `event.sender` | Authority guard / workspace; overlay + run dirs under `<workspace>/.orpad/core-runs/<runId>/` only |
+| `orpad-core-run-start` | handle | Run a governed delegation: spawn the configured CLI agent (`claude`) inside an isolated overlay seeded with the declared write-set, then diff overlay→canonical for changes + violations. Optional **verification gates** (`verifyCommands`/`gates`) run as shell checks with `cwd`=overlay BEFORE apply; a failing gate blocks the apply (nothing unverified reaches canonical), with up to `verifyCycles` overlay-reusing retries. Streams trace via `orpad-core-trace` | reads `event.sender` | Authority guard / workspace; overlay + run dirs + gate commands scoped under `<workspace>/.orpad/core-runs/<runId>/` only |
 | `orpad-core-run-replay` | handle | Replay a recorded `trace.jsonl` through `orpad-core-trace` for the live-trace GUI / CI (spawns nothing, writes nothing) | reads `event.sender` | Authority guard / trace file must be inside the approved workspace |
 | `orpad-core-trace` | send (main→renderer) | PUSH STREAM: outbound-only emergent-graph trace events (phase / classified work node / run-done) to the initiating sender | Outbound ONLY to the initiating `event.sender`, guarded against destroyed senders; no renderer→main surface, no capability token | **None** — advisory render data only, no secrets |
 | `save-binary` | handle | Save dialog then binary write | reads `event.sender` | Dialog enforces |
