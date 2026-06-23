@@ -1,25 +1,32 @@
-// OrPAD orchestration-core — live-trace Run view (2D data-flow).
+// OrPAD orchestration-core — live-trace Run view (3D "galaxy + DNA helix").
 //
-// One flat 2D scene that reads like the OrPAD sketch: the workspace link graph
-// (Obsidian-style) is a force-directed cluster of round FILE nodes on the left;
-// the governed-delegation run is a small tree of rounded-rect AGENT chips on the
-// right; and the files a run reads/writes are joined to it by blue, flowing
-// data-flow curves bridging the two. Pan (drag bg), zoom (wheel), drag a node,
-// click a node to focus it, Reset view to frame everything. The Run form lives in
-// the left sidebar.
+// One unified 3D scene (three.js via 3d-force-graph), freely orbit/zoom/drag-able:
+//   • The workspace link graph (Obsidian-style vault) is the CORE — a solid ball
+//     of note spheres pulled to the origin (the galaxy centre).
+//   • A run's work nodes spiral OUTWARD from the core as a DNA-like helix, in
+//     execution order (read bottom→top = chronological). Fanned-out sub-agents
+//     braid alongside as extra strands, so a read/write node can be traced back
+//     along its strand.
+//   • When a work node reads/writes a file it gets a data-flow link to that file —
+//     a glowing line with particles streaming along it (data physically moving):
+//     READ streams the file's data INTO the node (file→node, teal); WRITE streams
+//     OUT (node→file, orange).
+//   • Files the run touches that are NOT vault notes (e.g. source files) don't
+//     belong in the core — they hang just OUTSIDE the work node that touched them
+//     (a "leaf"), so the flow reads radially (core → helix → leaf) instead of
+//     crisscrossing back through the core.
 //
-// Data: buildEmergentGraph(events) gives the run nodes/edges/files; onLinkGraph()
-// gives the vault note↔note link graph. A tiny built-in force simulation lays the
-// unified graph out (no graph dependency) and runs incrementally so the layout
-// stays stable as the run streams in.
+// Data: buildEmergentGraph(events) → run nodes/edges/files (+ per-node `branch`);
+// onLinkGraph() → the vault note↔note link graph. Both feed one { nodes, links }.
 
 import { buildEmergentGraph } from './emergent-trace.js';
-
-const SVGNS = 'http://www.w3.org/2000/svg';
+import ForceGraph3D from '3d-force-graph';
 
 const TYPE_LABEL = {
-  recon: 'Recon', research: 'Research', plan: 'Plan', build: 'Build',
-  verify: 'Verify', apply: 'Apply', delegate: 'Delegate', agent: 'Agent',
+  recon: 'Recon', isolate: 'Isolate', guidance: 'Guidance', delegate: 'Delegate',
+  enforce: 'Enforce', inspect: 'Inspect', edit: 'Edit', exec: 'Exec',
+  research: 'Research', subagent: 'Subagent', plan: 'Plan', reason: 'Reason',
+  tool: 'Tool', phase: 'Phase', agent: 'Agent',
 };
 function typeLabel(type) { return TYPE_LABEL[type] || (type ? String(type) : 'Node'); }
 
@@ -27,34 +34,63 @@ function parseLines(value) {
   return String(value || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }
 
-function cssVar(name, fallback) {
-  try {
-    const v = getComputedStyle(document.documentElement).getPropertyValue(name);
-    return (v && v.trim()) || fallback;
-  } catch (_) { return fallback; }
+// --- palette (data-flow accents; background follows the app theme) -------------
+const TYPE_COLOR = {
+  recon: '#7aa2f7', isolate: '#bb9af7', guidance: '#e0af68', delegate: '#7dcfff',
+  enforce: '#9ece6a', inspect: '#9ece6a', edit: '#ff9e64', exec: '#bb9af7',
+  research: '#e0af68', subagent: '#7dcfff', plan: '#7aa2f7', reason: '#9aa5ce',
+  tool: '#9aa5ce', agent: '#7dcfff',
+};
+const FILE_COLOR = '#5b6699';
+const FILE_TOUCHED_COLOR = '#ff9e64';
+const ACTIVE_COLOR = '#ffffff';
+const ACCESS_READ = '#73f0c0';   // bright teal — reading a file
+const ACCESS_WRITE = '#ff9e64';  // orange — writing a file
+const ACCESS_TOUCH = '#7dcfff';
+const FLOW_COLOR = '#5fa8ff';    // intra-planet execution order
+const VAULT_LINK_COLOR = '#2e3b66';
+
+function nodeColor(n) {
+  if (n.kind === 'file') return n.touched ? FILE_TOUCHED_COLOR : FILE_COLOR;
+  if (n.active) return ACTIVE_COLOR;
+  return TYPE_COLOR[n.ntype] || '#9aa5ce';
+}
+function linkColor(l) {
+  if (l.kind === 'access') return l.access === 'write' ? ACCESS_WRITE : l.access === 'read' ? ACCESS_READ : ACCESS_TOUCH;
+  if (l.kind === 'flow') return FLOW_COLOR;
+  return VAULT_LINK_COLOR;
 }
 
-// Node-type accent colours for the agent chips.
-const TYPE_COLOR = {
-  recon: '#7dcfff', research: '#bb9af7', plan: '#7aa2f7', build: '#9ece6a',
-  verify: '#e0af68', apply: '#73daca', delegate: '#7dcfff', agent: '#7dcfff',
-};
-function runColor(n) { return n.active ? '#ffffff' : (TYPE_COLOR[n.ntype] || '#7dcfff'); }
+// --- galaxy + helix layout ----------------------------------------------------
+// Tunables — one-liners; tweak then Ctrl+R in the dev build.
+const FILE_GRAVITY = 0.045;       // pull of vault-note files to origin (tightness of the core ball)
+const HELIX_PULL   = 0.16;        // pull of each work node toward its own helix slot
+const HELIX_RADIUS = 90;          // radius of the helix cylinder
+const HELIX_PITCH  = 30;          // +Y rise per work node (helix "stretch" — bigger = more traceable)
+const HELIX_TURN   = Math.PI / 4; // angle step per node (~8 nodes per turn)
+const STRAND_PHASE = Math.PI;     // angular offset of each braided sub-agent strand (π = opposite side)
+const STRAND_GAP   = 18;          // radius bump per braided strand
 
-// --- force-simulation parameters ----------------------------------------------
-// Only the FILE nodes are force-laid-out (the Obsidian-style cluster). The agent
-// chips get a deterministic tree layout (layoutRunNodes) and are pinned, so the
-// run reads as a tidy tree on the right and the vault as an organic web on the left.
-const REPULSE = 6500;        // file-file repulsion strength (spreads the cluster)
-const CENTER_PULL = 0.006;   // gentle pull toward centre
-const SIDE_PULL = 0.06;      // pull the file cluster left of centre
-const VELOCITY_DECAY = 0.82;
-const ALPHA_DECAY = 0.992;   // slow cool-down so the cluster has time to spread
-const LINK = {
-  link:   { dist: 70,  k: 0.06 },  // vault note↔note
-  flow:   { dist: 78,  k: 0.10 },  // agent→agent (the run tree — pinned, advisory)
-  access: { dist: 150, k: 0.02 },  // agent→file (the data-flow bridge — weak + long)
-};
+const ORIGIN = { x: 0, y: 0, z: 0 };
+
+// Core-ball radius grows (slowly) with the note count so the helix can start just
+// OUTSIDE the core rather than buried inside it.
+function coreRadius(noteCount) {
+  return Math.max(70, Math.cbrt(Math.max(1, noteCount)) * 40);
+}
+// Per-node helix slot: rises with global execution order `g`, braided per strand.
+// Reading the strand bottom→top replays the run in order.
+function helixSlot(g, strand, base) {
+  const ang = HELIX_TURN * g + strand * STRAND_PHASE;
+  const rad = HELIX_RADIUS + strand * STRAND_GAP;
+  return { x: Math.cos(ang) * rad, y: base + HELIX_PITCH * g, z: Math.sin(ang) * rad };
+}
+// Small deterministic spawn jitter so freshly-born nodes aren't coincident (charge
+// would NaN) — they're born AT the core and visibly travel out to their slot/leaf.
+function seedPos(seed) {
+  const f = (k) => { const x = Math.sin(seed * k) * 43758.5453; return (x - Math.floor(x) - 0.5) * 9; };
+  return { x: f(12.9898), y: f(78.233), z: f(37.719) };
+}
 
 export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop = null } = {}) {
   const el = document.createElement('section');
@@ -104,24 +140,17 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
         <p class="core-run-form-result" data-core-run-result hidden></p>
       </form>
     </div>
-    <div class="core-run-graph-viewport" data-core-run-viewport>
-      <svg class="core-run-graph2d" data-core-run-svg>
-        <g data-core-run-scene>
-          <g data-core-run-edges class="core-run-edges"></g>
-          <g data-core-run-nodes class="core-run-nodes"></g>
-        </g>
-      </svg>
+    <div class="core-run-graph-viewport core-run-graph-viewport-3d" data-core-run-viewport>
+      <div class="core-run-3d" data-core-run-3d></div>
       <div class="core-run-graph-controls">
         <button type="button" class="core-run-zoom-btn" data-core-run-refresh title="Re-scan the workspace link graph">↻ Graph</button>
-        <button type="button" class="core-run-zoom-btn" data-core-run-zoomout title="Zoom out">−</button>
-        <button type="button" class="core-run-zoom-btn" data-core-run-fit title="Frame the whole graph">Reset view</button>
-        <button type="button" class="core-run-zoom-btn" data-core-run-zoomin title="Zoom in">+</button>
+        <button type="button" class="core-run-zoom-btn" data-core-run-fit title="Frame the whole galaxy">Reset view</button>
       </div>
       <div class="core-run-legend" aria-hidden="true">
-        <span><i class="dot" style="background:#7dcfff"></i>agent</span>
-        <span><i class="dot" style="background:#6b7194"></i>file</span>
-        <span><i class="dot" style="background:#ff9e64"></i>touched / write</span>
-        <span><i class="dot" style="background:#9ece6a"></i>read</span>
+        <span><i class="dot" style="background:${TYPE_COLOR.delegate}"></i>agent</span>
+        <span><i class="dot" style="background:${FILE_COLOR}"></i>file</span>
+        <span><i class="dot" style="background:${ACCESS_WRITE}"></i>write</span>
+        <span><i class="dot" style="background:${ACCESS_READ}"></i>read</span>
       </div>
     </div>
   `;
@@ -142,14 +171,9 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   const gatesEl = el.querySelector('[data-core-run-gates]');
   const verifyCyclesEl = el.querySelector('[data-core-run-verify-cycles]');
   const viewportEl = el.querySelector('[data-core-run-viewport]');
-  const svgEl = el.querySelector('[data-core-run-svg]');
-  const sceneEl = el.querySelector('[data-core-run-scene]');
-  const edgesEl = el.querySelector('[data-core-run-edges]');
-  const nodesEl = el.querySelector('[data-core-run-nodes]');
+  const graph3dEl = el.querySelector('[data-core-run-3d]');
   const refreshBtn = el.querySelector('[data-core-run-refresh]');
   const fitBtn = el.querySelector('[data-core-run-fit]');
-  const zoomInBtn = el.querySelector('[data-core-run-zoomin]');
-  const zoomOutBtn = el.querySelector('[data-core-run-zoomout]');
 
   let events = [];
   let currentRunId = null;
@@ -161,18 +185,12 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   let linkGraphLoading = false;
   let linkGraphTried = false;
 
-  // Persistent graph model (positions survive re-feeds so the layout is stable).
-  const nodeById = new Map();   // id -> node object (x, y, vx, vy, kind, __el, …)
-  let links = [];
-  let alpha = 0;                // simulation "heat"; >0 means keep ticking
-  let hadNodes = false;
-  let lastFlyId = null;
-  let hoverId = null;
-  let dragNode = null;
-
-  // View transform (scene = translate(view.x,view.y) scale(view.k)).
-  const view = { x: 0, y: 0, k: 1 };
-  const viewTarget = { x: 0, y: 0, k: 1, active: false };
+  // 3D graph state.
+  let fg = null;
+  const fgNodeById = new Map();  // id -> node object (reused so the layout is stable)
+  let lastSig = '';
+  let framedOnce = false;        // auto-frame the galaxy once after it first settles
+  let lastFitCount = 0;          // node count at the last auto-frame (re-frame as the helix grows)
 
   function showFormError(message) { errorEl.textContent = message; errorEl.hidden = !message; }
   function showFormResult(message) { if (!resultEl) return; resultEl.textContent = message || ''; resultEl.hidden = !message; }
@@ -182,7 +200,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     if (stopEl) stopEl.hidden = !next;
   }
 
-  function reset() { events = []; errorMessage = ''; lastFlyId = null; render(); }
+  function reset() { events = []; errorMessage = ''; lastSig = ''; render(); }
   function applyEvent(ev) {
     if (!ev || typeof ev !== 'object') return;
     if (ev.runId) currentRunId = ev.runId;
@@ -211,441 +229,169 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     Promise.resolve(onLinkGraph()).then((res) => {
       linkGraphLoading = false;
       if (res && res.ok) linkGraph = res;
+      lastSig = '';
       render();
     }).catch(() => { linkGraphLoading = false; });
   }
 
-  // ---- graph model build ------------------------------------------------------
-  function fileRadius(deg) { return Math.max(5, Math.min(22, 5 + Math.sqrt(deg || 0) * 3.4)); }
-  function chipSize(name) {
-    const w = Math.max(64, Math.min(230, 26 + String(name || '').length * 7.4));
-    return { w, h: 30 };
+  // --- 3D graph ----------------------------------------------------------------
+  // A custom d3 force:
+  //   • vault-note files fall toward the origin (the core ball),
+  //   • each work node falls toward its OWN helix slot (n.slot) → a traceable strand,
+  //   • touched non-vault "leaf" files get no gravity — their access spring parks
+  //     them just outside the work node that touched them (radial, not crisscrossing).
+  function galaxyForce() {
+    let nodes = [];
+    function force(alpha) {
+      const kf = FILE_GRAVITY * alpha, kh = HELIX_PULL * alpha;
+      for (const n of nodes) {
+        if (n.kind === 'file') {
+          if (n.leaf) continue; // parked by its access link, not pulled into the core
+          n.vx -= n.x * kf; n.vy -= n.y * kf; n.vz -= n.z * kf;
+        } else {
+          const c = n.slot || ORIGIN;
+          n.vx += (c.x - n.x) * kh; n.vy += (c.y - n.y) * kh; n.vz += (c.z - n.z) * kh;
+        }
+      }
+    }
+    force.initialize = (n) => { nodes = n; };
+    return force;
   }
 
-  // Deterministic tree layout for the agent run nodes: depth from the flow DAG
-  // gives the row, siblings spread across the column. Pinned (fixed) so the run
-  // reads as a tidy tree on the right while the file cluster floats free.
-  function layoutRunNodes(runNodes, runEdges) {
-    if (!runNodes.length) return;
-    const vw = svgEl.clientWidth || 800;
-    const vh = svgEl.clientHeight || 600;
-    const idIndex = new Map(runNodes.map((n, i) => [n.id, i]));
-    const depth = new Map(runNodes.map((n) => [n.id, 0]));
-    const edges = (runEdges || []).filter((e) => idIndex.has(e.from) && idIndex.has(e.to));
-    for (let pass = 0; pass < runNodes.length; pass++) {
-      let changed = false;
-      for (const e of edges) {
-        const nd = depth.get(e.from) + 1;
-        if (nd > depth.get(e.to)) { depth.set(e.to, nd); changed = true; }
-      }
-      if (!changed) break;
-    }
-    const levels = new Map();
-    for (const n of runNodes) {
-      const d = depth.get(n.id);
-      if (!levels.has(d)) levels.set(d, []);
-      levels.get(d).push(n.id);
-    }
-    const colX = vw * 0.72;
-    const topY = 64;
-    const rowGap = Math.max(46, Math.min(66, (vh - 128) / Math.max(1, levels.size)));
-    for (const [d, list] of levels) {
-      list.forEach((id, i) => {
-        const o = nodeById.get(`r:${id}`);
-        if (!o) return;
-        o.x = colX + (i - (list.length - 1) / 2) * 190;
-        o.y = topY + d * rowGap;
-        o.fixed = true;
-        o.__rr = Math.max(o.w, o.h) / 2 + 8;
+  function ensureFG() {
+    if (fg) return fg;
+    if (!graph3dEl || !graph3dEl.clientWidth) return null;
+    fg = ForceGraph3D()(graph3dEl)
+      .backgroundColor('rgba(0,0,0,0)') // transparent → the app theme shows through
+      .width(graph3dEl.clientWidth)
+      .height(graph3dEl.clientHeight)
+      .showNavInfo(false)
+      // Slower settle → a new node visibly travels out from the core instead of
+      // snapping into place (the "pulled from the Obsidian graph" effect, calmed).
+      .d3AlphaDecay(0.018)
+      .d3VelocityDecay(0.42)
+      .cooldownTime(20000)
+      .nodeLabel((n) => (n.kind === 'file' ? `📄 ${n.path}` : `${typeLabel(n.ntype)} — ${n.name}`))
+      .nodeColor(nodeColor)
+      .nodeVal((n) => (n.kind === 'file' ? Math.max(1.5, (n.deg || 0) + 1) : (n.phase ? 4 : 2.5)))
+      .nodeOpacity(0.95)
+      .nodeResolution(12)
+      .linkColor(linkColor)
+      .linkWidth((l) => (l.kind === 'access' ? 1.8 : l.kind === 'flow' ? 0.9 : 0.4))
+      .linkOpacity((l) => (l.kind === 'access' ? 0.6 : l.kind === 'flow' ? 0.45 : 0.22))
+      .linkDirectionalParticles((l) => (l.kind === 'access' ? 4 : l.kind === 'flow' ? 2 : 0))
+      // Calmer particle flow (lower speed = more "latency"; data drifts, not races).
+      .linkDirectionalParticleSpeed((l) => (l.kind === 'access' ? 0.006 : 0.004))
+      .linkDirectionalParticleWidth(2.6)
+      .linkDirectionalParticleColor((l) => linkColor(l))
+      .onNodeClick((node) => {
+        const d = 90;
+        const r = 1 + d / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
+        fg.cameraPosition({ x: (node.x || 0) * r, y: (node.y || 0) * r, z: (node.z || 0) * r }, node, 700);
+      });
+
+    // Forces: core/helix positioning + tuned charge & link springs.
+    fg.d3Force('galaxy', galaxyForce());
+    const charge = fg.d3Force('charge');
+    // Repulsion keeps clear gaps (a spaced core ball, not touching "frog-eggs");
+    // lighter on work/leaf nodes so the helix and its leaves stay legible.
+    if (charge && charge.strength) charge.strength((n) => (n.kind === 'file' ? (n.leaf ? -22 : -70) : -30));
+    if (charge && charge.distanceMax) charge.distanceMax(700); // localise repulsion for big vaults
+    const link = fg.d3Force('link');
+    if (link) {
+      if (link.distance) link.distance((l) => (l.kind === 'flow' ? 22 : l.kind === 'link' ? 46 : (l.leaf ? 26 : 60)));
+      // Vault-note access links are visual-only (the note stays in the core, the line
+      // just radiates out). LEAF access links DO spring — parking the file just off
+      // the work node that touched it, so the structure reads core → helix → leaf.
+      if (link.strength) link.strength((l) => {
+        if (l.kind === 'flow') return 0.5;
+        if (l.kind === 'link') return 0.12;
+        if (l.kind === 'access') return l.leaf ? 0.45 : 0;
+        return 0.1;
       });
     }
+    fg.d3Force('center', null); // the galaxy force centres things on the origin
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => { if (fg && graph3dEl.clientWidth) fg.width(graph3dEl.clientWidth).height(graph3dEl.clientHeight); });
+      ro.observe(graph3dEl);
+    }
+    return fg;
   }
 
-  function buildModel(runNodes, runEdges, files, activeId) {
+  // Build the unified { nodes, links } graph, reusing node objects so the 3D layout
+  // is stable as the run streams in.
+  function buildGraphData(runNodes, runEdges, files, activeId) {
     const wanted = new Set();
-    const vw = svgEl.clientWidth || 800;
-    const vh = svgEl.clientHeight || 600;
-
-    const ensure = (id, init, seed) => {
-      let o = nodeById.get(id);
-      if (!o) {
-        o = { id, x: seed.x, y: seed.y, vx: 0, vy: 0, fixed: false, __el: null };
-        nodeById.set(id, o);
-        alpha = Math.max(alpha, 0.9); // reheat when topology grows
-      }
+    const nodes = [];
+    // `spawn` is applied only on first creation: a new node is born AT the core (a
+    // small jitter ball) and travels out to its slot/leaf — the "pulled out" effect.
+    const ensure = (id, init, spawn) => {
+      let o = fgNodeById.get(id);
+      const isNew = !o;
+      if (!o) { o = { id }; fgNodeById.set(id, o); }
       Object.assign(o, init);
+      if (isNew && spawn) { o.x = spawn.x; o.y = spawn.y; o.z = spawn.z; o.vx = 0; o.vy = 0; o.vz = 0; }
       wanted.add(id);
+      nodes.push(o);
       return o;
     };
 
-    // Agent/run chips — created here; positioned by the deterministic tree layout below.
-    runNodes.forEach((n) => {
-      ensure(`r:${n.id}`, {
-        kind: 'run', ntype: n.type, name: n.label || typeLabel(n.type),
-        phase: !!n.phase, active: n.id === activeId,
-        ...chipSize(n.label || typeLabel(n.type)),
-      }, { x: vw * 0.72, y: vh * 0.5 });
-    });
-    layoutRunNodes(runNodes, runEdges);
-
-    // File circles — vault notes (left cluster) ∪ run-touched files.
+    // Vault (the core ball). Known up front so the helix base sits just outside it.
     const vault = (linkGraph && linkGraph.ok && Array.isArray(linkGraph.nodes)) ? linkGraph.nodes : [];
-    const vaultPaths = new Set(vault.map((v) => v.path));
-    vault.slice(0, 400).forEach((v) => {
-      ensure(`f:${v.path}`, { kind: 'file', path: v.path, name: v.name, deg: (v.out || 0) + (v.in || 0), touched: false, r: fileRadius((v.out || 0) + (v.in || 0)) },
-        { x: vw * 0.3 + (Math.random() - 0.5) * vw * 0.4, y: vh * 0.5 + (Math.random() - 0.5) * vh * 0.6 });
+    const vaultList = vault.slice(0, 600);
+    const vaultPaths = new Set(vaultList.map((v) => v.path));
+    const base = coreRadius(vaultList.length) + 40;
+
+    // Strand index per branch (first-seen order): main = 0, each sub-agent braids next.
+    const strandIndex = new Map();
+    for (const n of runNodes) { const b = n.branch || 'main'; if (!strandIndex.has(b)) strandIndex.set(b, strandIndex.size); }
+
+    // Work nodes — each gets its OWN helix slot, rising with global execution order g.
+    runNodes.forEach((n, g) => {
+      const branch = n.branch || 'main';
+      const o = ensure(
+        `r:${n.id}`,
+        { kind: 'run', ntype: n.type, name: n.label || n.type, phase: !!n.phase, active: n.id === activeId, branch },
+        seedPos(g + 1),
+      );
+      o.slot = helixSlot(g, strandIndex.get(branch) || 0, base);
     });
+
+    // Vault notes — the core ball at the origin (born in a small jitter ball there).
+    let fseed = 1000;
+    for (const v of vaultList) {
+      ensure(`f:${v.path}`, { kind: 'file', path: v.path, name: v.name, deg: (v.out || 0) + (v.in || 0), touched: false, leaf: false }, seedPos(fseed++));
+    }
+    // Touched non-vault files — LEAVES: no core gravity, parked just off their node.
     const touched = new Set((files || []).map((f) => f.path));
-    (files || []).forEach((f) => {
-      if (vaultPaths.has(f.path)) return;
-      ensure(`f:${f.path}`, { kind: 'file', path: f.path, name: f.path.split(/[\\/]/).pop(), deg: (f.reads || 0) + (f.writes || 0), touched: true, r: fileRadius((f.reads || 0) + (f.writes || 0)) },
-        { x: vw * 0.45 + (Math.random() - 0.5) * 60, y: vh * 0.5 + (Math.random() - 0.5) * 60 });
-    });
-    for (const o of nodeById.values()) if (o.kind === 'file' && touched.has(o.path)) o.touched = true;
-
-    // Drop stale nodes (and their DOM).
-    for (const id of [...nodeById.keys()]) {
-      if (wanted.has(id)) continue;
-      const o = nodeById.get(id);
-      if (o.__el && o.__el.parentNode) o.__el.parentNode.removeChild(o.__el);
-      nodeById.delete(id);
+    for (const f of (files || [])) {
+      if (!vaultPaths.has(f.path)) ensure(`f:${f.path}`, { kind: 'file', path: f.path, name: f.path.split(/[\\/]/).pop(), deg: (f.reads || 0) + (f.writes || 0), touched: true, leaf: true }, seedPos(fseed++));
     }
+    for (const o of nodes) if (o.kind === 'file' && touched.has(o.path)) o.touched = true;
 
-    // Links.
-    const next = [];
-    for (const e of (runEdges || [])) {
-      const s = nodeById.get(`r:${e.from}`), t = nodeById.get(`r:${e.to}`);
-      if (s && t) next.push({ source: s, target: t, kind: 'flow' });
-    }
+    for (const id of [...fgNodeById.keys()]) if (!wanted.has(id)) fgNodeById.delete(id);
+
+    const links = [];
+    for (const e of (runEdges || [])) links.push({ source: `r:${e.from}`, target: `r:${e.to}`, kind: 'flow' });
     for (const n of runNodes) {
-      const f = n.file && nodeById.get(`f:${n.file}`);
-      const s = nodeById.get(`r:${n.id}`);
-      if (f && s) next.push({ source: s, target: f, kind: 'access', access: n.access || 'touch', active: n.id === activeId });
+      if (n.file && fgNodeById.has(`f:${n.file}`)) {
+        const access = n.access || 'touch';
+        const leaf = !!fgNodeById.get(`f:${n.file}`).leaf;
+        // Particle direction tells the story: a READ streams the file's data INTO the
+        // workflow (file → run node); a WRITE streams data OUT (run node → file).
+        links.push(access === 'write'
+          ? { source: `r:${n.id}`, target: `f:${n.file}`, kind: 'access', access, leaf }
+          : { source: `f:${n.file}`, target: `r:${n.id}`, kind: 'access', access, leaf });
+      }
     }
     const vedges = (linkGraph && Array.isArray(linkGraph.edges)) ? linkGraph.edges : [];
     for (const e of vedges) {
-      const s = nodeById.get(`f:${e.from}`), t = nodeById.get(`f:${e.to}`);
-      if (s && t) next.push({ source: s, target: t, kind: 'link' });
+      if (fgNodeById.has(`f:${e.from}`) && fgNodeById.has(`f:${e.to}`)) links.push({ source: `f:${e.from}`, target: `f:${e.to}`, kind: 'link' });
     }
-    links = next;
+    return { nodes, links };
   }
 
-  // ---- force simulation (incremental) ----------------------------------------
-  function step() {
-    const nodes = [...nodeById.values()];
-    const n = nodes.length;
-    if (!n) return;
-    const vw = svgEl.clientWidth || 800;
-    const vh = svgEl.clientHeight || 600;
-    const cx = vw / 2, cy = vh / 2;
-    const a = alpha;
-
-    // Radius (used for soft collision so dense clusters spread, chips never overlap files).
-    const rOf = (p) => p.__rr || (p.kind === 'file' ? (p.r || 6) + 8 : Math.max(p.w || 80, p.h || 30) / 2 + 8);
-    // Pairwise repulsion (capped node count keeps this cheap).
-    for (let i = 0; i < n; i++) {
-      const p = nodes[i];
-      for (let j = i + 1; j < n; j++) {
-        const q = nodes[j];
-        let dx = p.x - q.x, dy = p.y - q.y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 0.01) { dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); d2 = 0.25; }
-        const d = Math.sqrt(d2);
-        let f = (REPULSE * a) / d2;
-        // Hard-ish floor when overlapping radii so nodes never stack.
-        const minD = rOf(p) + rOf(q);
-        if (d < minD) f += (minD - d) * 0.5;
-        const fx = (dx / d) * f, fy = (dy / d) * f;
-        p.vx += fx; p.vy += fy; q.vx -= fx; q.vy -= fy;
-      }
-    }
-    // Link springs.
-    for (const l of links) {
-      const cfg = LINK[l.kind] || LINK.link;
-      const s = l.source, t = l.target;
-      let dx = t.x - s.x, dy = t.y - s.y;
-      let d = Math.hypot(dx, dy) || 0.01;
-      const f = (d - cfg.dist) * cfg.k * a;
-      const fx = (dx / d) * f, fy = (dy / d) * f;
-      s.vx += fx; s.vy += fy; t.vx -= fx; t.vy -= fy;
-    }
-    // Centering + leftward bias — files only (agent chips are pinned by layout).
-    const fileTargetX = cx - vw * 0.24;
-    for (const p of nodes) {
-      if (p.kind !== 'file') continue;
-      p.vy += (cy - p.y) * CENTER_PULL * a;
-      p.vx += (fileTargetX - p.x) * SIDE_PULL * a;
-    }
-    // Integrate.
-    for (const p of nodes) {
-      if (p.fixed) { p.vx = 0; p.vy = 0; continue; }
-      p.vx *= VELOCITY_DECAY; p.vy *= VELOCITY_DECAY;
-      p.x += p.vx; p.y += p.vy;
-    }
-    alpha *= ALPHA_DECAY;
-    if (alpha < 0.004) alpha = 0;
-  }
-
-  // ---- rendering --------------------------------------------------------------
-  function edgeColor(l) {
-    if (l.kind === 'access') {
-      if (l.access === 'write') return cssVar('--syntax-number', '#ff9e64');
-      if (l.access === 'read') return cssVar('--syntax-string', '#9ece6a');
-      return cssVar('--accent-color', '#7dcfff');
-    }
-    if (l.kind === 'flow') return cssVar('--text-tertiary', '#7a8194');
-    return cssVar('--border-color', '#444a66');
-  }
-
-  function ensureNodeEl(node) {
-    if (node.__el) return node.__el;
-    if (node.kind === 'file') {
-      const g = document.createElementNS(SVGNS, 'g');
-      g.setAttribute('class', 'crn-file');
-      const c = document.createElementNS(SVGNS, 'circle');
-      g.appendChild(c);
-      const t = document.createElementNS(SVGNS, 'text');
-      t.setAttribute('class', 'crn-file-label');
-      t.setAttribute('text-anchor', 'middle');
-      g.appendChild(t);
-      node.__circle = c; node.__label = t;
-      g.addEventListener('pointerenter', () => { hoverId = node.id; paintHighlight(); });
-      g.addEventListener('pointerleave', () => { if (hoverId === node.id) { hoverId = null; paintHighlight(); } });
-      attachDrag(g, node);
-      nodesEl.appendChild(g);
-      node.__el = g;
-    } else {
-      const g = document.createElementNS(SVGNS, 'g');
-      g.setAttribute('class', 'crn-run');
-      const r = document.createElementNS(SVGNS, 'rect');
-      r.setAttribute('rx', '8'); r.setAttribute('ry', '8');
-      g.appendChild(r);
-      const t = document.createElementNS(SVGNS, 'text');
-      t.setAttribute('class', 'crn-run-label');
-      t.setAttribute('text-anchor', 'middle');
-      t.setAttribute('dominant-baseline', 'central');
-      g.appendChild(t);
-      node.__rect = r; node.__label = t;
-      g.addEventListener('pointerenter', () => { hoverId = node.id; paintHighlight(); });
-      g.addEventListener('pointerleave', () => { if (hoverId === node.id) { hoverId = null; paintHighlight(); } });
-      g.addEventListener('click', (e) => { e.stopPropagation(); focusNode(node); });
-      attachDrag(g, node);
-      nodesEl.appendChild(g);
-      node.__el = g;
-    }
-    return node.__el;
-  }
-
-  function paintNode(node) {
-    const g = ensureNodeEl(node);
-    if (node.kind === 'file') {
-      const r = node.r || 6;
-      node.__circle.setAttribute('cx', node.x);
-      node.__circle.setAttribute('cy', node.y);
-      node.__circle.setAttribute('r', r);
-      node.__circle.setAttribute('fill', node.touched ? cssVar('--syntax-number', '#ff9e64') : cssVar('--text-tertiary', '#6b7194'));
-      node.__circle.setAttribute('stroke', node.touched ? cssVar('--syntax-number', '#ff9e64') : cssVar('--border-color', '#444a66'));
-      node.__label.textContent = node.name || '';
-      node.__label.setAttribute('x', node.x);
-      node.__label.setAttribute('y', node.y + r + 11);
-    } else {
-      const { w, h } = node;
-      node.__rect.setAttribute('x', node.x - w / 2);
-      node.__rect.setAttribute('y', node.y - h / 2);
-      node.__rect.setAttribute('width', w);
-      node.__rect.setAttribute('height', h);
-      node.__rect.setAttribute('fill', cssVar('--bg-secondary', '#1f2335'));
-      node.__rect.setAttribute('stroke', runColor(node));
-      node.__rect.setAttribute('stroke-width', node.active ? 2.4 : 1.4);
-      node.__el.classList.toggle('is-active', !!node.active);
-      node.__el.classList.toggle('is-phase', !!node.phase);
-      node.__label.textContent = node.name || '';
-      node.__label.setAttribute('x', node.x);
-      node.__label.setAttribute('y', node.y);
-      node.__label.setAttribute('fill', cssVar('--text-primary', '#c0caf5'));
-    }
-  }
-
-  function paintEdges() {
-    // Reconcile edge <path> elements (rebuild — edges are few and cheap).
-    while (edgesEl.firstChild) edgesEl.removeChild(edgesEl.firstChild);
-    for (const l of links) {
-      const s = l.source, t = l.target;
-      const path = document.createElementNS(SVGNS, 'path');
-      let cls = 'crn-edge crn-edge-' + l.kind;
-      if (l.kind === 'access') {
-        cls += ' access-' + (l.access || 'touch');
-        if (l.active) cls += ' is-active';
-        // Curved bridge for the data-flow.
-        const mx = (s.x + t.x) / 2;
-        const dy = (t.y - s.y) * 0.2;
-        path.setAttribute('d', `M ${s.x} ${s.y} C ${mx} ${s.y + dy} ${mx} ${t.y - dy} ${t.x} ${t.y}`);
-      } else {
-        path.setAttribute('d', `M ${s.x} ${s.y} L ${t.x} ${t.y}`);
-      }
-      path.setAttribute('class', cls);
-      path.setAttribute('stroke', edgeColor(l));
-      l.__el = path;
-      l.__s = s; l.__t = t;
-      edgesEl.appendChild(path);
-    }
-  }
-
-  function paintHighlight() {
-    if (!hoverId) {
-      nodesEl.classList.remove('has-hover');
-      for (const n of nodeById.values()) { if (n.__el) { n.__el.classList.remove('is-hot', 'is-dim'); } }
-      for (const l of links) if (l.__el) l.__el.classList.remove('is-dim');
-      return;
-    }
-    nodesEl.classList.add('has-hover');
-    const hot = new Set([hoverId]);
-    for (const l of links) {
-      if (l.source.id === hoverId) hot.add(l.target.id);
-      if (l.target.id === hoverId) hot.add(l.source.id);
-    }
-    for (const n of nodeById.values()) {
-      if (!n.__el) continue;
-      n.__el.classList.toggle('is-hot', hot.has(n.id));
-      n.__el.classList.toggle('is-dim', !hot.has(n.id));
-    }
-    for (const l of links) {
-      if (!l.__el) continue;
-      l.__el.classList.toggle('is-dim', !(l.source.id === hoverId || l.target.id === hoverId));
-    }
-  }
-
-  function paintPositions() {
-    for (const n of nodeById.values()) if (n.__el) paintNode(n);
-    for (const l of links) {
-      if (!l.__el) continue;
-      const s = l.__s, t = l.__t;
-      if (l.kind === 'access') {
-        const mx = (s.x + t.x) / 2;
-        const dy = (t.y - s.y) * 0.2;
-        l.__el.setAttribute('d', `M ${s.x} ${s.y} C ${mx} ${s.y + dy} ${mx} ${t.y - dy} ${t.x} ${t.y}`);
-      } else {
-        l.__el.setAttribute('d', `M ${s.x} ${s.y} L ${t.x} ${t.y}`);
-      }
-    }
-  }
-
-  function applyTransform() {
-    sceneEl.setAttribute('transform', `translate(${view.x} ${view.y}) scale(${view.k})`);
-  }
-
-  // ---- camera (fit / focus / follow) -----------------------------------------
-  function nodeBBox() {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
-    for (const n of nodeById.values()) {
-      any = true;
-      const pad = n.kind === 'file' ? (n.r || 6) + 14 : (n.w || 80) / 2 + 6;
-      const padY = n.kind === 'file' ? (n.r || 6) + 14 : (n.h || 30) / 2 + 6;
-      minX = Math.min(minX, n.x - pad); maxX = Math.max(maxX, n.x + pad);
-      minY = Math.min(minY, n.y - padY); maxY = Math.max(maxY, n.y + padY);
-    }
-    return any ? { minX, minY, maxX, maxY } : null;
-  }
-  function zoomToFit(pad = 40) {
-    const bb = nodeBBox();
-    if (!bb) return;
-    const vw = svgEl.clientWidth || 800, vh = svgEl.clientHeight || 600;
-    const bw = Math.max(1, bb.maxX - bb.minX), bh = Math.max(1, bb.maxY - bb.minY);
-    const k = Math.max(0.2, Math.min(1.6, Math.min((vw - pad * 2) / bw, (vh - pad * 2) / bh)));
-    const cx = (bb.minX + bb.maxX) / 2, cy = (bb.minY + bb.maxY) / 2;
-    setViewTarget(vw / 2 - cx * k, vh / 2 - cy * k, k);
-  }
-  function focusNode(node) {
-    if (!node) return;
-    const vw = svgEl.clientWidth || 800, vh = svgEl.clientHeight || 600;
-    const k = Math.max(view.k, 1.1);
-    setViewTarget(vw / 2 - node.x * k, vh / 2 - node.y * k, k);
-  }
-  function setViewTarget(x, y, k) { viewTarget.x = x; viewTarget.y = y; viewTarget.k = k; viewTarget.active = true; }
-  function setViewNow(x, y, k) { view.x = x; view.y = y; view.k = k; viewTarget.active = false; applyTransform(); }
-
-  // ---- animation loop ---------------------------------------------------------
-  let rafId = null;
-  function loop() {
-    rafId = null;
-    if (alpha > 0) { step(); paintPositions(); }
-    if (viewTarget.active) {
-      view.x += (viewTarget.x - view.x) * 0.18;
-      view.y += (viewTarget.y - view.y) * 0.18;
-      view.k += (viewTarget.k - view.k) * 0.18;
-      applyTransform();
-      if (Math.abs(viewTarget.x - view.x) < 0.4 && Math.abs(viewTarget.y - view.y) < 0.4 && Math.abs(viewTarget.k - view.k) < 0.002) {
-        view.x = viewTarget.x; view.y = viewTarget.y; view.k = viewTarget.k; viewTarget.active = false; applyTransform();
-      }
-    }
-    if (alpha > 0 || viewTarget.active || dragNode) schedule();
-  }
-  function schedule() { if (rafId == null && typeof requestAnimationFrame !== 'undefined') rafId = requestAnimationFrame(loop); }
-
-  // ---- interaction ------------------------------------------------------------
-  function screenToGraph(clientX, clientY) {
-    const rect = svgEl.getBoundingClientRect();
-    return { x: (clientX - rect.left - view.x) / view.k, y: (clientY - rect.top - view.y) / view.k };
-  }
-  function attachDrag(g, node) {
-    g.addEventListener('pointerdown', (e) => {
-      e.stopPropagation();
-      dragNode = node;
-      node.fixed = true;
-      const p = screenToGraph(e.clientX, e.clientY);
-      node.__dx = node.x - p.x; node.__dy = node.y - p.y;
-      g.setPointerCapture && g.setPointerCapture(e.pointerId);
-      const move = (ev) => {
-        const q = screenToGraph(ev.clientX, ev.clientY);
-        node.x = q.x + node.__dx; node.y = q.y + node.__dy;
-        paintPositions();
-      };
-      const up = (ev) => {
-        node.fixed = false;
-        dragNode = null;
-        alpha = Math.max(alpha, 0.4); schedule();
-        g.releasePointerCapture && g.releasePointerCapture(ev.pointerId);
-        g.removeEventListener('pointermove', move);
-        g.removeEventListener('pointerup', up);
-      };
-      g.addEventListener('pointermove', move);
-      g.addEventListener('pointerup', up);
-    });
-  }
-  // Pan by dragging the background.
-  let panning = null;
-  svgEl.addEventListener('pointerdown', (e) => {
-    if (e.target !== svgEl && e.target.tagName !== 'svg') return;
-    panning = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-    viewportEl.classList.add('is-panning');
-    svgEl.setPointerCapture && svgEl.setPointerCapture(e.pointerId);
-  });
-  svgEl.addEventListener('pointermove', (e) => {
-    if (!panning) return;
-    view.x = panning.vx + (e.clientX - panning.x);
-    view.y = panning.vy + (e.clientY - panning.y);
-    viewTarget.active = false;
-    applyTransform();
-  });
-  const endPan = () => { panning = null; viewportEl.classList.remove('is-panning'); };
-  svgEl.addEventListener('pointerup', endPan);
-  svgEl.addEventListener('pointerleave', endPan);
-  // Wheel zoom anchored at the cursor.
-  svgEl.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const rect = svgEl.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const k = Math.max(0.2, Math.min(2.5, view.k * factor));
-    // keep the graph point under the cursor fixed
-    view.x = mx - ((mx - view.x) / view.k) * k;
-    view.y = my - ((my - view.y) / view.k) * k;
-    view.k = k;
-    viewTarget.active = false;
-    applyTransform();
-  }, { passive: false });
-
-  // ---- status -----------------------------------------------------------------
   function setStatus(runNodes, done) {
     if (errorMessage) { statusEl.textContent = `Error — ${errorMessage}`; statusEl.dataset.state = 'error'; return; }
     if (busy) {
@@ -663,24 +409,24 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   function render() {
     loadLinkGraph(false);
     const { nodes, edges, activeId, done, files } = buildEmergentGraph(events);
-    const runNodes = nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, phase: n.phase, file: n.file, access: n.access, active: n.id === activeId }));
-    buildModel(runNodes, edges, files, activeId);
-
-    const statNodes = [...nodeById.values()].filter((n) => n.kind === 'run');
+    const runNodes = nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, phase: n.phase, file: n.file, access: n.access, branch: n.branch, active: n.id === activeId }));
+    const data = buildGraphData(runNodes, edges, files, activeId);
+    const statNodes = data.nodes.filter((n) => n.kind === 'run');
     setStatus(statNodes, done);
 
-    paintEdges();
-    for (const n of nodeById.values()) paintNode(n);
-    paintHighlight();
-    schedule();
-
-    // Frame on first appearance and on completion; follow the active node live.
-    if (!hadNodes && nodeById.size) { hadNodes = true; setTimeout(() => zoomToFit(50), 500); }
-    if (done && nodeById.size) setTimeout(() => zoomToFit(50), 400);
-    if (busy && activeId && activeId !== lastFlyId) {
-      lastFlyId = activeId;
-      const obj = nodeById.get(`r:${activeId}`);
-      if (obj) setTimeout(() => focusNode(obj), 350);
+    const graph = ensureFG();
+    if (graph) {
+      const sig = `${data.nodes.length}:${data.links.length}:${activeId || ''}:${linkGraph ? linkGraph.nodes.length : 0}`;
+      if (sig !== lastSig) { lastSig = sig; graph.graphData(data); }
+      else { graph.nodeColor(nodeColor); } // refresh colours (e.g. active node) without reheating
+      // Frame once after the helix first expands, then re-frame whenever it has grown
+      // enough that the newest nodes would otherwise drift out of view.
+      const n = data.nodes.length;
+      if (n && (!framedOnce || n > lastFitCount * 1.6)) {
+        const first = !framedOnce;
+        framedOnce = true; lastFitCount = n;
+        setTimeout(() => { if (fg) fg.zoomToFit(900, 80); }, first ? 1800 : 1200);
+      }
     }
   }
 
@@ -744,23 +490,14 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   }
 
   if (refreshBtn) refreshBtn.addEventListener('click', () => { loadLinkGraph(true); });
-  if (fitBtn) fitBtn.addEventListener('click', () => zoomToFit(50));
-  if (zoomInBtn) zoomInBtn.addEventListener('click', () => {
-    const vw = svgEl.clientWidth / 2, vh = svgEl.clientHeight / 2;
-    const k = Math.min(2.5, view.k * 1.2);
-    view.x = vw - ((vw - view.x) / view.k) * k; view.y = vh - ((vh - view.y) / view.k) * k; view.k = k; applyTransform();
-  });
-  if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => {
-    const vw = svgEl.clientWidth / 2, vh = svgEl.clientHeight / 2;
-    const k = Math.max(0.2, view.k / 1.2);
-    view.x = vw - ((vw - view.x) / view.k) * k; view.y = vh - ((vh - view.y) / view.k) * k; view.k = k; applyTransform();
-  });
+  if (fitBtn) fitBtn.addEventListener('click', () => { if (fg) fg.zoomToFit(700, 80); });
 
-  if (typeof ResizeObserver !== 'undefined') {
-    const ro = new ResizeObserver(() => { schedule(); });
-    ro.observe(viewportEl);
-  }
-
+  // First paint may run before the element is laid out (clientWidth 0); retry once
+  // the viewport has size so the 3D scene initialises.
   render();
+  if (graph3dEl && !graph3dEl.clientWidth && typeof requestAnimationFrame !== 'undefined') {
+    const tryInit = () => { if (graph3dEl.clientWidth) { render(); } else { requestAnimationFrame(tryInit); } };
+    requestAnimationFrame(tryInit);
+  }
   return { el, applyEvent, reset };
 }

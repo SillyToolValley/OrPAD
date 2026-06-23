@@ -10845,6 +10845,11 @@ body.zen-mode #workspace {
   touch-action: none;
 }
 .core-run-graph-viewport.is-panning { cursor: grabbing; }
+/* 3D galaxy container (3d-force-graph mounts its WebGL canvas here).
+   Background follows the app theme (the viewport's own bg shows through the
+   transparent WebGL canvas). */
+.core-run-3d { position: absolute; inset: 0; }
+.core-run-3d canvas { display: block; }
 .core-run-graph-canvas {
   position: absolute;
   top: 0;
@@ -11196,7 +11201,7 @@ body.zen-mode #workspace {
 .core-run-legend {
   position: absolute;
   left: calc(12px * var(--us));
-  bottom: calc(12px * var(--us));
+  top: calc(12px * var(--us));
   z-index: 5;
   display: flex;
   flex-wrap: wrap;
