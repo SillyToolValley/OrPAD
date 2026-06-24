@@ -64,6 +64,15 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const allowedTools = Array.isArray(request?.allowedTools) ? request.allowedTools.map(String) : undefined;
     const timeoutMs = Number.isFinite(request?.timeoutMs) ? Math.max(0, request.timeoutMs) : 0;
     const agent = request?.agent ? String(request.agent) : undefined;
+
+    // Pre-flight: if the selected provider CLI isn't installed / on PATH, fail fast with
+    // guidance (a `providerMissing` payload the GUI turns into a help modal) instead of
+    // spawning a doomed child that "runs" but produces nothing.
+    const providerStatus = core.providerInfo(agent);
+    if (!providerStatus.available) {
+      return { ok: false, providerMissing: providerStatus, error: `The "${providerStatus.provider}" provider CLI ("${providerStatus.command}") was not found on your PATH.` };
+    }
+
     const ground = request?.ground !== false;     // default ON: research prior art first
     const apply = request?.apply !== false;       // default ON: write the result into the workspace
     const parallelResearch = request?.parallelResearch === true; // fan-out: parallel research subagents

@@ -49,7 +49,7 @@ const FILE_WRITE_COLOR = '#ff9e64';// a file the run WROTE (orange)
 const STEP_COLOR = '#9aa5ce';      // a generic agent step (read/edit/exec/tool/…)
 const SUBAGENT_COLOR = '#7dcfff';  // a delegation step (Task → sub-agent)
 const PHASE_COLOR = '#cdd6ff';     // a governed-envelope phase marker
-const ACTIVE_COLOR = '#ff8a3d';    // the step currently running (warm, visible on a light bg)
+const ACTIVE_COLOR = '#ffffff';    // the step currently running — white-hot, distinct from orange writes
 
 const ACCESS_READ = '#73f0c0';   // link: reading a file (file → step)
 const ACCESS_WRITE = '#ff9e64';  // link: writing a file (step → file)
@@ -84,8 +84,8 @@ const ARM_SPACING  = 16;    // in-plane phyllotaxis spacing (radius grows ARM_SP
 const ARM_RISE     = 11;    // out-of-plane cone depth per √k (gives the arm 3D body, not a flat disc)
 const STEM_FACTOR  = 0.85;  // stem length as a fraction of the core radius (pot → stem → bloom)
 const PARTICLE_SPEED = 0.42; // data-flow particle speed in world-units per tick (constant for all edges)
-const ACTIVE_GLOW_COLOR = '#ffd27a'; // warm glow halo on the in-progress node
-const ACTIVE_GLOW_SCALE = 7;         // halo size as a multiple of the node's radius
+const ACTIVE_GLOW_COLOR = '#dff1ff'; // icy-white glow halo (distinct from warm write/orange)
+const ACTIVE_GLOW_SCALE = 8;         // halo size as a multiple of the node's radius
 
 const GOLDEN = Math.PI * (3 - Math.sqrt(5)); // golden angle (137.5°) — the phyllotaxis winding
 const ORIGIN = { x: 0, y: 0, z: 0 };
@@ -137,46 +137,61 @@ function armSlot(k, axis, base) {
 // the strand (branch), strand = branch index.
 export const LAYOUT_THEMES = ['vase', 'helix', 'solar', 'molecule'];
 
-// HELIX (나선): work nodes spiral up a DNA-like column; sub-agents braid opposite.
-const HELIX_RADIUS = 92, HELIX_PITCH = 13, HELIX_TURN = Math.PI / 5, HELIX_GAP = 20;
-function helixSlot(g, strand, coreR) {
-  const ang = HELIX_TURN * g + strand * Math.PI;
-  const r = HELIX_RADIUS + strand * HELIX_GAP;
-  return { x: Math.cos(ang) * r, y: coreR + 30 + HELIX_PITCH * g, z: Math.sin(ang) * r };
+// Each parallel strand (the main run + every fanned-out sub-agent) is laid out as its
+// OWN separated sub-structure — k = ordinal WITHIN the strand, and a per-strand anchor
+// keeps the structures apart. A ring offset distributes strands around the centre.
+function strandRing(strand, strandCount, sep) {
+  if (strandCount <= 1) return { x: 0, z: 0 };
+  const az = (2 * Math.PI * strand) / strandCount;
+  return { x: Math.cos(az) * sep, z: Math.sin(az) * sep };
 }
 
-// SOLAR (태양계): the note vault is the SUN; every work node is its own PLANET,
-// spread evenly over a spherical orbit shell around it (Fibonacci sphere by global
-// exec order, so consecutive steps stay neighbours → short flow arcs). The files a
-// step reads/writes park right beside it (access spring) → the planet's satellites.
-const SOLAR_ORBIT = 2.3;
-function planetSlot(g, total, coreR) {
-  const R = Math.max(300, coreR * SOLAR_ORBIT);
-  const n = Math.max(1, total);
-  const y = n === 1 ? 0 : 1 - (g / (n - 1)) * 2; // 1 .. -1 over the shell
-  const rr = Math.sqrt(Math.max(0, 1 - y * y));
-  const th = GOLDEN * g;
-  return { x: Math.cos(th) * rr * R, y: y * R, z: Math.sin(th) * rr * R };
+// HELIX (나선): one separate vertical DNA helix per strand, on a ring of offsets.
+const HELIX_RADIUS = 90, HELIX_PITCH = 13, HELIX_TURN = Math.PI / 5, HELIX_SEP = 300;
+function helixSlot(k, strand, strandCount, coreR) {
+  const c = strandRing(strand, strandCount, HELIX_SEP);
+  const ang = HELIX_TURN * k;
+  return { x: c.x + Math.cos(ang) * HELIX_RADIUS, y: coreR + 30 + HELIX_PITCH * k, z: c.z + Math.sin(ang) * HELIX_RADIUS };
 }
 
-// MOLECULE (분자 결정구조): work nodes snap to a simple-cubic crystal lattice above
-// the core seed; flow edges read as bonds. Generously spaced so the lattice + bonds
-// stay legible (it was too dense before).
-const LATTICE_SPACING = 92;
-function latticeSlot(g, total, coreR) {
-  const side = Math.max(1, Math.ceil(Math.cbrt(Math.max(1, total))));
-  const ix = g % side;
-  const iy = Math.floor(g / side) % side;
-  const iz = Math.floor(g / (side * side));
-  const c = (side - 1) / 2;
-  return { x: (ix - c) * LATTICE_SPACING, y: coreR + 40 + iy * LATTICE_SPACING, z: (iz - c) * LATTICE_SPACING };
+// SOLAR (태양계): the note vault is the SUN (gizmo added in ensureDecor); each strand
+// is a PLANET — a small node cluster orbiting on its OWN tilted elliptical orbit.
+const SOLAR_A = 2.4, SOLAR_ECC = 0.62, SOLAR_TILT = 0.16, PLANET_SPACING = 14;
+function solarOrbit(strand, strandCount, coreR) {
+  const a = Math.max(330, coreR * SOLAR_A) + strand * Math.max(150, coreR * 0.9); // each strand a wider orbit
+  const b = a * SOLAR_ECC;
+  const th = strandCount > 1 ? GOLDEN * strand : 0; // the planet's angle on its orbit
+  return { a, b, th };
+}
+function planetSlot(k, strand, strandCount, branchSize, coreR) {
+  const o = solarOrbit(strand, strandCount, coreR);
+  const cx = Math.cos(o.th) * o.a, cz = Math.sin(o.th) * o.b, cy = Math.sin(o.th) * o.a * SOLAR_TILT;
+  // Distribute the strand's nodes evenly over a SPHERE shell (Fibonacci sphere) so the
+  // planet reads as a round ball, not an outward-expanding spray.
+  const n = Math.max(1, branchSize);
+  const R = Math.min(coreR * 0.9, Math.max(32, PLANET_SPACING * Math.sqrt(n) * 0.7));
+  const yy = n <= 1 ? 0 : 1 - (k / (n - 1)) * 2; // 1 .. -1 across the shell
+  const rr = Math.sqrt(Math.max(0, 1 - yy * yy));
+  const th = GOLDEN * k;
+  return { x: cx + Math.cos(th) * rr * R, y: cy + yy * R, z: cz + Math.sin(th) * rr * R };
+}
+
+// MOLECULE (분자 결정구조): each strand is its OWN simple-cubic crystal, offset onto a
+// ring; flow edges read as bonds.
+const LATTICE_SPACING = 84, LATTICE_SEP = 560;
+function latticeSlot(k, strand, strandCount, branchSize, coreR) {
+  const c = strandRing(strand, strandCount, LATTICE_SEP);
+  const side = Math.max(1, Math.ceil(Math.cbrt(Math.max(1, branchSize))));
+  const ix = k % side, iy = Math.floor(k / side) % side, iz = Math.floor(k / (side * side));
+  const half = (side - 1) / 2;
+  return { x: c.x + (ix - half) * LATTICE_SPACING, y: coreR + 60 + iy * LATTICE_SPACING, z: c.z + (iz - half) * LATTICE_SPACING };
 }
 
 function computeSlot(theme, c) {
   switch (theme) {
-    case 'helix': return helixSlot(c.g, c.strand, c.coreR);
-    case 'solar': return planetSlot(c.g, c.total, c.coreR);
-    case 'molecule': return latticeSlot(c.g, c.total, c.coreR);
+    case 'helix': return helixSlot(c.k, c.strand, c.strandCount, c.coreR);
+    case 'solar': return planetSlot(c.k, c.strand, c.strandCount, c.branchSize, c.coreR);
+    case 'molecule': return latticeSlot(c.k, c.strand, c.strandCount, c.branchSize, c.coreR);
     case 'vase':
     default: return armSlot(c.k, strandAxis(c.strand, c.strandCount), c.base);
   }
@@ -253,8 +268,8 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
         </label>
         <div class="core-run-form-row core-run-form-opts">
           <label class="core-run-check"><input type="checkbox" data-core-run-ground checked /> Research prior art first (grounding)</label>
-          <label class="core-run-check"><input type="checkbox" data-core-run-apply checked /> Apply result to workspace</label>
-          <label class="core-run-check"><input type="checkbox" data-core-run-parallel /> Parallel research (fan-out)</label>
+          <label class="core-run-check"><input type="checkbox" data-core-run-parallel checked /> Parallel research (fan-out)</label>
+          <label class="core-run-check"><input type="checkbox" data-core-run-apply /> Apply result to workspace <small>off = result stays in the run overlay</small></label>
         </div>
         <div class="core-run-form-row">
           <button type="submit" class="core-run-btn" data-core-run-submit>Run</button>
@@ -321,6 +336,16 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
         </div>
       </div>
     </div>
+    <div class="core-run-modal" data-core-run-modal hidden>
+      <div class="core-run-modal-backdrop" data-core-run-modal-close></div>
+      <div class="core-run-modal-card" role="alertdialog" aria-modal="true">
+        <h3 class="core-run-modal-title" data-core-run-modal-title></h3>
+        <div class="core-run-modal-body" data-core-run-modal-body></div>
+        <div class="core-run-modal-actions">
+          <button type="button" class="core-run-btn" data-core-run-modal-close>Got it</button>
+        </div>
+      </div>
+    </div>
   `;
 
   const statusEl = el.querySelector('[data-core-run-status]');
@@ -344,6 +369,9 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   const refreshBtn = el.querySelector('[data-core-run-refresh]');
   const fitBtn = el.querySelector('[data-core-run-fit]');
   const themeSelect = el.querySelector('[data-core-run-theme]');
+  const modalEl = el.querySelector('[data-core-run-modal]');
+  const modalTitleEl = el.querySelector('[data-core-run-modal-title]');
+  const modalBodyEl = el.querySelector('[data-core-run-modal-body]');
 
   let events = [];
   let currentRunId = null;
@@ -369,16 +397,45 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   const highlightLinks = new Set();
   let hoverNode = null;
   let dragging = false;        // keep the hover-highlight alive while a node is dragged
-  let activeNodeObj = null;    // the in-progress run node (drives the glow + live particles)
-  let glowSprite = null;       // additive halo following the active node
-  // Plant decor (three.js meshes added to the scene): the pot frame + the stem.
+  let activeNodeObjs = [];     // ALL in-progress run nodes (parallel branches each have one)
+  const activeSet = new Set(); // fast membership test for "is this link live?"
+  let glowMat = null;          // shared additive halo material
+  const glowSprites = [];      // halo pool — one per concurrently-active node
+  // Plant decor (three.js meshes added to the scene): the pot frame + one stem per strand.
   let potMesh = null;
-  let stemMesh = null;
+  let stemMeshes = [];  // one curved tube per work-unit strand (main + each sub-agent)
   let stemMat = null;
-  let stemCoreR = -1;   // coreR the stem tube was last built for (rebuild on change)
+  let stemKey = '';     // rebuild key (core size + strand count) so stems track the run
+  let currentStrandAxes = [{ x: 0, y: 1, z: 0 }]; // strand directions, set each build
+  let sunMesh = null;   // SOLAR theme: the note vault rendered as a sun gizmo
+  let orbitRings = [];  // SOLAR theme: one elliptical orbit line per strand
+  let orbitKey = '';    // rebuild key for the orbit rings
 
   function showFormError(message) { errorEl.textContent = message; errorEl.hidden = !message; }
   function showFormResult(message) { if (!resultEl) return; resultEl.textContent = message || ''; resultEl.hidden = !message; }
+
+  const PROVIDER_HELP = {
+    claude: 'Install Claude Code (e.g. `npm i -g @anthropic-ai/claude-code`) and make sure `claude` runs in a terminal.',
+    codex: 'Install the OpenAI Codex CLI (e.g. `npm i -g @openai/codex`), sign in (`codex login`), and make sure `codex` runs in a terminal.',
+    gemini: 'Install the Gemini CLI (e.g. `npm i -g @google/gemini-cli`), authenticate, and make sure `gemini` runs in a terminal.',
+  };
+  function closeModal() { if (modalEl) modalEl.hidden = true; }
+  function showProviderModal(info) {
+    if (!modalEl) return;
+    const provider = (info && info.provider) || 'claude';
+    const command = (info && info.command) || provider;
+    modalTitleEl.textContent = `${command} CLI not found`;
+    modalBodyEl.innerHTML = '';
+    const p1 = document.createElement('p');
+    p1.textContent = `The selected AI provider “${provider}” couldn't be reached — its command “${command}” isn't on your PATH, so the run can't start.`;
+    const p2 = document.createElement('p');
+    p2.textContent = PROVIDER_HELP[provider] || `Install the ${provider} CLI and make sure “${command}” runs in a terminal.`;
+    const p3 = document.createElement('p');
+    p3.className = 'core-run-modal-verify';
+    p3.innerHTML = `Verify with <code>${command} --version</code>, then pick the provider again and re-run.`;
+    modalBodyEl.append(p1, p2, p3);
+    modalEl.hidden = false;
+  }
   function setBusy(next) {
     busy = next;
     if (submitEl) { submitEl.disabled = next; submitEl.textContent = next ? 'Running…' : 'Run'; }
@@ -472,12 +529,15 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     if (graph3dEl) graph3dEl.style.cursor = node ? 'pointer' : '';
     refreshHoverStyles();
   }
-  // A link is "live" when it touches the in-progress node — only these stream particles.
+  // A link is "live" when it touches ANY in-progress node — only these stream particles
+  // (parallel research: every running branch's edges stream at once, not one at a time).
   function isActiveLink(l) {
-    return !!activeNodeObj && (l.source === activeNodeObj || l.target === activeNodeObj);
+    return activeSet.size > 0 && (activeSet.has(l.source) || activeSet.has(l.target));
   }
 
-  // The glow halo on the in-progress node (an additive sprite that follows it).
+  // Soft additive glow halo — emissive "発光" on the running node(s). (True post-process
+  // bloom whitewashes a light theme bg, so this per-node additive sprite gives the same
+  // glow selectively, on any background.)
   function glowTexture() {
     const size = 128;
     const cv = document.createElement('canvas'); cv.width = size; cv.height = size;
@@ -490,25 +550,32 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     return new THREE.CanvasTexture(cv);
   }
   function ensureActiveGlow() {
-    if (glowSprite || !fg || typeof fg.scene !== 'function') return;
-    const scene = fg.scene(); if (!scene) return;
-    const mat = new THREE.SpriteMaterial({
+    if (glowMat || !fg || typeof fg.scene !== 'function') return;
+    glowMat = new THREE.SpriteMaterial({
       map: glowTexture(), color: new THREE.Color(ACTIVE_GLOW_COLOR),
-      blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0.9,
+      blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0.95,
     });
-    glowSprite = new THREE.Sprite(mat);
-    glowSprite.visible = false;
-    glowSprite.renderOrder = 2;
-    scene.add(glowSprite);
   }
+  // Position one halo per concurrently-active node; grow the pool on demand, hide spares.
   function updateActiveGlow() {
-    if (!glowSprite) return;
-    const n = activeNodeObj;
-    if (!n || typeof n.x !== 'number') { glowSprite.visible = false; return; }
-    glowSprite.position.set(n.x, n.y, n.z || 0);
-    const radius = Math.cbrt(Math.max(0.1, n.phase ? 4 : 2.5)) * 4; // ~3d-force-graph node radius
-    glowSprite.scale.setScalar(Math.max(18, radius * ACTIVE_GLOW_SCALE));
-    glowSprite.visible = true;
+    if (!glowMat || !fg || typeof fg.scene !== 'function') return;
+    const scene = fg.scene(); if (!scene) return;
+    const live = activeNodeObjs.filter((n) => n && typeof n.x === 'number');
+    while (glowSprites.length < live.length) {
+      const s = new THREE.Sprite(glowMat); s.renderOrder = 2; scene.add(s); glowSprites.push(s);
+    }
+    for (let i = 0; i < glowSprites.length; i += 1) {
+      const s = glowSprites[i];
+      if (i < live.length) {
+        const n = live[i];
+        s.position.set(n.x, n.y, n.z || 0);
+        const radius = Math.cbrt(Math.max(0.1, n.phase ? 4 : 2.5)) * 4; // ~3d-force-graph node radius
+        s.scale.setScalar(Math.max(18, radius * ACTIVE_GLOW_SCALE));
+        s.visible = true;
+      } else {
+        s.visible = false;
+      }
+    }
   }
 
   // The "pot" (planter frame around the vault root-ball) + the "stem" rising to the
@@ -528,30 +595,67 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
       scene.add(potMesh);
       stemMat = new THREE.MeshBasicMaterial({ color: 0x5fa86a, transparent: true, opacity: 0.6 });
     }
-    // Vase CO-CENTRED with the root-ball (origin) so the globe sits inside the bulb;
-    // the main stem bridges the neck up to the bloom (sub-agent stems are the fork
-    // order-edges fanning out to their own flowers).
+    // Vase CO-CENTRED with the root-ball (origin) so the globe sits inside the bulb.
     potMesh.scale.set(coreR * 1.12, coreR * 1.15, coreR * 1.12);
     potMesh.position.set(0, 0, 0);
-    // Curved main stem: a tube along a quadratic bezier that bends gently sideways
-    // from the vase neck up to the bloom base. Rebuilt only when the core size changes.
-    if (stemCoreR !== coreR) {
-      stemCoreR = coreR;
-      if (stemMesh) { scene.remove(stemMesh); stemMesh.geometry.dispose(); }
-      const yb = coreR * 0.55, yt = coreR + stemLen;
-      const curve = new THREE.QuadraticBezierCurve3(
-        new THREE.Vector3(0, yb, 0),
-        new THREE.Vector3(coreR * 0.28, (yb + yt) / 2, coreR * 0.06),
-        new THREE.Vector3(0, yt, 0),
-      );
-      const stemGeo = new THREE.TubeGeometry(curve, 28, Math.max(2, coreR * 0.022), 8, false);
-      stemMesh = new THREE.Mesh(stemGeo, stemMat);
-      scene.add(stemMesh);
+    // ONE curved stem per strand — ALL emerging from the vase NECK (so they don't pierce
+    // the bulb wall) and bowing out to each strand's bloom base.
+    const stemKeyNew = `${Math.round(coreR)}:${currentStrandAxes.length}:${Math.round(stemLen)}`;
+    if (stemKey !== stemKeyNew) {
+      stemKey = stemKeyNew;
+      for (const m of stemMeshes) { scene.remove(m); m.geometry.dispose(); }
+      stemMeshes = [];
+      const neck = new THREE.Vector3(0, coreR * 0.95, 0); // shared origin at the vase neck
+      const rt = coreR + stemLen;
+      for (const axis of currentStrandAxes) {
+        const top = new THREE.Vector3(axis.x * rt, axis.y * rt, axis.z * rt);
+        const { u } = perpBasis(axis); const off = coreR * 0.16;
+        const ctrl = new THREE.Vector3(
+          (neck.x + top.x) / 2 + u.x * off, (neck.y + top.y) / 2 + u.y * off, (neck.z + top.z) / 2 + u.z * off,
+        );
+        const geo = new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(neck, ctrl, top), 24, Math.max(2, coreR * 0.02), 8, false);
+        const m = new THREE.Mesh(geo, stemMat);
+        scene.add(m);
+        stemMeshes.push(m);
+      }
     }
-    // Pot + stem belong to the VASE theme only; hide them for the other layouts.
-    const showVase = layoutTheme === 'vase';
-    potMesh.visible = showVase;
-    if (stemMesh) stemMesh.visible = showVase;
+
+    // SOLAR gizmo: the note vault as a glowing SUN + an elliptical orbit ring per strand.
+    if (!sunMesh) {
+      sunMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(1, 24, 16),
+        new THREE.MeshBasicMaterial({ color: 0xffcf66, wireframe: true, transparent: true, opacity: 0.3 }),
+      );
+      sunMesh.renderOrder = -1;
+      scene.add(sunMesh);
+    }
+    sunMesh.scale.setScalar(coreR * 1.18);
+    const orbitKeyNew = `${Math.round(coreR)}:${currentStrandAxes.length}`;
+    if (orbitKey !== orbitKeyNew) {
+      orbitKey = orbitKeyNew;
+      for (const r of orbitRings) { scene.remove(r); r.geometry.dispose(); }
+      orbitRings = [];
+      const sc = currentStrandAxes.length;
+      const orbitMat = new THREE.LineBasicMaterial({ color: 0x8aa0c8, transparent: true, opacity: 0.32 });
+      for (let s = 0; s < sc; s += 1) {
+        const o = solarOrbit(s, sc, coreR);
+        const pts = [];
+        for (let i = 0; i <= 100; i += 1) {
+          const th = (2 * Math.PI * i) / 100;
+          pts.push(new THREE.Vector3(Math.cos(th) * o.a, Math.sin(th) * o.a * SOLAR_TILT, Math.sin(th) * o.b));
+        }
+        const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), orbitMat);
+        scene.add(ring);
+        orbitRings.push(ring);
+      }
+    }
+
+    // Show each theme's gizmos only under that theme.
+    const isVase = layoutTheme === 'vase', isSolar = layoutTheme === 'solar';
+    potMesh.visible = isVase;
+    for (const m of stemMeshes) m.visible = isVase;
+    sunMesh.visible = isSolar;
+    for (const r of orbitRings) r.visible = isSolar;
   }
 
   function ensureFG() {
@@ -685,6 +789,11 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     for (const n of runNodes) { const b = n.branch || 'main'; if (!strandIndex.has(b)) strandIndex.set(b, strandIndex.size); }
     const strandCount = Math.max(1, strandIndex.size);
     const total = runNodes.length;
+    const branchSizes = new Map();
+    for (const n of runNodes) { const b = n.branch || 'main'; branchSizes.set(b, (branchSizes.get(b) || 0) + 1); }
+    // Stem directions (vase): one per strand, so ensurePlant can root each bloom.
+    currentStrandAxes = [];
+    for (let s = 0; s < strandCount; s += 1) currentStrandAxes.push(strandAxis(s, strandCount));
 
     // Work nodes — each gets its OWN slot, computed by the selected layout theme
     // (vase / helix / solar / molecule). g = global exec order, k = ordinal in strand.
@@ -695,10 +804,10 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
       const k = ordinal.get(branch) || 0; ordinal.set(branch, k + 1);
       const o = ensure(
         `r:${n.id}`,
-        { kind: 'run', ntype: n.type, name: n.label || n.type, phase: !!n.phase, active: n.id === activeId, branch },
+        { kind: 'run', ntype: n.type, name: n.label || n.type, phase: !!n.phase, active: !!n.active, branch },
         seedPos(g + 1),
       );
-      o.slot = computeSlot(layoutTheme, { g, k, strand, strandCount, total, base, coreR });
+      o.slot = computeSlot(layoutTheme, { g, k, strand, strandCount, total, base, coreR, branchSize: branchSizes.get(branch) || 1 });
     });
 
     // Vault notes — distributed over the core shell (born in a small jitter ball).
@@ -755,11 +864,15 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     const { done, files } = emergent;
     // Collapse the agent's transient "thinking" nodes so the arm shows real data flow.
     const { nodes, edges, activeId } = collapseTransient(emergent.nodes, emergent.edges, emergent.activeId);
-    const runNodes = nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, phase: n.phase, file: n.file, access: n.access, branch: n.branch, active: n.id === activeId }));
+    // Mark EVERY still-open work node active (parallel branches each have one), not just
+    // the single most-recent one — so all concurrent work glows + streams.
+    const runNodes = nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, phase: n.phase, file: n.file, access: n.access, branch: n.branch, active: n.state === 'active' && !n.phase }));
     const data = buildGraphData(runNodes, edges, files, activeId);
     const statNodes = data.nodes.filter((n) => n.kind === 'run');
-    // The in-progress node drives the glow halo + which flow streams particles.
-    activeNodeObj = done ? null : (data.nodes.find((n) => n.kind === 'run' && n.active) || null);
+    // The in-progress nodes drive the glow halos + which flows stream particles.
+    activeNodeObjs = done ? [] : data.nodes.filter((n) => n.kind === 'run' && n.active);
+    activeSet.clear();
+    for (const n of activeNodeObjs) activeSet.add(n);
     setStatus(statNodes, done);
 
     const graph = ensureFG();
@@ -817,7 +930,10 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
       setBusy(true);
       try {
         const res = await onRun(request);
-        if (res && res.ok === false) {
+        if (res && res.providerMissing) {
+          showProviderModal(res.providerMissing); // help modal: the provider CLI isn't installed
+          showFormError(res.error || 'Provider not available.');
+        } else if (res && res.ok === false) {
           showFormError(res.error || 'Run failed.');
         } else if (res) {
           const parts = [];
@@ -851,6 +967,10 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
 
   if (refreshBtn) refreshBtn.addEventListener('click', () => { loadLinkGraph(true); });
   if (fitBtn) fitBtn.addEventListener('click', () => { if (fg) fg.zoomToFit(700, 80); });
+  if (modalEl) {
+    el.querySelectorAll('[data-core-run-modal-close]').forEach((b) => b.addEventListener('click', closeModal));
+    el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modalEl.hidden) closeModal(); });
+  }
   if (themeSelect) {
     themeSelect.value = layoutTheme;
     themeSelect.addEventListener('change', () => {
@@ -861,6 +981,14 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
       render();
       if (fg) fg.d3ReheatSimulation();    // animate nodes to their new theme positions
     });
+  }
+
+  // While the window is unfocused the browser throttles the physics loop, so nodes that
+  // streamed in during that time stay stuck at their spawn point (the origin). Re-heat
+  // on focus so they travel out to their slots — but only mid-run, to avoid jiggling a
+  // settled idle graph.
+  if (typeof window !== 'undefined') {
+    window.addEventListener('focus', () => { if (fg && (busy || activeNodeObjs.length)) fg.d3ReheatSimulation(); });
   }
 
   // First paint may run before the element is laid out (clientWidth 0); retry once

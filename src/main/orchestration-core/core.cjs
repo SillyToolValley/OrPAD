@@ -93,11 +93,8 @@ function cancelAllRuns() {
 
 // AI-provider adapters. Each maps a provider key (the GUI's selection) to a CLI
 // command + its non-interactive argv. The goal is ALWAYS delivered on stdin (safe for
-// multi-line prompts under shell:true). Only `claude` emits a stream we parse into the
-// live tool-use graph (stream:true); the others run non-streamed — the orchestration
-// PHASE nodes still draw and the overlay result is still applied, just without the
-// per-tool nodes. NOTE: claude is the only adapter verified end-to-end; codex/gemini
-// are best-effort non-interactive invocations — confirm the flags against your install.
+// multi-line prompts under shell:true). Streaming providers parse their own native
+// stdout into OrPAD trace events; the trace schema stays provider-neutral.
 const PROVIDERS = {
   claude: {
     command: 'claude',
@@ -108,11 +105,40 @@ const PROVIDERS = {
       if (Array.isArray(allowedTools) && allowedTools.length) a.push('--allowedTools', ...allowedTools);
       return a;
     },
+    parseLine: (obj, at) => trace.streamEventToTrace(obj, at),
   },
-  codex: { command: 'codex', stream: false, buildArgs: () => ['exec', '--full-auto', '-'] },
+  codex: {
+    command: 'codex',
+    stream: true,
+    buildArgs: ({ streamMode }) => [
+      '--ask-for-approval', 'never',
+      'exec',
+      '-c', 'model_reasoning_effort=high',
+      '--sandbox', 'workspace-write',
+      '--skip-git-repo-check',
+      '--ephemeral',
+      ...(streamMode ? ['--json'] : []),
+      '-',
+    ],
+    parseLine: (obj, at) => trace.codexEventToTrace(obj, at),
+    resultFromLine: (obj, current) => trace.codexResultFromEvent(obj, current),
+  },
   gemini: { command: 'gemini', stream: false, buildArgs: () => ['-y'] },
 };
 function getProvider(name) { return PROVIDERS[String(name || 'claude').toLowerCase()] || PROVIDERS.claude; }
+
+// Is the provider's CLI actually installed / on PATH? (pre-flight so a missing agent
+// surfaces clear guidance instead of a silent "ran but produced nothing").
+function providerAvailable(command) {
+  const probe = process.platform === 'win32' ? 'where' : 'which';
+  try { return spawnSync(probe, [command], { shell: false, windowsHide: true }).status === 0; }
+  catch (_) { return false; }
+}
+function providerInfo(name) {
+  const key = String(name || 'claude').toLowerCase();
+  const provider = getProvider(key);
+  return { provider: key in PROVIDERS ? key : 'claude', command: provider.command, available: providerAvailable(provider.command) };
+}
 
 // Delegate the whole goal to a capable CLI agent, running INSIDE the isolated overlay.
 // Prompt goes via stdin (not argv) so multi-word goals are not mangled by the Windows shell.
@@ -134,17 +160,20 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
     let err = '';
     let stopped = false;
     let stopReason = null;
-    // stream-json: parse NDJSON lines into trace node events; capture the final result event.
+    // Provider JSONL: parse native stream lines into trace node events; capture
+    // provider result metadata when the stream exposes it.
     let lineBuf = '';
     let resultEvent = null;
     const handleStreamLine = (line) => {
       const s = String(line).trim();
       if (!s) return;
       let obj = null;
-      try { obj = JSON.parse(s); } catch (_) { return; }
-      if (obj && obj.type === 'result') resultEvent = obj;
+      try { obj = JSON.parse(s); } catch (_) { obj = s; }
+      if (provider.resultFromLine) resultEvent = provider.resultFromLine(obj, resultEvent) || resultEvent;
+      else if (obj && obj.type === 'result') resultEvent = obj;
       try {
-        for (const ev of trace.streamEventToTrace(obj, nowIso())) {
+        const parseLine = provider.parseLine || (() => []);
+        for (const ev of parseLine(obj, nowIso())) {
           if (traceFile) fs.appendFileSync(traceFile, JSON.stringify(ev) + '\n', 'utf8');
           if (onTraceEvent) { try { onTraceEvent(ev); } catch (_) { /* listener is best-effort */ } }
         }
@@ -584,6 +613,7 @@ async function runVerifiedBuildLoop({ buildFn, verifyFn, maxCycles = 0 }) {
 module.exports = {
   recon,
   delegateToAgent,
+  providerInfo,
   killTree,
   cancelRun,
   cancelAllRuns,

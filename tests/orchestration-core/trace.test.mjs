@@ -45,6 +45,63 @@ test('streamEventToTrace turns claude stream-json into node trace events', () =>
   assert.equal(fin[0].costUsd, 0.5);
 });
 
+test('codexEventToTrace maps codex JSONL command and file items to node trace events', () => {
+  const cmdStart = trace.codexEventToTrace({
+    type: 'item.started',
+    item: { id: 'cmd1', type: 'command_execution', command: 'bash -lc npm test', status: 'in_progress' },
+  }, '2026-06-24T00:00:00.000Z');
+  assert.equal(cmdStart.length, 1);
+  assert.equal(cmdStart[0].ev, 'node');
+  assert.equal(cmdStart[0].state, 'active');
+  assert.equal(cmdStart[0].toolId, 'cmd1');
+  assert.equal(cmdStart[0].type, 'exec');
+  assert.match(cmdStart[0].label, /npm test/);
+  assert.equal(cmdStart[0].file, null);
+
+  const cmdDone = trace.codexEventToTrace({
+    type: 'item.completed',
+    item: { id: 'cmd1', type: 'command_execution', status: 'completed' },
+  });
+  assert.deepEqual(cmdDone, [{ ev: 'node', state: 'done', toolId: 'cmd1', at: null }]);
+
+  const fileStart = trace.codexEventToTrace({
+    type: 'item.started',
+    item: { id: 'file1', type: 'file_change', path: 'src/main/x.js', status: 'in_progress' },
+  });
+  assert.equal(fileStart[0].type, 'edit');
+  assert.equal(fileStart[0].file, 'src/main/x.js');
+  assert.match(fileStart[0].label, /x\.js|src\/main\/x\.js/);
+});
+
+test('codexEventToTrace maps codex reasoning, prose, and turn completion', () => {
+  const reason = trace.codexEventToTrace({
+    type: 'item.started',
+    item: { id: 'r1', type: 'reasoning', status: 'in_progress' },
+  });
+  assert.equal(reason[0].type, 'reason');
+  assert.equal(reason[0].transient, true);
+  assert.equal(reason[0].toolId, null);
+
+  const respond = trace.codexEventToTrace({
+    type: 'item.completed',
+    item: { id: 'msg1', type: 'agent_message', text: 'done' },
+  });
+  assert.equal(respond[0].label, 'Respond');
+  assert.equal(respond[0].transient, true);
+
+  const done = trace.codexEventToTrace({
+    type: 'turn.completed',
+    usage: { input_tokens: 10, output_tokens: 2 },
+  }, '2026-06-24T00:00:01.000Z');
+  assert.deepEqual(done, [{
+    ev: 'run',
+    state: 'done',
+    at: '2026-06-24T00:00:01.000Z',
+    costUsd: null,
+    numTurns: 1,
+  }]);
+});
+
 test('buildEmergentGraph grows nodes in execution order and links them', () => {
   const events = [
     { ev: 'phase', kind: 'recon', state: 'start' },

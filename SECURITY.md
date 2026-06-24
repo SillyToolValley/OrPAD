@@ -340,7 +340,7 @@ described in earlier revisions are gone.
 The replacement is `src/main/orchestration-core/` (`core.cjs`, `trace.cjs`,
 `ralphloop.cjs`): a zero-node **governed delegation** core. It grounds a goal,
 seeds an isolated overlay containing only the declared write-set, delegates the
-whole task to a capable CLI agent (`claude`) running inside that overlay, and
+whole task to a capable CLI agent (`claude` or `codex`) running inside that overlay, and
 enforces the write-set by diffing overlay→canonical via the preserved isolation
 moat (`orchestration-machine/patches.js` — write-set overlay + `patchArtifact`).
 A motion/progress stop-signal (time cap + process-tree kill + partial recovery)
@@ -352,8 +352,8 @@ Renderer-facing IPC is `registerCoreRunHandlers` in
 
 - `orpad-core-run-start` (invoke) — runs a REAL governed delegation. It resolves
   the run's workspace from the main-process authority (`authority.getWorkspaceRoot`)
-  and refuses when no workspace is approved. It spawns the configured agent
-  (`claude`) **inside an isolated overlay** under `<workspace>/.orpad/core-runs/<runId>/`
+  and refuses when no workspace is approved. It spawns the configured provider
+  agent (`claude` or `codex`) **inside an isolated overlay** under `<workspace>/.orpad/core-runs/<runId>/`
   seeded with only the caller-declared write-set; the moat diffs the overlay back
   to canonical and reports changes + out-of-write-set violations. **Verification
   gate (trust boundary):** when the caller supplies `verifyCommands` / `gates`,
@@ -371,8 +371,8 @@ Renderer-facing IPC is `registerCoreRunHandlers` in
   step spawns several READ-ONLY research subagents concurrently, each in its own
   sibling overlay `<workspace>/.orpad/core-runs/<runId>/overlay-r{n}/` under the
   same run dir and the same moat; only the single build writer applies to canonical
-  (writes are never parallelized). Each subagent is the same contained `claude`
-  child process as a normal delegation — more processes, no new capability.
+  (writes are never parallelized). Each subagent is the same selected contained
+  provider child process as a normal delegation - more processes, no new capability.
 - `orpad-core-run-replay` (invoke) — replays a RECORDED `trace.jsonl` through the
   same `orpad-core-trace` channel for the live-trace GUI and CI (no paid agent
   run). The trace path is validated with `authority.assertWorkspacePath`, so the
@@ -459,7 +459,7 @@ features that intentionally launch configured/user-requested child processes.
 | `pipeline-create-run-record` / `runbook-create-run-record` | handle | Create minimal run evidence under `.orpad/pipelines/<pipeline>/runs/{runId}` or legacy `.orch-runs/{runId}` | — | Authority guard / workspace only |
 | `pipeline-start-local-run` / `runbook-start-local-run` | handle | Create a local MVP run record, context manifest, approval events, and claim artifact under the target run directory | — | Authority guard / workspace only |
 | `pipeline-read-run-record` / `runbook-read-run-record` | handle | Read `run.or-run` or legacy `run.json` plus `events.jsonl` from allowed run directories | — | Authority guard / `.orpad/pipelines/*/runs`, recorded workspace-local `.or-pipeline` sibling `runs`, or `.orch-runs` only |
-| `orpad-core-run-start` | handle | Run a governed delegation: spawn the configured CLI agent (`claude`) inside an isolated overlay seeded with the declared write-set, then diff overlay→canonical for changes + violations. Optional **verification gates** (`verifyCommands`/`gates`) run as shell checks with `cwd`=overlay BEFORE apply; a failing gate blocks the apply (nothing unverified reaches canonical), with up to `verifyCycles` overlay-reusing retries. Streams trace via `orpad-core-trace` | reads `event.sender` | Authority guard / workspace; overlay + run dirs + gate commands scoped under `<workspace>/.orpad/core-runs/<runId>/` only |
+| `orpad-core-run-start` | handle | Run a governed delegation: spawn the configured CLI agent (`claude` or `codex`) inside an isolated overlay seeded with the declared write-set, then diff overlay→canonical for changes + violations. Optional **verification gates** (`verifyCommands`/`gates`) run as shell checks with `cwd`=overlay BEFORE apply; a failing gate blocks the apply (nothing unverified reaches canonical), with up to `verifyCycles` overlay-reusing retries. Streams trace via `orpad-core-trace` | reads `event.sender` | Authority guard / workspace; overlay + run dirs + gate commands scoped under `<workspace>/.orpad/core-runs/<runId>/` only |
 | `orpad-core-run-stop` | handle | Stop a running governed delegation: kill the agent child process tree for that runId so it stops occupying resources (the in-flight run resolves stopped:cancelled). App quit (`before-quit`) kills every active run's children too | reads `event.sender` | runId-scoped; only kills processes OrPAD spawned for that run |
 | `orpad-core-run-replay` | handle | Replay a recorded `trace.jsonl` through `orpad-core-trace` for the live-trace GUI / CI (spawns nothing, writes nothing) | reads `event.sender` | Authority guard / trace file must be inside the approved workspace |
 | `orpad-core-trace` | send (main→renderer) | PUSH STREAM: outbound-only emergent-graph trace events (phase / classified work node / run-done) to the initiating sender | Outbound ONLY to the initiating `event.sender`, guarded against destroyed senders; no renderer→main surface, no capability token | **None** — advisory render data only, no secrets |

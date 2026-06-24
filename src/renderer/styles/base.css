@@ -10851,18 +10851,41 @@ body.zen-mode #workspace {
   color: var(--danger-color);
 }
 .core-run-form-opts {
-  flex-wrap: wrap;
-  gap: calc(14px * var(--us));
-  justify-content: flex-start;
+  flex-direction: column;       /* stack the checkboxes — long labels were wrapping mid-row */
+  align-items: flex-start;
+  gap: calc(8px * var(--us));
 }
 .core-run-check {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: calc(6px * var(--us));
   font-size: calc(11.5px * var(--us));
   color: var(--text-secondary, var(--text-tertiary));
   cursor: pointer;
 }
+.core-run-check input { flex: none; }
+.core-run-check small { color: var(--text-tertiary); }
+
+/* Provider-not-found help modal (scoped inside the live-run view). */
+.core-run-view { position: relative; }
+.core-run-modal { position: absolute; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
+.core-run-modal[hidden] { display: none; }
+.core-run-modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.38); }
+.core-run-modal-card {
+  position: relative;
+  max-width: min(calc(440px * var(--us)), 86%);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: calc(18px * var(--us)) calc(20px * var(--us));
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+  display: flex; flex-direction: column; gap: calc(10px * var(--us));
+}
+.core-run-modal-title { margin: 0; font-size: calc(15px * var(--us)); color: var(--text-primary); }
+.core-run-modal-body { font-size: calc(12.5px * var(--us)); color: var(--text-secondary); display: flex; flex-direction: column; gap: calc(8px * var(--us)); }
+.core-run-modal-body p { margin: 0; line-height: 1.5; }
+.core-run-modal-body code { font-family: var(--font-mono, ui-monospace, monospace); background: color-mix(in srgb, var(--text-primary) 9%, transparent); padding: 0 calc(4px * var(--us)); border-radius: 4px; }
+.core-run-modal-actions { display: flex; justify-content: flex-end; }
 .core-run-form-result {
   margin: 0;
   font-size: calc(11.5px * var(--us));

@@ -73,6 +73,193 @@ function streamEventToTrace(obj, at) {
   return out;
 }
 
+// Convert ONE Codex CLI `exec --json` event into zero or more trace events.
+// Recognized stream shapes:
+//   {type:'thread.started'|...}                       -> ignored (session)
+//   {type:'item.started',item:{id,type,...}}          -> node active
+//   {type:'item.completed'|'item.failed',item:{id}}   -> node done / prose transient
+//   {type:'turn.completed'|'turn.failed'|'error'}     -> run done
+function codexEventToTrace(input, at) {
+  const obj = typeof input === 'string' ? parseJsonOrNull(input) : input;
+  if (!obj || typeof obj !== 'object') return [];
+  const ts = at || obj.at || null;
+  const item = obj.item && typeof obj.item === 'object' ? obj.item : null;
+  if (obj.type === 'item.started' && item) {
+    if (codexItemKind(item) === 'reasoning') {
+      return [{ ev: 'node', state: 'active', toolId: null, type: 'reason',
+        transient: true, label: 'Reason', at: ts }];
+    }
+    const work = codexItemWork(item, ts);
+    return work ? [work] : [];
+  }
+  if ((obj.type === 'item.completed' || obj.type === 'item.failed') && item) {
+    if (codexItemKind(item) === 'agent_message') {
+      return [{ ev: 'node', state: 'active', toolId: null, type: 'reason',
+        transient: true, label: 'Respond', at: ts }];
+    }
+    if (codexItemKind(item) === 'reasoning') {
+      return [{ ev: 'node', state: 'active', toolId: null, type: 'reason',
+        transient: true, label: 'Reason', at: ts }];
+    }
+    if (codexItemKind(item) === 'plan_update' && !item.id) {
+      return [
+        { ev: 'node', state: 'active', toolId: null, type: 'plan',
+          label: codexItemLabel(item), file: null, at: ts },
+        { ev: 'node', state: 'done', toolId: null, at: ts },
+      ];
+    }
+    if (codexItemTraceType(item)) {
+      return [{ ev: 'node', state: 'done', toolId: item.id || null, at: ts }];
+    }
+  }
+  if (obj.type === 'turn.completed') {
+    return [{ ev: 'run', state: 'done', at: ts, costUsd: null, numTurns: 1 }];
+  }
+  if (obj.type === 'turn.failed' || obj.type === 'error') {
+    return [{ ev: 'run', state: 'done', at: ts, costUsd: null, numTurns: null }];
+  }
+  return [];
+}
+
+function codexResultFromEvent(input, current) {
+  const obj = typeof input === 'string' ? parseJsonOrNull(input) : input;
+  if (!obj || typeof obj !== 'object') return current || null;
+  const item = obj.item && typeof obj.item === 'object' ? obj.item : null;
+  const next = current && typeof current === 'object' ? { ...current } : {};
+  if (item && obj.type === 'item.completed' && codexItemKind(item) === 'agent_message') {
+    next.result = String(item.text || item.message || item.content || next.result || '');
+    return next;
+  }
+  if (obj.type === 'turn.completed') {
+    next.is_error = false;
+    next.usage = obj.usage || next.usage || null;
+    next.num_turns = (Number.isInteger(next.num_turns) ? next.num_turns : 0) + 1;
+    return next;
+  }
+  if (obj.type === 'turn.failed' || obj.type === 'error') {
+    next.is_error = true;
+    const errorMessage = obj.error && typeof obj.error === 'object'
+      ? (obj.error.message || obj.error.code || '')
+      : obj.error;
+    next.result = String(obj.message || errorMessage || next.result || '');
+    next.api_error_status = obj.status || obj.code || next.api_error_status || null;
+    return next;
+  }
+  return current || null;
+}
+
+function parseJsonOrNull(text) {
+  try { return JSON.parse(String(text || '').trim()); } catch (_) { return null; }
+}
+
+function codexItemWork(item, at) {
+  const type = codexItemTraceType(item);
+  if (!type) return null;
+  return {
+    ev: 'node',
+    state: 'active',
+    toolId: item.id || null,
+    type,
+    label: codexItemLabel(item),
+    file: codexItemFile(item),
+    at,
+  };
+}
+
+function codexItemTraceType(item) {
+  const kind = codexItemKind(item);
+  if (kind === 'command_execution' || kind === 'shell_command' || kind === 'exec_command' || kind === 'local_shell') return 'exec';
+  if (kind === 'file_change' || kind === 'file_changes' || kind === 'file_edit' || kind === 'apply_patch') return 'edit';
+  if (kind === 'file_read' || kind === 'read_file' || kind === 'grep' || kind === 'glob' || kind === 'list_files') return 'inspect';
+  if (kind === 'web_search' || kind === 'web_search_call' || kind === 'web_fetch') return 'research';
+  if (kind === 'subagent' || kind === 'agent_task' || kind === 'task') return 'subagent';
+  if (kind === 'plan_update' || kind === 'update_plan') return 'plan';
+  if (kind === 'mcp_tool_call' || kind === 'tool_call' || kind === 'dynamic_tool_call') return 'tool';
+  if (kind === 'agent_message') return null;
+  return null;
+}
+
+function codexItemKind(item) {
+  return String((item && (item.type || item.kind || item.name)) || '').toLowerCase();
+}
+
+function codexItemLabel(item) {
+  const kind = codexItemKind(item);
+  const name = codexItemDisplayName(item);
+  const hint = codexItemHint(item);
+  const short = hint ? truncateMiddle(String(hint).replace(/\s+/g, ' ').trim(), 64) : '';
+  if (kind === 'reasoning') return 'Reason';
+  if (kind === 'plan_update' || kind === 'update_plan') return short ? `Plan: ${short}` : 'Plan';
+  if (short) return `${name}: ${short}`;
+  return name;
+}
+
+function codexItemDisplayName(item) {
+  const kind = codexItemKind(item);
+  const raw = item.name || item.tool_name || item.tool || item.command_name || '';
+  if (raw) return String(raw);
+  if (kind === 'command_execution' || kind === 'shell_command' || kind === 'exec_command' || kind === 'local_shell') return 'Bash';
+  if (kind === 'file_change' || kind === 'file_changes' || kind === 'file_edit' || kind === 'apply_patch') return 'Edit';
+  if (kind === 'file_read' || kind === 'read_file') return 'Read';
+  if (kind === 'grep') return 'Grep';
+  if (kind === 'glob') return 'Glob';
+  if (kind === 'list_files') return 'LS';
+  if (kind === 'web_search' || kind === 'web_search_call') return 'WebSearch';
+  if (kind === 'web_fetch') return 'WebFetch';
+  if (kind === 'subagent' || kind === 'agent_task' || kind === 'task') return 'Task';
+  if (kind === 'mcp_tool_call') return 'MCP';
+  return kind || 'tool';
+}
+
+function codexItemHint(item) {
+  const command = item.command || item.cmd || item.argv;
+  if (Array.isArray(command)) return command.join(' ');
+  const direct = command || item.path || item.file_path || item.filename || item.query || item.url
+    || item.description || item.summary || item.text;
+  if (direct) return direct;
+  if (Array.isArray(item.files) && item.files.length) return item.files[0];
+  if (Array.isArray(item.changes) && item.changes.length) {
+    const first = item.changes[0];
+    if (first && typeof first === 'object') return first.path || first.file_path || first.filename || '';
+    return first;
+  }
+  if (item.input && typeof item.input === 'object') {
+    return item.input.file_path || item.input.path || item.input.command || item.input.query
+      || item.input.url || item.input.description || '';
+  }
+  return '';
+}
+
+function codexItemFile(item) {
+  const direct = item.path || item.file_path || item.filename;
+  if (direct) return String(direct);
+  if (Array.isArray(item.files) && item.files.length) return String(item.files[0]);
+  if (Array.isArray(item.changes) && item.changes.length) {
+    const first = item.changes[0];
+    if (first && typeof first === 'object') {
+      const f = first.path || first.file_path || first.filename;
+      if (f) return String(f);
+    } else if (first) {
+      return String(first);
+    }
+  }
+  const input = item.input && typeof item.input === 'object' ? item.input : null;
+  if (input) {
+    const f = input.file_path || input.path || input.notebook_path;
+    if (f) return String(f);
+  }
+  return null;
+}
+
+function truncateMiddle(text, max) {
+  const s = String(text || '');
+  if (s.length <= max) return s;
+  if (max <= 3) return s.slice(0, max);
+  const head = Math.ceil((max - 3) / 2);
+  const tail = Math.floor((max - 3) / 2);
+  return `${s.slice(0, head)}...${s.slice(-tail)}`;
+}
+
 function toolLabel(block) {
   const name = block.name || 'tool';
   const input = block.input || {};
@@ -233,5 +420,7 @@ module.exports = {
   isInProgress,
   toolLabel,
   streamEventToTrace,
+  codexEventToTrace,
+  codexResultFromEvent,
   buildEmergentGraph,
 };
