@@ -10889,6 +10889,21 @@ body.zen-mode #workspace {
 .core-run-modal-body p { margin: 0; line-height: 1.5; }
 .core-run-modal-body code { font-family: var(--font-mono, ui-monospace, monospace); background: color-mix(in srgb, var(--text-primary) 9%, transparent); padding: 0 calc(4px * var(--us)); border-radius: 4px; }
 .core-run-modal-actions { display: flex; justify-content: flex-end; }
+
+/* "Where is my result" row shown after a run (overlay path + open-folder). */
+.core-run-result-loc {
+  display: flex; flex-wrap: wrap; align-items: center; gap: calc(6px * var(--us));
+  margin-top: calc(4px * var(--us));
+  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-secondary) 60%, transparent);
+  font-size: calc(11.5px * var(--us)); color: var(--text-secondary);
+}
+.core-run-result-loc[hidden] { display: none; }
+.core-run-loc-label { flex-basis: 100%; }
+.core-run-loc-path { font-family: var(--font-mono, ui-monospace, monospace); font-size: calc(10.5px * var(--us)); color: var(--text-tertiary); word-break: break-all; flex: 1 1 auto; }
+.core-run-loc-btn { font: inherit; font-size: calc(11px * var(--us)); padding: calc(4px * var(--us)) calc(10px * var(--us)); border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); cursor: pointer; flex: none; }
+.core-run-loc-btn:hover { background: var(--bg-secondary); }
 .core-run-form-result {
   margin: 0;
   font-size: calc(11.5px * var(--us));

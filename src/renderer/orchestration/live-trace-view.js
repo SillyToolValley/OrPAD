@@ -303,6 +303,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
         <p class="core-run-form-note">Spawns the selected agent under the isolation moat. A real run — it may take minutes and incur cost.</p>
         <p class="core-run-form-error" data-core-run-error hidden></p>
         <p class="core-run-form-result" data-core-run-result hidden></p>
+        <div class="core-run-result-loc" data-core-run-result-loc hidden></div>
       </form>
     </div>
     <div class="core-run-graph-viewport core-run-graph-viewport-3d" data-core-run-viewport>
@@ -372,6 +373,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   const modalEl = el.querySelector('[data-core-run-modal]');
   const modalTitleEl = el.querySelector('[data-core-run-modal-title]');
   const modalBodyEl = el.querySelector('[data-core-run-modal-body]');
+  const resultLocEl = el.querySelector('[data-core-run-result-loc]');
 
   let events = [];
   let currentRunId = null;
@@ -413,6 +415,33 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
 
   function showFormError(message) { errorEl.textContent = message; errorEl.hidden = !message; }
   function showFormResult(message) { if (!resultEl) return; resultEl.textContent = message || ''; resultEl.hidden = !message; }
+
+  // After a run, surface WHERE the built result lives (the run overlay) + an Open-folder
+  // button — essential now that "Apply to workspace" defaults OFF, so the output isn't
+  // dumped into a notes vault but you still need to find it.
+  function showResultLocation(res) {
+    if (!resultLocEl) return;
+    resultLocEl.innerHTML = '';
+    const overlay = res && res.overlayPath;
+    if (!overlay || !res.builtCount) { resultLocEl.hidden = true; return; }
+    const label = document.createElement('span');
+    label.className = 'core-run-loc-label';
+    label.textContent = res.appliedCount
+      ? 'Applied to your workspace. The built result also lives in the run overlay:'
+      : 'Result built but NOT applied — it lives in the run overlay:';
+    const pathEl = document.createElement('code');
+    pathEl.className = 'core-run-loc-path';
+    pathEl.textContent = overlay;
+    const openBtn = document.createElement('button');
+    openBtn.type = 'button';
+    openBtn.className = 'core-run-loc-btn';
+    openBtn.textContent = 'Open folder';
+    openBtn.addEventListener('click', () => {
+      if (window.orpad && typeof window.orpad.revealInExplorer === 'function') window.orpad.revealInExplorer(overlay);
+    });
+    resultLocEl.append(label, pathEl, openBtn);
+    resultLocEl.hidden = false;
+  }
 
   const PROVIDER_HELP = {
     claude: 'Install Claude Code (e.g. `npm i -g @anthropic-ai/claude-code`) and make sure `claude` runs in a terminal.',
@@ -908,6 +937,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
       if (busy) return;
       showFormError('');
       showFormResult('');
+      if (resultLocEl) resultLocEl.hidden = true;
       const goal = (goalEl?.value || '').trim();
       if (!goal) { showFormError('Enter a goal first.'); goalEl?.focus(); return; }
       const allowedFiles = parseLines(writesetEl?.value);
@@ -954,6 +984,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
           if (res.stopped) parts.push(`stopped: ${res.stopReason || 'time-cap'}`);
           const summary = parts.join(' · ');
           if (res.met === false) { showFormError(summary); } else { showFormResult(summary); }
+          showResultLocation(res);
         }
       } catch (err) {
         showFormError(String(err?.message || err));

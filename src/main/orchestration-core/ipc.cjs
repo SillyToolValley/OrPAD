@@ -188,6 +188,8 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
         appliedCount: applied.length,
         changes: patch.changes.map((c) => c.path),
         violations: patch.violations,
+        overlayPath: overlayRoot,           // where the built result lives (esp. when not applied)
+        builtCount: patch.changes.length + patch.violations.length,
       };
     } catch (err) {
       const message = String(err?.message || err);
