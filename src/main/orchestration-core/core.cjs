@@ -91,27 +91,42 @@ function cancelAllRuns() {
   }
 }
 
+// AI-provider adapters. Each maps a provider key (the GUI's selection) to a CLI
+// command + its non-interactive argv. The goal is ALWAYS delivered on stdin (safe for
+// multi-line prompts under shell:true). Only `claude` emits a stream we parse into the
+// live tool-use graph (stream:true); the others run non-streamed — the orchestration
+// PHASE nodes still draw and the overlay result is still applied, just without the
+// per-tool nodes. NOTE: claude is the only adapter verified end-to-end; codex/gemini
+// are best-effort non-interactive invocations — confirm the flags against your install.
+const PROVIDERS = {
+  claude: {
+    command: 'claude',
+    stream: true,
+    buildArgs: ({ allowedTools, streamMode }) => {
+      const a = ['-p', '--output-format', streamMode ? 'stream-json' : 'json',
+        ...(streamMode ? ['--verbose'] : []), '--no-session-persistence', '--permission-mode', 'default'];
+      if (Array.isArray(allowedTools) && allowedTools.length) a.push('--allowedTools', ...allowedTools);
+      return a;
+    },
+  },
+  codex: { command: 'codex', stream: false, buildArgs: () => ['exec', '--full-auto', '-'] },
+  gemini: { command: 'gemini', stream: false, buildArgs: () => ['-y'] },
+};
+function getProvider(name) { return PROVIDERS[String(name || 'claude').toLowerCase()] || PROVIDERS.claude; }
+
 // Delegate the whole goal to a capable CLI agent, running INSIDE the isolated overlay.
 // Prompt goes via stdin (not argv) so multi-word goals are not mangled by the Windows shell.
 // timeoutMs > 0 enables the motion stop-signal: the agent + its whole tree are killed on cap.
 // Returns a Promise of the run result (stopped:true when the cap fired).
 function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null, onTraceEvent = null, runId = null }) {
   return new Promise((resolve) => {
-    const streamMode = !!(traceFile || onTraceEvent);
-    const args = [
-      '-p',
-      '--output-format', streamMode ? 'stream-json' : 'json',
-      ...(streamMode ? ['--verbose'] : []),
-      '--no-session-persistence',
-      '--permission-mode', 'default',
-    ];
-    if (Array.isArray(allowedTools) && allowedTools.length) {
-      args.push('--allowedTools', ...allowedTools);
-    }
+    const provider = getProvider(agent);
+    const streamMode = !!provider.stream && !!(traceFile || onTraceEvent);
+    const args = provider.buildArgs({ allowedTools, streamMode });
     const t0 = Date.now();
-    const child = spawn(agent, args, {
+    const child = spawn(provider.command, args, {
       cwd: overlayRoot,
-      shell: true, // Windows: claude is a .cmd shim
+      shell: true, // Windows: the agent CLI is often a .cmd shim
     });
     registerChild(runId, child);
     if (isRunCancelled(runId)) killTree(child); // already asked to stop before we spawned
