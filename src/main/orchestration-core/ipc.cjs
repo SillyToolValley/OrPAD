@@ -102,6 +102,13 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     // branches that only ever reached the live IPC stream.
     const traceFilePath = path.join(runRoot, 'trace.jsonl');
     try { fs.mkdirSync(runRoot, { recursive: true }); fs.writeFileSync(traceFilePath, '', 'utf8'); } catch (_) { /* best effort */ }
+    // Persist a human-readable label for the run-history picker (the cryptic runId dir
+    // is kept as-is so paths don't break; the goal is shown as the title instead).
+    try {
+      fs.writeFileSync(path.join(runBase, 'meta.json'), JSON.stringify({
+        goal, agent: providerStatus.provider, parallelResearch, ground, apply, startedAt: nowIso(),
+      }), 'utf8');
+    } catch (_) { /* label is best-effort */ }
     const rawSend = sender(event, runId);
     const send = (ev) => {
       try { fs.appendFileSync(traceFilePath, JSON.stringify(ev) + '\n', 'utf8'); } catch (_) { /* trace persist best-effort */ }
@@ -272,7 +279,14 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
       const hasResearch = await fsp.stat(researchTrace).then((s) => s.isFile()).catch(() => false);
       const m = /-(\d{10,16})-/.exec(runId); // core-<startedMs>-<rand>
       const startedMs = m ? Number(m[1]) : stat.mtimeMs;
-      runs.push({ runId, traceFile, sizeBytes: stat.size, mtimeMs: stat.mtimeMs, startedMs, hasResearch });
+      // Human-readable label from the run's meta.json (older runs have none → null).
+      let goal = null; let agent = null;
+      try {
+        const meta = JSON.parse(await fsp.readFile(path.join(runsDir, runId, 'meta.json'), 'utf8'));
+        if (meta && typeof meta.goal === 'string') goal = meta.goal;
+        if (meta && meta.agent) agent = String(meta.agent);
+      } catch (_) { /* no meta */ }
+      runs.push({ runId, traceFile, sizeBytes: stat.size, mtimeMs: stat.mtimeMs, startedMs, hasResearch, goal, agent });
     }
     runs.sort((a, b) => (b.startedMs || b.mtimeMs) - (a.startedMs || a.mtimeMs));
     return { ok: true, runs };

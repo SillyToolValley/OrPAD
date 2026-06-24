@@ -238,7 +238,10 @@ body.orchestration-window #btn-core-runs { display: flex; margin-left: auto; }
   background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
 }
 .core-run-picker-item:hover { background: color-mix(in srgb, var(--text-primary) 9%, transparent); border-color: color-mix(in srgb, var(--text-primary) 35%, var(--border-color)); }
-.core-run-picker-item .crp-id { font-weight: 600; font-size: calc(12.5px * var(--us)); color: var(--text-primary); font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
+.core-run-picker-item .crp-title {
+  font-weight: 600; font-size: calc(12.5px * var(--us)); color: var(--text-primary); line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 .core-run-picker-item .crp-meta { font-size: calc(11px * var(--us)); color: var(--text-tertiary); }
 #orchestration-runbar-slot {
   display: none;

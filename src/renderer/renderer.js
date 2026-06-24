@@ -339,14 +339,16 @@ async function openCoreRunPicker() {
       const row = document.createElement('button');
       row.type = 'button';
       row.className = 'core-run-picker-item';
-      const idEl = document.createElement('span');
-      idEl.className = 'crp-id';
-      idEl.textContent = run.runId;
+      const titleEl = document.createElement('span');
+      titleEl.className = 'crp-title';
+      const goal = (run.goal || '').replace(/\s+/g, ' ').trim();
+      titleEl.textContent = goal || run.runId; // goal as the title; older runs fall back to the id
+      titleEl.title = goal || run.runId;
       const metaEl = document.createElement('span');
       metaEl.className = 'crp-meta';
       const kb = Math.max(1, Math.round((run.sizeBytes || 0) / 1024));
-      metaEl.textContent = `${formatRunTime(run.startedMs)} · ${kb} KB${run.hasResearch ? ' · grounded' : ''}`;
-      row.append(idEl, metaEl);
+      metaEl.textContent = `${formatRunTime(run.startedMs)} · ${kb} KB${run.agent ? ` · ${run.agent}` : ''}${run.hasResearch ? ' · grounded' : ''}`;
+      row.append(titleEl, metaEl);
       row.addEventListener('click', () => { closeFmtModal(); replayCoreRun(run.traceFile); });
       body.appendChild(row);
     }
