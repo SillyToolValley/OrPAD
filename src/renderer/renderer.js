@@ -273,6 +273,10 @@ if (IS_ORCHESTRATION_WINDOW) {
   btnOrchestrationEl?.classList.add('active');
   btnOrchestrationEl?.setAttribute('aria-pressed', 'true');
   setupCoreRunView();
+} else {
+  // Run-history is an orchestration-only control; remove it from the editor toolbar
+  // entirely (a bare CSS hide loses to `#toolbar button { display:flex }`).
+  document.getElementById('btn-core-runs')?.remove();
 }
 
 // Live-trace Run view: mount the emergent-graph panel into the orchestration
@@ -295,6 +299,62 @@ function setupCoreRunView() {
   previewPaneEl.appendChild(coreRunView.el);
   window.orpad.core.onCoreTrace((payload) => {
     if (coreRunView) coreRunView.applyEvent(payload);
+  });
+  const coreRunsBtn = document.getElementById('btn-core-runs');
+  if (coreRunsBtn && typeof window.orpad?.core?.listRuns === 'function') {
+    coreRunsBtn.addEventListener('click', openCoreRunPicker);
+  } else if (coreRunsBtn) {
+    coreRunsBtn.style.display = 'none';
+  }
+}
+
+// Replay a recorded run's trace through the live IPC so the picker can re-visualise
+// a past run without paying for a fresh agent run. The existing onCoreTrace listener
+// rebuilds the graph; replay's run/start event resets it first.
+function replayCoreRun(traceFile) {
+  Promise.resolve(window.orpad.core.replayTrace({ traceFile, intervalMs: 5 }))
+    .catch((err) => notifyFormatError('Replay run', err));
+}
+
+function formatRunTime(ms) {
+  if (!Number.isFinite(ms)) return '';
+  try { return new Date(ms).toLocaleString(); } catch (_) { return ''; }
+}
+
+// Run-history picker: lists recorded runs under .orpad/core-runs and replays the one
+// you click. Reuses the shared fmt-modal.
+async function openCoreRunPicker() {
+  let res;
+  try { res = await window.orpad.core.listRuns(); }
+  catch (err) { res = { ok: false, error: String(err?.message || err) }; }
+
+  const body = document.createElement('div');
+  body.className = 'core-run-picker';
+  if (!res || res.ok === false) {
+    body.textContent = (res && res.error) || 'Could not list runs.';
+  } else if (!Array.isArray(res.runs) || !res.runs.length) {
+    body.textContent = 'No recorded runs in this workspace yet — start a run first.';
+  } else {
+    for (const run of res.runs) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'core-run-picker-item';
+      const idEl = document.createElement('span');
+      idEl.className = 'crp-id';
+      idEl.textContent = run.runId;
+      const metaEl = document.createElement('span');
+      metaEl.className = 'crp-meta';
+      const kb = Math.max(1, Math.round((run.sizeBytes || 0) / 1024));
+      metaEl.textContent = `${formatRunTime(run.startedMs)} · ${kb} KB${run.hasResearch ? ' · grounded' : ''}`;
+      row.append(idEl, metaEl);
+      row.addEventListener('click', () => { closeFmtModal(); replayCoreRun(run.traceFile); });
+      body.appendChild(row);
+    }
+  }
+  openFmtModal({
+    title: 'Run history',
+    body,
+    footer: [{ label: 'Close', onClick: () => closeFmtModal() }],
   });
 }
 

@@ -126,6 +126,7 @@ contextBridge.exposeInMainWorld('orpad', {
     startRun: (request = {}) => ipcRenderer.invoke('orpad-core-run-start', request),
     stopRun: (runId) => ipcRenderer.invoke('orpad-core-run-stop', { runId }),
     replayTrace: (request = {}) => ipcRenderer.invoke('orpad-core-run-replay', request),
+    listRuns: () => ipcRenderer.invoke('orpad-core-list-runs'),
     onCoreTrace: (cb) => {
       const listener = (_event, payload) => cb(payload);
       ipcRenderer.on('orpad-core-trace', listener);

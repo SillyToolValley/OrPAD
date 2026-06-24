@@ -202,13 +202,13 @@ body.orchestration-window #toolbar {
   height: calc(36px * var(--us));
   overflow: visible;
 }
-body.orchestration-window #toolbar > :not(#btn-orchestration):not(#orchestration-runbar-slot):not(#btn-package-manager):not(#btn-theme) {
+body.orchestration-window #toolbar > :not(#btn-orchestration):not(#btn-core-runs):not(#orchestration-runbar-slot):not(#btn-package-manager):not(#btn-theme) {
   display: none !important;
 }
 body.orchestration-window #toolbar::after {
   content: 'Orchestration';
   position: absolute;
-  left: calc(52px * var(--us));
+  left: calc(16px * var(--us));
   top: 50%;
   transform: translateY(-50%);
   color: var(--text-primary);
@@ -216,9 +216,30 @@ body.orchestration-window #toolbar::after {
   font-weight: 700;
   pointer-events: none;
 }
-body.orchestration-window #btn-package-manager {
-  margin-left: auto;
+/* The runbooks rail + its toggle (btn-orchestration) are no longer used in the
+   orchestration window — the Live-run view fills it. Hide both; group the run-history
+   button + theme at the far right. */
+body.orchestration-window #btn-orchestration { display: none !important; }
+body.orchestration-window #sidebar,
+body.orchestration-window #sidebar-resize { display: none !important; }
+/* Run-history button: orchestration-only. Specificity must beat `#toolbar button
+   { display:flex }`, hence the body-scoped selectors (a bare `#btn-core-runs` would
+   lose and leak into the main window). margin-left:auto pushes it + theme right. */
+body:not(.orchestration-window) #btn-core-runs { display: none; }
+body.orchestration-window #btn-core-runs { display: flex; margin-left: auto; }
+
+/* Run-history picker (inside the shared fmt-modal). */
+.core-run-picker { display: flex; flex-direction: column; gap: calc(6px * var(--us)); max-height: 60vh; overflow: auto; min-width: calc(360px * var(--us)); }
+.core-run-picker-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: calc(2px * var(--us));
+  width: 100%; text-align: left; cursor: pointer;
+  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
 }
+.core-run-picker-item:hover { background: color-mix(in srgb, var(--text-primary) 9%, transparent); border-color: color-mix(in srgb, var(--text-primary) 35%, var(--border-color)); }
+.core-run-picker-item .crp-id { font-weight: 600; font-size: calc(12.5px * var(--us)); color: var(--text-primary); font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
+.core-run-picker-item .crp-meta { font-size: calc(11px * var(--us)); color: var(--text-tertiary); }
 #orchestration-runbar-slot {
   display: none;
 }
@@ -10748,7 +10769,8 @@ body.zen-mode #workspace {
   color: var(--text-tertiary);
 }
 .core-run-field textarea,
-.core-run-field input {
+.core-run-field input,
+.core-run-field select {
   font: inherit;
   font-size: calc(12px * var(--us));
   padding: calc(7px * var(--us)) calc(9px * var(--us));
@@ -10758,11 +10780,30 @@ body.zen-mode #workspace {
   color: var(--text-primary);
   resize: vertical;
 }
+.core-run-field select { cursor: pointer; }
 .core-run-field textarea:focus,
-.core-run-field input:focus {
+.core-run-field input:focus,
+.core-run-field select:focus {
   outline: none;
   border-color: color-mix(in srgb, var(--accent-color) 64%, var(--border-color));
 }
+/* Advanced options — collapsed by default; most runs are just Goal + Run. */
+.core-run-advanced {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: calc(4px * var(--us)) calc(10px * var(--us));
+  background: color-mix(in srgb, var(--bg-secondary) 50%, transparent);
+}
+.core-run-advanced > summary {
+  cursor: pointer;
+  font-size: calc(12px * var(--us));
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: calc(5px * var(--us)) 0;
+  list-style-position: inside;
+}
+.core-run-advanced[open] > summary { margin-bottom: calc(8px * var(--us)); }
+.core-run-advanced > .core-run-field { margin-bottom: calc(10px * var(--us)); }
 .core-run-form-row {
   display: flex;
   align-items: flex-end;
@@ -10982,6 +11023,16 @@ body.zen-mode #workspace {
   cursor: pointer;
 }
 .core-run-zoom-btn:hover { background: var(--bg-secondary); }
+.core-run-theme-select {
+  font: inherit;
+  height: calc(30px * var(--us));
+  padding: 0 calc(8px * var(--us));
+  border: 1px solid var(--border-color);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+}
 /* Override the canvas-absolute positioning so nodes stack in the flow. */
 .core-run-node.orch-graph-node {
   position: relative;
@@ -11204,14 +11255,19 @@ body.zen-mode #workspace {
   top: calc(12px * var(--us));
   z-index: 5;
   display: flex;
-  flex-wrap: wrap;
-  gap: calc(12px * var(--us));
+  flex-direction: column;
+  gap: calc(6px * var(--us));
   font-size: calc(10.5px * var(--us));
   color: var(--text-tertiary);
-  padding: calc(4px * var(--us)) calc(9px * var(--us));
+  padding: calc(7px * var(--us)) calc(10px * var(--us));
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-secondary) 82%, transparent);
+  background: color-mix(in srgb, var(--bg-secondary) 86%, transparent);
 }
-.core-run-legend span { display: inline-flex; align-items: center; gap: calc(5px * var(--us)); }
-.core-run-legend .dot { width: calc(9px * var(--us)); height: calc(9px * var(--us)); border-radius: 50%; display: inline-block; }
+.core-run-legend-group { display: flex; flex-direction: column; gap: calc(3px * var(--us)); }
+.core-run-legend-group + .core-run-legend-group { margin-top: calc(4px * var(--us)); padding-top: calc(5px * var(--us)); border-top: 1px solid var(--border-color); }
+.core-run-legend-title { font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; font-size: calc(9px * var(--us)); margin-bottom: calc(1px * var(--us)); }
+.core-run-legend span { display: inline-flex; align-items: center; gap: calc(6px * var(--us)); }
+.core-run-legend .dot { width: calc(9px * var(--us)); height: calc(9px * var(--us)); border-radius: 50%; display: inline-block; flex: none; }
+.core-run-legend .bar { width: calc(16px * var(--us)); height: calc(3px * var(--us)); border-radius: 2px; display: inline-block; flex: none; }
+.core-run-legend .core-run-legend-bar-thin { height: calc(1.5px * var(--us)); opacity: 0.8; }

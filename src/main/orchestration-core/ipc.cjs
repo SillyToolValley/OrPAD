@@ -9,6 +9,7 @@
 // them and (re)builds the emergent graph (see trace.cjs buildEmergentGraph).
 
 const path = require('path');
+const fs = require('fs');
 const fsp = require('fs/promises');
 const core = require('./core.cjs');
 
@@ -85,14 +86,25 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const overlayRoot = path.join(runBase, 'overlay');
     const runRoot = path.join(runBase, 'run');
 
-    const send = sender(event, runId);
+    // Persist EVERY streamed event to the replayable trace (research fan-out branches
+    // AND the build), so a later replay reconstructs the fork/join flowers. This TEE
+    // is the single source of truth — the core no longer writes its own trace file
+    // (streamTrace:false), which previously truncated it and dropped the research
+    // branches that only ever reached the live IPC stream.
+    const traceFilePath = path.join(runRoot, 'trace.jsonl');
+    try { fs.mkdirSync(runRoot, { recursive: true }); fs.writeFileSync(traceFilePath, '', 'utf8'); } catch (_) { /* best effort */ }
+    const rawSend = sender(event, runId);
+    const send = (ev) => {
+      try { fs.appendFileSync(traceFilePath, JSON.stringify(ev) + '\n', 'utf8'); } catch (_) { /* trace persist best-effort */ }
+      rawSend(ev);
+    };
     send({ ev: 'run', state: 'start', at: nowIso() });
     try {
       const baseOpts = {
         workspaceRoot, overlayRoot, runRoot, runId,
         allowedFiles, readOnlyFiles, goal, allowedTools, agent, timeoutMs,
         parallelResearch, researchQueries,
-        streamTrace: true,
+        streamTrace: false, // the IPC tee above owns trace persistence now
         onTraceEvent: send,
       };
       const runner = ground ? core.runGroundedDelegation : core.runGovernedDelegation;
@@ -220,6 +232,41 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     }
     if (!sawDone) send({ ev: 'run', state: 'done', at: nowIso() });
     return { ok: true, runId, events: emitted, done: true };
+  });
+
+  // --- List recorded runs (for the run-history picker) -----------------------
+  // Enumerate <workspace>/.orpad/core-runs/* and report the replayable trace of
+  // each (newest first), so the GUI can re-visualise a past run without re-running.
+  ipcMain.handle('orpad-core-list-runs', async (event) => {
+    const workspaceRoot = authority.getWorkspaceRoot(event.sender);
+    if (!workspaceRoot) return { ok: false, error: 'Open a project folder first.' };
+    const runsDir = path.join(workspaceRoot, '.orpad', 'core-runs');
+    let entries;
+    try {
+      entries = await fsp.readdir(runsDir, { withFileTypes: true });
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return { ok: true, runs: [] };
+      return { ok: false, error: String(err?.message || err) };
+    }
+    const runs = [];
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const runId = e.name;
+      const mainTrace = path.join(runsDir, runId, 'run', 'trace.jsonl');
+      const researchTrace = path.join(runsDir, runId, 'run-research', 'trace.jsonl');
+      let traceFile = null;
+      let stat = null;
+      for (const c of [mainTrace, researchTrace]) {
+        try { const s = await fsp.stat(c); if (s.isFile() && s.size > 0) { traceFile = c; stat = s; break; } } catch (_) { /* missing */ }
+      }
+      if (!traceFile) continue;
+      const hasResearch = await fsp.stat(researchTrace).then((s) => s.isFile()).catch(() => false);
+      const m = /-(\d{10,16})-/.exec(runId); // core-<startedMs>-<rand>
+      const startedMs = m ? Number(m[1]) : stat.mtimeMs;
+      runs.push({ runId, traceFile, sizeBytes: stat.size, mtimeMs: stat.mtimeMs, startedMs, hasResearch });
+    }
+    runs.sort((a, b) => (b.startedMs || b.mtimeMs) - (a.startedMs || a.mtimeMs));
+    return { ok: true, runs };
   });
 }
 
