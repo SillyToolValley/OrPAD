@@ -389,6 +389,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   let fg = null;
   const fgNodeById = new Map();  // id -> node object (reused so the layout is stable)
   let lastSig = '';
+  let lastLinkSig = '';          // vault content signature — skip needless re-heats on refresh
   let framedOnce = false;        // auto-frame the galaxy once after it first settles
   let lastFitCount = 0;          // node count at the last auto-frame (re-frame as the helix grows)
   let coreR = 120;               // current core-shell radius (set from the note count each build)
@@ -500,7 +501,11 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     Promise.resolve(onLinkGraph()).then((res) => {
       linkGraphLoading = false;
       if (res && res.ok) linkGraph = res;
-      lastSig = '';
+      // Only force a full rebuild + physics re-heat when the vault CONTENT actually
+      // changed. A "↻ Graph" on an unchanged vault used to reheat the whole layout for
+      // seconds (the temporary frame drops) for nothing.
+      const sig = res && res.ok ? `${res.nodes.length}:${(res.edges || []).length}` : '';
+      if (sig !== lastLinkSig) { lastLinkSig = sig; lastSig = ''; }
       render();
     }).catch(() => { linkGraphLoading = false; });
   }
