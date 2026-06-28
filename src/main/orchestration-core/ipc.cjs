@@ -12,6 +12,9 @@ const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const core = require('./core.cjs');
+const observer = require('./tui-observer.cjs');
+const tuiDetect = require('./tui-detect-observer.cjs');
+const { assertNoSymlinkInWorkspacePath } = require('../orchestration-machine/patches');
 
 const TRACE_CHANNEL = 'orpad-core-trace';
 
@@ -25,22 +28,161 @@ function newRunId(prefix) {
 // governed delegation only COLLECTS a patch and the result stays trapped in the
 // run overlay (the observed "my repo didn't change" / output-buried-in-.orpad
 // problem). Each target is contained to the workspace (no path escape).
-async function applyOverlayToWorkspace(workspaceRoot, overlayRoot, relPaths) {
-  const root = path.resolve(workspaceRoot);
-  const applied = [];
+// Copy overlay files into an arbitrary destination root, contained to it (no '..'/absolute escape).
+// Each target is resolved under destRoot and rejected if it escapes. Returns the copied rel paths.
+async function copyOverlayPathsToDir(overlayRoot, destRoot, relPaths) {
+  const root = path.resolve(destRoot);
+  const copied = [];
   for (const rel of relPaths) {
+    // `norm` is forced relative + '..'-free below, so it stays contained under BOTH overlayRoot (the
+    // source read) and destRoot (the write). Only the dest side is symlink-asserted, so keep this invariant.
     const norm = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!norm || norm.split('/').includes('..')) continue;
     const dest = path.resolve(root, norm);
     const relCheck = path.relative(root, dest);
     if (relCheck.startsWith('..') || path.isAbsolute(relCheck)) continue;
     try {
+      // Refuse to write THROUGH a symlink at the destination: a pre-existing dir-symlink on the path
+      // (e.g. <root>/dist -> outside) would let copyFile escape the contained root. Per-segment lstat
+      // guard, so containment is a property of THIS helper (matching the vault delivery's guarantee),
+      // not an accident of when collectOverlayPatch happens to read the workspace baseline.
+      await assertNoSymlinkInWorkspacePath(root, norm);
       await fsp.mkdir(path.dirname(dest), { recursive: true });
       await fsp.copyFile(path.resolve(overlayRoot, norm), dest);
-      applied.push(norm);
-    } catch (_) { /* skip files that vanished/unreadable */ }
+      copied.push(norm);
+    } catch (_) { /* skip files that vanished/unreadable OR that cross a symlink */ }
   }
-  return applied.sort();
+  return copied.sort();
+}
+
+// Apply overlay output into the canonical workspace (contained to it — no path escape).
+async function applyOverlayToWorkspace(workspaceRoot, overlayRoot, relPaths) {
+  return copyOverlayPathsToDir(overlayRoot, workspaceRoot, relPaths);
+}
+
+// Shared minimum-verification loop used by BOTH the initial run AND every conversation turn: build ->
+// deterministic smoke gates (+ user gates) [+ adversarial critic] -> on failure re-delegate REUSING the
+// overlay with the failures injected, up to maxCycles. PROMOTION is gated on the DETERMINISTIC gates; the
+// critic is ADVISORY (it drives retries + is surfaced, never authorizes shipping). This is what makes a
+// follow-up turn as safe as turn 1. Returns { result, gate, cycles } (gate carries detPassed/criticFindings/
+// criticNotes). `runner({...baseOpts, seedOverlay, resumeSessionId})` runs the first build; retries reuse the
+// overlay via runGovernedDelegation. Injectable `coreApi` for tests.
+async function runVerifiedLoop(ctx) {
+  const {
+    runner, baseOpts = {}, goal, agent, timeoutMs = 0, runId = null, overlayRoot,
+    gates = [], autoVerify = true, maxCycles = 0, greenfield = false,
+    seedOverlay = true, resumeSessionId = null, send = () => {}, coreApi = core,
+  } = ctx;
+  const criticCapable = String(agent || 'claude').toLowerCase() === 'claude';
+  // Trust-boundary safety for best-so-far: retries reuse the SAME overlay IN PLACE (seedOverlay:false), so if
+  // a later attempt regresses and the loop rolls back to an earlier det-passing one, the overlay on disk still
+  // holds the LATER (gate-failed) bytes. We snapshot the promoted attempt's shipped bytes here and (only if a
+  // retry actually happened) re-materialize them into the overlay before apply — so applyOverlayToWorkspace,
+  // which copies live overlay bytes, can NEVER ship the regressed/unverified attempt. (changes carry recorded
+  // content in the patch, but violations/greenfield output do not — so we snapshot from disk, uniformly.)
+  let bestSnapshot = null; // Map<relPath, Buffer|null> of the last det-passing attempt's shipped files
+  const snapshotOverlay = async (relPaths) => {
+    const m = new Map();
+    for (const rel of relPaths) {
+      const norm = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!norm || norm.split('/').includes('..')) continue;
+      try { m.set(norm, await fsp.readFile(path.resolve(overlayRoot, norm))); }
+      catch (_) { m.set(norm, null); } // absent/unreadable -> record as "should not exist"
+    }
+    return m;
+  };
+  const verifyFn = async (b) => {
+    const built = b && (b.build || b);
+    const patch = (built && built.patch) || { changes: [], violations: [] };
+    const shipped = greenfield
+      ? [...patch.changes, ...patch.violations.map((v) => ({ path: v.path, afterExists: true }))]
+      : patch.changes;
+    send({ ev: 'phase', kind: 'verify', state: 'start', at: nowIso() });
+    const smoke = autoVerify ? coreApi.buildSmokeGates({ changes: shipped }) : [];
+    const detGates = [...gates, ...smoke];
+    const det = detGates.length ? coreApi.runVerificationGates(overlayRoot, detGates) : { passed: true, results: [] };
+    // Snapshot the shipped bytes of every det-passing attempt (only meaningful when retries can mutate the
+    // overlay). The critic runs READ-ONLY after this, so the overlay isn't touched between det and snapshot.
+    if (maxCycles > 0 && det.passed && shipped.length) {
+      try { bestSnapshot = await snapshotOverlay(shipped.map((c) => c.path)); } catch (_) { /* best effort */ }
+    }
+    let critic = { passed: true, findings: [], notes: [] };
+    if (autoVerify && criticCapable && det.passed && !(built && built.stopped) && shipped.length) {
+      try { critic = await coreApi.runCritic({ overlayRoot, goal, agent, timeoutMs, onTraceEvent: send, runId }); }
+      catch (_) { critic = { passed: true, findings: [], notes: [] }; }
+    }
+    send({ ev: 'phase', kind: 'verify', state: 'done', at: nowIso() });
+    const criticResults = (critic.findings || []).map((f, i) => ({ id: `critic:${i + 1}`, kind: 'critic', passed: false, detail: f }));
+    return {
+      passed: det.passed && critic.passed,        // loop continuation (retry on either)
+      detPassed: det.passed,                       // PROMOTION gate (deterministic source of truth)
+      criticPassed: critic.passed,
+      results: [...det.results, ...criticResults], // feedback to the next attempt (det + critic)
+      detResults: det.results,                     // UI "X/Y checks" display
+      criticFindings: critic.findings || [],
+      criticNotes: critic.notes || [],             // advisory "shipped anyway, consider X" channel
+    };
+  };
+  let firstDone = false;
+  let firstWrap = null;
+  const withInfraRetry = async (fn) => {
+    let r;
+    for (let i = 0; i < 3; i += 1) {
+      r = await fn();
+      const built = r && (r.build || r);
+      const ar = built && built.agentRun;
+      const transient = ar && ar.isError && [429, 500, 502, 503, 504].includes(Number(ar.apiErrorStatus));
+      if (transient && !built.stopped && i < 2) { send({ ev: 'phase', kind: 'verify', state: 'infra-retry', at: nowIso() }); continue; }
+      break;
+    }
+    return r;
+  };
+  const buildFn = async (feedback) => {
+    if (!firstDone) { firstDone = true; const r = await withInfraRetry(() => runner({ ...baseOpts, seedOverlay, resumeSessionId })); firstWrap = r; return r; }
+    // Retry: reuse the overlay (seedOverlay:false), keep the session (resume), re-inject the first attempt's
+    // grounding/vault brief so the fix pass keeps the same standing context.
+    const grounded = firstWrap && firstWrap.brief ? coreApi.composeGoalWithGrounding(goal, firstWrap.brief) : goal;
+    // Resume the FIRST attempt's agent session so the fix pass keeps attempt-1's reasoning (not just the files
+    // on disk + the feedback). On an INITIAL run ctx.resumeSessionId is null, so fall back to the session the
+    // first attempt created (captured on firstWrap); the conversation-continue path already passes a real one.
+    const firstBuilt = firstWrap && (firstWrap.build || firstWrap);
+    const retryResumeId = resumeSessionId || (firstBuilt && firstBuilt.agentRun && firstBuilt.agentRun.sessionId) || null;
+    return await withInfraRetry(() => coreApi.runGovernedDelegation({ ...baseOpts, goal: `${grounded}\n\n${feedback}`, seedOverlay: false, resumeSessionId: retryResumeId }));
+  };
+  const loop = await coreApi.runVerifiedBuildLoop({ buildFn, verifyFn, maxCycles });
+  let result = loop.build;
+  const gate = loop.gate;
+  // If a retry happened and the loop returned a det-passing build, re-materialize that promoted attempt's
+  // shipped bytes into the overlay — undoing any in-place mutation by a later regressed attempt — so the apply
+  // ships exactly what was verified. No-op (idempotent) when the final attempt WAS the best.
+  if (bestSnapshot && loop.cycles > 0 && gate && gate.detPassed) {
+    for (const [rel, buf] of bestSnapshot) {
+      const dest = path.resolve(overlayRoot, rel);
+      try {
+        await assertNoSymlinkInWorkspacePath(overlayRoot, rel); // contained like copyOverlayPathsToDir: never write THROUGH a planted symlink
+        if (buf === null) await fsp.rm(dest, { force: true });
+        else { await fsp.mkdir(path.dirname(dest), { recursive: true }); await fsp.writeFile(dest, buf); }
+      } catch (_) { /* best effort — apply still reads whatever is on disk (and re-asserts containment) */ }
+    }
+  }
+  // Carry the first (grounded/vault) attempt's wrapper fields forward — a retry returns a plain governed
+  // result with no .vault/.brief/.research that would otherwise be dropped.
+  if (firstWrap && result && result !== firstWrap) {
+    if (!result.vault) result.vault = firstWrap.vault;
+    if (result.brief == null) result.brief = firstWrap.brief;
+    if (!result.research) result.research = firstWrap.research;
+  }
+  return { result, gate, cycles: loop.cycles, firstWrap };
+}
+
+// Resolve a run's base dir from a renderer-supplied runId, kept STRICTLY under core-runs (no '..'/escape).
+// Returns the absolute runBase, or null if the runId would escape the runs directory.
+function resolveRunBase(workspaceRoot, runId) {
+  const runsDir = path.join(workspaceRoot, '.orpad', 'core-runs');
+  const runBase = path.join(runsDir, String(runId || ''));
+  const rel = path.relative(runsDir, runBase);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) return null;
+  return runBase;
 }
 
 function registerCoreRunHandlers({ ipcMain, app, authority }) {
@@ -78,6 +220,10 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     const parallelResearch = request?.parallelResearch === true; // fan-out: parallel research subagents
     const researchQueries = Array.isArray(request?.researchQueries) ? request.researchQueries : undefined;
     const greenfield = allowedFiles.length === 0; // no write-set -> unconstrained build, apply everything
+    const useVault = request?.vault === true; // opt-in: ground in + capture to the durable knowledge vault
+    // Where compiled build artifacts (dist/build/release/...) land. OrPAD does NOT build — the agent does;
+    // this only routes the OUTPUT. 'auto' follows the apply verdict; 'workspace'/'run-dir' are explicit.
+    const buildOutputTo = ['workspace', 'run-dir'].includes(request?.buildOutputTo) ? request.buildOutputTo : 'auto';
 
     // Verification gates (the TRUST boundary): deterministic checks run against the
     // overlay before anything is applied. `gates` are explicit gate objects;
@@ -87,8 +233,12 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
       ? request.verifyCommands.map(String).map((s) => s.trim()).filter(Boolean).map((cmd) => ({ kind: 'command', cmd }))
       : [];
     const gates = [...rawGates.filter((g) => g && typeof g === 'object' && g.kind), ...cmdGates];
-    const gated = gates.length > 0;
-    const maxVerifyCycles = Number.isInteger(request?.verifyCycles) ? Math.max(0, Math.min(5, request.verifyCycles)) : 0;
+    // Default-ON minimum verification (benchmark-informed): even with NO user gates, auto-derive deterministic
+    // smoke gates from the build + run an adversarial critic, with bounded feedback retries. Disable via verify:false.
+    const autoVerify = request?.verify !== false;
+    const userMaxCycles = Number.isInteger(request?.verifyCycles) ? Math.max(0, Math.min(5, request.verifyCycles)) : null;
+    const maxVerifyCycles = userMaxCycles != null ? userMaxCycles : (autoVerify ? 3 : 0);
+    const doVerify = autoVerify || gates.length > 0;
 
     const runId = newRunId('core');
     const runBase = path.join(workspaceRoot, '.orpad', 'core-runs', runId);
@@ -106,7 +256,7 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     // is kept as-is so paths don't break; the goal is shown as the title instead).
     try {
       fs.writeFileSync(path.join(runBase, 'meta.json'), JSON.stringify({
-        goal, agent: providerStatus.provider, parallelResearch, ground, apply, startedAt: nowIso(),
+        goal, agent: providerStatus.provider, parallelResearch, ground, apply, vault: useVault, startedAt: nowIso(),
       }), 'utf8');
     } catch (_) { /* label is best-effort */ }
     const rawSend = sender(event, runId);
@@ -119,34 +269,28 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
       const baseOpts = {
         workspaceRoot, overlayRoot, runRoot, runId,
         allowedFiles, readOnlyFiles, goal, allowedTools, agent, timeoutMs,
-        parallelResearch, researchQueries,
+        ground, parallelResearch, researchQueries,
+        earnedFrom: `${runId} — goal: ${goal.slice(0, 120)}`,
         streamTrace: false, // the IPC tee above owns trace persistence now
         onTraceEvent: send,
       };
-      const runner = ground ? core.runGroundedDelegation : core.runGovernedDelegation;
+      const runner = useVault
+        ? core.runVaultGroundedDelegation
+        : ground ? core.runGroundedDelegation : core.runGovernedDelegation;
 
       let result;
-      let gate = { passed: true, results: [] };
+      let gate = { passed: true, results: [], detResults: [], detPassed: true, criticPassed: true, criticFindings: [] };
       let verifyCycles = 0;
-      if (gated) {
-        // Trust gate: build -> verify deterministic gates against the overlay; on
-        // failure, re-delegate REUSING the overlay (seedOverlay:false) with the
-        // failure logs injected, up to maxVerifyCycles times.
-        const tracedVerify = () => {
-          send({ ev: 'phase', kind: 'verify', state: 'start', at: nowIso() });
-          const g = core.runVerificationGates(overlayRoot, gates);
-          send({ ev: 'phase', kind: 'verify', state: 'done', at: nowIso() });
-          return g;
-        };
-        let firstDone = false;
-        const buildFn = async (feedback) => {
-          if (!firstDone) { firstDone = true; return await runner(baseOpts); }
-          return await core.runGovernedDelegation({ ...baseOpts, goal: `${goal}\n\n${feedback}`, seedOverlay: false });
-        };
-        const loop = await core.runVerifiedBuildLoop({ buildFn, verifyFn: tracedVerify, maxCycles: maxVerifyCycles });
-        result = loop.build;
-        gate = loop.gate;
-        verifyCycles = loop.cycles;
+      if (doVerify) {
+        // The minimum-verification loop, shared with conversation turns (run-continue).
+        const out = await runVerifiedLoop({
+          runner, baseOpts, goal, agent, timeoutMs, runId, overlayRoot,
+          gates, autoVerify, maxCycles: maxVerifyCycles, greenfield,
+          seedOverlay: true, resumeSessionId: null, send,
+        });
+        result = out.result;
+        gate = out.gate;
+        verifyCycles = out.cycles;
       } else {
         result = await runner(baseOpts);
       }
@@ -156,7 +300,8 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
       const build = result.build || result;
       const patch = build.patch || { changes: [], violations: [] };
       const summary = result.summary || build.summary || {};
-      const met = gated ? gate.passed : null; // null = ungated (applied unverified)
+      const sessionId = (build.agentRun && build.agentRun.sessionId) || null; // for conversational continue (--resume)
+      const met = doVerify ? !!gate.detPassed : null; // promotion gated on DETERMINISTIC checks; null = unverified
       send({ ev: 'run', state: 'done', at: nowIso() });
 
       // Trust boundary: apply the agent's overlay output into the canonical
@@ -173,23 +318,87 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
         applied = await applyOverlayToWorkspace(workspaceRoot, overlayRoot, applySet);
       }
 
+      // Knowledge-vault write-back: persist the notes the run produced into the durable vault, through
+      // the transactional moat (collectOverlayPatch -> applyPatchArtifact in core.promoteVaultPatch), NOT
+      // applyOverlayToWorkspace. Gated on vaultEligible (not stopped, not gate-FAILED) — deliberately
+      // INDEPENDENT of `apply`: turning OFF code-apply (to inspect the build before it touches the repo)
+      // must NOT also discard the researched knowledge. NOTE the notes are advisory grounding from the
+      // research overlay and are NOT themselves gate-verified (gates inspect the build overlay, not
+      // `${overlayRoot}-vault`); ungated runs (met===null) still seed the vault. Best-effort: a vault
+      // failure surfaces as vaultSkipped and never crashes the run.
+      const vaultEligible = useVault && !build.stopped && met !== false;
+      let vaultResult = null;
+      if (vaultEligible && result.vault && result.vault.patch) {
+        try {
+          vaultResult = await core.promoteVaultPatch({ workspaceRoot, patch: result.vault.patch, runId });
+        } catch (e) {
+          vaultResult = { written: [], skipped: [{ path: core.VAULT_REL, reason: String(e?.message || e) }], indexed: false };
+        }
+      }
+
+      // Build outputs (dist/build/release/out/.next/...) are normally filtered as generated artifacts and
+      // dropped. Deliver them so a "build me an app" goal yields a retrievable result: apply ON -> into the
+      // workspace (alongside source); otherwise -> a clean `build/` folder under the run dir (findable, not
+      // buried in overlay/). Only the build-output category is delivered — tool caches (__pycache__/
+      // .pytest_cache) and validation artifacts (coverage/test-results) stay filtered.
+      const buildOutputPaths = (patch.ignoredGeneratedFiles || [])
+        .filter((f) => f && f.reason === 'overlay-generated-build-output')
+        .map((f) => f.path);
+      let buildOutputs = [];
+      let buildOutputDest = null;
+      if (buildOutputPaths.length) {
+        // Explicit choice wins; 'auto' follows the apply verdict (workspace when eligible, else run dir).
+        const toWorkspace = buildOutputTo === 'workspace' || (buildOutputTo === 'auto' && applyEligible);
+        if (toWorkspace) {
+          buildOutputs = await applyOverlayToWorkspace(workspaceRoot, overlayRoot, buildOutputPaths);
+          buildOutputDest = 'workspace';
+        } else {
+          const buildDir = path.join(runBase, 'build');
+          buildOutputs = await copyOverlayPathsToDir(overlayRoot, buildDir, buildOutputPaths);
+          buildOutputDest = buildDir;
+        }
+      }
+
+      // Persist the captured session id so this run can be CONTINUED conversationally (--resume).
+      if (sessionId) {
+        try {
+          const m = JSON.parse(fs.readFileSync(path.join(runBase, 'meta.json'), 'utf8'));
+          m.sessionId = sessionId;
+          fs.writeFileSync(path.join(runBase, 'meta.json'), JSON.stringify(m), 'utf8');
+        } catch (_) { /* best effort */ }
+      }
+
       return {
         ok: true,
         runId,
+        sessionId,
+        agentText: (build.agentRun && build.agentRun.result) ? String(build.agentRun.result).slice(0, 4000) : '',
         ...summary,
         grounded: ground,
         groundingBrief: !!(result.brief && String(result.brief).trim()),
         greenfield,
-        gated,
+        gated: doVerify,
+        verified: doVerify,
         met,
         verifyCycles,
-        gates: gate.results,
+        gates: gate.detResults || gate.results,
+        criticPassed: doVerify ? !!gate.criticPassed : null,
+        criticConcerns: gate.criticFindings || [],
+        criticNotes: gate.criticNotes || [],
         applied,
         appliedCount: applied.length,
         changes: patch.changes.map((c) => c.path),
         violations: patch.violations,
         overlayPath: overlayRoot,           // where the built result lives (esp. when not applied)
         builtCount: patch.changes.length + patch.violations.length,
+        vault: useVault,
+        vaultWritten: vaultResult ? vaultResult.written : [],
+        vaultIndexed: vaultResult ? vaultResult.indexed : false,
+        vaultSkipped: vaultResult ? vaultResult.skipped : [],
+        ignoredGeneratedFiles: (patch.ignoredGeneratedFiles || []).length,
+        buildOutputs,
+        buildOutputCount: buildOutputs.length,
+        buildOutputDest,
       };
     } catch (err) {
       const message = String(err?.message || err);
@@ -206,8 +415,195 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
   ipcMain.handle('orpad-core-run-stop', async (event, request = {}) => {
     const runId = request && request.runId ? String(request.runId) : null;
     if (!runId) return { ok: false, error: 'runId is required.' };
+    // An observed TUI run isn't a child process — stop its detector/tailer; otherwise cancel the delegation.
+    if (runId.startsWith('observe-')) return { ok: true, cancelled: tuiDetect.stopTuiDetect(runId) || observer.stopObserve(runId) };
     const cancelled = core.cancelRun(runId);
     return { ok: true, cancelled };
+  });
+
+  // --- Observe a live interactive TUI (claude) → live graph ---------------------------------------------
+  // Called BY the Run GUI window (so trace streams back to it). Visualises a session the user drives in the
+  // terminal — no sandbox/verify (advisory only). Cleans up when the window is destroyed.
+  //
+  // PRIMARY path = PTY-stream parsing: claude under ConPTY writes no conversation log, but OrPAD owns the PTY,
+  // so we tap the session's output, reconstruct the rendered screen, and detect tool calls from it (works for
+  // any provider tui-detect knows, no session-log dependency). Requires the pty `sessionId`. Without one we
+  // fall back to log-tailing (legacy; only sees claudes that DO write a live log).
+  ipcMain.handle('orpad-core-observe-start', async (event, request = {}) => {
+    const workspaceRoot = authority.getWorkspaceRoot(event.sender);
+    const cwd = request && request.cwd ? String(request.cwd) : workspaceRoot;
+    const agent = request && request.agent ? String(request.agent).toLowerCase() : 'claude';
+    const sessionId = request && request.sessionId ? String(request.sessionId) : null;
+    const runId = newRunId('observe');
+    const send = sender(event, runId);
+
+    if (sessionId) {
+      const wcId = event.sender.id;
+      // The observer's lifetime follows the PTY SESSION, not this window. If one already exists for this session
+      // (the Run GUI was closed and reopened, or Apply re-seeds), REATTACH and replay its buffer so the graph
+      // re-syncs — don't start a new, empty observer. Window close DETACHES (keeps it running); only PTY exit /
+      // explicit Stop / quit truly stops it.
+      const existing = tuiDetect.findBySession(sessionId);
+      if (existing && !existing.closed) {
+        // Only replay if this window isn't already bound (avoids a double-replay if observe-reattach also ran).
+        if (existing.boundWcId !== wcId) tuiDetect.reattach(existing.runId, sender(event, existing.runId), wcId);
+        try { event.sender.once('destroyed', () => tuiDetect.detachWindow(wcId)); } catch (_) { /* best effort */ }
+        return { ok: true, runId: existing.runId };
+      }
+      const cols = Number(request.cols) || undefined;
+      const rows = Number(request.rows) || undefined;
+      // If this session is somehow already observed, startTuiDetect returns the EXISTING handle; report its
+      // (stable) runId, never the fresh one, so the renderer routes to the live channel.
+      const h = tuiDetect.startTuiDetect({ runId, sessionId, agent, send: sender(event, runId), cols, rows, workspaceRoot, wcId });
+      try { event.sender.once('destroyed', () => tuiDetect.detachWindow(wcId)); } catch (_) { /* best effort */ }
+      return { ok: true, runId: (h && h.runId) || runId };
+    }
+
+    // Fallback: tail the on-disk session log (legacy path).
+    if (!cwd) return { ok: false, error: 'A working directory is required to locate the session log.' };
+    if (agent !== 'claude') return { ok: false, error: 'Live observation currently supports claude only.' };
+    const pid = request && request.pid ? Number(request.pid) : null;
+    observer.startObserve({ runId, cwd, agent, pid, send });
+    // Tie the observer's lifetime to the window that asked for it — no leaked tailers.
+    try { event.sender.once('destroyed', () => observer.stopObserve(runId)); } catch (_) { /* best effort */ }
+    return { ok: true, runId };
+  });
+
+  // Reattach a (re)opened Run GUI window to any live observers for its workspace and replay their buffers, so
+  // closing/reopening the window re-syncs the graph without a fresh Apply. The PTY sessions kept running.
+  ipcMain.handle('orpad-core-observe-reattach', async (event) => {
+    const workspaceRoot = authority.getWorkspaceRoot(event.sender);
+    const wcId = event.sender.id;
+    const runIds = tuiDetect.reattachWorkspace(workspaceRoot, (runId) => sender(event, runId), wcId);
+    try { event.sender.once('destroyed', () => tuiDetect.detachWindow(wcId)); } catch (_) { /* best effort */ }
+    return { ok: true, runIds };
+  });
+
+  ipcMain.handle('orpad-core-observe-stop', async (event, request = {}) => {
+    const runId = request && request.runId ? String(request.runId) : null;
+    if (!runId) return { ok: false, error: 'runId is required.' };
+    return { ok: tuiDetect.stopTuiDetect(runId) || observer.stopObserve(runId) };
+  });
+
+  // --- Continue a run as a CONVERSATION turn ---------------------------------
+  // The conceptual shift: a run is a SESSION, not a one-shot. A turn = a governed delegation that REUSES the
+  // run's overlay (seedOverlay:false) and RESUMES the agent session (--resume, so it keeps full context),
+  // streamed into the SAME graph (same runId channel) so it accumulates. Everything is preserved — the moat,
+  // vault grounding, and a deterministic smoke verify before apply all run per turn (full critic/retry loop
+  // per turn is a later phase).
+  ipcMain.handle('orpad-core-run-continue', async (event, request = {}) => {
+    const workspaceRoot = authority.getWorkspaceRoot(event.sender);
+    if (!workspaceRoot) return { ok: false, error: 'Open a project folder before continuing a run.' };
+    const runId = request?.runId ? String(request.runId) : null;
+    const message = String(request?.message || '').trim();
+    if (!runId) return { ok: false, error: 'runId is required.' };
+    if (!message) return { ok: false, error: 'A message is required.' };
+
+    // Containment: runId comes from the renderer — keep runBase strictly under core-runs (no '..'/escape),
+    // matching the path-safety posture of the replay/apply paths.
+    const runBase = resolveRunBase(workspaceRoot, runId);
+    if (!runBase) return { ok: false, error: 'Invalid runId.' };
+    const overlayRoot = path.join(runBase, 'overlay');
+    const runRoot = path.join(runBase, 'run');
+    if (!fs.existsSync(overlayRoot)) return { ok: false, error: "This run's overlay no longer exists — start a new run." };
+
+    let meta = {};
+    try { meta = JSON.parse(fs.readFileSync(path.join(runBase, 'meta.json'), 'utf8')); } catch (_) { /* no meta */ }
+    const agent = meta.agent ? String(meta.agent) : 'claude';
+    const resumeSessionId = meta.sessionId || null;
+    const useVault = meta.vault === true;
+    const apply = meta.apply !== false;
+
+    const providerStatus = core.providerInfo(agent);
+    if (!providerStatus.available) {
+      return { ok: false, providerMissing: providerStatus, error: `The "${providerStatus.provider}" provider CLI ("${providerStatus.command}") was not found on your PATH.` };
+    }
+
+    const traceFilePath = path.join(runRoot, 'trace.jsonl');
+    const rawSend = sender(event, runId);
+    const send = (ev) => {
+      try { fs.appendFileSync(traceFilePath, JSON.stringify(ev) + '\n', 'utf8'); } catch (_) { /* best effort */ }
+      rawSend(ev);
+    };
+    // Degrade LOUDLY (not silently): flag a pre-conversational run, missing session memory, or a non-claude
+    // provider (no adversarial critic) so the UI can warn rather than mislead.
+    const criticCapable = String(agent || 'claude').toLowerCase() === 'claude';
+    const degraded = [];
+    if (!meta.agent) degraded.push('this run predates conversational continue — starting a fresh run is recommended');
+    if (!resumeSessionId) degraded.push('no session memory for this turn — the agent will not recall earlier turns');
+    if (!criticCapable) degraded.push(`adversarial critic is claude-only — this ${agent} turn ships with smoke checks only`);
+    for (const d of degraded) send({ ev: 'notice', level: 'warn', text: d, at: nowIso() });
+
+    send({ ev: 'turn', state: 'start', message: message.slice(0, 200), at: nowIso() });
+    send({ ev: 'run', state: 'start', continued: true, at: nowIso() }); // continued=true: graph accumulates, no reset
+    try {
+      const runner = useVault ? core.runVaultGroundedDelegation : core.runGovernedDelegation;
+      // FULL minimum-verification (smoke + adversarial critic + fix-retry) — the SAME loop as the initial run,
+      // so a follow-up turn is as safe as turn 1. Reuse the overlay (seedOverlay:false) and resume the session.
+      const out = await runVerifiedLoop({
+        runner,
+        // ground: useVault — a plain turn skips the (expensive) prior-art research, but a VAULT turn must keep
+        // it ON, because runVaultGroundedDelegation gates its gap-research + knowledge write-back on ground;
+        // forcing it off would let the vault READ each turn but never CAPTURE, so it stops compounding.
+        baseOpts: { workspaceRoot, overlayRoot, runRoot, runId, allowedFiles: [], readOnlyFiles: [], goal: message, agent, ground: useVault, streamTrace: false, onTraceEvent: send, earnedFrom: `${runId} (turn)` },
+        goal: message, agent, timeoutMs: 0, runId, overlayRoot,
+        gates: [], autoVerify: true, maxCycles: 3, greenfield: true,
+        seedOverlay: false, resumeSessionId, send,
+      });
+      const result = out.result;
+      const gate = out.gate;
+      const build = result.build || result;
+      const patch = build.patch || { changes: [], violations: [] };
+      const newSessionId = (build.agentRun && build.agentRun.sessionId) || resumeSessionId || null;
+      const met = !!gate.detPassed;
+
+      send({ ev: 'run', state: 'done', at: nowIso() });
+      send({ ev: 'turn', state: 'done', at: nowIso() });
+
+      let applied = [];
+      const applyEligible = apply && !build.stopped && met !== false;
+      if (applyEligible) {
+        const applySet = [...patch.changes.map((c) => c.path), ...patch.violations.map((v) => v.path)];
+        applied = await applyOverlayToWorkspace(workspaceRoot, overlayRoot, applySet);
+      }
+      // Vault write-back on the turn (when the vault runner produced notes and the turn is promotable).
+      let vaultResult = null;
+      if (useVault && applyEligible && result.vault && result.vault.patch) {
+        try { vaultResult = await core.promoteVaultPatch({ workspaceRoot, patch: result.vault.patch, runId }); }
+        catch (e) { vaultResult = { written: [], skipped: [{ path: core.VAULT_REL, reason: String(e?.message || e) }], indexed: false }; }
+      }
+      if (newSessionId && newSessionId !== resumeSessionId) {
+        // Re-read fresh and merge only sessionId: the turn held its meta snapshot across a minutes-long
+        // delegation, during which another writer may have updated meta.json. Writing the stale snapshot back
+        // would clobber those edits — so merge sessionId into the latest on disk.
+        try {
+          const m = JSON.parse(fs.readFileSync(path.join(runBase, 'meta.json'), 'utf8'));
+          m.sessionId = newSessionId;
+          fs.writeFileSync(path.join(runBase, 'meta.json'), JSON.stringify(m), 'utf8');
+        } catch (_) { /* best effort */ }
+      }
+
+      return {
+        ok: true, runId, turn: true, sessionId: newSessionId, degraded,
+        agentText: (build.agentRun && build.agentRun.result) ? String(build.agentRun.result).slice(0, 4000) : '',
+        ...(result.summary || build.summary || {}),
+        gated: true, verified: true, met, verifyCycles: out.cycles,
+        gates: gate.detResults || gate.results,
+        criticPassed: !!gate.criticPassed, criticConcerns: gate.criticFindings || [], criticNotes: gate.criticNotes || [],
+        applied, appliedCount: applied.length,
+        vault: useVault, vaultWritten: vaultResult ? vaultResult.written : [],
+        changes: patch.changes.map((c) => c.path),
+        violations: patch.violations,
+        overlayPath: overlayRoot,
+        stopped: build.stopped, stopReason: build.stopReason,
+      };
+    } catch (err) {
+      const errMsg = String(err?.message || err);
+      send({ ev: 'run', state: 'error', error: errMsg, at: nowIso() });
+      return { ok: false, runId, error: errMsg };
+    } finally {
+      core.clearCancelled(runId);
+    }
   });
 
   // --- Replay a recorded trace.jsonl -----------------------------------------
@@ -282,17 +678,18 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
       const m = /-(\d{10,16})-/.exec(runId); // core-<startedMs>-<rand>
       const startedMs = m ? Number(m[1]) : stat.mtimeMs;
       // Human-readable label from the run's meta.json (older runs have none → null).
-      let goal = null; let agent = null;
+      let goal = null; let agent = null; let vault = false;
       try {
         const meta = JSON.parse(await fsp.readFile(path.join(runsDir, runId, 'meta.json'), 'utf8'));
         if (meta && typeof meta.goal === 'string') goal = meta.goal;
         if (meta && meta.agent) agent = String(meta.agent);
+        if (meta && meta.vault) vault = true;
       } catch (_) { /* no meta */ }
-      runs.push({ runId, traceFile, sizeBytes: stat.size, mtimeMs: stat.mtimeMs, startedMs, hasResearch, goal, agent });
+      runs.push({ runId, traceFile, sizeBytes: stat.size, mtimeMs: stat.mtimeMs, startedMs, hasResearch, goal, agent, vault });
     }
     runs.sort((a, b) => (b.startedMs || b.mtimeMs) - (a.startedMs || a.mtimeMs));
     return { ok: true, runs };
   });
 }
 
-module.exports = { registerCoreRunHandlers, TRACE_CHANNEL };
+module.exports = { registerCoreRunHandlers, TRACE_CHANNEL, applyOverlayToWorkspace, copyOverlayPathsToDir, runVerifiedLoop };

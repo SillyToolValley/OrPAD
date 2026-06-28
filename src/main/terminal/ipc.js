@@ -155,6 +155,16 @@ function registerTerminalHandlers({ ipcMain, app, authority }) {
     return ptyManager.kill(event.sender, sessionId);
   });
 
+  // System clipboard for the terminal (copy/paste + a TUI's OSC 52 clipboard writes). Main-process clipboard
+  // reaches the OS reliably from a sandboxed renderer.
+  ipcMain.handle('clipboard.write-text', async (_event, text) => {
+    try { require('electron').clipboard.writeText(String(text == null ? '' : text)); return true; }
+    catch (_) { return false; }
+  });
+  ipcMain.handle('clipboard.read-text', async () => {
+    try { return require('electron').clipboard.readText(); } catch (_) { return ''; }
+  });
+
   app.on('before-quit', () => {
     ptyManager.shutdown().catch(() => {});
     cancelAll();

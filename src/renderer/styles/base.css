@@ -206,7 +206,7 @@ body.orchestration-window #toolbar > :not(#btn-orchestration):not(#btn-core-runs
   display: none !important;
 }
 body.orchestration-window #toolbar::after {
-  content: 'Orchestration';
+  content: 'Run GUI';
   position: absolute;
   left: calc(16px * var(--us));
   top: 50%;
@@ -8959,6 +8959,44 @@ body.drag-over::after {
 .terminal-pty-status {
   color: var(--text-tertiary);
 }
+.terminal-rungui-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent-color) 55%, var(--border-color));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-color) 16%, transparent);
+  color: var(--accent-color);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.terminal-rungui-btn:hover { background: color-mix(in srgb, var(--accent-color) 26%, transparent); }
+.terminal-orch-opts-btn {
+  flex: 0 0 auto;
+  font: inherit; font-size: 11px; font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  color: var(--text-secondary);
+  cursor: pointer; white-space: nowrap;
+}
+.terminal-orch-opts-btn:hover { background: var(--bg-secondary); color: var(--text-primary); }
+/* Orchestration Options modal body (rendered inside the shared terminal modal). */
+.terminal-orch-options { display: flex; flex-direction: column; gap: 8px; max-height: 64vh; overflow-y: auto; }
+.terminal-orch-hint { margin: 0 0 2px; font-size: 11.5px; color: var(--text-tertiary); }
+.terminal-orch-check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); }
+.terminal-orch-field { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-secondary); }
+.terminal-orch-field > span { color: var(--text-tertiary); }
+.terminal-orch-field textarea, .terminal-orch-field input, .terminal-orch-field select {
+  font: inherit; font-size: 12px; padding: 4px 6px;
+  border: 1px solid var(--border-color); border-radius: 6px;
+  background: var(--bg-primary); color: var(--text-primary);
+}
+.terminal-orch-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.terminal-orch-row .terminal-orch-field { flex: 1 1 120px; }
 .terminal-draft button {
   border: 1px solid var(--border-color);
   border-radius: 7px;
@@ -9233,13 +9271,16 @@ body.drag-over::after {
 .terminal-pty-container {
   position: absolute;
   inset: 0;
-  min-height: 190px;
+  /* No min-height: the container must shrink with the stage when the command-blocks drawer takes space, else it
+     overflows the stage and the bottom TUI rows are clipped under the drawer. The drawer is capped at 34% so the
+     stage always keeps the majority of the height. */
+  min-height: 0;
   padding: 8px 10px;
   background: var(--editor-bg);
 }
 .terminal-pty-container .xterm {
   height: 100%;
-  min-height: 170px;
+  min-height: 0;
 }
 .terminal-pty-container .xterm-screen,
 .terminal-pty-container .xterm-viewport {
@@ -10909,6 +10950,90 @@ body.zen-mode #workspace {
   font-size: calc(11.5px * var(--us));
   color: var(--success-color);
 }
+
+/* Conversation transcript — the human-facing dialogue (user turns + agent replies). */
+.core-run-transcript {
+  margin-top: calc(6px * var(--us));
+  border: 1px solid var(--border-color); border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-secondary) 50%, transparent);
+  overflow: hidden;
+}
+.core-run-transcript[hidden] { display: none; }
+.core-run-transcript-head {
+  padding: calc(5px * var(--us)) calc(10px * var(--us));
+  font-size: calc(10.5px * var(--us)); font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-color);
+}
+.core-run-transcript-body {
+  display: flex; flex-direction: column; gap: calc(8px * var(--us));
+  padding: calc(8px * var(--us)) calc(10px * var(--us));
+  max-height: calc(220px * var(--us)); overflow-y: auto;
+}
+.core-run-msg { display: flex; flex-direction: column; gap: calc(2px * var(--us)); }
+.core-run-msg-who {
+  font-size: calc(10px * var(--us)); font-weight: 700; letter-spacing: 0.03em;
+  text-transform: uppercase; color: var(--text-tertiary);
+}
+.core-run-msg-user .core-run-msg-who { color: var(--accent-color); }
+.core-run-msg-text {
+  font-size: calc(11.5px * var(--us)); line-height: 1.5; color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+}
+.core-run-msg-user .core-run-msg-text { color: var(--text-primary); }
+
+/* Ghost button (Options / secondary actions). */
+.core-run-btn-ghost {
+  font: inherit; font-weight: 600;
+  padding: calc(8px * var(--us)) calc(14px * var(--us));
+  border: 1px solid var(--border-color); border-radius: 7px;
+  background: var(--bg-primary); color: var(--text-secondary, var(--text-primary)); cursor: pointer;
+}
+.core-run-btn-ghost:hover:not(:disabled) { background: var(--bg-secondary); color: var(--text-primary); }
+
+/* Run-list sidebar: the toggleable list of runs (active vs inactive) inside the Run GUI. */
+.run-gui-runs { display: flex; flex-direction: column; gap: calc(4px * var(--us)); }
+.run-gui-runs-head { display: flex; align-items: center; justify-content: space-between; gap: calc(6px * var(--us)); }
+.run-gui-runs-toggle {
+  font: inherit; font-size: calc(11px * var(--us)); font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-tertiary);
+  background: none; border: 0; padding: calc(2px * var(--us)) 0; cursor: pointer; text-align: left;
+}
+.run-gui-runs-refresh {
+  font: inherit; font-size: calc(12px * var(--us)); line-height: 1;
+  background: none; border: 0; color: var(--text-tertiary); cursor: pointer; padding: calc(2px * var(--us));
+}
+.run-gui-runs-refresh:hover { color: var(--text-primary); }
+.run-gui-run-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: calc(3px * var(--us));
+  max-height: calc(200px * var(--us)); overflow-y: auto;
+}
+.run-gui-runs-collapsed .run-gui-run-list { display: none; }
+.run-gui-run-empty { font-size: calc(11px * var(--us)); color: var(--text-tertiary); padding: calc(4px * var(--us)) calc(6px * var(--us)); }
+.run-gui-run-row {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: calc(7px * var(--us));
+  padding: calc(5px * var(--us)) calc(8px * var(--us));
+  border: 1px solid transparent; border-radius: 7px; cursor: pointer;
+  font-size: calc(11.5px * var(--us));
+}
+.run-gui-run-row:hover { background: color-mix(in srgb, var(--bg-secondary) 60%, transparent); }
+.run-gui-run-row.is-selected {
+  background: color-mix(in srgb, var(--accent-color) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent-color) 45%, var(--border-color));
+}
+.run-gui-run-label { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-gui-run-meta { color: var(--text-tertiary); font-size: calc(10px * var(--us)); white-space: nowrap; }
+.run-gui-badge { width: calc(8px * var(--us)); height: calc(8px * var(--us)); border-radius: 50%; flex: none; background: var(--text-tertiary); }
+.run-gui-badge.is-active { background: var(--success-color, #73f0c0); box-shadow: 0 0 0 calc(2px * var(--us)) color-mix(in srgb, var(--success-color, #73f0c0) 30%, transparent); animation: run-gui-pulse 1.4s ease-in-out infinite; }
+.run-gui-badge.is-inactive { background: color-mix(in srgb, var(--text-tertiary) 70%, transparent); }
+.run-gui-badge.is-error { background: var(--danger-color, #f7768e); }
+@keyframes run-gui-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Orchestration options modal: a wider card holding the advanced run config. */
+.core-run-options-modal .core-run-modal-card { max-width: min(calc(520px * var(--us)), 92%); }
+.core-run-options-modal .core-run-modal-body { gap: calc(10px * var(--us)); max-height: 70vh; overflow-y: auto; }
+
 .core-run-graph-viewport {
   position: relative;
   flex: 1 1 auto;

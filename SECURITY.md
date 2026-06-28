@@ -373,6 +373,27 @@ Renderer-facing IPC is `registerCoreRunHandlers` in
   same run dir and the same moat; only the single build writer applies to canonical
   (writes are never parallelized). Each subagent is the same selected contained
   provider child process as a normal delegation - more processes, no new capability.
+  **Knowledge vault:** when `vault` is set, the run also reads + writes a durable,
+  **workspace-contained** note store at `<workspace>/.orpad/knowledge/` (a sibling of
+  `core-runs`, never nested). It adds **no new capability**: the vault is read with a
+  defensive no-op contract (a missing/empty/malformed vault degrades to web grounding
+  and never blocks the run), and write-back goes through the SAME transactional moat as
+  any apply (`collectOverlayPatch` → `applyPatchArtifact` — per-segment symlink/junction
+  rejection, base-SHA preconditions, asar handling, deletions), gated on the build's trust
+  verdict (`vaultEligible` = not stopped, not gate-failed; independent of the code-apply
+  toggle), and serialized behind an in-process per-vault lock. An **external / out-of-workspace `vaultPath`** is
+  deliberately NOT supported (it would require a new authority grant + a separately
+  validated root) and the vault is NEVER auto-committed to git (working-tree only) — both
+  are HIGH-risk additions intentionally deferred. `request.vault` only toggles this
+  workspace-contained behavior; no path is taken from the renderer.
+  **Build outputs:** OrPAD does NOT build — the delegated agent does (it chooses tools and runs them);
+  OrPAD only ROUTES the resulting artifacts. Generated build artifacts (the `dist`/`build`/`out`/`release`/…
+  category) are delivered rather than silently dropped, to a destination chosen by `request.buildOutputTo`:
+  `workspace`, `run-dir`, or `auto` (default — workspace when `apply` is eligible, else the run dir). The
+  run-dir destination is a `build/` folder under `<workspace>/.orpad/core-runs/<runId>/`. Both destinations
+  are path-escape + symlink contained (`copyOverlayPathsToDir`: rejects `..`/absolute and refuses to write
+  through a destination symlink); tool caches (`__pycache__`/`.pytest_cache`) and validation artifacts
+  (coverage/test-results) remain filtered. No new capability — same contained copy as the workspace apply.
 - `orpad-core-run-replay` (invoke) — replays a RECORDED `trace.jsonl` through the
   same `orpad-core-trace` channel for the live-trace GUI and CI (no paid agent
   run). The trace path is validated with `authority.assertWorkspacePath`, so the

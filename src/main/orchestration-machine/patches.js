@@ -52,13 +52,26 @@ function isIgnoredOverlayGeneratedArtifactPath(filePath) {
 
 function ignoredOverlayGeneratedArtifactReason(filePath) {
   const normalized = normalizeWriteSetPath(filePath).toLowerCase();
+  // The knowledge vault is durable user content, never a generated artifact — exempt it so a note whose
+  // path happens to contain a taxonomy-like segment (build/dist/coverage/.cache/__pycache__/...) is never
+  // silently dropped, even if a future caller narrows the write-set below the vault directory.
+  if (normalized.startsWith('.orpad/knowledge/')) {
+    return '';
+  }
   if (/^orpad-worker-result-[a-z0-9_.-]+\.json$/.test(normalized)) {
     return 'overlay-generated-adapter-result';
   }
   if (/(^|\/)(test-results|playwright-report|blob-report|coverage|\.nyc_output)\//.test(normalized)) {
     return 'overlay-generated-validation-artifact';
   }
-  if (/(^|\/)(dist|build|out|release|\.next|\.nuxt|\.svelte-kit|storybook-static)\//.test(normalized)) {
+  // `build/` is ambiguous — OUTPUT in some toolchains (CRA, CMake) but CONFIG/resources in others
+  // (electron-builder uses build/ for icons/entitlements). Classify it separately so it is STILL filtered
+  // from out-of-write-set violations, but is NOT auto-delivered as a build artifact (avoids the
+  // electron-builder build/icon.png false-positive that delivery key 'overlay-generated-build-output' hit).
+  if (/(^|\/)build\//.test(normalized)) {
+    return 'overlay-generated-build-dir';
+  }
+  if (/(^|\/)(dist|out|release|\.next|\.nuxt|\.svelte-kit|storybook-static)\//.test(normalized)) {
     return 'overlay-generated-build-output';
   }
   // Tool caches a worker's verification commands drop as a side effect (pytest

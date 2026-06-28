@@ -16,10 +16,12 @@
 // the capable agent's NATIVE tool use (we do not invent control-flow nodes).
 const PHASE_NODE = {
   recon: { type: 'recon', label: 'Recon workspace' },
+  vault_read: { type: 'recon', label: 'Read knowledge vault' },
   overlay_seeded: { type: 'isolate', label: 'Isolate (write-set overlay)' },
   guidance_injected: { type: 'guidance', label: 'Inject standing guidance' },
   agent_run: { type: 'delegate', label: 'Delegate to agent' },
   patch_collected: { type: 'enforce', label: 'Enforce write-set' },
+  vault_writeback: { type: 'enforce', label: 'Capture to knowledge vault' },
   verify: { type: 'enforce', label: 'Verify gates' },
 };
 
@@ -71,6 +73,22 @@ function streamEventToTrace(obj, at) {
       costUsd: obj.total_cost_usd ?? null, numTurns: obj.num_turns ?? null });
   }
   return out;
+}
+
+// Convert ONE Claude Code on-disk SESSION-LOG entry (~/.claude/projects/<slug>/<id>.jsonl) into trace events.
+// This is how we OBSERVE a live interactive TUI (which the user drives) without OrPAD running the agent: the
+// session log reuses the SAME assistant/user message shape as `-p` stream-json (tool_use / tool_result / text
+// / thinking blocks), so we delegate to streamEventToTrace. Differences handled here:
+//   • a human 'user' turn carries a plain STRING content (not blocks) → streamEventToTrace's Array.isArray
+//     guard skips it (no node), which is what we want;
+//   • there is NO {type:'result'} terminal entry → run-done is synthesized by the watcher on idle / PTY exit,
+//     so we only forward assistant/user message entries and ignore everything else
+//     (mode / permission-mode / attachment / file-history-snapshot / summary / system).
+function sessionEntryToTrace(input, at) {
+  const obj = typeof input === 'string' ? parseJsonOrNull(input) : input;
+  if (!obj || typeof obj !== 'object') return [];
+  if (obj.type !== 'assistant' && obj.type !== 'user') return [];
+  return streamEventToTrace(obj, at || obj.timestamp || null);
 }
 
 // Convert ONE Codex CLI `exec --json` event into zero or more trace events.
@@ -420,6 +438,7 @@ module.exports = {
   isInProgress,
   toolLabel,
   streamEventToTrace,
+  sessionEntryToTrace,
   codexEventToTrace,
   codexResultFromEvent,
   buildEmergentGraph,

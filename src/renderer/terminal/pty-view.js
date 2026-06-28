@@ -8,6 +8,11 @@ import xtermCss from '@xterm/xterm/css/xterm.css';
 import { t } from '../i18n.js';
 
 const MAX_BLOCK_CHARS = 240_000;
+// When a window is minimized/hidden, requestAnimationFrame stops firing (backgroundThrottling:false only keeps
+// timers, not rAF), so the rAF-batched flush wouldn't run and session.pendingData would grow without bound on a
+// high-output session. Past this many buffered chars, flush synchronously into xterm's (scrollback-bounded)
+// buffer instead of waiting for a frame.
+const MAX_PENDING_FLUSH = 256_000;
 const DEFAULT_MAX_COMMAND_BLOCKS = 120;
 const LAST_SHELL_KEY = 'orpad-terminal-last-shell';
 
@@ -212,6 +217,10 @@ function latestFinishedBlock(sessions) {
 async function writeClipboardText(text) {
   const value = String(text || '');
   if (!value) return false;
+  // Prefer the Electron main-process clipboard (reliable from a sandboxed renderer); fall back to navigator.
+  if (typeof window !== 'undefined' && window.clipboard?.writeText) {
+    try { if (await window.clipboard.writeText(value)) return true; } catch {}
+  }
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(value);
@@ -297,9 +306,16 @@ function startCommandBlock(session, commandLine, provisional = false) {
 }
 
 function appendBlockOutput(session, text) {
-  if (!session.currentBlock || !text) return;
-  session.currentBlock.output += text;
-  session.currentBlock.pre.textContent = truncateForUi(session.currentBlock.output);
+  const block = session.currentBlock;
+  if (!block || !text) return;
+  // Once a block reaches the cap, STOP accumulating + re-stripping. Previously every chunk did
+  // `output += text` then re-stripped the ENTIRE history (truncateForUi) → O(n²) on long output, the main
+  // source of the "lag as content piles up". The cap bounds it; the rAF batching (handlePtyEvent) makes the
+  // pre-cap render at most once per frame.
+  if (block.truncated) return;
+  block.output += text;
+  if (block.output.length >= MAX_BLOCK_CHARS) block.truncated = true;
+  block.pre.textContent = truncateForUi(block.output);
 }
 
 function finishCommandBlock(session, exitCode) {
@@ -333,6 +349,23 @@ function finishCommandBlock(session, exitCode) {
   session.renderBlockCount?.();
 }
 
+// Render all PTY data that accumulated since the last frame in ONE batched write. Coalescing across the many
+// small IPC 'data' events (instead of one term.write per chunk) is what removes the refocus backlog burst and
+// the per-chunk overhead. consumeOsc633 already buffers a split OSC across calls, so joining chunks first is
+// strictly safer for escape-sequence parsing.
+function flushSessionData(session) {
+  session.flushScheduled = false;
+  if (session.disposed) return; // closed before the frame fired — term is gone
+  const raw = session.pendingData || '';
+  session.pendingData = '';
+  if (!raw) return;
+  const cleaned = consumeOsc633(session, raw);
+  if (cleaned) {
+    session.term.write(cleaned);
+    appendBlockOutput(session, cleaned);
+  }
+}
+
 function handleOsc633(session, code, param) {
   if (code === 'P') {
     const cwd = String(param || '').replace(/^Cwd=/, '');
@@ -351,11 +384,24 @@ function handleOsc633(session, code, param) {
   }
 }
 
+// OSC 52 = clipboard write. A TUI (e.g. claude's drag-to-copy) sends the selection this way; xterm ignores it,
+// so the system clipboard never gets it. Decode the base64 payload and write it to the OS clipboard ourselves.
+function handleOsc52(b64) {
+  try {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const text = new TextDecoder().decode(bytes);
+    if (text && typeof window !== 'undefined' && window.clipboard?.writeText) {
+      Promise.resolve(window.clipboard.writeText(text)).catch(() => {}); // fire-and-forget; never throw on a TUI copy
+    }
+  } catch (_) { /* malformed base64 — ignore */ }
+}
+
 function consumeOsc633(session, chunk) {
   let input = `${session.oscBuffer || ''}${String(chunk || '')}`;
   session.oscBuffer = '';
 
-  const partialAt = input.lastIndexOf('\x1b]633;');
+  // Hold back a trailing INCOMPLETE OSC 633/52 sequence (split across PTY chunks) for the next chunk.
+  const partialAt = Math.max(input.lastIndexOf('\x1b]633;'), input.lastIndexOf('\x1b]52;'));
   if (partialAt >= 0) {
     const tail = input.slice(partialAt);
     if (!tail.includes('\x07') && !tail.includes('\x1b\\')) {
@@ -374,6 +420,14 @@ function consumeOsc633(session, chunk) {
     last = re.lastIndex;
   }
   cleaned += input.slice(last);
+
+  // Intercept OSC 52 clipboard writes (selection -> OS clipboard) and strip them from the rendered output.
+  if (cleaned.indexOf('\x1b]52;') >= 0) {
+    cleaned = cleaned.replace(/\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)/g, (_m, data) => {
+      if (data && data !== '?') handleOsc52(data);
+      return '';
+    });
+  }
   return cleaned;
 }
 
@@ -391,6 +445,8 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       <div class="terminal-tab-strip"></div>
       <div class="terminal-pty-toolbar">
         <span class="terminal-active-context"></span>
+        <button type="button" class="terminal-orch-opts-btn" title="Orchestration options — applied when you launch an AI CLI and choose Apply">Orchestration Options</button>
+        <button type="button" class="terminal-rungui-btn" title="Open the Run GUI — visualise AI runs as a live graph">Run GUI</button>
         <span class="terminal-pty-status"></span>
       </div>
     </div>
@@ -438,7 +494,146 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
 
   const tabStrip = root.querySelector('.terminal-tab-strip');
   const activeContextEl = root.querySelector('.terminal-active-context');
+  const runGuiBtn = root.querySelector('.terminal-rungui-btn');
   const statusEl = root.querySelector('.terminal-pty-status');
+
+  // The terminal is the entry point to orchestration: a "Run GUI" button opens the viewer, and launching an
+  // AI CLI offers to layer OrPAD's orchestration on top. Both route through window.orpad.orchestrationWindow.
+  const orchestrationApi = (typeof window !== 'undefined' && window.orpad && window.orpad.orchestrationWindow) || null;
+  function openRunGui(seed) {
+    if (!orchestrationApi || !orchestrationApi.open) return;
+    Promise.resolve(orchestrationApi.open(seed ? { seed } : {})).catch(() => {});
+  }
+  // Build an observe seed for the CURRENTLY-ACTIVE AI-CLI terminal session (if any). Lets "Run GUI" attach the
+  // graph to a session you're already working in — observe only auto-starts at Apply-time, so opening the Run GUI
+  // mid-session would otherwise show nothing. Idempotent: if that session is already observed, observeStart
+  // reattaches to the live observer (no duplicate).
+  function activeObserveSeed() {
+    const s = activeSession();
+    if (!s || !s.shell || s.shell.kind !== 'ai-cli') return undefined;
+    const agent = aiCliAgent(s.shell);
+    return {
+      agent, cwd: s.cwd, sessionId: s.id,
+      cols: (s.term && s.term.cols) || null, rows: (s.term && s.term.rows) || null,
+      observe: true, // observe any AI-CLI TUI (claude + codex have detector grammars; others still show the run)
+      options: loadOrchestrationOptions(),
+    };
+  }
+
+  // Orchestration options live HERE in the terminal (not in the Run GUI viewer): the default config applied
+  // when you launch an AI CLI and choose "Apply". Persisted to localStorage; included in the Apply seed.
+  const ORCH_OPTS_KEY = 'orpad-orchestration-options';
+  const ORCH_OPTS_DEFAULTS = { ground: true, parallelResearch: true, apply: false, vault: false, verify: true, writeset: '', readonly: '', gates: '', verifyCycles: 3, timeoutMin: 0, buildOutputTo: 'auto' };
+  function loadOrchestrationOptions() {
+    try { return { ...ORCH_OPTS_DEFAULTS, ...(JSON.parse(localStorage.getItem(ORCH_OPTS_KEY) || '{}') || {}) }; }
+    catch (_) { return { ...ORCH_OPTS_DEFAULTS }; }
+  }
+  function saveOrchestrationOptions(opts) {
+    try { localStorage.setItem(ORCH_OPTS_KEY, JSON.stringify(opts)); } catch (_) { /* ignore */ }
+  }
+  function openOrchestrationOptions() {
+    if (!hooks.openModal) return;
+    const o = loadOrchestrationOptions();
+    const body = el('div', 'terminal-orch-options');
+    body.innerHTML = `
+      <p class="terminal-orch-hint">Defaults for OrPAD's <strong>governed runs</strong> (sandboxed execute + verify). Note: launching an AI CLI in the terminal and choosing “Apply” is <strong>read-only observation</strong> — these options do not apply to it (a live terminal session can't be sandboxed).</p>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-ground> Research prior art first (grounding)</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-parallel> Parallel research (fan-out)</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-vault> Knowledge vault (ground in + capture notes)</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-verify> Verify (auto QA: smoke + critic + retry)</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-apply> Apply result to workspace</label>
+      <label class="terminal-orch-field"><span>Write-set (one path per line)</span><textarea data-o-writeset rows="2"></textarea></label>
+      <label class="terminal-orch-field"><span>Read-only context (one path per line)</span><textarea data-o-readonly rows="1"></textarea></label>
+      <label class="terminal-orch-field"><span>Verification gates (one shell check per line)</span><textarea data-o-gates rows="2"></textarea></label>
+      <div class="terminal-orch-row">
+        <label class="terminal-orch-field"><span>Verify retry cycles</span><input type="number" min="0" max="5" step="1" data-o-cycles></label>
+        <label class="terminal-orch-field"><span>Time cap (min, 0=none)</span><input type="number" min="0" step="1" data-o-timeout></label>
+        <label class="terminal-orch-field"><span>Build output</span><select data-o-buildout><option value="auto">Auto</option><option value="workspace">Workspace</option><option value="run-dir">Run dir</option></select></label>
+      </div>
+    `;
+    const q = (s) => body.querySelector(s);
+    q('[data-o-ground]').checked = !!o.ground;
+    q('[data-o-parallel]').checked = !!o.parallelResearch;
+    q('[data-o-vault]').checked = !!o.vault;
+    q('[data-o-verify]').checked = !!o.verify;
+    q('[data-o-apply]').checked = !!o.apply;
+    q('[data-o-writeset]').value = o.writeset || '';
+    q('[data-o-readonly]').value = o.readonly || '';
+    q('[data-o-gates]').value = o.gates || '';
+    q('[data-o-cycles]').value = String(o.verifyCycles ?? 3);
+    q('[data-o-timeout]').value = String(o.timeoutMin ?? 0);
+    q('[data-o-buildout]').value = o.buildOutputTo || 'auto';
+    hooks.openModal({
+      title: 'Orchestration Options',
+      body,
+      onClose: () => hooks.closeModal?.(),
+      footer: [
+        { label: 'Cancel', onClick: () => hooks.closeModal?.() },
+        { label: 'Save', primary: true, onClick: () => {
+          saveOrchestrationOptions({
+            ground: q('[data-o-ground]').checked,
+            parallelResearch: q('[data-o-parallel]').checked,
+            vault: q('[data-o-vault]').checked,
+            verify: q('[data-o-verify]').checked,
+            apply: q('[data-o-apply]').checked,
+            writeset: q('[data-o-writeset]').value,
+            readonly: q('[data-o-readonly]').value,
+            gates: q('[data-o-gates]').value,
+            verifyCycles: Math.max(0, Math.min(5, Number(q('[data-o-cycles]').value) || 0)),
+            timeoutMin: Math.max(0, Number(q('[data-o-timeout]').value) || 0),
+            buildOutputTo: q('[data-o-buildout]').value,
+          });
+          hooks.closeModal?.();
+        } },
+      ],
+    });
+  }
+  function aiCliAgent(shell) {
+    const id = String((shell && shell.id) || '');
+    if (id.includes('codex')) return 'codex';
+    if (id.includes('gemini')) return 'gemini';
+    return 'claude';
+  }
+  function offerOrchestration(info) {
+    if (!orchestrationApi || !orchestrationApi.open || !hooks.openModal) return;
+    const agent = aiCliAgent(info.shell);
+    const body = el('div', 'terminal-confirm');
+    body.innerHTML = `
+      <p>Watch this <strong>${agent}</strong> session as a live graph in the Run GUI?</p>
+      <p>This is <strong>read-only observation</strong> — OrPAD visualises the tools the CLI runs in the terminal. It does not sandbox or change what the CLI does (it works directly in your workspace). Skip to use the CLI without the graph.</p>
+    `;
+    const finish = () => hooks.closeModal?.();
+    hooks.openModal({
+      title: 'Apply orchestration?',
+      body,
+      onClose: () => finish(),
+      footer: [
+        { label: 'Skip', onClick: () => finish() },
+        // claude → observe the live session as a graph. PRIMARY: the pty `sessionId` lets the observer tap this
+        // exact terminal's stream and reconstruct the rendered screen (no session-log dependency). Pass the live
+        // terminal dims so the screen reconstruction matches what claude is rendering. (pid kept for the legacy
+        // log-tail fallback.)
+        { label: 'Apply', primary: true, onClick: () => {
+          finish();
+          const s = sessions.find((x) => x.id === info.sessionId);
+          const cols = (s && s.term && s.term.cols) || info.cols || null;
+          const rows = (s && s.term && s.term.rows) || info.rows || null;
+          openRunGui({ agent, cwd: info.cwd, sessionId: info.sessionId, pid: info.aiPid || null, cols, rows, observe: true, options: loadOrchestrationOptions() });
+        } },
+      ],
+    });
+  }
+  if (runGuiBtn) {
+    // Opening the Run GUI also attaches observe to the active AI-CLI session (so the graph shows the session
+    // you're working in, even if you never clicked Apply at launch).
+    if (orchestrationApi && orchestrationApi.open) runGuiBtn.addEventListener('click', () => openRunGui(activeObserveSeed()));
+    else runGuiBtn.style.display = 'none';
+  }
+  const orchOptsBtn = root.querySelector('.terminal-orch-opts-btn');
+  if (orchOptsBtn) {
+    if (hooks.openModal) orchOptsBtn.addEventListener('click', openOrchestrationOptions);
+    else orchOptsBtn.style.display = 'none';
+  }
   const newPopover = root.querySelector('.terminal-new-popover');
   const shellList = root.querySelector('.terminal-shell-list');
   const newCwdInput = root.querySelector('.terminal-new-cwd input');
@@ -834,7 +1029,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     return shellsPromise;
   }
 
-  function createTerminalSession(info) {
+  function createTerminalSession(info, opts = {}) {
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
     const serializeAddon = new SerializeAddon();
@@ -866,10 +1061,32 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     };
     term.attachCustomKeyEventHandler((event) => {
       const key = String(event.key || '').toLowerCase();
-      const copyShortcut = (event.ctrlKey || event.metaKey) && key === 'c';
+      const mod = event.ctrlKey || event.metaKey;
+      // Copy: Ctrl/Cmd+C ONLY when there's a selection (otherwise Ctrl+C must pass through as SIGINT), or the
+      // explicit Ctrl+Shift+C. Routed through the OS clipboard via writeClipboardText.
+      const copyShortcut = mod && key === 'c';
       const explicitCopyShortcut = event.ctrlKey && event.shiftKey && key === 'c';
       if ((copyShortcut || explicitCopyShortcut) && term.hasSelection?.()) {
         if (event.type === 'keydown') copyTerminalSelection(term).catch(() => {});
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+      }
+      // Paste: Ctrl+V / Ctrl+Shift+V (Win/Linux) or Cmd+V (mac). Routed through term.paste(), which honors the
+      // app's bracketed-paste mode — so a multi-line paste reaches claude/readline as ONE paste (not line-by-line
+      // Enters that submit early). (We restored plain Ctrl+V because that's what users actually press to paste.)
+      const pasteShortcut = mod && key === 'v';
+      if (pasteShortcut) {
+        if (event.type === 'keydown') {
+          const read = (typeof window !== 'undefined' && window.clipboard?.readText)
+            ? window.clipboard.readText()
+            : (navigator.clipboard?.readText ? navigator.clipboard.readText() : Promise.resolve(''));
+          Promise.resolve(read).then((text) => {
+            if (!text) return;
+            if (typeof term.paste === 'function') term.paste(text); // bracketed-paste aware; fires onData -> PTY
+            else window.pty.write(session.id, text);
+          }).catch(() => {});
+        }
         event.preventDefault();
         event.stopPropagation();
         return false;
@@ -912,6 +1129,10 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       window.pty.resize(session.id, term.cols, term.rows);
     });
     resizeObserver.observe(container);
+    // Also observe the STAGE: when the command-blocks drawer appears/grows it shrinks the stage (flex sibling),
+    // but the absolutely-positioned container's intrinsic size may not fire on its own — without this the xterm
+    // keeps the old row count and the drawer overlaps/clips the bottom rows of a TUI.
+    resizeObserver.observe(stage);
     session.resizeObserver = resizeObserver;
 
     sessions.push(session);
@@ -919,6 +1140,11 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     fitActiveTerminal();
     setStatus(fmt('terminal.maskedEnv', { count: info.maskedEnvCount || 0 }));
     track?.('terminal_pty_spawn', { shell: info.shell?.id || 'unknown' });
+    // Launching an AI CLI TUI offers to observe it as a live graph — but NOT for tabs re-created on startup by
+    // restoreSaved (that would pop a modal per restored AI-CLI tab on every launch).
+    if (!opts.fromRestore && info.shell && info.shell.kind === 'ai-cli') {
+      try { offerOrchestration(info); } catch (_) { /* non-fatal */ }
+    }
     return session;
   }
 
@@ -955,7 +1181,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
         rows: 28,
         restore: options.restore !== false,
       });
-      return createTerminalSession(info);
+      return createTerminalSession(info, { fromRestore: options.fromRestore === true });
     } catch (err) {
       setStatus(err.message || String(err));
       hooks.notify?.('Terminal', err);
@@ -971,6 +1197,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     const index = sessions.findIndex(item => item.id === id);
     if (index < 0) return;
     const [session] = sessions.splice(index, 1);
+    session.disposed = true; // a queued rAF flush must not touch the disposed term
     try { session.resizeObserver?.disconnect(); } catch {}
     try { session.term.dispose(); } catch {}
     try { session.container.remove(); } catch {}
@@ -989,14 +1216,22 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     const session = sessions.find(item => item.id === payload.sessionId);
     if (!session) return;
     if (payload.type === 'data') {
-      const cleaned = consumeOsc633(session, payload.chunk || '');
-      if (cleaned) {
-        session.term.write(cleaned);
-        appendBlockOutput(session, cleaned);
+      // Buffer the chunk and flush once per animation frame (coalesced) instead of writing per chunk.
+      session.pendingData = (session.pendingData || '') + (payload.chunk || '');
+      // Safety valve for a hidden window (no rAF): drain immediately once the buffer is large, so it can't grow
+      // unbounded under a high-output workload while minimized.
+      if (session.pendingData.length >= MAX_PENDING_FLUSH) {
+        flushSessionData(session);
+        return;
+      }
+      if (!session.flushScheduled) {
+        session.flushScheduled = true;
+        requestAnimationFrame(() => flushSessionData(session));
       }
       return;
     }
     if (payload.type === 'exit') {
+      flushSessionData(session); // drain any buffered output before the exit notice
       if (session.currentBlock) finishCommandBlock(session, payload.exitCode ?? null);
       session.term.writeln('');
       session.term.writeln(fmt('terminal.processExitedLine', { code: payload.exitCode ?? t('terminal.unknown') }));
@@ -1015,7 +1250,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       const workspaceRoot = hooks.getWorkspacePath?.() || '';
       for (const item of saved || []) {
         if (workspaceRoot && !isInsidePath(item.cwd, workspaceRoot)) continue;
-        await newTerminal({ shell: item.shell, cwd: item.cwd, allowOutsideWorkspace: true, restore: true });
+        await newTerminal({ shell: item.shell, cwd: item.cwd, allowOutsideWorkspace: true, restore: true, fromRestore: true });
       }
     } catch {}
   }

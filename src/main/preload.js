@@ -124,6 +124,10 @@ contextBridge.exposeInMainWorld('orpad', {
   // unsubscribe function (mirrors the machine/orchestration channel pattern).
   core: {
     startRun: (request = {}) => ipcRenderer.invoke('orpad-core-run-start', request),
+    continueRun: (request = {}) => ipcRenderer.invoke('orpad-core-run-continue', request),
+    observeStart: (request = {}) => ipcRenderer.invoke('orpad-core-observe-start', request),
+    observeStop: (runId) => ipcRenderer.invoke('orpad-core-observe-stop', { runId }),
+    observeReattach: () => ipcRenderer.invoke('orpad-core-observe-reattach'),
     stopRun: (runId) => ipcRenderer.invoke('orpad-core-run-stop', { runId }),
     replayTrace: (request = {}) => ipcRenderer.invoke('orpad-core-run-replay', request),
     listRuns: () => ipcRenderer.invoke('orpad-core-list-runs'),
@@ -132,6 +136,14 @@ contextBridge.exposeInMainWorld('orpad', {
       ipcRenderer.on('orpad-core-trace', listener);
       return () => ipcRenderer.removeListener('orpad-core-trace', listener);
     },
+    // Seed pushed to the Run GUI window from a terminal AI-CLI launch.
+    onSeed: (cb) => {
+      const listener = (_event, payload) => cb(payload);
+      ipcRenderer.on('orpad-core-seed', listener);
+      return () => ipcRenderer.removeListener('orpad-core-seed', listener);
+    },
+    // Race-proof pull: the Run GUI fetches any seed stashed for it on init (in case the push fired first).
+    pullSeed: () => ipcRenderer.invoke('orpad-core-pull-seed'),
   },
   userSnippets: {
     read: () => ipcRenderer.invoke('snippets-read'),
@@ -208,4 +220,11 @@ contextBridge.exposeInMainWorld('pty', {
     ipcRenderer.on('terminal.pty.event', listener);
     return () => ipcRenderer.removeListener('terminal.pty.event', listener);
   },
+});
+
+// System clipboard bridge — the renderer is sandboxed, so navigator.clipboard is unreliable; route copy/paste
+// (and a TUI's OSC 52 clipboard writes) through the Electron main-process clipboard, which always reaches the OS.
+contextBridge.exposeInMainWorld('clipboard', {
+  writeText: (text) => ipcRenderer.invoke('clipboard.write-text', String(text == null ? '' : text)),
+  readText: () => ipcRenderer.invoke('clipboard.read-text'),
 });

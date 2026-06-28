@@ -286,13 +286,17 @@ if (IS_ORCHESTRATION_WINDOW) {
 function setupCoreRunView() {
   if (coreRunView || !previewPaneEl || !window.orpad?.core?.onCoreTrace) return;
   const canRun = typeof window.orpad?.core?.startRun === 'function';
+  // The Run GUI window is a PURE VIEWER — it never launches runs (that happens in the terminal). It only
+  // lists/replays recorded runs and renders the live trace stream.
   coreRunView = createLiveTraceView({
-    onRun: canRun ? (request) => window.orpad.core.startRun(request) : null,
     onLinkGraph: typeof window.orpad?.getLinkGraph === 'function'
       ? () => window.orpad.getLinkGraph()
       : null,
-    onStop: typeof window.orpad?.core?.stopRun === 'function'
-      ? (runId) => window.orpad.core.stopRun(runId)
+    onListRuns: typeof window.orpad?.core?.listRuns === 'function'
+      ? () => window.orpad.core.listRuns()
+      : null,
+    onReplay: typeof window.orpad?.core?.replayTrace === 'function'
+      ? (traceFile) => window.orpad.core.replayTrace({ traceFile, intervalMs: 5 })
       : null,
   });
   coreRunView.el.id = 'core-run-view';
@@ -300,67 +304,47 @@ function setupCoreRunView() {
   window.orpad.core.onCoreTrace((payload) => {
     if (coreRunView) coreRunView.applyEvent(payload);
   });
+  // Seed from a terminal AI-CLI launch ("Apply orchestration"): OBSERVE the live session so it streams into this
+  // viewer as a graph. PRIMARY = parse the terminal's PTY stream (sessionId); the graph builds from the rendered
+  // screen, no session-log dependency. Works for ANY AI CLI (claude + codex have detector grammars; others still
+  // show the run). Dedup PER SESSION (not a single boolean): the same seed may arrive twice (push + pull), but a
+  // SECOND Apply on a different session must start its OWN observer — the backend supports N concurrent sessions.
+  const seededSessions = new Set();
+  const handleSeed = (seed) => {
+    if (!coreRunView || !seed) return;
+    if (seed.observe && typeof window.orpad?.core?.observeStart === 'function') {
+      const sid = String(seed.sessionId || '');
+      if (sid && seededSessions.has(sid)) return; // already observing this exact session
+      if (sid) seededSessions.add(sid);
+      window.orpad.core.observeStart({
+        cwd: seed.cwd, agent: seed.agent, pid: seed.pid || null,
+        sessionId: seed.sessionId || null, cols: seed.cols || null, rows: seed.rows || null,
+      }).catch(() => {});
+    }
+  };
+  // Delivered two ways (whichever wins): a push for an already-open window + a pull on init (race-proof).
+  if (typeof window.orpad?.core?.onSeed === 'function') window.orpad.core.onSeed(handleSeed);
+  if (typeof window.orpad?.core?.pullSeed === 'function') {
+    window.orpad.core.pullSeed().then((seed) => handleSeed(seed)).catch(() => {});
+  }
+  // Re-sync on (re)open: reattach to any live observers for this workspace (their PTY sessions are still
+  // running) and replay their buffered graph — so closing+reopening the Run GUI doesn't lose the live graph.
+  // Replayed events arrive via onCoreTrace above. (No-op on a fresh first open with no active observers.)
+  if (typeof window.orpad?.core?.observeReattach === 'function') {
+    window.orpad.core.observeReattach().catch(() => {});
+  }
+  void canRun;
+  // The run-history picker is superseded by the in-view Runs sidebar; the toolbar button now refreshes it.
   const coreRunsBtn = document.getElementById('btn-core-runs');
   if (coreRunsBtn && typeof window.orpad?.core?.listRuns === 'function') {
-    coreRunsBtn.addEventListener('click', openCoreRunPicker);
+    coreRunsBtn.addEventListener('click', () => { coreRunView?.seedRunsFromHistory?.(); });
   } else if (coreRunsBtn) {
     coreRunsBtn.style.display = 'none';
   }
 }
 
-// Replay a recorded run's trace through the live IPC so the picker can re-visualise
-// a past run without paying for a fresh agent run. The existing onCoreTrace listener
-// rebuilds the graph; replay's run/start event resets it first.
-function replayCoreRun(traceFile) {
-  Promise.resolve(window.orpad.core.replayTrace({ traceFile, intervalMs: 5 }))
-    .catch((err) => notifyFormatError('Replay run', err));
-}
-
-function formatRunTime(ms) {
-  if (!Number.isFinite(ms)) return '';
-  try { return new Date(ms).toLocaleString(); } catch (_) { return ''; }
-}
-
-// Run-history picker: lists recorded runs under .orpad/core-runs and replays the one
-// you click. Reuses the shared fmt-modal.
-async function openCoreRunPicker() {
-  let res;
-  try { res = await window.orpad.core.listRuns(); }
-  catch (err) { res = { ok: false, error: String(err?.message || err) }; }
-
-  const body = document.createElement('div');
-  body.className = 'core-run-picker';
-  if (!res || res.ok === false) {
-    body.textContent = (res && res.error) || 'Could not list runs.';
-  } else if (!Array.isArray(res.runs) || !res.runs.length) {
-    body.textContent = 'No recorded runs in this workspace yet — start a run first.';
-  } else {
-    for (const run of res.runs) {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'core-run-picker-item';
-      const titleEl = document.createElement('span');
-      titleEl.className = 'crp-title';
-      const goal = (run.goal || '').replace(/\s+/g, ' ').trim();
-      titleEl.textContent = goal || run.runId; // goal as the title; older runs fall back to the id
-      titleEl.title = goal || run.runId;
-      const metaEl = document.createElement('span');
-      metaEl.className = 'crp-meta';
-      const kb = Math.max(1, Math.round((run.sizeBytes || 0) / 1024));
-      metaEl.textContent = `${formatRunTime(run.startedMs)} · ${kb} KB${run.agent ? ` · ${run.agent}` : ''}${run.hasResearch ? ' · grounded' : ''}`;
-      row.append(titleEl, metaEl);
-      row.addEventListener('click', () => { closeFmtModal(); replayCoreRun(run.traceFile); });
-      body.appendChild(row);
-    }
-  }
-  openFmtModal({
-    title: 'Run history',
-    body,
-    footer: [{ label: 'Close', onClick: () => closeFmtModal() }],
-  });
-}
-
-
+// (The old run-history picker modal + replayCoreRun/formatRunTime helpers were removed — superseded by the
+// in-view Runs sidebar, which lists + replays recorded runs via the view's onListRuns/onReplay callbacks.)
 
 // ==================== Platform gating ====================
 // Detect the browser build so workspace features can fall back gracefully.
@@ -9073,7 +9057,7 @@ function setupCommandRegistry() {
     { id: 'view.files', title: 'Toggle File Explorer', category: 'View', keybinding: 'Ctrl Shift E', run: () => showSidebar('files') },
     { id: 'view.search', title: 'Search in Files', category: 'View', keybinding: 'Ctrl Shift F', run: () => showSidebar('search') },
     { id: 'view.backlinks', title: 'Toggle Backlinks', category: 'View', keybinding: 'Ctrl Shift B', run: () => showSidebar('backlinks') },
-    { id: 'view.orchestration', title: 'Open Orchestration', category: 'View', run: openOrchestrationWindow },
+    { id: 'view.orchestration', title: 'Open Run GUI', category: 'View', run: openOrchestrationWindow },
     { id: 'view.runbooks', title: 'Open Pipes', category: 'View', run: () => showSidebar('runbooks') },
     { id: 'runbook.validateActive', title: 'Check Active Pipeline', category: 'Pipeline', enabled: ({ activeTab }) => !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); } },
     { id: 'runbook.createRunRecord', title: 'Save Evidence', category: 'Pipeline', enabled: ({ activeTab, workspacePath }) => !!workspacePath && !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); await createSelectedRunRecord(activeTab.filePath); } },
@@ -11120,10 +11104,10 @@ async function openOrchestrationWindow() {
   try {
     const response = await api.open({ workspacePath });
     if (response?.success === false) {
-      throw new Error(response.error || 'Orchestration window could not be opened.');
+      throw new Error(response.error || 'Run GUI window could not be opened.');
     }
   } catch (err) {
-    notifyFormatError('Orchestration', err);
+    notifyFormatError('Run GUI', err);
   }
 }
 
@@ -11267,7 +11251,7 @@ window.addEventListener('resize', () => {
     applyStoredSidebarWidth();
     btnAiEl?.setAttribute('hidden', '');
     document.getElementById('sidebar-runbooks')?.classList.add('active');
-    window.orpad?.setTitle?.('OrPAD Orchestration');
+    window.orpad?.setTitle?.('OrPAD Run GUI');
     setOrchestrationRailCollapsed(localStorage.getItem('orpad-orchestration-rail-collapsed') === 'true');
     renderRunbooksPanel();
     void refreshWorkspaceRunbookSummary();

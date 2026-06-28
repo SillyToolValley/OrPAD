@@ -21,6 +21,7 @@ const {
 } = require('../orchestration-machine/patches');
 
 const trace = require('./trace.cjs');
+const vault = require('./vault.cjs');
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -99,9 +100,12 @@ const PROVIDERS = {
   claude: {
     command: 'claude',
     stream: true,
-    buildArgs: ({ allowedTools, streamMode }) => {
+    buildArgs: ({ allowedTools, streamMode, resumeSessionId }) => {
+      // Session persistence is ENABLED (no --no-session-persistence) so a run can be CONTINUED
+      // conversationally via --resume <sessionId> (the session_id is captured from the stream).
       const a = ['-p', '--output-format', streamMode ? 'stream-json' : 'json',
-        ...(streamMode ? ['--verbose'] : []), '--no-session-persistence', '--permission-mode', 'default'];
+        ...(streamMode ? ['--verbose'] : []), '--permission-mode', 'default'];
+      if (resumeSessionId) a.push('--resume', String(resumeSessionId));
       if (Array.isArray(allowedTools) && allowedTools.length) a.push('--allowedTools', ...allowedTools);
       return a;
     },
@@ -129,7 +133,7 @@ function getProvider(name) { return PROVIDERS[String(name || 'claude').toLowerCa
 
 // Is the provider's CLI actually installed / on PATH? (pre-flight so a missing agent
 // surfaces clear guidance instead of a silent "ran but produced nothing").
-function providerAvailable(command) {
+function commandAvailable(command) {
   const probe = process.platform === 'win32' ? 'where' : 'which';
   try { return spawnSync(probe, [command], { shell: false, windowsHide: true }).status === 0; }
   catch (_) { return false; }
@@ -137,18 +141,18 @@ function providerAvailable(command) {
 function providerInfo(name) {
   const key = String(name || 'claude').toLowerCase();
   const provider = getProvider(key);
-  return { provider: key in PROVIDERS ? key : 'claude', command: provider.command, available: providerAvailable(provider.command) };
+  return { provider: key in PROVIDERS ? key : 'claude', command: provider.command, available: commandAvailable(provider.command) };
 }
 
 // Delegate the whole goal to a capable CLI agent, running INSIDE the isolated overlay.
 // Prompt goes via stdin (not argv) so multi-word goals are not mangled by the Windows shell.
 // timeoutMs > 0 enables the motion stop-signal: the agent + its whole tree are killed on cap.
 // Returns a Promise of the run result (stopped:true when the cap fired).
-function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null, onTraceEvent = null, runId = null }) {
+function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', timeoutMs = 0, traceFile = null, onTraceEvent = null, runId = null, resumeSessionId = null }) {
   return new Promise((resolve) => {
     const provider = getProvider(agent);
     const streamMode = !!provider.stream && !!(traceFile || onTraceEvent);
-    const args = provider.buildArgs({ allowedTools, streamMode });
+    const args = provider.buildArgs({ allowedTools, streamMode, resumeSessionId });
     const t0 = Date.now();
     const child = spawn(provider.command, args, {
       cwd: overlayRoot,
@@ -164,11 +168,13 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
     // provider result metadata when the stream exposes it.
     let lineBuf = '';
     let resultEvent = null;
+    let sessionId = null; // captured from the stream so this run can be CONTINUED conversationally (--resume)
     const handleStreamLine = (line) => {
       const s = String(line).trim();
       if (!s) return;
       let obj = null;
       try { obj = JSON.parse(s); } catch (_) { obj = s; }
+      if (obj && typeof obj === 'object' && obj.session_id && !sessionId) sessionId = obj.session_id;
       if (provider.resultFromLine) resultEvent = provider.resultFromLine(obj, resultEvent) || resultEvent;
       else if (obj && obj.type === 'result') resultEvent = obj;
       try {
@@ -226,6 +232,7 @@ function delegateToAgent({ overlayRoot, goal, allowedTools, agent = 'claude', ti
         usage: parsed ? parsed.usage : null,
         numTurns: parsed ? parsed.num_turns : null,
         permissionDenials: parsed ? parsed.permission_denials : null,
+        sessionId: sessionId || (parsed && parsed.session_id) || null,
       });
     });
     child.on('error', (e) => {
@@ -337,7 +344,7 @@ async function runGovernedDelegation(opts) {
   //    use is classified into emergent-graph nodes written to traceFile live.
   phase('agent_run', 'start');
   const effectiveAllowedTools = (Array.isArray(allowedTools) && allowedTools.length) ? allowedTools : DEFAULT_ALLOWED_TOOLS;
-  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools: effectiveAllowedTools, agent, timeoutMs, traceFile, onTraceEvent, runId: opts.runId });
+  const agentRun = await delegateToAgent({ overlayRoot, goal: effectiveGoal, allowedTools: effectiveAllowedTools, agent, timeoutMs, traceFile, onTraceEvent, runId: opts.runId, resumeSessionId: opts.resumeSessionId });
   appendObserverTrace(runDir, {
     event: 'agent_run', at: nowIso(),
     exitCode: agentRun.exitCode, durationMs: agentRun.durationMs,
@@ -540,6 +547,70 @@ async function runGroundedDelegation(opts) {
   return { research, brief, build, summary: build.summary };
 }
 
+// --- Vault-grounded delegation (knowledge vault: read -> research+capture -> build) ------------------
+// Mirrors runGroundedDelegation but sources grounding from the durable knowledge vault and (when ground
+// is on) runs a research step that ALSO writes notes back into a vault overlay. Returns the IDENTICAL
+// { research, brief, build, summary } shape — plus `vault:{overlayRoot,patch}` for the caller (ipc) to
+// persist through the transactional moat — so the result-unwrap downstream is unchanged. The vault read
+// is a defensive no-op on a missing/empty vault: a cold start degrades to plain web grounding, never blocked.
+async function runVaultGroundedDelegation(opts) {
+  if (!opts || !opts.goal) throw new Error('goal is required');
+  if (!opts.overlayRoot) throw new Error('overlayRoot is required');
+  if (!opts.workspaceRoot) throw new Error('workspaceRoot is required');
+  const onTraceEvent = opts.onTraceEvent || null;
+  const emit = (ev) => { if (onTraceEvent) { try { onTraceEvent(ev); } catch (_) { /* best effort */ } } };
+  const runDir = opts.runRoot || path.join(path.resolve(opts.overlayRoot), '..', 'run');
+
+  // 1. vault_read — load durable knowledge (missing/empty/malformed -> no notes, no throw).
+  emit({ ev: 'phase', kind: 'vault_read', state: 'start', at: nowIso() });
+  const index = vault.loadVaultIndex(opts.workspaceRoot);
+  const vaultBrief = vault.composeVaultBrief(index);
+  appendObserverTrace(runDir, { event: 'vault_read', at: nowIso(), noteCount: index.notes.length, hasBrief: !!vaultBrief });
+  emit({ ev: 'phase', kind: 'vault_read', state: 'done', at: nowIso() });
+
+  // 2. gap-research that also writes notes into the vault overlay (write-set = the vault dir). Reuses the
+  //    governed-delegation envelope; its collected patch IS the vault write-back the caller persists.
+  let research = null;
+  let researchBrief = '';
+  let vaultWrite = null; // { overlayRoot, patch }
+  if (opts.ground !== false && !isRunCancelled(opts.runId)) {
+    emit({ ev: 'phase', kind: 'vault_writeback', state: 'start', at: nowIso() });
+    const researchOverlay = opts.researchOverlayRoot || `${opts.overlayRoot}-vault`;
+    const researchRun = opts.researchRunRoot || (opts.runRoot ? `${opts.runRoot}-vault` : undefined);
+    research = await runGovernedDelegation({
+      ...opts,
+      overlayRoot: researchOverlay,
+      runRoot: researchRun,
+      goal: vault.composeVaultResearchGoal(opts.goal, { vaultBrief, earnedFrom: opts.earnedFrom }),
+      allowedFiles: [vault.VAULT_REL],
+      readOnlyFiles: opts.readOnlyFiles || [],
+      allowedTools: opts.researchTools || ['Read', 'Write', 'Edit', 'WebSearch', 'WebFetch', 'Bash', 'Grep', 'Glob'],
+      timeoutMs: opts.researchTimeoutMs || opts.timeoutMs || 0,
+      injectGuidance: false, // research is grounded by the vault brief, not the build's standing guidance
+    });
+    vaultWrite = { overlayRoot: researchOverlay, patch: research.patch };
+    researchBrief = vault.readVaultNotesFromPatch(research.patch);
+    emit({ ev: 'phase', kind: 'vault_writeback', state: 'done', at: nowIso() });
+  }
+
+  // cancellation between research and build (mirror runGroundedDelegation).
+  if (isRunCancelled(opts.runId)) {
+    return {
+      research, brief: '', vault: vaultWrite,
+      build: { stopped: true, stopReason: 'cancelled', patch: { changes: [], violations: [] }, summary: { stopped: true, stopReason: 'cancelled' } },
+      summary: { stopped: true, stopReason: 'cancelled' },
+    };
+  }
+
+  // 3. build with the vault knowledge + fresh research injected; uses the caller's real write-set.
+  const combinedBrief = [vaultBrief, researchBrief].filter(s => String(s || '').trim()).join('\n\n');
+  const build = await runGovernedDelegation({
+    ...opts,
+    goal: composeGoalWithGrounding(opts.goal, combinedBrief),
+  });
+  return { research, brief: combinedBrief, vault: vaultWrite, build, summary: build.summary };
+}
+
 // --- Verification gates (the TRUST boundary) -----------------------------------
 // Deterministic, EXTERNAL checks run against the agent's overlay output BEFORE it
 // is allowed to touch the canonical workspace. External verification is the only
@@ -556,13 +627,18 @@ function runVerificationGates(overlayRoot, gates, opts = {}) {
   const results = [];
   for (const g of (Array.isArray(gates) ? gates : [])) {
     if (!g || typeof g !== 'object') continue;
-    const id = String(g.id || g.cmd || g.path || g.kind || 'gate');
+    const id = String(g.id || g.cmd || (Array.isArray(g.argv) ? g.argv.join(' ') : '') || g.path || g.kind || 'gate');
     let passed = false;
     let detail = '';
     try {
-      if (g.kind === 'command' && g.cmd) {
+      if (g.kind === 'command' && (g.cmd || Array.isArray(g.argv))) {
         const expect = Number.isInteger(g.expectExit) ? g.expectExit : 0;
-        const r = spawnSync(String(g.cmd), { cwd: overlayRoot, shell: true, timeout: perGateTimeoutMs, encoding: 'utf8' });
+        // argv form (shell:false) for INTERNALLY-generated gates whose tokens may include an agent-chosen
+        // file path — a shell string built from that path is command injection at the trust boundary. The
+        // g.cmd form (user-supplied shell command, e.g. "npm test") stays shell:true.
+        const r = Array.isArray(g.argv)
+          ? spawnSync(String(g.argv[0]), g.argv.slice(1).map(String), { cwd: overlayRoot, shell: false, timeout: perGateTimeoutMs, encoding: 'utf8', windowsHide: true })
+          : spawnSync(String(g.cmd), { cwd: overlayRoot, shell: true, timeout: perGateTimeoutMs, encoding: 'utf8' });
         const code = r.status;
         passed = code === expect && !r.error;
         const tail = String(r.stderr || r.stdout || '').trim().slice(-400);
@@ -596,18 +672,139 @@ async function runVerifiedBuildLoop({ buildFn, verifyFn, maxCycles = 0 }) {
   if (typeof buildFn !== 'function' || typeof verifyFn !== 'function') {
     throw new Error('runVerifiedBuildLoop requires buildFn and verifyFn');
   }
+  // A grounded/vault runner returns a wrapper { ..., build, summary } whose stop flag lives at
+  // build.build.stopped; a plain governed result has it at build.stopped. Unwrap so a stopped/cancelled
+  // attempt is never wrongly retried (mirrors the ipc result-unwrap at build = result.build || result).
+  const isStopped = (b) => { const x = b && (b.build || b); return !!(x && x.stopped); };
+  // Promotion criterion: the DETERMINISTIC verdict (detPassed) when present, else gate.passed.
+  const promoted = (g) => (g && g.detPassed !== undefined) ? !!g.detPassed : !!(g && g.passed);
   let cycle = 0;
   let build = await buildFn(null);
-  let gate = verifyFn();
-  while (!gate.passed && cycle < maxCycles && !(build && build.stopped)) {
+  let gate = await verifyFn(build);
+  let best = promoted(gate) ? { build, gate } : null; // best-so-far: a promotable attempt is never lost
+  while (!gate.passed && cycle < maxCycles && !isStopped(build)) {
     cycle += 1;
     const failures = gate.results.filter((r) => !r.passed)
       .map((r) => `- [${r.id}] ${r.detail}`).join('\n');
     const feedback = `The previous attempt FAILED these verification checks:\n${failures}\nFix them. Do not change unrelated behavior.`;
     build = await buildFn(feedback);
-    gate = verifyFn();
+    gate = await verifyFn(build);
+    if (promoted(gate)) best = { build, gate };
   }
+  // If the final attempt regressed below a previously-promotable one (e.g. a critic-driven retry broke a
+  // deterministically-passing build), return the BEST — never discard already-shippable output.
+  if (!promoted(gate) && best) { build = best.build; gate = best.gate; }
+  // NB: a promotion decision should key off promoted(gate) / gate.detPassed (when present), NOT `met` —
+  // with best-so-far, the returned gate can be a det-passing build whose `passed` is false (critic flagged).
   return { build, gate, met: gate.passed, cycles: cycle };
+}
+
+// --- Default verification layer: smoke gates + adversarial critic (the minimum QA orchestration) -----
+// Benchmark-informed (Nous Hermes): the durable, model-advancement-proof parts are an EXTERNAL
+// deterministic gate at the trust boundary + a SEPARATE critic role + bounded feedback retry. OrPAD already
+// owns the gate engine (runVerificationGates) and the loop (runVerifiedBuildLoop); this adds the DEFAULT,
+// auto-derived layer so a non-dev user gets verification without writing any gates.
+
+// Cheap, dependency-free smoke gates derived from the build's changed files — language-aware STATIC checks
+// (NO install/build) that catch broken output (syntax errors) without an environment. Capped to bound cost.
+// These run via runVerificationGates in the overlay and are the DETERMINISTIC source of truth for promotion.
+let _smokeToolCache = null;
+function defaultToolAvailability() {
+  if (!_smokeToolCache) {
+    _smokeToolCache = { node: commandAvailable('node'), python: commandAvailable('python'), python3: commandAvailable('python3') };
+  }
+  return _smokeToolCache;
+}
+function buildSmokeGates(patch, opts = {}) {
+  const cap = Number.isInteger(opts.cap) ? opts.cap : 60;
+  // Only emit a gate for a toolchain that actually resolves on PATH — a MISSING interpreter must degrade to
+  // "unverified for those files", never a permanent gate failure that discards correct output every retry.
+  const has = opts.has || defaultToolAvailability();
+  const pythonCmd = has.python ? 'python' : (has.python3 ? 'python3' : null);
+  const changes = (patch && Array.isArray(patch.changes) ? patch.changes : [])
+    .filter((c) => c && c.afterExists !== false && typeof c.path === 'string');
+  const gates = [];
+  for (const c of changes) {
+    if (gates.length >= cap) break;
+    const p = c.path;
+    if (p.split('/').includes('..') || /^([a-zA-Z]:)?[\\/]/.test(p)) continue; // no traversal / absolute paths
+    // argv form -> spawnSync shell:false, so an agent-chosen filename can never be shell-injected.
+    if (/\.(c|m)?js$/i.test(p) && has.node) gates.push({ kind: 'command', id: `syntax:${p}`, argv: ['node', '--check', p] });
+    else if (/\.py$/i.test(p) && pythonCmd) gates.push({ kind: 'command', id: `pysyntax:${p}`, argv: [pythonCmd, '-m', 'py_compile', p] });
+  }
+  return gates;
+}
+
+// Parse a critic verdict from an LLM's final text: the last ```json fenced block, else the last {...}.
+// Defensive — any failure yields a non-blocking pass (the critic must never hard-block promotion).
+function parseCriticVerdict(text) {
+  const s = String(text || '');
+  let jsonStr = null;
+  const fences = [...s.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  if (fences.length) jsonStr = fences[fences.length - 1][1];
+  else { const m = s.match(/\{[\s\S]*\}/); if (m) jsonStr = m[0]; }
+  if (!jsonStr) return { passed: true, blockers: [], notes: [] };
+  try {
+    const v = JSON.parse(jsonStr);
+    const blockers = Array.isArray(v.blockers) ? v.blockers.map(String).map((x) => x.trim()).filter(Boolean) : [];
+    const passed = v.passed === false ? false : blockers.length === 0;
+    return { passed, blockers, notes: Array.isArray(v.notes) ? v.notes.map(String) : [] };
+  } catch (_) { return { passed: true, blockers: [], notes: [] }; }
+}
+
+function composeCriticGoal(buildGoal) {
+  return [
+    'You are an INDEPENDENT QA CRITIC. Do NOT modify, build, or run anything — review only (Read/Grep/Glob).',
+    'Adversarially review the code in this directory against the TASK below. Catch things that pass a syntax',
+    'check but mean the result DOES NOT ACTUALLY WORK for a real user, especially:',
+    '- runtime-assumption failures: an API/library used in a target where it does not work (e.g. a browser-only',
+    '  API like webkitSpeechRecognition used inside Electron; OS/platform mismatches);',
+    '- features claimed (README/UI/docs) with no real implementation behind them (stubs/TODOs shipped as "done");',
+    '- missing wiring between components (an event/handler/route never connected), broken entry points;',
+    '- correctness or security holes that would make the stated goal fail in practice;',
+    '- DELIVERABLE NOT PRODUCED: the TASK promises a built/packaged/deployable/distributable artifact (an',
+    '  installer, a compiled binary, a published build) but only buildable SOURCE + instructions exist — no',
+    '  actual artifact (e.g. a dist/ or release/ output) was produced. "Buildable" is not "built": check for',
+    '  the real artifact with Glob/Read before accepting that the goal is met;',
+    '- OVERCLAIM: the project README/docs/comments CLAIM something is done/built/working/distributable that is',
+    '  NOT actually true — e.g. a README says "built as a distributable app" but no installer/release artifact',
+    '  exists, or a claimed feature is only a stub. An overclaim that hides an unmet goal is a blocker.',
+    'Be concrete and skeptical; name specific blockers rather than vague worry. Judge against what the TASK',
+    'actually promised, not perfection.',
+    '',
+    'End your reply with ONLY a JSON block and no prose after it:',
+    '```json',
+    '{"passed": true, "blockers": ["a concrete blocker that breaks the goal"], "notes": ["minor issue"]}',
+    '```',
+    'Set passed=false iff there is at least one blocker that would make the goal not actually work for a user.',
+    '',
+    '--- TASK ---',
+    buildGoal,
+  ].join('\n');
+}
+
+// Adversarial critic as a SEPARATE read-only delegation over the build overlay. ADVISORY: returns
+// { passed, findings[] }. The caller gates PROMOTION on the deterministic gates and uses the critic only to
+// drive retry feedback + surface unresolved concerns — a model grading itself must never authorize shipping.
+// Injectable `delegate` for tests. Any failure / stop yields a non-blocking pass.
+async function runCritic(opts) {
+  const { overlayRoot, goal, agent, timeoutMs = 0, onTraceEvent = null, runId = null, delegate = delegateToAgent } = opts || {};
+  if (!overlayRoot || !goal) return { passed: true, findings: [] };
+  let res;
+  try {
+    res = await delegate({
+      overlayRoot,
+      goal: composeCriticGoal(goal),
+      allowedTools: ['Read', 'Grep', 'Glob'],
+      agent,
+      timeoutMs,
+      onTraceEvent,
+      runId,
+    });
+  } catch (_) { return { passed: true, findings: [] }; }
+  if (!res || res.stopped || res.isError) return { passed: true, findings: [] };
+  const v = parseCriticVerdict(res.result);
+  return { passed: v.passed, findings: v.blockers, notes: v.notes };
 }
 
 module.exports = {
@@ -628,8 +825,20 @@ module.exports = {
   runParallelResearch,
   DEFAULT_RESEARCH_QUERIES,
   runGroundedDelegation,
+  runVaultGroundedDelegation,
+  // Knowledge vault (durable, workspace-contained domain knowledge; see vault.cjs + the spec).
+  loadVaultIndex: vault.loadVaultIndex,
+  composeVaultBrief: vault.composeVaultBrief,
+  composeVaultResearchGoal: vault.composeVaultResearchGoal,
+  promoteVaultPatch: vault.promoteVaultPatch,
+  rebuildVaultIndex: vault.rebuildVaultIndex,
+  VAULT_REL: vault.VAULT_REL,
   runVerificationGates,
   runVerifiedBuildLoop,
+  buildSmokeGates,
+  commandAvailable,
+  runCritic,
+  parseCriticVerdict,
   // The soft-node guidance catalog is no longer empty: it is grown from observed gaps and
   // promoted into guidance-catalog.json, then injected into every governed delegation.
   guidanceCatalog: loadGuidanceCatalog(),

@@ -17,6 +17,7 @@ const terminalWindows = new Set();
 const orchestrationWindows = new Set();
 const terminalWindowContexts = new Map();
 const orchestrationWindowContexts = new Map();
+const pendingOrchestrationSeeds = new Map(); // webContentsId -> seed, awaiting the Run GUI renderer's pull
 const watchers = new Map();
 const snippetWatchers = new Map();
 const authority = createAuthorityManager();
@@ -227,6 +228,10 @@ function createWindow(filePath) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Keep timers/rAF running at full rate when the window is blurred/occluded. Without this Electron throttles
+      // background rendering, so a live terminal (or the observe graph) stops updating while unfocused and then
+      // floods through a huge backlog on refocus — the cause of the "lag when not focused" stutter.
+      backgroundThrottling: false,
     },
     show: false,
     backgroundColor: '#1a1b26',
@@ -411,6 +416,10 @@ function createTerminalWindow({ openerWebContents, workspaceRoot = '', cwd = '',
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Keep timers/rAF running at full rate when the window is blurred/occluded. Without this Electron throttles
+      // background rendering, so a live terminal (or the observe graph) stops updating while unfocused and then
+      // floods through a huge backlog on refocus — the cause of the "lag when not focused" stutter.
+      backgroundThrottling: false,
     },
     show: false,
     backgroundColor: '#1a1b26',
@@ -468,10 +477,16 @@ function createOrchestrationWindow({ openerWebContents, workspaceRoot = '' } = {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Keep timers/rAF running at full rate when the window is blurred/occluded. Without this Electron throttles
+      // background rendering, so a live terminal (or the observe graph) stops updating while unfocused and then
+      // floods through a huge backlog on refocus — the cause of the "lag when not focused" stutter.
+      backgroundThrottling: false,
     },
     show: false,
     backgroundColor: '#1a1b26',
-    title: 'OrPAD Orchestration',
+    // Make the project this Run GUI is scoped to explicit — the window is bound to ONE workspace (its run list
+    // and live observers are filtered to it), so name it in the title.
+    title: workspaceRoot ? `OrPAD Run GUI — ${path.basename(String(workspaceRoot))}` : 'OrPAD Run GUI',
   });
 
   win.setMenuBarVisibility(false);
@@ -497,6 +512,7 @@ function createOrchestrationWindow({ openerWebContents, workspaceRoot = '' } = {
   win.on('closed', () => {
     orchestrationWindows.delete(win);
     orchestrationWindowContexts.delete(webContentsId);
+    pendingOrchestrationSeeds.delete(webContentsId);
     authority.forget({ id: webContentsId });
   });
   return win;
@@ -632,17 +648,38 @@ ipcMain.handle('terminal-window-focus', async () => {
 
 ipcMain.handle('orchestration-window-open', async (event, request = {}) => {
   const target = await orchestrationWindowTargetForRequest(event, request);
-  if (!target.workspaceRoot) return { success: false, error: 'Open a project folder before opening Orchestration.' };
+  if (!target.workspaceRoot) return { success: false, error: 'Open a project folder before opening the Run GUI.' };
+  // Optional seed from a terminal AI-CLI launch ("Apply orchestration"). Delivered TWO ways for reliability:
+  // (1) STORE it keyed by the target window so the renderer can PULL it on init (race-proof), and
+  // (2) PUSH it via 'orpad-core-seed' for an already-loaded window.
+  const seed = request && request.seed && typeof request.seed === 'object' ? request.seed : null;
+  const stash = (id) => { if (seed) pendingOrchestrationSeeds.set(id, seed); };
   const existing = activeOrchestrationWindow(target);
   if (existing) {
     focusOrchestrationWindow(existing);
+    if (seed && !existing.isDestroyed()) {
+      stash(existing.webContents.id);
+      if (!existing.webContents.isLoadingMainFrame()) existing.webContents.send('orpad-core-seed', seed);
+    }
     return { id: existing.id, success: true, reused: true, workspaceRoot: target.workspaceRoot };
   }
   const win = createOrchestrationWindow({
     openerWebContents: event.sender,
     workspaceRoot: target.workspaceRoot,
   });
+  if (seed) {
+    stash(win.webContents.id);
+    win.webContents.once('did-finish-load', () => { if (!win.isDestroyed()) win.webContents.send('orpad-core-seed', seed); });
+  }
   return { id: win.id, success: true, workspaceRoot: target.workspaceRoot };
+});
+
+// Race-proof seed delivery: the Run GUI renderer pulls any seed stashed for its window on init.
+ipcMain.handle('orpad-core-pull-seed', (event) => {
+  const id = event.sender.id;
+  const seed = pendingOrchestrationSeeds.get(id) || null;
+  pendingOrchestrationSeeds.delete(id);
+  return seed;
 });
 
 ipcMain.handle('orchestration-window-status', async (event, request = {}) => {
@@ -1728,6 +1765,8 @@ app.on('window-all-closed', () => app.quit());
 // process tree so it stops occupying resources (it does not survive the app).
 app.on('before-quit', () => {
   try { require('./orchestration-core/core.cjs').cancelAllRuns(); } catch (_) { /* best effort */ }
+  try { require('./orchestration-core/tui-observer.cjs').stopAll(); } catch (_) { /* best effort */ }
+  try { require('./orchestration-core/tui-detect-observer.cjs').stopAllTuiDetect(); } catch (_) { /* best effort */ }
 });
 app.on('activate', () => {
   if (windows.size === 0) createWindow(null);

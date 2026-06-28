@@ -244,67 +244,34 @@ function collapseTransient(nodes, edges, activeId) {
   return { nodes: keptNodes, edges: keptEdges, activeId: active };
 }
 
-export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop = null } = {}) {
+export function createLiveTraceView({ onRun = null, onContinue = null, onLinkGraph = null, onStop = null, onListRuns = null, onReplay = null } = {}) {
   const el = document.createElement('section');
   el.className = 'core-run-view';
   el.innerHTML = `
     <div class="core-run-side">
       <header class="core-run-header">
-        <h2 class="core-run-title">Live run</h2>
+        <h2 class="core-run-title">Runs</h2>
         <div class="core-run-status" data-core-run-status role="status">Idle — no run yet.</div>
       </header>
-      <form class="core-run-form" data-core-run-form>
-        <label class="core-run-field">
-          <span>AI provider <small>which agent runs the task</small></span>
-          <select data-core-run-provider>
-            <option value="claude">Claude (claude CLI)</option>
-            <option value="codex">Codex (codex CLI)</option>
-            <option value="gemini">Gemini (gemini CLI)</option>
-          </select>
-        </label>
-        <label class="core-run-field">
-          <span>Goal</span>
-          <textarea data-core-run-goal rows="3" placeholder="Describe the task to delegate to the agent…"></textarea>
-        </label>
-        <div class="core-run-form-row core-run-form-opts">
-          <label class="core-run-check"><input type="checkbox" data-core-run-ground checked /> Research prior art first (grounding)</label>
-          <label class="core-run-check"><input type="checkbox" data-core-run-parallel checked /> Parallel research (fan-out)</label>
-          <label class="core-run-check"><input type="checkbox" data-core-run-apply /> Apply result to workspace <small>off = result stays in the run overlay</small></label>
+      <div class="run-gui-runs" data-run-gui-runs>
+        <div class="run-gui-runs-head">
+          <button type="button" class="run-gui-runs-toggle" data-run-gui-toggle aria-expanded="true" title="Collapse / expand the run list">▾ Sessions</button>
+          <button type="button" class="run-gui-runs-refresh" data-run-gui-refresh title="Refresh run history">↻</button>
         </div>
-        <div class="core-run-form-row">
-          <button type="submit" class="core-run-btn" data-core-run-submit>Run</button>
-          <button type="button" class="core-run-btn core-run-btn-stop" data-core-run-stop hidden>Stop</button>
-        </div>
-        <details class="core-run-advanced">
-          <summary>Advanced options</summary>
-          <label class="core-run-field">
-            <span>Write-set <small>optional — files the agent may change. Leave empty to build freely; the whole result is applied to the workspace.</small></span>
-            <textarea data-core-run-writeset rows="2" placeholder="src/feature.js"></textarea>
-          </label>
-          <label class="core-run-field">
-            <span>Read-only context <small>optional — extra files seeded read-only, one per line</small></span>
-            <textarea data-core-run-readonly rows="1" placeholder="src/types.ts"></textarea>
-          </label>
-          <label class="core-run-field">
-            <span>Verification gates <small>optional — shell checks, one per line; exit 0 = pass. A failing check BLOCKS apply, so nothing unverified reaches your workspace.</small></span>
-            <textarea data-core-run-gates rows="2" placeholder="npm test"></textarea>
-          </label>
-          <div class="core-run-form-row">
-            <label class="core-run-field core-run-field-inline">
-              <span>Auto-fix cycles <small>retries on gate failure</small></span>
-              <input type="number" data-core-run-verify-cycles min="0" max="5" step="1" value="0" inputmode="numeric" />
-            </label>
-            <label class="core-run-field core-run-field-inline">
-              <span>Time cap (min) <small>0 = no stop-signal</small></span>
-              <input type="number" data-core-run-timeout min="0" step="1" value="0" inputmode="numeric" />
-            </label>
-          </div>
-        </details>
-        <p class="core-run-form-note">Spawns the selected agent under the isolation moat. A real run — it may take minutes and incur cost.</p>
+        <ul class="run-gui-run-list" data-run-list></ul>
+      </div>
+      <!-- The Run GUI is a PURE VIEWER: pick a run on the left, see its status here + its graph on the right.
+           Runs are launched from the TERMINAL (launch an AI CLI → "Apply orchestration"; configure via the
+           terminal's "Orchestration Options" button). No provider/goal form or options live in this window. -->
+      <div class="run-gui-status" data-run-gui-status>
         <p class="core-run-form-error" data-core-run-error hidden></p>
         <p class="core-run-form-result" data-core-run-result hidden></p>
         <div class="core-run-result-loc" data-core-run-result-loc hidden></div>
-      </form>
+        <div class="core-run-transcript" data-core-run-transcript hidden>
+          <div class="core-run-transcript-head">Conversation</div>
+          <div class="core-run-transcript-body" data-core-run-transcript-body></div>
+        </div>
+      </div>
     </div>
     <div class="core-run-graph-viewport core-run-graph-viewport-3d" data-core-run-viewport>
       <div class="core-run-3d" data-core-run-3d></div>
@@ -337,48 +304,48 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
         </div>
       </div>
     </div>
-    <div class="core-run-modal" data-core-run-modal hidden>
-      <div class="core-run-modal-backdrop" data-core-run-modal-close></div>
-      <div class="core-run-modal-card" role="alertdialog" aria-modal="true">
-        <h3 class="core-run-modal-title" data-core-run-modal-title></h3>
-        <div class="core-run-modal-body" data-core-run-modal-body></div>
-        <div class="core-run-modal-actions">
-          <button type="button" class="core-run-btn" data-core-run-modal-close>Got it</button>
-        </div>
-      </div>
-    </div>
   `;
 
+  // Pure-viewer refs: a run-list sidebar + a selected-run status panel + the 3D graph. No form/inputs.
   const statusEl = el.querySelector('[data-core-run-status]');
-  const formEl = el.querySelector('[data-core-run-form]');
-  const providerEl = el.querySelector('[data-core-run-provider]');
-  const goalEl = el.querySelector('[data-core-run-goal]');
-  const writesetEl = el.querySelector('[data-core-run-writeset]');
-  const readonlyEl = el.querySelector('[data-core-run-readonly]');
-  const timeoutEl = el.querySelector('[data-core-run-timeout]');
-  const submitEl = el.querySelector('[data-core-run-submit]');
-  const stopEl = el.querySelector('[data-core-run-stop]');
   const errorEl = el.querySelector('[data-core-run-error]');
   const resultEl = el.querySelector('[data-core-run-result]');
-  const groundEl = el.querySelector('[data-core-run-ground]');
-  const applyEl = el.querySelector('[data-core-run-apply]');
-  const parallelEl = el.querySelector('[data-core-run-parallel]');
-  const gatesEl = el.querySelector('[data-core-run-gates]');
-  const verifyCyclesEl = el.querySelector('[data-core-run-verify-cycles]');
   const viewportEl = el.querySelector('[data-core-run-viewport]');
   const graph3dEl = el.querySelector('[data-core-run-3d]');
   const refreshBtn = el.querySelector('[data-core-run-refresh]');
   const fitBtn = el.querySelector('[data-core-run-fit]');
   const themeSelect = el.querySelector('[data-core-run-theme]');
-  const modalEl = el.querySelector('[data-core-run-modal]');
-  const modalTitleEl = el.querySelector('[data-core-run-modal-title]');
-  const modalBodyEl = el.querySelector('[data-core-run-modal-body]');
   const resultLocEl = el.querySelector('[data-core-run-result-loc]');
+  const transcriptEl = el.querySelector('[data-core-run-transcript]');
+  const transcriptBodyEl = el.querySelector('[data-core-run-transcript-body]');
+  const runListEl = el.querySelector('[data-run-list]');
+  const runsToggleEl = el.querySelector('[data-run-gui-toggle]');
+  const runsRefreshEl = el.querySelector('[data-run-gui-refresh]');
 
-  let events = [];
-  let currentRunId = null;
-  let errorMessage = '';
-  let busy = false;
+  // --- Multi-run model -------------------------------------------------------
+  // Each run (form run, terminal-launched, replayed, or observed TUI) keeps its OWN event buffer + status +
+  // side-panel state. The single 3D scene renders the SELECTED run; off-screen runs keep buffering so their
+  // sidebar badges stay live. render()/transcript/status read straight from `selected` (no fragile aliases).
+  const runs = new Map();          // runId -> RunEntry (insertion order = sidebar order)
+  let selected = null;             // the RunEntry shown in `fg`
+  const EMPTY = [];
+
+  function createRunEntry(runId, meta = {}) {
+    const entry = {
+      runId, events: [], transcript: [],
+      goal: meta.goal || '', agent: meta.agent || '',
+      status: meta.status || 'inactive', errorMessage: '',
+      startedMs: meta.startedMs || Date.now(),
+      isReplay: /^replay-/.test(String(runId || '')),
+      isObserve: /^observe-/.test(String(runId || '')),
+      seeded: !!meta.seeded,
+      traceFile: meta.traceFile || null,
+      resultText: '', resultIsError: false, resultRes: null,
+    };
+    runs.set(runId, entry);
+    return entry;
+  }
+  function entryFor(runId, meta) { return runs.get(runId) || createRunEntry(runId, meta); }
 
   // Workspace link graph (lazy-loaded once via onLinkGraph; "↻ Graph" re-scans).
   let linkGraph = null;
@@ -423,73 +390,269 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   function showResultLocation(res) {
     if (!resultLocEl) return;
     resultLocEl.innerHTML = '';
+    const rows = [];
     const overlay = res && res.overlayPath;
-    if (!overlay || !res.builtCount) { resultLocEl.hidden = true; return; }
-    const label = document.createElement('span');
-    label.className = 'core-run-loc-label';
-    label.textContent = res.appliedCount
-      ? 'Applied to your workspace. The built result also lives in the run overlay:'
-      : 'Result built but NOT applied — it lives in the run overlay:';
-    const pathEl = document.createElement('code');
-    pathEl.className = 'core-run-loc-path';
-    pathEl.textContent = overlay;
-    const openBtn = document.createElement('button');
-    openBtn.type = 'button';
-    openBtn.className = 'core-run-loc-btn';
-    openBtn.textContent = 'Open folder';
-    openBtn.addEventListener('click', () => {
-      if (window.orpad && typeof window.orpad.revealInExplorer === 'function') window.orpad.revealInExplorer(overlay);
-    });
-    resultLocEl.append(label, pathEl, openBtn);
+    if (overlay && res.builtCount) {
+      rows.push({
+        label: res.appliedCount
+          ? 'Applied to your workspace. The built result also lives in the run overlay:'
+          : 'Result built but NOT applied — it lives in the run overlay:',
+        path: overlay,
+      });
+    }
+    // Build outputs delivered to the run dir (apply off, or apply on but stopped/gate-failed).
+    if (res && res.buildOutputDest && res.buildOutputDest !== 'workspace' && res.buildOutputCount) {
+      rows.push({
+        label: `${res.buildOutputCount} build output${res.buildOutputCount === 1 ? '' : 's'} delivered to the run dir:`,
+        path: res.buildOutputDest,
+      });
+    }
+    if (!rows.length) { resultLocEl.hidden = true; return; }
+    for (const row of rows) {
+      const wrap = document.createElement('div');
+      wrap.className = 'core-run-loc-row';
+      const label = document.createElement('span');
+      label.className = 'core-run-loc-label';
+      label.textContent = row.label;
+      const pathEl = document.createElement('code');
+      pathEl.className = 'core-run-loc-path';
+      pathEl.textContent = row.path;
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'core-run-loc-btn';
+      openBtn.textContent = 'Open folder';
+      openBtn.addEventListener('click', () => {
+        if (window.orpad && typeof window.orpad.revealInExplorer === 'function') window.orpad.revealInExplorer(row.path);
+      });
+      wrap.append(label, pathEl, openBtn);
+      resultLocEl.append(wrap);
+    }
     resultLocEl.hidden = false;
   }
 
-  const PROVIDER_HELP = {
-    claude: 'Install Claude Code (e.g. `npm i -g @anthropic-ai/claude-code`) and make sure `claude` runs in a terminal.',
-    codex: 'Install the OpenAI Codex CLI (e.g. `npm i -g @openai/codex`), sign in (`codex login`), and make sure `codex` runs in a terminal.',
-    gemini: 'Install the Gemini CLI (e.g. `npm i -g @google/gemini-cli`), authenticate, and make sure `gemini` runs in a terminal.',
-  };
-  function closeModal() { if (modalEl) modalEl.hidden = true; }
-  function showProviderModal(info) {
-    if (!modalEl) return;
-    const provider = (info && info.provider) || 'claude';
-    const command = (info && info.command) || provider;
-    modalTitleEl.textContent = `${command} CLI not found`;
-    modalBodyEl.innerHTML = '';
-    const p1 = document.createElement('p');
-    p1.textContent = `The selected AI provider “${provider}” couldn't be reached — its command “${command}” isn't on your PATH, so the run can't start.`;
-    const p2 = document.createElement('p');
-    p2.textContent = PROVIDER_HELP[provider] || `Install the ${provider} CLI and make sure “${command}” runs in a terminal.`;
-    const p3 = document.createElement('p');
-    p3.className = 'core-run-modal-verify';
-    p3.innerHTML = `Verify with <code>${command} --version</code>, then pick the provider again and re-run.`;
-    modalBodyEl.append(p1, p2, p3);
-    modalEl.hidden = false;
+  // Conversation transcript — the human-facing session log (the user's turn + the agent's reply per turn).
+  // The graph shows the MACHINERY; this shows the DIALOGUE. Cleared on a fresh run (reset), grows per turn.
+  function renderTranscript() {
+    if (!transcriptBodyEl) return;
+    const list = selected ? selected.transcript : EMPTY;
+    transcriptBodyEl.innerHTML = '';
+    for (const m of list) {
+      const row = document.createElement('div');
+      row.className = `core-run-msg core-run-msg-${m.role === 'user' ? 'user' : 'agent'}`;
+      const who = document.createElement('span');
+      who.className = 'core-run-msg-who';
+      who.textContent = m.role === 'user' ? 'You' : 'Agent';
+      const body = document.createElement('div');
+      body.className = 'core-run-msg-text';
+      body.textContent = m.text;
+      row.append(who, body);
+      transcriptBodyEl.append(row);
+    }
+    if (transcriptEl) transcriptEl.hidden = list.length === 0;
+    transcriptBodyEl.scrollTop = transcriptBodyEl.scrollHeight;
   }
-  function setBusy(next) {
-    busy = next;
-    if (submitEl) { submitEl.disabled = next; submitEl.textContent = next ? 'Running…' : 'Run'; }
-    if (stopEl) stopEl.hidden = !next;
+  // Push into a SPECIFIC run's transcript (defaults to the selected one) — a form/continue handler logs into
+  // the run it launched even if the user has since switched the sidebar selection to another run.
+  function pushTranscript(role, text, entry = selected) {
+    const t = String(text || '').trim();
+    if (!t || !entry) return;
+    entry.transcript.push({ role, text: t });
+    if (entry === selected) renderTranscript();
   }
 
-  function reset() { events = []; errorMessage = ''; lastSig = ''; render(); }
+  function resetEntry(entry) {
+    if (!entry) return;
+    entry.events = []; entry.transcript = []; entry.errorMessage = '';
+    entry.status = 'inactive'; entry.nodeCount = 0; // a cleared buffer must not keep a stale 'active' status
+    entry.resultText = ''; entry.resultIsError = false; entry.resultRes = null;
+    if (entry === selected) {
+      lastSig = ''; fgNodeById.clear(); framedOnce = false; lastFitCount = 0; // a fresh run starts a fresh scene
+      renderTranscript(); showFormResult(''); showFormError('');
+      if (resultLocEl) resultLocEl.hidden = true;
+    }
+  }
+  // Back-compat public reset(): clear the currently selected run.
+  function reset() { resetEntry(selected); render(); }
+
+  function restoreResultPanel(entry) {
+    if (entry && entry.resultText) {
+      if (entry.resultIsError) { showFormError(entry.resultText); showFormResult(''); }
+      else { showFormResult(entry.resultText); showFormError(''); }
+    } else { showFormError(''); showFormResult(''); }
+    if (entry && entry.resultRes) showResultLocation(entry.resultRes);
+    else if (resultLocEl) resultLocEl.hidden = true;
+  }
+
+  function selectRun(runId) {
+    const entry = runs.get(runId);
+    if (!entry || entry === selected) return;
+    selected = entry;
+    // R1: clear the shared 3D instance so geometry from the previous run doesn't bleed in (node ids repeat).
+    fgNodeById.clear(); lastSig = ''; framedOnce = false; lastFitCount = 0;
+    renderTranscript();
+    restoreResultPanel(entry);
+    renderSidebar();
+    render();
+    // Reheat on the NEXT frame (after render()'s graphData has established the layout) and guard it — reheating
+    // a layout that isn't ready was crashing the lib's tick loop on reopen.
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => { try { if (fg) fg.d3ReheatSimulation(); } catch (_) { /* ignore */ } });
+    }
+  }
+
+  let pendingReplayInto = null; // seeded runId we're replaying INTO (merge the replay-* stream onto its row)
+
+  // --- Run sidebar -----------------------------------------------------------
+  function runLabel(entry) {
+    const g = (entry.goal || '').trim();
+    if (g) return g.length > 48 ? `${g.slice(0, 47)}…` : g;
+    if (entry.isObserve) return `observed ${entry.agent || 'session'}`;
+    if (entry.isReplay) return 'replay';
+    return entry.runId;
+  }
+  function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
+  function renderSidebar() {
+    if (!runListEl) return;
+    runListEl.innerHTML = '';
+    if (!runs.size) {
+      const empty = document.createElement('li');
+      empty.className = 'run-gui-run-empty';
+      empty.textContent = 'No runs yet.';
+      runListEl.append(empty);
+      return;
+    }
+    for (const entry of runs.values()) runListEl.append(buildRunRow(entry));
+  }
+  function buildRunRow(entry) {
+    const li = document.createElement('li');
+    li.className = `run-gui-run-row${entry === selected ? ' is-selected' : ''}`;
+    li.dataset.runId = entry.runId;
+    const active = entry.status === 'active';
+    const badge = document.createElement('span');
+    badge.className = `run-gui-badge ${active ? 'is-active' : (entry.errorMessage ? 'is-error' : 'is-inactive')}`;
+    const label = document.createElement('span');
+    label.className = 'run-gui-run-label';
+    label.textContent = runLabel(entry);
+    const meta = document.createElement('span');
+    meta.className = 'run-gui-run-meta';
+    // Use a CACHED count for every row: render() caches the selected run; scheduleBgCount caches the rest on a
+    // throttle. Only build the graph here the first time a row is created — never per incoming event. (Rebuilding
+    // a background run's whole emergent graph on every event is O(n^2) and re-introduces the lag this PR fixes.)
+    if (entry.nodeCount == null) entry.nodeCount = entry.events.length ? buildEmergentGraph(entry.events).nodes.length : 0;
+    const nodeCount = entry.nodeCount;
+    const stateText = active ? `● ${nodeCount}` : (entry.errorMessage ? 'error' : (entry.seeded && !entry.events.length ? 'history' : `done ${nodeCount}`));
+    meta.textContent = [entry.agent || '', stateText].filter(Boolean).join(' · ');
+    li.append(badge, label, meta);
+    li.addEventListener('click', () => onRowClick(entry));
+    return li;
+  }
+  // Refresh a non-selected (background) run's cached node count at most ~once per 800ms and update its row —
+  // instead of rebuilding its full graph on every streamed event.
+  function scheduleBgCount(entry) {
+    if (entry._countTimer) return;
+    entry._countTimer = setTimeout(() => {
+      entry._countTimer = null;
+      if (!runs.has(entry.runId)) return; // row was removed (e.g. merged into a replay)
+      entry.nodeCount = entry.events.length ? buildEmergentGraph(entry.events).nodes.length : 0;
+      updateSidebarRow(entry);
+    }, 800);
+  }
+  function updateSidebarRow(entry) {
+    if (!runListEl) return;
+    const existing = runListEl.querySelector(`[data-run-id="${cssEsc(entry.runId)}"]`);
+    if (!existing) { renderSidebar(); return; }
+    existing.replaceWith(buildRunRow(entry));
+  }
+  function onRowClick(entry) {
+    // A seeded (history) row has no live events — replay it, merging the replay stream onto this row.
+    if (entry.seeded && !entry.events.length && onReplay && entry.traceFile) {
+      const target = entry.runId;
+      pendingReplayInto = target;
+      // If the replay fails (missing/empty trace), drop the pending merge so it can't later merge an unrelated
+      // fresh run into — and delete — this stale seeded row.
+      Promise.resolve(onReplay(entry.traceFile)).catch(() => { if (pendingReplayInto === target) pendingReplayInto = null; });
+      return;
+    }
+    selectRun(entry.runId);
+  }
+  // Seed the sidebar from recorded run history (metadata only; events load lazily on replay).
+  async function seedRunsFromHistory() {
+    if (!onListRuns) return;
+    let res = null;
+    try { res = await onListRuns(); } catch (_) { res = null; }
+    const list = res && res.ok && Array.isArray(res.runs) ? res.runs : [];
+    // A run already represented by a loaded replay row (entry.sourceRunId) must not be re-added as a duplicate
+    // seeded row. Computed from LIVE entries each refresh (not a persistent set) so a source reappears if its
+    // replay row is later cleared — never permanently hidden.
+    const replayedSources = new Set();
+    for (const e of runs.values()) if (e.sourceRunId) replayedSources.add(e.sourceRunId);
+    for (const r of list) {
+      if (!r || !r.runId || runs.has(r.runId) || replayedSources.has(r.runId)) continue;
+      createRunEntry(r.runId, { goal: r.goal || '', agent: r.agent || '', startedMs: r.startedMs, seeded: true, traceFile: r.traceFile });
+    }
+    renderSidebar();
+  }
+
+  // Coalesce renders to one per animation frame. A reopen replays the whole event buffer in a synchronous burst
+  // (dozens-to-hundreds of events in a few ms); calling render() — which rebuilds graphData + reheats the d3
+  // simulation — per event churns the 3D layout so hard it crashes the lib's rAF tick loop ("reading 'tick'"),
+  // leaving the graph blank. One coalesced render per frame builds the final graph cleanly (and is far cheaper).
+  let renderScheduled = false;
+  function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    const run = () => { renderScheduled = false; try { render(); } catch (_) { /* keep the stream alive */ } };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run); else setTimeout(run, 16);
+  }
   function applyEvent(ev) {
     if (!ev || typeof ev !== 'object') return;
-    if (ev.runId) currentRunId = ev.runId;
-    if (ev.ev === 'run' && ev.state === 'start') { reset(); return; }
-    if (ev.ev === 'run' && ev.state === 'error') errorMessage = String(ev.error || 'Run failed.');
-    events.push(ev);
-    render();
+    const runId = ev.runId || (selected && selected.runId);
+    if (!runId) return;
+    const fresh = !runs.has(runId);
+    const entry = entryFor(runId);
+    let pushed = true;
+    if (ev.ev === 'notice') {
+      // Notices (e.g. the observer's "Observing … / no session found") are human-facing status — show them in
+      // the selected run's status panel rather than the graph.
+      pushed = false;
+      entry.transcript.push({ role: 'agent', text: `${ev.level === 'warn' ? '⚠ ' : ''}${ev.text || ''}` });
+      if (entry === selected) renderTranscript();
+    } else if (ev.ev === 'run' && ev.state === 'start') {
+      pushed = false;
+      if (!ev.continued) resetEntry(entry); // fresh run/turn-less start: clear THIS run's buffer
+      // Carry the run's identity into the sidebar label (observe runs send agent/goal here).
+      if (ev.agent && !entry.agent) entry.agent = String(ev.agent);
+      if (ev.goal && !entry.goal) entry.goal = String(ev.goal);
+      entry.status = 'active';
+    } else if (ev.ev === 'run' && ev.state === 'done') {
+      entry.status = 'inactive';
+    } else if (ev.ev === 'run' && ev.state === 'error') {
+      entry.status = 'inactive';
+      entry.errorMessage = String(ev.error || 'Run failed.');
+    } else if (ev.ev === 'turn' && ev.state === 'start') {
+      entry.status = 'active';
+    }
+    if (pushed) entry.events.push(ev);
+    // Selection: a user-initiated replay merge FIRST (so it runs even when nothing is selected yet — first-ever
+    // replay); otherwise auto-select the first run that ever appears. Observe runs streamed into a fresh window
+    // are the first run, so they auto-select; later runs surface in the sidebar for the user to pick.
+    if (fresh && pendingReplayInto) { mergeReplayRow(runId, pendingReplayInto); pendingReplayInto = null; selectRun(runId); }
+    else if (!selected) selectRun(runId);
+    if (entry === selected) { scheduleRender(); updateSidebarRow(entry); } // coalesced — never per-event during a replay burst
+    else scheduleBgCount(entry); // background run: throttled count refresh, never a per-event full rebuild
   }
 
-  if (stopEl) {
-    stopEl.addEventListener('click', () => {
-      if (!currentRunId) return;
-      stopEl.disabled = true;
-      statusEl.textContent = 'Stopping…';
-      statusEl.dataset.state = 'running';
-      Promise.resolve(onStop ? onStop(currentRunId) : null).finally(() => { stopEl.disabled = false; });
-    });
+  // When a seeded history row is replayed, the replay streams under a fresh replay-* runId. Carry the seeded
+  // row's label onto the new entry and drop the placeholder, so there's one sidebar row per logical run.
+  function mergeReplayRow(newRunId, seededRunId) {
+    const seed = runs.get(seededRunId);
+    const fresh = runs.get(newRunId);
+    if (seed && fresh) {
+      fresh.goal = fresh.goal || seed.goal; fresh.agent = fresh.agent || seed.agent;
+      fresh.sourceRunId = seededRunId; fresh.traceFile = fresh.traceFile || seed.traceFile;
+    }
+    if (seed && seed !== fresh) runs.delete(seededRunId); // the replay-* row (with sourceRunId) now represents it
+    renderSidebar();
   }
 
   function loadLinkGraph(force) {
@@ -694,7 +857,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
 
   function ensureFG() {
     if (fg) return fg;
-    if (!graph3dEl || !graph3dEl.clientWidth) return null;
+    if (!graph3dEl || !graph3dEl.clientWidth || !graph3dEl.clientHeight) return null; // need BOTH dims, else 0-size canvas
     fg = ForceGraph3D()(graph3dEl)
       .backgroundColor('rgba(0,0,0,0)') // transparent → the app theme background shows through
       .width(graph3dEl.clientWidth)
@@ -781,11 +944,10 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     // glows. (Post-process bloom was dropped — it can't be selective on a light theme bg.)
     ensureActiveGlow();
     fg.onEngineTick(updateActiveGlow);
-
-    if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(() => { if (fg && graph3dEl.clientWidth) fg.width(graph3dEl.clientWidth).height(graph3dEl.clientHeight); });
-      ro.observe(graph3dEl);
-    }
+    // Safety frame: once the instance exists and the sim has had a moment to spread the nodes, frame them once.
+    // Covers a replay-built graph (reopen) where the incremental framedOnce path might not frame a burst-loaded
+    // graph against a just-sized canvas — without this the nodes can render off-screen and look blank.
+    setTimeout(() => { try { if (fg && graph3dEl && graph3dEl.clientWidth) fg.zoomToFit(800, 80); } catch (_) { /* ignore */ } }, 2200);
     return fg;
   }
 
@@ -879,22 +1041,23 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   }
 
   function setStatus(runNodes, done) {
-    if (errorMessage) { statusEl.textContent = `Error — ${errorMessage}`; statusEl.dataset.state = 'error'; return; }
-    if (busy) {
+    const errMsg = selected ? selected.errorMessage : '';
+    if (errMsg) { statusEl.textContent = `Error — ${errMsg}`; statusEl.dataset.state = 'error'; return; }
+    const running = !!(selected && selected.status === 'active') && !done;
+    if (running) {
       const active = runNodes.find((n) => n.active);
       statusEl.textContent = !runNodes.length ? 'Starting run…' : `Running — ${active ? (active.name || typeLabel(active.ntype)) : 'working'}…`;
       statusEl.dataset.state = 'running';
       return;
     }
     if (!runNodes.length) { statusEl.textContent = 'Idle — no run yet.'; statusEl.dataset.state = 'idle'; return; }
-    if (done) { statusEl.textContent = `Run complete — ${runNodes.length} node${runNodes.length === 1 ? '' : 's'}.`; statusEl.dataset.state = 'done'; return; }
-    statusEl.textContent = `Running — ${runNodes.length} node${runNodes.length === 1 ? '' : 's'}…`;
-    statusEl.dataset.state = 'running';
+    statusEl.textContent = `Run complete — ${runNodes.length} node${runNodes.length === 1 ? '' : 's'}.`;
+    statusEl.dataset.state = 'done';
   }
 
   function render() {
     loadLinkGraph(false);
-    const emergent = buildEmergentGraph(events);
+    const emergent = buildEmergentGraph(selected ? selected.events : EMPTY);
     const { done, files } = emergent;
     // Collapse the agent's transient "thinking" nodes so the arm shows real data flow.
     const { nodes, edges, activeId } = collapseTransient(emergent.nodes, emergent.edges, emergent.activeId);
@@ -903,6 +1066,7 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     const runNodes = nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, phase: n.phase, file: n.file, access: n.access, branch: n.branch, active: n.state === 'active' && !n.phase }));
     const data = buildGraphData(runNodes, edges, files, activeId);
     const statNodes = data.nodes.filter((n) => n.kind === 'run');
+    if (selected) selected.nodeCount = statNodes.length; // cache for the sidebar badge (buildRunRow reuses it)
     // The in-progress nodes drive the glow halos + which flows stream particles.
     activeNodeObjs = done ? [] : data.nodes.filter((n) => n.kind === 'run' && n.active);
     activeSet.clear();
@@ -936,77 +1100,26 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
     }
   }
 
-  if (onRun && formEl) {
-    formEl.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      if (busy) return;
-      showFormError('');
-      showFormResult('');
-      if (resultLocEl) resultLocEl.hidden = true;
-      const goal = (goalEl?.value || '').trim();
-      if (!goal) { showFormError('Enter a goal first.'); goalEl?.focus(); return; }
-      const allowedFiles = parseLines(writesetEl?.value);
-      const readOnlyFiles = parseLines(readonlyEl?.value);
-      const timeoutMin = Math.max(0, Number(timeoutEl?.value) || 0);
-      const verifyCommands = parseLines(gatesEl?.value);
-      const verifyCycles = Math.max(0, Math.min(5, Number(verifyCyclesEl?.value) || 0));
-      const request = {
-        goal,
-        agent: providerEl && providerEl.value ? providerEl.value : 'claude',
-        allowedFiles,
-        readOnlyFiles,
-        timeoutMs: timeoutMin > 0 ? Math.round(timeoutMin * 60000) : 0,
-        ground: groundEl ? groundEl.checked : true,
-        apply: applyEl ? applyEl.checked : true,
-        parallelResearch: parallelEl ? parallelEl.checked : false,
-        verifyCommands,
-        verifyCycles,
-      };
-      setBusy(true);
-      try {
-        const res = await onRun(request);
-        if (res && res.providerMissing) {
-          showProviderModal(res.providerMissing); // help modal: the provider CLI isn't installed
-          showFormError(res.error || 'Provider not available.');
-        } else if (res && res.ok === false) {
-          showFormError(res.error || 'Run failed.');
-        } else if (res) {
-          const parts = [];
-          const gateList = Array.isArray(res.gates) ? res.gates : [];
-          if (res.gated) {
-            const passedN = gateList.filter((g) => g.passed).length;
-            parts.push(res.met
-              ? `Verified ✓ ${passedN}/${gateList.length} checks passed`
-              : `Verification FAILED ✗ ${passedN}/${gateList.length} — NOT applied (nothing unverified reaches your workspace)`);
-            if (res.verifyCycles) parts.push(`${res.verifyCycles} fix cycle${res.verifyCycles === 1 ? '' : 's'}`);
-          }
-          if (res.met !== false) {
-            parts.push(res.appliedCount ? `Applied ${res.appliedCount} file${res.appliedCount === 1 ? '' : 's'} to the workspace` : 'No files applied');
-          }
-          if (res.grounded) parts.push(res.groundingBrief ? 'grounded (prior-art brief)' : 'grounding requested');
-          const vCount = Array.isArray(res.violations) ? res.violations.length : 0;
-          if (vCount) parts.push(`${vCount} out-of-write-set violation${vCount === 1 ? '' : 's'}`);
-          if (res.stopped) parts.push(`stopped: ${res.stopReason || 'time-cap'}`);
-          const summary = parts.join(' · ');
-          if (res.met === false) { showFormError(summary); } else { showFormResult(summary); }
-          showResultLocation(res);
-        }
-      } catch (err) {
-        showFormError(String(err?.message || err));
-      } finally {
-        setBusy(false);
-      }
-    });
-  } else if (formEl) {
-    formEl.remove();
-  }
+  // (Run launching + orchestration options live in the TERMINAL now — this window is a pure viewer. There is
+  //  no goal form, options modal, provider-help modal, or follow-up input here.)
 
   if (refreshBtn) refreshBtn.addEventListener('click', () => { loadLinkGraph(true); });
   if (fitBtn) fitBtn.addEventListener('click', () => { if (fg) fg.zoomToFit(700, 80); });
-  if (modalEl) {
-    el.querySelectorAll('[data-core-run-modal-close]').forEach((b) => b.addEventListener('click', closeModal));
-    el.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modalEl.hidden) closeModal(); });
+
+  // Run-list sidebar: collapse toggle (persisted) + history refresh.
+  if (runsToggleEl) {
+    const applyCollapsed = (collapsed) => {
+      el.classList.toggle('run-gui-runs-collapsed', collapsed);
+      runsToggleEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    };
+    runsToggleEl.addEventListener('click', () => {
+      const collapsed = !el.classList.contains('run-gui-runs-collapsed');
+      applyCollapsed(collapsed);
+      try { localStorage.setItem('orpad-rungui-runs-collapsed', collapsed ? 'true' : 'false'); } catch (_) { /* ignore */ }
+    });
+    try { if (localStorage.getItem('orpad-rungui-runs-collapsed') === 'true') applyCollapsed(true); } catch (_) { /* ignore */ }
   }
+  if (runsRefreshEl) runsRefreshEl.addEventListener('click', () => { seedRunsFromHistory(); });
   if (themeSelect) {
     themeSelect.value = layoutTheme;
     themeSelect.addEventListener('change', () => {
@@ -1024,15 +1137,29 @@ export function createLiveTraceView({ onRun = null, onLinkGraph = null, onStop =
   // on focus so they travel out to their slots — but only mid-run, to avoid jiggling a
   // settled idle graph.
   if (typeof window !== 'undefined') {
-    window.addEventListener('focus', () => { if (fg && (busy || activeNodeObjs.length)) fg.d3ReheatSimulation(); });
+    window.addEventListener('focus', () => { if (fg && activeNodeObjs.length) fg.d3ReheatSimulation(); });
   }
 
-  // First paint may run before the element is laid out (clientWidth 0); retry once
-  // the viewport has size so the 3D scene initialises.
+  // Seed the run list from history, then first paint. First paint may run before the element is laid out
+  // (clientWidth 0); retry once the viewport has size so the 3D scene initialises.
+  renderSidebar();
+  seedRunsFromHistory();
   render();
   if (graph3dEl && !graph3dEl.clientWidth && typeof requestAnimationFrame !== 'undefined') {
     const tryInit = () => { if (graph3dEl.clientWidth) { render(); } else { requestAnimationFrame(tryInit); } };
     requestAnimationFrame(tryInit);
   }
-  return { el, applyEvent, reset };
+  // Keep the 3D scene in sync with the container size. CRITICAL for reopen: events replayed into a freshly
+  // opened window arrive ~1ms after load, BEFORE the canvas is laid out (clientWidth 0), so ensureFG can't build
+  // the graph yet. When the canvas finally gains a size this BUILDS the graph (fg null → render()), not just
+  // resizes an existing one — otherwise the replayed graph would never paint.
+  if (graph3dEl && typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      if (!graph3dEl.clientWidth || !graph3dEl.clientHeight) return;
+      if (fg) fg.width(graph3dEl.clientWidth).height(graph3dEl.clientHeight);
+      else render(); // canvas just gained real size — build the graph now (replay may have arrived pre-layout)
+    });
+    ro.observe(graph3dEl);
+  }
+  return { el, applyEvent, reset, selectRun, seedRunsFromHistory };
 }

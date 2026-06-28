@@ -11,10 +11,12 @@
 // the capable agent's NATIVE tool use.
 export const PHASE_NODE = {
   recon: { type: 'recon', label: 'Recon workspace' },
+  vault_read: { type: 'recon', label: 'Read knowledge vault' },
   overlay_seeded: { type: 'isolate', label: 'Isolate (write-set overlay)' },
   guidance_injected: { type: 'guidance', label: 'Inject standing guidance' },
   agent_run: { type: 'delegate', label: 'Delegate to agent' },
   patch_collected: { type: 'enforce', label: 'Enforce write-set' },
+  vault_writeback: { type: 'enforce', label: 'Capture to knowledge vault' },
   verify: { type: 'enforce', label: 'Verify gates' },
 };
 

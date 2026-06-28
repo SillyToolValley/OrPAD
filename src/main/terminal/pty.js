@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { filterSecrets, isInsidePath } = require('./runner');
+const ptyTap = require('./pty-tap.cjs');
 
 const DEFAULT_COLS = 100;
 const DEFAULT_ROWS = 28;
@@ -233,12 +234,29 @@ function windowsNodeVersionCommandCandidates(commandName) {
   return candidates;
 }
 
+// The flag each AI CLI uses to skip ALL of its approval/permission prompts ("bypass mode" / YOLO). Used by the
+// `*-bypass` profile variants. Bypass mode trades safety prompts for an uninterrupted run — the agent edits
+// files and runs commands without asking — so each is a SEPARATE, clearly-labelled profile, never the default.
+const AI_CLI_BYPASS_ARGS = {
+  claude: ['--dangerously-skip-permissions'],
+  codex: ['--dangerously-bypass-approvals-and-sandbox'],
+  gemini: ['--yolo'],
+};
+
 const AI_CLI_PROFILES = [
   {
     id: 'ai-claude',
     label: 'Claude Code',
     commandName: 'claude',
     description: 'Launch the Claude Code TUI in this workspace.',
+    installHint: 'Install Claude Code and ensure `claude` is on PATH.',
+  },
+  {
+    id: 'ai-claude-bypass',
+    label: 'Claude Code (bypass)',
+    commandName: 'claude',
+    bypass: true,
+    description: 'Claude Code with every permission prompt skipped (--dangerously-skip-permissions). It edits files and runs commands without asking.',
     installHint: 'Install Claude Code and ensure `claude` is on PATH.',
   },
   {
@@ -249,10 +267,26 @@ const AI_CLI_PROFILES = [
     installHint: 'Install Codex CLI and ensure `codex` is on PATH.',
   },
   {
+    id: 'ai-codex-bypass',
+    label: 'Codex CLI (bypass)',
+    commandName: 'codex',
+    bypass: true,
+    description: 'Codex CLI bypassing approvals + the sandbox (--dangerously-bypass-approvals-and-sandbox). Full auto, no prompts.',
+    installHint: 'Install Codex CLI and ensure `codex` is on PATH.',
+  },
+  {
     id: 'ai-gemini',
     label: 'Gemini CLI',
     commandName: 'gemini',
     description: 'Launch the Gemini CLI TUI in this workspace.',
+    installHint: 'Install Gemini CLI and ensure `gemini` is on PATH.',
+  },
+  {
+    id: 'ai-gemini-bypass',
+    label: 'Gemini CLI (bypass)',
+    commandName: 'gemini',
+    bypass: true,
+    description: 'Gemini CLI in YOLO mode, auto-approving all actions (--yolo).',
     installHint: 'Install Gemini CLI and ensure `gemini` is on PATH.',
   },
 ];
@@ -314,32 +348,37 @@ function aiCliCandidates(commandName) {
 
 function detectAiCliProfiles() {
   return AI_CLI_PROFILES.map(profile => {
+    // Bypass-mode profiles carry the CLI's skip-all-prompts flag; normal profiles run with no extra args.
+    const bypassArgs = profile.bypass ? (AI_CLI_BYPASS_ARGS[profile.commandName] || []) : [];
     const command = existing(aiCliCandidates(profile.commandName));
-    const fallback = command ? null : (aiCliNpmExecFallback(profile) || aiCliShellFallback(profile));
+    const fallback = command ? null : (aiCliNpmExecFallback(profile, bypassArgs) || aiCliShellFallback(profile, bypassArgs));
     return {
       ...profile,
       kind: 'ai-cli',
       family: 'ai-cli',
+      bypass: !!profile.bypass,
       command: command || fallback?.command || null,
-      args: fallback?.args || [],
+      // Direct launch: just the bypass flag (if any). Fallback launch (npm/powershell wrapper): the wrapper
+      // already embeds the bypass flag around the gemini invocation, so use its args verbatim.
+      args: fallback ? (fallback.args || []) : [...bypassArgs],
       available: Boolean(command || fallback),
       description: fallback?.description || profile.description,
     };
   });
 }
 
-function aiCliNpmExecFallback(profile) {
+function aiCliNpmExecFallback(profile, bypassArgs = []) {
   if (process.platform !== 'win32' || profile.commandName !== 'gemini') return null;
   const npm = findOnPath('npm.cmd') || findOnPath('npm');
   if (!npm) return null;
   return {
     command: npm,
-    args: ['exec', '--package', '@google/gemini-cli', '--', 'gemini'],
+    args: ['exec', '--package', '@google/gemini-cli', '--', 'gemini', ...bypassArgs],
     description: 'Launch Gemini CLI via npm exec when the gemini shim is not directly visible to Electron.',
   };
 }
 
-function aiCliShellFallback(profile) {
+function aiCliShellFallback(profile, bypassArgs = []) {
   if (process.platform !== 'win32' || profile.commandName !== 'gemini') return null;
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
   const powershell = existing([
@@ -349,7 +388,8 @@ function aiCliShellFallback(profile) {
   if (!powershell) return null;
   return {
     command: powershell,
-    args: ['-NoLogo', '-NoExit', '-Command', profile.commandName],
+    // Bypass flag must live INSIDE the -Command string so it's passed to gemini, not to powershell.
+    args: ['-NoLogo', '-NoExit', '-Command', [profile.commandName, ...bypassArgs].join(' ')],
     description: 'Launch Gemini CLI through PowerShell so user PATH/profile aliases can resolve it.',
   };
 }
@@ -477,16 +517,22 @@ function writeZshRc(appDataPath) {
 function buildSpawnArgs(shell, env, appDataPath) {
   const scripts = shellIntegrationDir();
   if (shell.family === 'ai-cli') {
+    // Bypass flags (if any) are already baked into shell.args by detectAiCliProfiles per the chosen profile
+    // (the `*-bypass` variants), so the launch is just the command + those args — normal profiles get none.
     const args = Array.isArray(shell.args) ? shell.args.map(String) : [];
+    // claude shows a first-run "Do you trust this folder?" prompt that is NOT skipped by any flag and BLOCKS the
+    // session; flag claude (either variant) so spawnPty auto-accepts the default. (Also gates the observe pid.)
+    const aiClaude = String(shell.commandName || '').toLowerCase() === 'claude';
     if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(shell.command || '')) {
       return {
         command: process.env.ComSpec || path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'),
         // node-pty/libuv quotes args for us; use call so .cmd/.bat shims work with paths containing spaces.
         args: ['/D', '/K', 'call', shell.command, ...args],
         env,
+        aiClaude,
       };
     }
-    return { args, env };
+    return { args, env, aiClaude };
   }
   if (shell.family === 'powershell') {
     return {
@@ -631,11 +677,33 @@ function createPtyManager({ app }) {
     };
     sessions.set(id, session);
 
+    // claude shows a first-run "Do you trust this folder?" prompt (NOT skipped by --dangerously-skip-permissions)
+    // that BLOCKS the interactive session — so it never writes its session log and OrPAD can't observe it. Auto-
+    // accept the DEFAULT option ("Yes, I trust this folder") by sending Enter once when the prompt is detected.
+    // Robust: matches the rendered text with whitespace/ANSI stripped; never fires if the folder is already trusted.
+    const autoTrust = !!spawnSpec.aiClaude;
+    let trustBuf = '';
+    let trustDone = !autoTrust;
+    if (autoTrust) setTimeout(() => { trustDone = true; }, 30000); // give up watching after init settles
+
     proc.onData(chunk => {
       emit(ownerId, { type: 'data', sessionId: id, chunk });
+      // Mirror the stream to the observe bus (no-op unless a live-TUI observer is tapping this session) so the
+      // orchestration observer can reconstruct the rendered screen without disturbing the terminal.
+      ptyTap.publishData(id, chunk);
+      if (!trustDone) {
+        trustBuf += chunk;
+        if (trustBuf.length > 12000) trustBuf = trustBuf.slice(-6000);
+        const flat = trustBuf.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\s+/g, '').toLowerCase();
+        if (flat.includes('trustthisfolder') || (flat.includes('doyoutrust') && flat.includes('entertoconfirm'))) {
+          trustDone = true;
+          try { proc.write('\r'); } catch (_) { /* best effort */ }
+        }
+      }
     });
     proc.onExit(event => {
       sessions.delete(id);
+      ptyTap.publishExit(id); // let any live-TUI observer synthesize run/done and detach
       emit(ownerId, {
         type: 'exit',
         sessionId: id,
@@ -661,6 +729,8 @@ function createPtyManager({ app }) {
       cols,
       rows,
       maskedEnvCount: maskedCount,
+      // claude: the spawned PID — OrPAD resolves the session's REAL id via ~/.claude/sessions/<pid>.json.
+      aiPid: spawnSpec.aiClaude ? (proc.pid || null) : null,
     };
   }
 
