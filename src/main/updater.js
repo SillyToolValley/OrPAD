@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-const GITHUB_OWNER = 'luke-youngmin-cho';
+const GITHUB_OWNER = 'SillyToolValley';
 const GITHUB_REPO = 'OrPAD';
 const RELEASE_MANIFEST_NAMES = new Set([
   'orpad-release-manifest.json',
