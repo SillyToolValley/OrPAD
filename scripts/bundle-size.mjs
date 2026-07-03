@@ -19,8 +19,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
 const PACKAGE = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
 
-// Ideal target is 1.8 MB; kept at current+10% until the heavy diagram stack is split.
-const RENDERER_BUDGET_BYTES = Math.round(2.05 * 1024 * 1024);
+// Ideal target is 1.8 MB. Bumped as the heavy diagram/graph stack grows until it is
+// code-split: mermaid plus the orchestration 3D graph (three / 3d-force-graph /
+// cytoscape, ~4 MB raw) now dominate the bundle. Follow-up: lazy-load
+// live-trace-view so those load only when the Run GUI opens, then drop this back
+// toward 1.8 MB.
+const RENDERER_BUDGET_BYTES = Math.round(2.2 * 1024 * 1024);
 const HTML_BUDGET_BYTES = 100 * 1024;
 const INSTALLER_BUDGET_BYTES = 100 * 1024 * 1024;
 const WEB_TARGETS = ['chrome90', 'firefox90', 'safari14', 'edge90'];
