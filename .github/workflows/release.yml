@@ -41,6 +41,13 @@ jobs:
         with:
           python-version: '3.11'
 
+      # node-gyp on the windows-latest runner fails to auto-detect Visual Studio
+      # when electron-builder rebuilds the native node-pty module. Set up the MSVC
+      # command-line environment so node-gyp finds the compiler.
+      - name: Set up MSVC toolchain (Windows native rebuild)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Cache Electron downloads
         uses: actions/cache@v4
         with:
