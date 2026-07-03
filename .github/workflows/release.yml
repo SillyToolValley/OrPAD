@@ -13,7 +13,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          # Pinned to windows-2022 (VS 2022): windows-latest moved to an image with
+          # Visual Studio 18, which the bundled node-gyp cannot detect, breaking the
+          # electron-builder native rebuild of node-pty.
+          - os: windows-2022
             build_script: dist:win
             manifest_name: orpad-release-manifest-windows.json
             artifacts: |
@@ -40,13 +43,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      # node-gyp on the windows-latest runner fails to auto-detect Visual Studio
-      # when electron-builder rebuilds the native node-pty module. Set up the MSVC
-      # command-line environment so node-gyp finds the compiler.
-      - name: Set up MSVC toolchain (Windows native rebuild)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Cache Electron downloads
         uses: actions/cache@v4
