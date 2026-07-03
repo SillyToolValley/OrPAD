@@ -198,7 +198,10 @@ function codexItemTraceType(item) {
 }
 
 function codexItemKind(item) {
-  return String((item && (item.type || item.kind || item.name)) || '').toLowerCase();
+  // Real `codex exec --json` items carry their kind as `item_type` (e.g. {"type":"item.completed","item":
+  // {"id":"item_1","item_type":"file_change","changes":[{"path":"...","kind":"update"}]}}); older/other
+  // shapes use `type`/`kind`/`name`. Tolerate all of them.
+  return String((item && (item.item_type || item.type || item.kind || item.name)) || '').toLowerCase();
 }
 
 function codexItemLabel(item) {

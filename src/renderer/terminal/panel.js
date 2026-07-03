@@ -161,7 +161,7 @@ export function createTerminalPanel({ hooks, track }) {
         <span class="terminal-dock-hint" role="img"><span aria-hidden="true"></span></span>
         <span class="terminal-env"></span>
         <button type="button" class="terminal-cancel" disabled>${t('terminal.cancel')}</button>
-        <button type="button" class="terminal-close" aria-label="Close terminal" title="Close terminal"><span aria-hidden="true"></span></button>
+        <button type="button" class="terminal-close" aria-label="${t('terminal.closeTerminal')}" title="${t('terminal.closeTerminal')}"><span aria-hidden="true"></span></button>
       </div>
     </div>
     <div class="terminal-runner-view hidden">
@@ -235,8 +235,8 @@ export function createTerminalPanel({ hooks, track }) {
   }
 
   function refreshCloseButtonLabel() {
-    closeBtn.setAttribute('aria-label', 'Close terminal');
-    closeBtn.setAttribute('title', 'Close terminal');
+    closeBtn.setAttribute('aria-label', t('terminal.closeTerminal'));
+    closeBtn.setAttribute('title', t('terminal.closeTerminal'));
   }
 
   const blocks = [];
@@ -622,11 +622,6 @@ export function createTerminalPanel({ hooks, track }) {
     const toolbar = el('div', 'terminal-block-toolbar');
     for (const [label, handler] of [
       [t('terminal.action.copy'), async () => navigator.clipboard.writeText(stripAnsi(block.output || ''))],
-      [t('terminal.action.askAi'), () => {
-        window.dispatchEvent(new CustomEvent('orpad-ai-prefill', {
-          detail: { text: `<runner_output>\n${stripAnsi(block.output || '')}\n</runner_output>\n\nExplain this output:` },
-        }));
-      }],
       [t('terminal.action.insertEditor'), () => hooks.insertRunnerBlock?.(blockMarkdown(block))],
     ]) {
       const btn = el('button', '', label);

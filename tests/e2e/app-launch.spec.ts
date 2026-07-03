@@ -132,6 +132,27 @@ async function detachTerminalWindow(app: ElectronApp, win: Page) {
   return detachedTerminal;
 }
 
+// Computed colors can serialize as rgb(...) or color(srgb ...) depending on how
+// Chromium resolved them (color-mix participation yields float srgb), so compare
+// channels numerically instead of string-matching serializations.
+function parseCssColor(value: string): [number, number, number] | null {
+  const rgb = /^rgba?\(\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/.exec(value);
+  if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+  const srgb = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(value);
+  if (srgb) return [Number(srgb[1]) * 255, Number(srgb[2]) * 255, Number(srgb[3]) * 255];
+  return null;
+}
+
+function expectColorAmong(actual: string, candidates: string[], tolerance = 4) {
+  const parsed = parseCssColor(actual);
+  expect(parsed, `unparseable color: ${actual}`).not.toBeNull();
+  const matched = candidates.some((candidate) => {
+    const c = parseCssColor(candidate);
+    return c !== null && parsed!.every((channel, i) => Math.abs(channel - c[i]) <= tolerance);
+  });
+  expect(matched, `${actual} is not close to any of: ${candidates.join(', ')}`).toBe(true);
+}
+
 async function readDetachedTerminalChrome(page: Page) {
   return page.evaluate(() => {
     const requireElement = (selector: string) => {
@@ -197,61 +218,7 @@ test('desktop app launches, window title contains OrPAD', async () => {
   await win.waitForLoadState('domcontentloaded');
 
   await expect(win).toHaveTitle(/OrPAD/);
-  await expect(win.locator('#btn-ai')).toBeVisible();
-  await expect(win.locator('#btn-mcp')).toHaveCount(0);
   await expect(win.locator('#btn-git')).toHaveCount(0);
-
-  await win.locator('#btn-ai').click();
-  await expect(win.locator('.ai-sidebar')).toBeVisible();
-  await expect(win.locator('.ai-context-chip')).not.toBeEmpty();
-  await win.locator('#lang-select').selectOption('en');
-  await expect(win.locator('.ai-context-chip')).toContainText('No active document');
-  await win.locator('#lang-select').selectOption('ja');
-  await expect(win.locator('.ai-context-chip')).toContainText('アクティブな文書はありません');
-  await win.locator('#lang-select').selectOption('ko');
-  await expect(win.locator('.ai-context-chip')).toContainText('활성 문서가 없습니다');
-
-  await win.locator('#btn-ai').click();
-  await expect(win.locator('.ai-sidebar')).toBeHidden();
-
-  await win.locator('#btn-ai').click();
-  await expect(win.locator('.ai-sidebar')).toBeVisible();
-  await win.evaluate(() => (window as any).orpadCommands.runCommand('file.new'));
-  await expect(win.locator('.ai-context-chip')).toContainText(/Context:|컨텍스트:/);
-
-  const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
-  const mcpConfigPath = path.join(userData, 'mcp-servers.json');
-  fs.writeFileSync(mcpConfigPath, JSON.stringify({
-    version: 1,
-    servers: [{
-      id: 'filesystem',
-      label: 'Filesystem (workspace)',
-      transport: 'stdio',
-      enabled: true,
-      command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-filesystem@2026.1.14', '${workspacePath}'],
-      env: {},
-      description: 'Stale enabled state from a previous session.',
-      readOnlyDefault: true,
-    }],
-  }, null, 2), 'utf-8');
-
-  await win.locator('.ai-mode-tabs button[data-mode="mcp"]').click();
-  await expect(win.locator('.ai-mcp-panel')).toBeVisible();
-  const filesystemCard = win.locator('.ai-mcp-card').filter({ hasText: 'Filesystem (workspace)' });
-  await expect(filesystemCard.locator('input[type="checkbox"]')).not.toBeChecked();
-  await win.locator('.ai-mcp-panel > .ai-actions-head .ai-mcp-actions button').nth(0).click();
-  await expect(win.locator('.ai-action-status')).toBeVisible();
-  await expect.poll(() => {
-    const savedMcpConfig = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf-8'));
-    return savedMcpConfig.servers.find((server: { id?: string }) => server.id === 'filesystem')?.enabled;
-  }).toBe(false);
-  const mcpCardButtons = filesystemCard.locator('.ai-mcp-actions button');
-  await mcpCardButtons.nth(1).click();
-  await expect(win.locator('.ai-action-status')).toContainText('Filesystem (workspace)');
-  await mcpCardButtons.nth(2).click();
-  await expect(win.locator('.ai-action-status')).toContainText('Filesystem (workspace)');
-  await expect(mcpCardButtons.nth(3)).toBeVisible();
 
   await win.locator('#btn-terminal').click();
   await expect(win.locator('.terminal-panel')).toBeVisible();
@@ -298,7 +265,8 @@ test('desktop app launches, window title contains OrPAD', async () => {
   await expect(win.locator('.terminal-new-popover')).toHaveCSS('position', 'fixed');
   await expect(win.locator('.terminal-new-popover-head')).toBeVisible();
   await expect(win.locator('.terminal-profile-section-title')).toHaveCount(2);
-  await expect(win.locator('.terminal-shell-card[data-profile-kind="ai-cli"]')).toHaveCount(3);
+  // 3 AI CLIs × (normal + bypass) profile variants — locked by tests/terminal/ai-cli-profiles.test.mjs.
+  await expect(win.locator('.terminal-shell-card[data-profile-kind="ai-cli"]')).toHaveCount(6);
   const shellCardCount = await win.locator('.terminal-shell-card').count();
   const shellEmptyCount = await win.locator('.terminal-shell-empty').count();
   expect(shellCardCount + shellEmptyCount).toBeGreaterThan(0);
@@ -353,10 +321,10 @@ test('detached terminal follows saved and live OrPAD theme tokens', async () => 
     expect(lightChrome.vars.textPrimary).toBe('#1f2328');
     expect(lightChrome.shell.backgroundImage).toBe('none');
     expect(lightChrome.head.backgroundImage).toBe('none');
-    expect([lightChrome.tokens.bgPrimary, lightChrome.tokens.bgSecondary]).toContain(lightChrome.shell.backgroundColor);
-    expect(lightChrome.shell.color).toBe(lightChrome.tokens.textPrimary);
-    expect([lightChrome.tokens.bgPrimary, lightChrome.tokens.bgSecondary]).toContain(lightChrome.head.backgroundColor);
-    expect([lightChrome.tokens.textPrimary, lightChrome.tokens.textSecondary]).toContain(lightChrome.head.color);
+    expectColorAmong(lightChrome.shell.backgroundColor, [lightChrome.tokens.bgPrimary, lightChrome.tokens.bgSecondary]);
+    expectColorAmong(lightChrome.shell.color, [lightChrome.tokens.textPrimary]);
+    expectColorAmong(lightChrome.head.backgroundColor, [lightChrome.tokens.bgPrimary, lightChrome.tokens.bgSecondary]);
+    expectColorAmong(lightChrome.head.color, [lightChrome.tokens.textPrimary, lightChrome.tokens.textSecondary]);
 
     await win.evaluate(() => localStorage.setItem('orpad-theme', 'github-dark'));
     await expect.poll(async () => (await readDetachedTerminalChrome(detachedTerminal)).vars.bgPrimary).toBe('#0d1117');
@@ -364,7 +332,7 @@ test('detached terminal follows saved and live OrPAD theme tokens', async () => 
     const darkChrome = await readDetachedTerminalChrome(detachedTerminal);
     expect(darkChrome.dataset.theme).toBe('github-dark');
     expect(darkChrome.dataset.themeType).toBe('dark');
-    expect([darkChrome.tokens.bgPrimary, darkChrome.tokens.bgSecondary]).toContain(darkChrome.shell.backgroundColor);
+    expectColorAmong(darkChrome.shell.backgroundColor, [darkChrome.tokens.bgPrimary, darkChrome.tokens.bgSecondary]);
     expect(darkChrome.shell.backgroundImage).toBe('none');
     expect(darkChrome.head.backgroundImage).toBe('none');
 
@@ -395,8 +363,8 @@ test('detached terminal follows saved and live OrPAD theme tokens', async () => 
     expect(customChrome.dataset.themeType).toBe('light');
     expect(customChrome.vars.bgSecondary).toBe('#eef6ff');
     expect(customChrome.vars.textPrimary).toBe('#182230');
-    expect([customChrome.tokens.bgPrimary, customChrome.tokens.bgSecondary]).toContain(customChrome.shell.backgroundColor);
-    expect(customChrome.shell.color).toBe(customChrome.tokens.textPrimary);
+    expectColorAmong(customChrome.shell.backgroundColor, [customChrome.tokens.bgPrimary, customChrome.tokens.bgSecondary]);
+    expectColorAmong(customChrome.shell.color, [customChrome.tokens.textPrimary]);
   } finally {
     await closeElectronApp(app);
   }

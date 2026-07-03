@@ -38,11 +38,11 @@ function isSecretEnvName(name) {
   return /(^SENTRY_DSN$|^GITHUB_TOKEN$|(^|_)(KEY|TOKEN|SECRET)$|PASSWORD)/i.test(String(name || ''));
 }
 
-function filterSecrets(env = process.env) {
+function filterSecrets(env = process.env, { allowNames = null } = {}) {
   const filtered = {};
   let maskedCount = 0;
   for (const [key, value] of Object.entries(env || {})) {
-    if (isSecretEnvName(key)) {
+    if (isSecretEnvName(key) && !(allowNames && allowNames.test(String(key)))) {
       maskedCount += 1;
       continue;
     }

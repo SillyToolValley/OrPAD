@@ -11,8 +11,8 @@
 // Pure + dependency-free (no xterm in the main process) → unit-testable.
 
 function createVtGrid(rows = 40, cols = 120) {
-  const R = Math.max(4, rows | 0);
-  const C = Math.max(20, cols | 0);
+  let R = Math.max(4, rows | 0);
+  let C = Math.max(20, cols | 0);
   let grid = Array.from({ length: R }, () => new Array(C).fill(' '));
   let cr = 0; // cursor row
   let cc = 0; // cursor col
@@ -108,11 +108,42 @@ function createVtGrid(rows = 40, cols = 120) {
     if (carry.length > CARRY_CAP) carry = ''; // never-terminated escape = garbage; don't hold it forever
   }
 
+  // Live geometry change (the terminal was resized while observed). The TUI reflows + repaints after a real
+  // resize anyway, so this is BEST-EFFORT preservation: columns truncate/pad in place; when rows SHRINK the
+  // overflowing TOP rows are DROPPED (not archived — the repaint re-delivers that content, and an archived
+  // copy + the repaint would double-count every line, which the detector would read as genuine re-runs);
+  // when rows GROW blank rows append at the bottom. Cursor is clamped into the new box.
+  function resize(cols, rows) {
+    const nc = Math.max(20, cols | 0);
+    const nr = Math.max(4, rows | 0);
+    if (nc === C && nr === R) return;
+    if (nc !== C) {
+      for (const row of grid) {
+        if (nc < row.length) row.length = nc;
+        else while (row.length < nc) row.push(' ');
+      }
+      C = nc;
+    }
+    if (nr > R) {
+      while (grid.length < nr) grid.push(new Array(C).fill(' '));
+      R = nr;
+    } else if (nr < R) {
+      const drop = R - nr;
+      for (let i = 0; i < drop; i += 1) grid.shift();
+      R = nr;
+      cr -= drop;
+    }
+    if (cr < 0) cr = 0;
+    if (cr >= R) cr = R - 1;
+    if (cc < 0) cc = 0;
+    if (cc >= C) cc = C - 1;
+  }
+
   // Scrolled-off history THEN the current visible screen — the detector dedups, so any overlap is harmless.
   function lines() { return scrollback.concat(grid.map((row) => row.join('').replace(/\s+$/, ''))); }
   function visibleLines() { return grid.map((row) => row.join('').replace(/\s+$/, '')); }
 
-  return { write, lines, visibleLines, get cols() { return C; }, get rows() { return R; } };
+  return { write, resize, lines, visibleLines, get cols() { return C; }, get rows() { return R; } };
 }
 
 module.exports = { createVtGrid };

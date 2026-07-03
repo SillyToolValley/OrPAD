@@ -14,6 +14,7 @@ const APP_SHELL_URLS = [
   './',
   'index.html',
   'renderer.js',
+  'theme-boot.js',
   'styles/base.css',
   'styles/katex.min.css',
   'orpad-mark.png',
@@ -27,6 +28,7 @@ const APP_SHELL_URLS = [
 const APP_SHELL_SUFFIXES = [
   '/index.html',
   '/renderer.js',
+  '/theme-boot.js',
   '/styles/base.css',
   '/styles/katex.min.css',
   '/orpad-mark.png',

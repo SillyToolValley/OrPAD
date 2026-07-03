@@ -52,15 +52,11 @@ test('orchestration-core live-trace Run view replays a recorded trace', async ()
 
     const orchestrationWin = await openOrchestrationWindow(app, win);
 
-    // The Run view starts idle and the Run form is present.
+    // The Run view starts idle. Since the terminal-driven Run GUI rework this
+    // window is a pure viewer — runs launch from the terminal, so no run form.
     await expect(orchestrationWin.locator('#core-run-view [data-core-run-status]'))
       .toHaveText(/Idle/);
-    await expect(orchestrationWin.locator('#core-run-view [data-core-run-form]')).toBeVisible();
-    await expect(orchestrationWin.locator('#core-run-view [data-core-run-submit]')).toBeEnabled();
-
-    // Submitting an empty goal is rejected client-side (no run, inline error).
-    await orchestrationWin.locator('#core-run-view [data-core-run-submit]').click();
-    await expect(orchestrationWin.locator('#core-run-view [data-core-run-error]')).toBeVisible();
+    await expect(orchestrationWin.locator('#core-run-view [data-core-run-form]')).toHaveCount(0);
 
     // Replay the recorded trace through the real IPC. The graph renders in a 3D
     // WebGL "galaxy" scene (vault sun + run work-unit "planets" + data-flow particle

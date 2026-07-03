@@ -324,9 +324,52 @@ function withDerivedThemeTokens(colors) {
 
 export function applyThemeColors(colors) {
   const root = document.documentElement;
+  const vars = {};
   for (const [key, value] of Object.entries(withDerivedThemeTokens(colors))) {
-    root.style.setProperty(toCssVar(key), value);
+    const cssVar = toCssVar(key);
+    root.style.setProperty(cssVar, value);
+    vars[cssVar] = value;
   }
+  // Keep the root surfaces theme-boot.js paints pre-load in sync on live switches,
+  // so the html background / scrollbar scheme never lag the applied theme.
+  const bg = typeof colors.bgPrimary === 'string' ? colors.bgPrimary : '';
+  if (bg) {
+    root.style.background = bg;
+    root.style.colorScheme = isDarkColor(bg) ? 'dark' : 'light';
+  }
+  cacheBootTheme(vars, colors.bgPrimary);
+  // Live consumers that snapshot theme-derived colors (e.g. the xterm terminal's
+  // palette) re-derive on this signal — CSS vars alone don't reach canvas renderers.
+  try { window.dispatchEvent(new CustomEvent('orpad-theme-applied')); } catch { /* non-DOM host */ }
+}
+
+// theme-boot.js (loaded in <head> of both windows) replays this cache before the
+// first paint of the NEXT launch; without it the saved theme only lands after the
+// end-of-body bundle evaluates and the default theme flashes. Also reports the
+// resolved background to the main process so new BrowserWindows are created with
+// a matching backgroundColor instead of a stale hardcoded one.
+let lastReportedBg = '';
+function cacheBootTheme(vars, bgPrimary) {
+  const bg = typeof bgPrimary === 'string' ? bgPrimary : '';
+  try {
+    localStorage.setItem('orpad-theme-boot', JSON.stringify({
+      vars,
+      bg,
+      type: isDarkColor(bg) ? 'dark' : 'light',
+    }));
+  } catch { /* storage full/blocked — theme still applies live */ }
+  if (bg && bg !== lastReportedBg && /^#[0-9a-f]{6}$/i.test(bg)) {
+    lastReportedBg = bg;
+    try { window.orpad?.setThemeBackground?.(bg); } catch { /* web build has no bridge */ }
+  }
+}
+
+function isDarkColor(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return false;
+  const n = parseInt(m[1], 16);
+  const luma = 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
+  return luma < 128;
 }
 
 // ==================== Persistence ====================

@@ -50,28 +50,6 @@ export function openTemplatePicker({ openModal, closeModal, onCreate, notify }) 
     }
     detail.appendChild(fieldBox);
 
-    if (selected.integrations?.length) {
-      const integrations = el('div', 'template-integrations');
-      integrations.appendChild(el('strong', '', 'Imports'));
-      for (const name of selected.integrations) {
-        const btn = el('button', '', name === 'task-master' ? 'Import from Task Master' : `Import from ${name[0].toUpperCase()}${name.slice(1)}`);
-        btn.type = 'button';
-        btn.addEventListener('click', async () => {
-          try {
-            const servers = window.mcp ? await window.mcp.listServers() : [];
-            const enabled = (servers || []).some(server => server.enabled && String(server.name || server.id || '').toLowerCase().includes(name.replace('-', '')));
-            notify?.('Templates', new Error(enabled
-              ? `MCP server appears enabled. Phase 1 exposes the hook; full import mapping is Phase 2.`
-              : `Enable the ${name} MCP server in the AI > MCP panel, then re-run this import.`));
-          } catch (err) {
-            notify?.('Templates', err);
-          }
-        });
-        integrations.appendChild(btn);
-      }
-      detail.appendChild(integrations);
-    }
-
     const preview = el('pre', 'template-preview');
     preview.textContent = previewFor(selected).slice(0, 5000);
     detail.appendChild(preview);

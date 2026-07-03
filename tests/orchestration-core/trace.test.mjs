@@ -73,6 +73,43 @@ test('codexEventToTrace maps codex JSONL command and file items to node trace ev
   assert.match(fileStart[0].label, /x\.js|src\/main\/x\.js/);
 });
 
+test('codexEventToTrace handles the REAL codex exec --json item schema (item_type + changes[].path)', () => {
+  // A realistic event sequence as codex actually emits it: items carry `item_type` (not `type`), and file
+  // edits arrive as file_change items with a changes[] array — this is what previously rendered NO file nodes.
+  const seq = [
+    { type: 'thread.started', thread_id: 'th_1' },
+    { type: 'turn.started' },
+    { type: 'item.started', item: { id: 'item_0', item_type: 'reasoning' } },
+    { type: 'item.completed', item: { id: 'item_0', item_type: 'reasoning', text: '**Planning the edit**' } },
+    { type: 'item.started', item: { id: 'item_1', item_type: 'command_execution', command: 'bash -lc "npm test"', aggregated_output: '', status: 'in_progress' } },
+    { type: 'item.completed', item: { id: 'item_1', item_type: 'command_execution', command: 'bash -lc "npm test"', exit_code: 0, status: 'completed' } },
+    { type: 'item.started', item: { id: 'item_2', item_type: 'file_change', changes: [{ path: 'src/app.js', kind: 'update' }, { path: 'src/other.js', kind: 'add' }], status: 'in_progress' } },
+    { type: 'item.completed', item: { id: 'item_2', item_type: 'file_change', changes: [{ path: 'src/app.js', kind: 'update' }, { path: 'src/other.js', kind: 'add' }], status: 'completed' } },
+    { type: 'item.completed', item: { id: 'item_3', item_type: 'agent_message', text: 'Done.' } },
+    { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+  ];
+  const evs = seq.flatMap((o) => trace.codexEventToTrace(o));
+
+  const exec = evs.find((e) => e.state === 'active' && e.type === 'exec');
+  assert.ok(exec, 'command_execution renders an exec node');
+  assert.equal(exec.toolId, 'item_1');
+  assert.match(exec.label, /npm test/);
+
+  const edit = evs.find((e) => e.state === 'active' && e.type === 'edit');
+  assert.ok(edit, 'file_change renders an edit node (the known pending fix)');
+  assert.equal(edit.toolId, 'item_2');
+  assert.equal(edit.file, 'src/app.js', 'the first changed path is the node file');
+
+  const g = trace.buildEmergentGraph(evs);
+  assert.equal(g.done, true, 'turn.completed closes the run');
+  assert.deepEqual(g.files.map((f) => f.path), ['src/app.js'], 'the file-access layer sees the edit');
+  assert.equal(g.files[0].writes, 1);
+
+  // result extraction keeps working on the real schema too
+  const res = trace.codexResultFromEvent(seq[8], null);
+  assert.equal(res.result, 'Done.');
+});
+
 test('codexEventToTrace maps codex reasoning, prose, and turn completion', () => {
   const reason = trace.codexEventToTrace({
     type: 'item.started',

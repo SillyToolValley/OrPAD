@@ -61,7 +61,6 @@ import hljsXml from 'highlight.js/lib/languages/xml';
 import hljsYaml from 'highlight.js/lib/languages/yaml';
 import katex from 'katex';
 import { t, setLocale, getLocaleCode, LANGUAGES } from './i18n.js';
-import { initAISidebar } from './ai/index.js';
 import { createTerminalPanel } from './terminal/panel.js';
 import { openTemplatePicker } from './ui/template-picker.js';
 import { getCommands, registerCommand, registerCommands, runCommand } from './commands/registry.js';
@@ -252,7 +251,6 @@ statusGitEl.id = 'status-git';
 statusGitEl.className = 'status-git hidden';
 statusGitEl.type = 'button';
 statusZoomEl?.insertAdjacentElement('beforebegin', statusGitEl);
-const btnAiEl = document.getElementById('btn-ai');
 const tabListEl = document.getElementById('tab-list');
 const sidebarEl = document.getElementById('sidebar');
 const fileTreeEl = document.getElementById('file-tree');
@@ -307,15 +305,12 @@ function setupCoreRunView() {
   // Seed from a terminal AI-CLI launch ("Apply orchestration"): OBSERVE the live session so it streams into this
   // viewer as a graph. PRIMARY = parse the terminal's PTY stream (sessionId); the graph builds from the rendered
   // screen, no session-log dependency. Works for ANY AI CLI (claude + codex have detector grammars; others still
-  // show the run). Dedup PER SESSION (not a single boolean): the same seed may arrive twice (push + pull), but a
-  // SECOND Apply on a different session must start its OWN observer — the backend supports N concurrent sessions.
-  const seededSessions = new Set();
+  // show the run). No renderer-side session dedup: observe-start is idempotent (a known session returns its
+  // EXISTING stable runId and replays — the replayed head run/start resets the entry), and a renderer-side
+  // "already seeded" set would make a session permanently unobservable after its run is stopped/dismissed.
   const handleSeed = (seed) => {
     if (!coreRunView || !seed) return;
     if (seed.observe && typeof window.orpad?.core?.observeStart === 'function') {
-      const sid = String(seed.sessionId || '');
-      if (sid && seededSessions.has(sid)) return; // already observing this exact session
-      if (sid) seededSessions.add(sid);
       window.orpad.core.observeStart({
         cwd: seed.cwd, agent: seed.agent, pid: seed.pid || null,
         sessionId: seed.sessionId || null, cols: seed.cols || null, rows: seed.rows || null,
@@ -389,29 +384,12 @@ let autoSaveTimer = null;
 let debounceTimer = null;
 let editorMouseDown = false;
 let terminalController = null;
-let aiController = null;
 let commandPalette = null;
 let quickOpen = null;
 let vimEnabled = localStorage.getItem('editor.vim') === 'true';
 let minimapEnabled = localStorage.getItem('editor.minimap') === 'true';
 let zenChordArmed = false;
 let zenChordTimer = null;
-let aiContextRefreshTimer = null;
-
-function syncAiToolbarButton(visible = aiController?.isVisible?.() === true) {
-  if (!btnAiEl) return;
-  btnAiEl.classList.toggle('active', !!visible);
-  btnAiEl.setAttribute('aria-pressed', String(!!visible));
-  btnAiEl.title = visible ? t('ai.toolbar.hide') : t('ai.toolbar.show');
-}
-
-function scheduleAIContextRefresh(delay = 0) {
-  if (aiContextRefreshTimer) clearTimeout(aiContextRefreshTimer);
-  aiContextRefreshTimer = setTimeout(() => {
-    aiContextRefreshTimer = null;
-    aiController?.refreshActiveContext?.();
-  }, delay);
-}
 
 // Tab state
 const tabs = [];
@@ -1120,7 +1098,8 @@ document.addEventListener('wheel', (e) => {
 statusZoomEl.addEventListener('click', () => applyZoom(ZOOM_DEFAULT));
 
 // ==================== Theme ====================
-let currentThemeId = getSavedThemeId() || (window.orpad?.getSystemTheme ? null : 'tokyo-night');
+// getSavedThemeId falls back to the default theme id, so this is always truthy.
+let currentThemeId = getSavedThemeId();
 let editingCustomId = null;
 
 function getThemeById(id) {
@@ -1130,11 +1109,7 @@ function getThemeById(id) {
   return builtinThemes['github-light'];
 }
 
-async function initTheme() {
-  if (!currentThemeId) {
-    const sys = await window.orpad.getSystemTheme();
-    currentThemeId = 'tokyo-night';
-  }
+function initTheme() {
   const theme = getThemeById(currentThemeId);
   applyThemeColors(theme.colors);
   saveThemeId(currentThemeId);
@@ -1890,7 +1865,6 @@ function createEditorState(content, viewType = 'markdown', filePath = '') {
         }
         if (update.selectionSet && !editorMouseDown) updateStatusBar();
         if (update.docChanged || update.selectionSet) updateVimStatusBar();
-        if (update.docChanged || update.selectionSet) scheduleAIContextRefresh(80);
       }),
       Prec.highest(keymap.of(editorUxKeymap)),
       keymap.of([
@@ -1907,12 +1881,6 @@ const editor = new EditorView({
   state: createEditorState('', 'plain'),
   parent: document.getElementById('editor'),
 });
-document.getElementById('editor').addEventListener('contextmenu', () => {
-  if (getActiveTab()?.viewType === 'markdown') {
-    window.dispatchEvent(new CustomEvent('orpad-ai-open-actions', { detail: { format: 'markdown', scope: getEditorSelectionText() ? 'selection' : 'document' } }));
-  }
-});
-
 function tabLanguageLoadKey(tab) {
   return `${tab?.viewType || ''}:${tab?.filePath || tab?.title || ''}`;
 }
@@ -2323,7 +2291,6 @@ function switchToTab(tabId) {
   if (sidebarActivePanel === 'runbooks') {
     renderRunbooksPanel();
   }
-  aiController?.refreshActiveContext?.({ force: true });
 
   // RB-1: opening one file grants that file only. Workspace authority comes
   // from the main process after Open Folder or trusted restore.
@@ -2374,7 +2341,6 @@ async function closeTab(tabId) {
     document.body.classList.remove('json-diff-mode');
     updateTitle();
     renderTabBar();
-    aiController?.refreshActiveContext?.({ force: true });
     return;
   }
 
@@ -2578,54 +2544,16 @@ function openTemplateStatusPopover(analysis) {
     row.type = 'button';
     row.className = 'template-section-row';
     const missing = analysis.missingSections.includes(section);
+    row.disabled = true;
     row.innerHTML = `<span>${missing ? '!' : 'OK'}</span><strong>${section}</strong><small>${missing ? 'Needs content' : 'Looks filled'}</small>`;
-    row.addEventListener('click', () => {
-      closeFmtModal();
-      window.dispatchEvent(new CustomEvent('orpad-ai-fill-template-section', { detail: { section } }));
-    });
     list.appendChild(row);
   }
   body.appendChild(list);
-
-  const actions = document.createElement('div');
-  actions.className = 'template-popover-actions';
-  if (analysis.templateId === 'task-list') {
-    for (const label of ['Import from GitHub Issues', 'Import from Linear', 'Import from Task Master']) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = label;
-      btn.addEventListener('click', () => notifyFormatError('Templates', new Error('Enable the matching MCP server in AI > MCP. Phase 1 exposes the hook; full import mapping is Phase 2.')));
-      actions.appendChild(btn);
-    }
-  }
-  if (analysis.templateId === 'handover') {
-    const handover = document.createElement('button');
-    handover.type = 'button';
-    handover.textContent = 'Load into next AI chat';
-    handover.addEventListener('click', () => {
-      closeFmtModal();
-      window.dispatchEvent(new CustomEvent('orpad-ai-load-handover', {
-        detail: { content: editor.state.doc.toString() },
-      }));
-    });
-    actions.appendChild(handover);
-  }
-  if (actions.childElementCount) body.appendChild(actions);
 
   openFmtModal({
     title: 'Template status',
     body,
     footer: [
-      {
-        label: 'Complete remaining sections',
-        primary: true,
-        onClick: () => {
-          closeFmtModal();
-          window.dispatchEvent(new CustomEvent('orpad-ai-complete-template', {
-            detail: { sections: analysis.missingSections },
-          }));
-        },
-      },
       { label: 'Close', onClick: closeFmtModal },
     ],
   });
@@ -2797,22 +2725,6 @@ function renderPreview(content) {
   }
   contentEl.innerHTML = parsedHtml;
 
-  const templateAnalysis = activeTemplateAnalysis();
-  if (templateAnalysis) {
-    contentEl.querySelectorAll('h2, h3, h4, h5, h6').forEach((heading) => {
-      const text = heading.textContent?.replace(/\s+#$/, '').trim();
-      if (!text || !templateAnalysis.requiredSections.includes(text)) return;
-      heading.classList.add('template-heading');
-      heading.title = 'Right-click to ask AI to fill this section';
-      heading.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        window.dispatchEvent(new CustomEvent('orpad-ai-fill-template-section', {
-          detail: { section: text },
-        }));
-      });
-    });
-  }
-
   contentEl.querySelectorAll('a[href]').forEach((link) => {
     const href = link.getAttribute('href');
     if (href.startsWith('http')) {
@@ -2924,10 +2836,6 @@ function renderMermaidPreview(content) {
     '<div class="mermaid-block" data-mermaid="' + esc + '">' + escapeHtml(content) + '</div>';
   renderMermaidBlocks().then(() => {
     const block = contentEl.querySelector('.mermaid-block');
-    block?.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      window.dispatchEvent(new CustomEvent('orpad-ai-open-actions', { detail: { format: 'mermaid', scope: 'node' } }));
-    });
     const svg = block?.querySelector('svg');
     if (!svg) return;
     // Snapshot original SVG string before svgPanZoom wraps it in a group.
@@ -7830,27 +7738,6 @@ function defaultOrpadRunbookSkill(taskText) {
 }
 
 async function buildOrpadRunbookSkill(taskText) {
-  if (aiController?.canUseProvider?.() && typeof aiController.complete === 'function') {
-    try {
-      const response = await aiController.complete({
-        timeoutMs: 90000,
-        system: 'Draft concise OrPAD skill Markdown only.',
-        prompt: [
-          'Create a usable OrPAD skill for this request.',
-          'Include context, implementation loop, acceptance criteria, and safety constraints.',
-          'It is referenced by an `.or-tree` subflow inside an OrPAD `.or-pipeline` package.',
-          '',
-          '<user-request>',
-          taskText,
-          '</user-request>',
-        ].join('\n'),
-      });
-      const markdown = extractMarkdownFence(response);
-      if (markdown) return addExternalResearchSkillGuard(markdown, taskText);
-    } catch {
-      // Fall back to the local template when no provider is reachable.
-    }
-  }
   return addExternalResearchSkillGuard(defaultOrpadRunbookSkill(taskText), taskText);
 }
 
@@ -9065,18 +8952,11 @@ function setupCommandRegistry() {
     { id: 'runbook.startLocal', title: 'Run Locally Or Prepare Handoff', category: 'Pipeline', enabled: ({ activeTab, workspacePath }) => !!workspacePath && !!activeTab?.filePath && /(\.or-pipeline|\.or-graph|\.or-tree|\.orch-(tree|graph)\.json|\.orch)$/i.test(activeTab.filePath), run: async (_args, { activeTab }) => { ensureSidebar('runbooks'); await validateSelectedRunbook(activeTab.filePath); if (isAgentOrchestratedPipeline(selectedRunbookValidation)) await openAgentHandoffModal(activeTab.filePath, selectedRunbookValidation); else await startSelectedLocalRun(activeTab.filePath); } },
     { id: 'runbook.newClaimAuditStarter', title: 'New Pipeline', category: 'Pipeline', run: () => createOrpadRunbookStarter() },
     { id: 'view.terminal', title: 'Toggle Terminal', category: 'View', keybinding: 'Ctrl `', run: () => terminalController?.toggle() },
-    { id: 'view.ai', title: 'Toggle AI Sidebar', category: 'View', keybinding: 'Ctrl L', run: () => aiController?.toggle() },
     { id: 'view.zen', title: 'Zen Mode', category: 'View', keywords: ['focus'], run: toggleZenMode },
     { id: 'view.editor', title: 'Editor Only', category: 'View', run: () => setViewMode('editor') },
     { id: 'view.split', title: 'Split View', category: 'View', run: () => setViewMode('split') },
     { id: 'view.preview', title: 'Preview Only', category: 'View', run: () => setViewMode('preview') },
     { id: 'view.themePanel', title: 'Open Theme Panel', category: 'View', run: openThemePanel },
-    { id: 'ai.openChat', title: 'Open AI Chat', category: 'AI', run: () => aiController?.openChat?.() },
-    { id: 'ai.newChat', title: 'New AI Chat', category: 'AI', run: () => aiController?.newChat?.() },
-    { id: 'ai.openActions', title: 'Open AI Assist Tools', category: 'AI', run: () => aiController?.openActions?.() },
-    { id: 'ai.switchProvider', title: 'Switch AI Provider', category: 'AI', run: () => aiController?.openSettings?.() },
-    { id: 'ai.runLastAction', title: 'Run Suggested AI Assist Tool', category: 'AI', run: () => aiController?.runLastAction?.() },
-    { id: 'mcp.openServers', title: 'Open MCP Servers', category: 'MCP', run: () => aiController?.openMcp?.() },
     { id: 'terminal.newTerminal', title: 'New Terminal', category: 'Terminal', keybinding: 'Ctrl Shift `', run: () => terminalController?.newTerminal?.() },
     { id: 'terminal.commandRunner', title: 'Run Command in Command Runner', category: 'Terminal', run: () => terminalController?.openRunner?.() },
     { id: 'settings.open', title: 'Open Settings', category: 'Settings', run: openSettingsModal },
@@ -9282,8 +9162,6 @@ function refreshLocalizedSurfaces() {
   if (getActiveTab()) renderPreview(editor.state.doc.toString());
   renderThemePanel();
   terminalController?.refreshLocale?.();
-  aiController?.refreshLocale?.();
-  syncAiToolbarButton();
 }
 
 function changeAppLocale(code, { persist = true, broadcast = true } = {}) {
@@ -11179,6 +11057,10 @@ window.addEventListener('resize', () => {
 });
 
 (async () => {
+  // Apply the saved theme before anything awaits: first paint races module
+  // evaluation, and theme-boot.js only replays colors cached on a previous run.
+  initTheme();
+
   // Load locale
   const { code: installerLocale, mtime } = await window.orpad.getLocale();
   const prevMtime = localStorage.getItem('orpad-locale-mtime');
@@ -11190,8 +11072,6 @@ window.addEventListener('resize', () => {
   setLocale(userLocale || installerLocale);
   applyLocaleToDOM();
   langSelect.value = getLocaleCode();
-
-  await initTheme();
 
   // Restore sidebar state (migrate from legacy TOC)
   const legacyTocVisible = localStorage.getItem('orpad-toc-visible');
@@ -11249,7 +11129,6 @@ window.addEventListener('resize', () => {
     sidebarActivePanel = 'runbooks';
     sidebarEl?.classList.remove('hidden');
     applyStoredSidebarWidth();
-    btnAiEl?.setAttribute('hidden', '');
     document.getElementById('sidebar-runbooks')?.classList.add('active');
     window.orpad?.setTitle?.('OrPAD Run GUI');
     setOrchestrationRailCollapsed(localStorage.getItem('orpad-orchestration-rail-collapsed') === 'true');
@@ -11281,92 +11160,6 @@ window.addEventListener('resize', () => {
     },
   });
   document.getElementById('btn-terminal')?.addEventListener('click', () => terminalController?.toggle());
-
-  if (!IS_ORCHESTRATION_WINDOW) {
-    aiController = initAISidebar({
-      workspaceEl,
-      track,
-      hooks: {
-        getActiveTab() {
-          const tab = getActiveTab();
-          if (!tab) return null;
-          return {
-            id: tab.id,
-            filePath: tab.filePath,
-            name: tab.filePath ? tab.filePath.split(/[/\\]/).pop() : (tab.title || t('untitled')),
-            dirPath: tab.dirPath,
-            viewType: tab.viewType,
-            content: editor.state.doc.toString(),
-            selection: getEditorSelectionText(),
-            isModified: tab.isModified,
-          };
-        },
-        getOpenTabs() {
-          return tabs.map(tab => ({
-            id: tab.id,
-            filePath: tab.filePath,
-            name: tab.filePath ? tab.filePath.split(/[/\\]/).pop() : (tab.title || t('untitled')),
-            viewType: tab.viewType,
-            isModified: tab.isModified,
-          }));
-        },
-        getWorkspacePath() { return workspacePath; },
-        activateTab(tabId) {
-          if (!tabs.some(tab => tab.id === tabId)) return false;
-          switchToTab(tabId);
-          return true;
-        },
-        getRunnerAttachment() { return terminalController?.getLastOutput?.() || null; },
-        getTemplateSection(section) {
-          const active = getActiveTab();
-          if (!active || active.viewType !== 'markdown') return null;
-          const range = findSectionRange(editor.state.doc.toString(), section);
-          return range ? { section, text: range.text } : null;
-        },
-        replaceTemplateSection(section, text) {
-          const active = getActiveTab();
-          if (!active || active.viewType !== 'markdown') return;
-          const next = replaceSectionContent(editor.state.doc.toString(), section, text);
-          replaceEditorDoc(next);
-          renderTemplateStatusChip();
-        },
-        async getWorkspaceFiles() {
-          if (!workspacePath) return [];
-          try {
-            const names = await window.orpad.getFileNames(workspacePath);
-            return (names || []).slice(0, 100).map(item => item.filePath || item.baseName || '');
-          } catch {
-            return [];
-          }
-        },
-        replaceSelectionOrDocument: replaceSelectionOrDoc,
-        replaceDocument: replaceEditorDoc,
-        createTextTab(name, content, viewType) {
-          const tab = createTab(null, null, content || '');
-          tab.title = name || t('untitled');
-          if (viewType) {
-            tab.viewType = viewType;
-            tab.editorState = createEditorState(content || '', viewType, tab.filePath || tab.title);
-            editor.setState(tab.editorState);
-            ensureTabLanguageLoaded(tab);
-            renderPreview(content || '');
-            updateFormatBar(viewType);
-          }
-          renderTabBar();
-          return tab;
-        },
-        showCsvFilterChip(label) {
-          currentGrid?.showFilterChip?.(label);
-        },
-        openModal: openFmtModal,
-        closeModal: closeFmtModal,
-        notify: notifyFormatError,
-        onVisibilityChange: syncAiToolbarButton,
-      },
-    });
-    btnAiEl?.addEventListener('click', () => aiController?.toggle?.());
-    syncAiToolbarButton();
-  }
 
   const commandRoot = document.getElementById('command-palette-root') || document.body;
   commandPalette = createCommandPalette({

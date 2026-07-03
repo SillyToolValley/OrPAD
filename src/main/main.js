@@ -4,9 +4,6 @@ const path = require('path');
 const fs = require('fs');
 const fsp = require('fs').promises;
 const crypto = require('crypto');
-const { registerAiKeyHandlers } = require('./ai-keys');
-const { registerAiConversationHandlers } = require('./ai-conversations');
-const { registerMcpHandlers } = require('./mcp/ipc');
 const { registerRunbookHandlers } = require('./runbooks/ipc');
 const { registerCoreRunHandlers } = require('./orchestration-core/ipc.cjs');
 const { registerTerminalHandlers } = require('./terminal/ipc');
@@ -234,7 +231,7 @@ function createWindow(filePath) {
       backgroundThrottling: false,
     },
     show: false,
-    backgroundColor: '#1a1b26',
+    backgroundColor: windowBackgroundColor(),
     title: 'OrPAD',
   });
   const windowId = win.id;
@@ -422,7 +419,7 @@ function createTerminalWindow({ openerWebContents, workspaceRoot = '', cwd = '',
       backgroundThrottling: false,
     },
     show: false,
-    backgroundColor: '#1a1b26',
+    backgroundColor: windowBackgroundColor(),
     title: 'OrPAD Terminal',
   });
   const webContentsId = win.webContents.id;
@@ -483,7 +480,7 @@ function createOrchestrationWindow({ openerWebContents, workspaceRoot = '' } = {
       backgroundThrottling: false,
     },
     show: false,
-    backgroundColor: '#1a1b26',
+    backgroundColor: windowBackgroundColor(),
     // Make the project this Run GUI is scoped to explicit — the window is bound to ONE workspace (its run list
     // and live observers are filtered to it), so name it in the title.
     title: workspaceRoot ? `OrPAD Run GUI — ${path.basename(String(workspaceRoot))}` : 'OrPAD Run GUI',
@@ -606,9 +603,6 @@ ipcMain.handle('get-app-info', () => ({
   version: app.getVersion(),
 }));
 
-registerAiKeyHandlers({ ipcMain, app, safeStorage });
-registerAiConversationHandlers({ ipcMain, authority });
-registerMcpHandlers({ ipcMain, app, authority });
 registerRunbookHandlers({ ipcMain, app, authority });
 registerCoreRunHandlers({ ipcMain, app, authority });
 registerTerminalHandlers({ ipcMain, app, authority });
@@ -713,6 +707,39 @@ ipcMain.handle('terminal-window-context', async (event) => {
 
 ipcMain.handle('get-system-theme', () => {
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+});
+
+// New BrowserWindows are created with the last applied theme's background so the
+// pre-HTML frame matches the theme instead of flashing a mismatched color. The
+// renderer reports it (themes.js cacheBootTheme) on every theme apply; persisted
+// so the very first window of the next launch already matches.
+function windowThemePath() {
+  return path.join(app.getPath('userData'), 'window-theme.json');
+}
+
+let cachedWindowBackgroundColor = '';
+function windowBackgroundColor() {
+  if (!cachedWindowBackgroundColor) {
+    // Fallback = orpad-hero bgPrimary, matching the base.css :root defaults that
+    // paint when no saved theme cache exists yet.
+    cachedWindowBackgroundColor = '#f6f8fd';
+    try {
+      const parsed = JSON.parse(fs.readFileSync(windowThemePath(), 'utf-8'));
+      if (typeof parsed?.backgroundColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(parsed.backgroundColor)) {
+        cachedWindowBackgroundColor = parsed.backgroundColor;
+      }
+    } catch { /* missing/corrupt file → default */ }
+  }
+  return cachedWindowBackgroundColor;
+}
+
+ipcMain.on('set-theme-background', (_event, color) => {
+  if (typeof color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(color)) return;
+  if (color === windowBackgroundColor()) return;
+  cachedWindowBackgroundColor = color;
+  fsp.mkdir(path.dirname(windowThemePath()), { recursive: true })
+    .then(() => fsp.writeFile(windowThemePath(), JSON.stringify({ version: 1, backgroundColor: color }), 'utf-8'))
+    .catch(() => {});
 });
 
 ipcMain.handle('get-locale', async () => {

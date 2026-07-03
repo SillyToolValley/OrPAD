@@ -3,31 +3,11 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('orpad', {
   platform: process.platform,
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
-  // AI provider keys: desktop secrets stay encrypted in the main process store.
-  aiKeys: {
-    status: () => ipcRenderer.invoke('ai-keys-status'),
-    set: (provider, key, metadata) => ipcRenderer.invoke('ai-key-set', provider, key, metadata),
-    remove: (provider) => ipcRenderer.invoke('ai-key-remove', provider),
-  },
-  aiChat: {
-    start: (request) => ipcRenderer.invoke('ai-provider-chat', request),
-    cancel: (requestId) => ipcRenderer.invoke('ai-provider-cancel', requestId),
-    onEvent: (cb) => {
-      const listener = (_event, payload) => cb(payload);
-      ipcRenderer.on('ai-provider-event', listener);
-      return () => ipcRenderer.removeListener('ai-provider-event', listener);
-    },
-  },
-  aiConversations: {
-    list: (workspacePath) => ipcRenderer.invoke('ai-conversations-list', workspacePath),
-    load: (workspacePath, id) => ipcRenderer.invoke('ai-conversation-load', workspacePath, id),
-    save: (workspacePath, conversation) => ipcRenderer.invoke('ai-conversation-save', workspacePath, conversation),
-    delete: (workspacePath, id) => ipcRenderer.invoke('ai-conversation-delete', workspacePath, id),
-    search: (workspacePath, query) => ipcRenderer.invoke('ai-conversations-search', workspacePath, query),
-  },
   // File operations
   onLoadMarkdown: (cb) => ipcRenderer.on('load-markdown', (_e, d) => cb(d)),
   getSystemTheme: () => ipcRenderer.invoke('get-system-theme'),
+  // Fire-and-forget: lets main create future windows with a matching backgroundColor.
+  setThemeBackground: (color) => ipcRenderer.send('set-theme-background', color),
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   saveFile: (filePath, content) => ipcRenderer.invoke('save-file', filePath, content),
   saveFileAs: (content) => ipcRenderer.invoke('save-file-as', content),
@@ -166,22 +146,6 @@ contextBridge.exposeInMainWorld('orpad', {
   updateAction: (action) => ipcRenderer.send('update-action', action),
 });
 
-contextBridge.exposeInMainWorld('mcp', {
-  listServers: () => ipcRenderer.invoke('mcp-list-servers'),
-  upsertServer: (server) => ipcRenderer.invoke('mcp-upsert-server', server),
-  removeServer: (id) => ipcRenderer.invoke('mcp-remove-server', id),
-  setEnabled: (id, enabled, workspacePath) => ipcRenderer.invoke('mcp-set-enabled', id, enabled, workspacePath),
-  refreshServer: (id) => ipcRenderer.invoke('mcp-refresh-server', id),
-  listTools: (id) => ipcRenderer.invoke('mcp-list-tools', id),
-  listResources: (id) => ipcRenderer.invoke('mcp-list-resources', id),
-  readResource: (id, uri) => ipcRenderer.invoke('mcp-read-resource', id, uri),
-  prepareToolCall: (serverId, toolName) => ipcRenderer.invoke('mcp-prepare-tool-call', serverId, toolName),
-  revokeGlobalPermission: (serverId, toolName) => ipcRenderer.invoke('mcp-revoke-global-permission', serverId, toolName),
-  callTool: (serverId, toolName, args, options) => ipcRenderer.invoke('mcp-call-tool', serverId, toolName, args, options),
-  exportConfig: () => ipcRenderer.invoke('mcp-export-config'),
-  importConfig: (config) => ipcRenderer.invoke('mcp-import-config', config),
-});
-
 contextBridge.exposeInMainWorld('terminal', {
   history: () => ipcRenderer.invoke('terminal.history'),
   run: (request) => ipcRenderer.invoke('terminal.run', request),
@@ -227,4 +191,5 @@ contextBridge.exposeInMainWorld('pty', {
 contextBridge.exposeInMainWorld('clipboard', {
   writeText: (text) => ipcRenderer.invoke('clipboard.write-text', String(text == null ? '' : text)),
   readText: () => ipcRenderer.invoke('clipboard.read-text'),
+  hasImage: () => ipcRenderer.invoke('clipboard.has-image'),
 });

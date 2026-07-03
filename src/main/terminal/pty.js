@@ -653,7 +653,14 @@ function createPtyManager({ app }) {
       ORPAD_TERMINAL: '1',
       ...(input.env && typeof input.env === 'object' ? input.env : {}),
     };
-    const { env, maskedCount } = filterSecrets(mergedEnv);
+    // AI provider auth vars must survive into the interactive terminal: claude/codex/gemini
+    // authenticate via ANTHROPIC_API_KEY-style env, and stripping them makes a CLI that works
+    // in every external terminal fail auth only inside OrPAD. The interactive pty is the user's
+    // own shell on their own machine — masking here protects nothing the shell couldn't read
+    // anyway. The governed Command Runner keeps full filtering (no allowlist).
+    const { env, maskedCount } = filterSecrets(mergedEnv, {
+      allowNames: /^(ANTHROPIC_|OPENAI_|GEMINI_|GOOGLE_|CLAUDE_|CODEX_)/i,
+    });
     const spawnSpec = buildSpawnArgs(shell, env, appDataPath);
     const cols = Math.max(20, Math.min(500, Number(input.cols) || DEFAULT_COLS));
     const rows = Math.max(5, Math.min(200, Number(input.rows) || DEFAULT_ROWS));
@@ -676,6 +683,7 @@ function createPtyManager({ app }) {
       restore: input.restore !== false,
     };
     sessions.set(id, session);
+    ptyTap.markAlive(id); // observers check this before attaching to a session
 
     // claude shows a first-run "Do you trust this folder?" prompt (NOT skipped by --dangerously-skip-permissions)
     // that BLOCKS the interactive session — so it never writes its session log and OrPAD can't observe it. Auto-
@@ -744,10 +752,10 @@ function createPtyManager({ app }) {
   function resize(ownerWebContents, sessionId, cols, rows) {
     const session = getOwnedSession(ownerWebContents, sessionId);
     if (!session) return false;
-    session.proc.resize(
-      Math.max(20, Math.min(500, Number(cols) || DEFAULT_COLS)),
-      Math.max(5, Math.min(200, Number(rows) || DEFAULT_ROWS)),
-    );
+    const nextCols = Math.max(20, Math.min(500, Number(cols) || DEFAULT_COLS));
+    const nextRows = Math.max(5, Math.min(200, Number(rows) || DEFAULT_ROWS));
+    session.proc.resize(nextCols, nextRows);
+    ptyTap.publishResize(session.id, nextCols, nextRows); // keep any live-TUI observer's grid in sync
     return true;
   }
 

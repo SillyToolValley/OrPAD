@@ -104,6 +104,48 @@ test('content flowing past the last row scrolls up; scrolled-off rows are archiv
   assert.equal(all.some((l) => l.includes('line7')), true);
 });
 
+test('resize: columns truncate/pad in place; shrinking rows DROP the top rows (repaint re-delivers them)', () => {
+  const g = createVtGrid(6, 40);
+  g.write('hello world\r\nsecond line\r\n');
+  g.resize(20, 6); // narrower — existing text (within 20 cols) survives
+  assert.equal(g.cols, 20);
+  assert.equal(g.lines()[0], 'hello world');
+  g.resize(60, 6); // wider again — rows padded; new full-width text renders intact
+  assert.equal(g.cols, 60);
+  assert.equal(g.lines()[1], 'second line');
+  g.write('a-line-after-widening-that-is-longer-than-40-chars!\r\n');
+  assert.ok(g.lines().some((l) => l.includes('longer-than-40-chars!')));
+
+  // rows SHRINK: the overflowing TOP rows are DROPPED, not archived — the TUI repaints for the new geometry,
+  // so an archived copy + the repaint would double-count every line (the detector would read it as re-runs).
+  const g2 = createVtGrid(6, 30);
+  for (let i = 0; i < 4; i += 1) g2.write(`row${i}\r\n`);
+  g2.resize(30, 4);
+  assert.equal(g2.rows, 4);
+  assert.deepEqual(g2.visibleLines().slice(0, 2), ['row2', 'row3']);
+  assert.equal(g2.lines().includes('row0'), false, 'dropped, not archived to scrollback');
+  assert.equal(g2.lines().includes('row1'), false, 'the repaint re-delivers this content');
+  g2.write('tail');
+  assert.equal(g2.visibleLines()[2], 'tail', 'cursor tracked the shrink');
+
+  // rows GROW: blank rows append at the bottom; the cursor keeps flowing
+  const g3 = createVtGrid(4, 30);
+  g3.write('top');
+  g3.resize(30, 8);
+  assert.equal(g3.rows, 8);
+  g3.write('\r\n\r\n\r\n\r\n\r\nmore');
+  assert.equal(g3.visibleLines()[0], 'top');
+  assert.ok(g3.visibleLines().includes('more'));
+
+  // cursor clamped when it would land outside the new box
+  const g4 = createVtGrid(8, 40);
+  g4.write('\x1b[8;35Hx'); // park the cursor near the bottom-right
+  g4.resize(24, 4);
+  g4.write('y'); // must not throw / write out of bounds
+  assert.equal(g4.cols, 24);
+  assert.equal(g4.rows, 4);
+});
+
 test('a tool line that scrolls off-screen between ticks is still detected via scrollback', () => {
   const g = createVtGrid(4, 30);
   g.write('● Write(early.txt)\r\n');     // tool rendered...

@@ -16,15 +16,23 @@ test('JSON file displays tree view with expected keys', async () => {
   // The fixture has a top-level "name" key
   const keyNames = win.locator('.jedit-key-name');
   await expect(keyNames.filter({ hasText: 'name' }).first()).toBeVisible({ timeout: 5000 });
+  // Key names follow the active theme's accent token (base.css .jedit-key-name),
+  // not a hardcoded palette — the old radial-gradient chrome was retired with the
+  // OrPAD Hero → OrPAD Default retune.
   const treeChrome = await win.locator('.jedit-scroll').evaluate((el: Element) => {
-    const styles = getComputedStyle(el);
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--accent-color)';
+    document.body.appendChild(probe);
+    const accent = getComputedStyle(probe).color;
+    probe.remove();
     return {
-      backgroundImage: styles.backgroundImage,
+      visible: (el as HTMLElement).offsetHeight > 0,
+      accent,
       keyColor: getComputedStyle(document.querySelector('.jedit-key-name') as Element).color,
     };
   });
-  expect(treeChrome.backgroundImage).toContain('radial-gradient');
-  expect(treeChrome.keyColor).toBe('rgb(56, 163, 255)');
+  expect(treeChrome.visible).toBe(true);
+  expect(treeChrome.keyColor).toBe(treeChrome.accent);
 
   await app.close();
 });

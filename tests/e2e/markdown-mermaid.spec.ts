@@ -78,7 +78,7 @@ test('mermaid fenced block follows OrPAD theme tokens in preview', async () => {
   const win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
 
-  await chooseTheme(win, 'Hero');
+  await chooseTheme(win, 'OrPAD Default');
   await win.evaluate((p: string) => window.orpad.dropFile(p), fixturePath);
 
   // Wait past the 400ms per-block debounce before polling for the SVG.

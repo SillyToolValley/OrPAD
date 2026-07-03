@@ -6,9 +6,12 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';">
   <link rel="stylesheet" href="styles/katex.min.css">
   <link rel="stylesheet" href="styles/base.css">
+  <script src="theme-boot.js"></script>
   <title>OrPAD</title>
 </head>
 <body>
+  <!-- Applies the Run GUI (orchestration) body class before any chrome paints. Must be the first child of <body>. -->
+  <script src="mode-boot.js"></script>
   <!-- Toolbar -->
   <div id="toolbar">
     <button id="btn-files" title="Toggle Files (Ctrl+Shift+E)" data-i18n-title="tooltip.files">
@@ -75,9 +78,6 @@
       </svg>
     </button>
     <div id="orchestration-runbar-slot" aria-live="polite"></div>
-    <button id="btn-ai" title="AI Edit and Chat (Ctrl+L)" aria-label="AI Edit and Chat">
-      <span class="fmt-mono">AI</span>
-    </button>
 
     <select id="lang-select"></select>
 

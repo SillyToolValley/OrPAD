@@ -34,6 +34,7 @@ const REQUIRED_OUTPUT_FILES = [
   'sw.js',
   'orpad-mark.png',
   'ui-scale.js',
+  'theme-boot.js',
   'styles/base.css',
   'styles/katex.min.css',
 ];
@@ -220,6 +221,10 @@ async function main() {
   copyFile(
     path.join(ROOT, 'src/renderer/ui-scale.js'),
     path.join(OUT, 'ui-scale.js')
+  );
+  copyFile(
+    path.join(ROOT, 'src/renderer/theme-boot.js'),
+    path.join(OUT, 'theme-boot.js')
   );
   copyDir(
     path.join(ROOT, 'node_modules/katex/dist/fonts'),

@@ -246,8 +246,9 @@ test('terminal dock overlay uses theme-safe solid surfaces', async () => {
       };
     });
     expect(closeControl.text).toBe('');
-    expect(closeControl.ariaLabel).toBe('Close terminal');
-    expect(closeControl.title).toBe('Close terminal');
+    // The label is localized (terminal.closeTerminal), so assert presence + tooltip parity like the drag hint.
+    expect(closeControl.ariaLabel).toBeTruthy();
+    expect(closeControl.title).toBe(closeControl.ariaLabel);
     expect(closeControl.width).toBeGreaterThan(0);
     expect(Math.abs(closeControl.width - closeControl.height)).toBeLessThan(1);
 
@@ -354,7 +355,9 @@ test('terminal PTY tabs launch shell profiles and copy dragged output', async ()
 
     await win.locator('.terminal-tab-add').click();
     await expect(win.locator('.terminal-new-popover')).toBeVisible();
-    await expect(win.locator('.terminal-shell-card[data-profile-kind="ai-cli"]')).toHaveCount(3);
+    // claude/codex/gemini each ship a normal AND a clearly-labelled bypass profile
+    // (identity + args locked by tests/terminal/ai-cli-profiles.test.mjs).
+    await expect(win.locator('.terminal-shell-card[data-profile-kind="ai-cli"]')).toHaveCount(6);
     const profiles = await win.evaluate(() => (window as any).pty.shells()) as TerminalProfile[];
     await win.keyboard.press('Escape');
 

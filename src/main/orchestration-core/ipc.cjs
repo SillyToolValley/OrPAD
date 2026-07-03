@@ -14,6 +14,7 @@ const fsp = require('fs/promises');
 const core = require('./core.cjs');
 const observer = require('./tui-observer.cjs');
 const tuiDetect = require('./tui-detect-observer.cjs');
+const ptyTap = require('../terminal/pty-tap.cjs');
 const { assertNoSymlinkInWorkspacePath } = require('../orchestration-machine/patches');
 
 const TRACE_CHANNEL = 'orpad-core-trace';
@@ -421,6 +422,21 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     return { ok: true, cancelled };
   });
 
+  // One detach hook per webContents: observe-start/reattach are called repeatedly (per Apply, per reload),
+  // and stacking a fresh once('destroyed') each time accumulates listeners on long-lived windows.
+  const hookedDetachSenders = new Set();
+  function hookDetachOnDestroy(event) {
+    const wcId = event.sender.id;
+    if (hookedDetachSenders.has(wcId)) return;
+    hookedDetachSenders.add(wcId);
+    try {
+      event.sender.once('destroyed', () => {
+        hookedDetachSenders.delete(wcId);
+        tuiDetect.detachWindow(wcId);
+      });
+    } catch (_) { hookedDetachSenders.delete(wcId); /* best effort */ }
+  }
+
   // --- Observe a live interactive TUI (claude) → live graph ---------------------------------------------
   // Called BY the Run GUI window (so trace streams back to it). Visualises a session the user drives in the
   // terminal — no sandbox/verify (advisory only). Cleans up when the window is destroyed.
@@ -439,23 +455,30 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
 
     if (sessionId) {
       const wcId = event.sender.id;
-      // The observer's lifetime follows the PTY SESSION, not this window. If one already exists for this session
-      // (the Run GUI was closed and reopened, or Apply re-seeds), REATTACH and replay its buffer so the graph
-      // re-syncs — don't start a new, empty observer. Window close DETACHES (keeps it running); only PTY exit /
-      // explicit Stop / quit truly stops it.
+      // The observer's lifetime follows the PTY SESSION, not this window. If one already exists for this
+      // session — live, or finished-but-retained after PTY exit — REATTACH: bind this webContents as a
+      // consumer and ALWAYS replay the buffer to it. A Ctrl+R reload keeps the same wcId, so "already bound"
+      // must never skip the replay (the replayed head run/start resets the renderer entry — idempotent).
       const existing = tuiDetect.findBySession(sessionId);
       if (existing && !existing.closed) {
-        // Only replay if this window isn't already bound (avoids a double-replay if observe-reattach also ran).
-        if (existing.boundWcId !== wcId) tuiDetect.reattach(existing.runId, sender(event, existing.runId), wcId);
-        try { event.sender.once('destroyed', () => tuiDetect.detachWindow(wcId)); } catch (_) { /* best effort */ }
+        tuiDetect.reattach(existing.runId, sender(event, existing.runId), wcId);
+        hookDetachOnDestroy(event);
         return { ok: true, runId: existing.runId };
+      }
+      // Observing an already-exited session would create an immortal 'active' zombie run. Reject it — and
+      // surface WHY in the Run GUI (an Apply seed can still arrive after the CLI exited), as an error row
+      // rather than a silently missing graph.
+      if (!ptyTap.isAlive(sessionId)) {
+        const msg = 'This terminal session has already exited — nothing to observe.';
+        send({ ev: 'run', state: 'error', error: msg, at: nowIso() });
+        return { ok: false, deadSession: true, error: msg };
       }
       const cols = Number(request.cols) || undefined;
       const rows = Number(request.rows) || undefined;
       // If this session is somehow already observed, startTuiDetect returns the EXISTING handle; report its
       // (stable) runId, never the fresh one, so the renderer routes to the live channel.
       const h = tuiDetect.startTuiDetect({ runId, sessionId, agent, send: sender(event, runId), cols, rows, workspaceRoot, wcId });
-      try { event.sender.once('destroyed', () => tuiDetect.detachWindow(wcId)); } catch (_) { /* best effort */ }
+      hookDetachOnDestroy(event);
       return { ok: true, runId: (h && h.runId) || runId };
     }
 
@@ -469,13 +492,14 @@ function registerCoreRunHandlers({ ipcMain, app, authority }) {
     return { ok: true, runId };
   });
 
-  // Reattach a (re)opened Run GUI window to any live observers for its workspace and replay their buffers, so
-  // closing/reopening the window re-syncs the graph without a fresh Apply. The PTY sessions kept running.
+  // Reattach a (re)opened Run GUI window to every observer for its workspace — live ones (their PTY sessions
+  // kept running) AND finished-retained ones (their session exited while no window was open) — and replay
+  // their buffers, so closing/reopening the window re-syncs the graphs without a fresh Apply.
   ipcMain.handle('orpad-core-observe-reattach', async (event) => {
     const workspaceRoot = authority.getWorkspaceRoot(event.sender);
     const wcId = event.sender.id;
     const runIds = tuiDetect.reattachWorkspace(workspaceRoot, (runId) => sender(event, runId), wcId);
-    try { event.sender.once('destroyed', () => tuiDetect.detachWindow(wcId)); } catch (_) { /* best effort */ }
+    hookDetachOnDestroy(event);
     return { ok: true, runIds };
   });
 

@@ -543,8 +543,59 @@ export function createLiveTraceView({ onRun = null, onContinue = null, onLinkGra
     const stateText = active ? `● ${nodeCount}` : (entry.errorMessage ? 'error' : (entry.seeded && !entry.events.length ? 'history' : `done ${nodeCount}`));
     meta.textContent = [entry.agent || '', stateText].filter(Boolean).join(' · ');
     li.append(badge, label, meta);
+    // Stop/dismiss affordance — the ONLY control this pure viewer offers. An ACTIVE observe run gets a real
+    // Stop (ends the tui-detect observer main-side; the row flips to done when its run/done streams back);
+    // any inactive row is just removed from the list locally. (No base.css additions — inline chrome only.)
+    const stopFn = onStop
+      || (typeof window !== 'undefined' && window.orpad && window.orpad.core && typeof window.orpad.core.observeStop === 'function'
+        ? (rid) => window.orpad.core.observeStop(rid) : null);
+    let ctrl = null;
+    if (active && entry.isObserve && stopFn) {
+      ctrl = document.createElement('button');
+      ctrl.title = 'Stop observing this session';
+      ctrl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        ctrl.disabled = true;
+        Promise.resolve(stopFn(entry.runId)).catch(() => {}).then(() => { ctrl.disabled = false; });
+      });
+    } else if (!active) {
+      ctrl = document.createElement('button');
+      ctrl.title = 'Remove from list';
+      ctrl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // A finished observe run is also RETAINED main-side for reattach-replay; free that buffer too, or the
+        // dismissed row would resurrect on the next window (re)open. Best-effort — local removal always wins.
+        if (entry.isObserve && stopFn) Promise.resolve(stopFn(entry.runId)).catch(() => {});
+        removeEntry(entry);
+      });
+    }
+    if (ctrl) {
+      ctrl.type = 'button';
+      ctrl.className = 'run-gui-run-stop';
+      ctrl.textContent = '×';
+      ctrl.setAttribute('aria-label', ctrl.title);
+      ctrl.style.cssText = 'margin-left:auto;flex:0 0 auto;border:none;background:transparent;color:inherit;opacity:.45;cursor:pointer;font-size:13px;line-height:1;padding:0 3px;';
+      ctrl.addEventListener('mouseenter', () => { ctrl.style.opacity = '0.9'; });
+      ctrl.addEventListener('mouseleave', () => { ctrl.style.opacity = '0.45'; });
+      li.append(ctrl);
+    }
     li.addEventListener('click', () => onRowClick(entry));
     return li;
+  }
+  // Drop a run row locally (a finished/inactive run the user dismissed). Pure view-side: the run's recorded
+  // trace (if any) is untouched and reappears via the history refresh.
+  function removeEntry(entry) {
+    if (!entry || !runs.has(entry.runId)) return;
+    if (entry._countTimer) { clearTimeout(entry._countTimer); entry._countTimer = null; }
+    runs.delete(entry.runId);
+    if (selected === entry) {
+      selected = runs.values().next().value || null;
+      fgNodeById.clear(); lastSig = ''; framedOnce = false; lastFitCount = 0;
+      renderTranscript();
+      restoreResultPanel(selected);
+      render();
+    }
+    renderSidebar();
   }
   // Refresh a non-selected (background) run's cached node count at most ~once per 800ms and update its row —
   // instead of rebuilding its full graph on every streamed event.
@@ -617,6 +668,14 @@ export function createLiveTraceView({ onRun = null, onContinue = null, onLinkGra
       pushed = false;
       entry.transcript.push({ role: 'agent', text: `${ev.level === 'warn' ? '⚠ ' : ''}${ev.text || ''}` });
       if (entry === selected) renderTranscript();
+    } else if (ev.ev === 'transcript') {
+      // Observed-TUI dialogue (the user's submitted prompt / assistant prose) — Conversation panel, not graph.
+      pushed = false;
+      const text = String(ev.text || '').trim();
+      if (text) {
+        entry.transcript.push({ role: ev.role === 'user' ? 'user' : 'agent', text });
+        if (entry === selected) renderTranscript();
+      }
     } else if (ev.ev === 'run' && ev.state === 'start') {
       pushed = false;
       if (!ev.continued) resetEntry(entry); // fresh run/turn-less start: clear THIS run's buffer

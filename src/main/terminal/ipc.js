@@ -164,6 +164,14 @@ function registerTerminalHandlers({ ipcMain, app, authority }) {
   ipcMain.handle('clipboard.read-text', async () => {
     try { return require('electron').clipboard.readText(); } catch (_) { return ''; }
   });
+  // Whether the OS clipboard currently holds an image — an AI CLI paste (\x16) reads the clipboard itself,
+  // so the renderer only needs the yes/no to decide between term.paste(text) and forwarding the Ctrl+V byte.
+  ipcMain.handle('clipboard.has-image', async () => {
+    try {
+      const formats = require('electron').clipboard.availableFormats() || [];
+      return formats.some(format => String(format).toLowerCase().startsWith('image/'));
+    } catch (_) { return false; }
+  });
 
   app.on('before-quit', () => {
     ptyManager.shutdown().catch(() => {});

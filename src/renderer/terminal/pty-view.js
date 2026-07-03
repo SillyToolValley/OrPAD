@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { WebglAddon } from '@xterm/addon-webgl';
 import xtermCss from '@xterm/xterm/css/xterm.css';
 import { t } from '../i18n.js';
@@ -13,8 +14,15 @@ const MAX_BLOCK_CHARS = 240_000;
 // high-output session. Past this many buffered chars, flush synchronously into xterm's (scrollback-bounded)
 // buffer instead of waiting for a frame.
 const MAX_PENDING_FLUSH = 256_000;
+// rAF never fires while the window is minimized/hidden, so a timer fallback drains pending output there —
+// otherwise a TUI's startup queries (DSR/DA1) get no echo back and e.g. claude wedges until restore.
+const FLUSH_FALLBACK_MS = 50;
 const DEFAULT_MAX_COMMAND_BLOCKS = 120;
 const LAST_SHELL_KEY = 'orpad-terminal-last-shell';
+const FONT_SIZE_KEY = 'orpad-terminal-font-size';
+const FONT_SIZE_DEFAULT = 13;
+const FONT_SIZE_MIN = 8;
+const FONT_SIZE_MAX = 28;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -102,16 +110,51 @@ function escapeMarkdownCode(text) {
   return String(text || '').replace(/`/g, '\\`');
 }
 
+// Parse a CSS color (hex / rgb() / rgba()) into [r, g, b, a]; xterm themes render on canvas, so derived
+// colors must be computed in JS (no color-mix there).
+function parseColorChannels(value) {
+  const raw = String(value || '').trim();
+  let m = raw.match(/^#([0-9a-f]{3})$/i);
+  if (m) return [...m[1]].map(c => parseInt(c + c, 16)).concat(1);
+  m = raw.match(/^#([0-9a-f]{6})([0-9a-f]{2})?$/i);
+  if (m) return [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16)).concat(m[2] ? parseInt(m[2], 16) / 255 : 1);
+  m = raw.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?\s*\)$/i);
+  if (m) {
+    const alpha = m[4] === undefined ? 1 : (m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]));
+    return [Number(m[1]), Number(m[2]), Number(m[3]), alpha];
+  }
+  return null;
+}
+
+// Mix a color toward black (0) or white (255) by `ratio`; falls back to the input when unparseable.
+function mixTowardChannel(value, target, ratio) {
+  const from = parseColorChannels(value);
+  if (!from) return value;
+  const channel = i => Math.max(0, Math.min(255, Math.round(from[i] + (target - from[i]) * ratio)));
+  return `#${[channel(0), channel(1), channel(2)].map(c => c.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function withAlphaScaled(value, multiplier) {
+  const c = parseColorChannels(value);
+  if (!c) return value;
+  const alpha = Math.max(0, Math.min(1, c[3] * multiplier));
+  return `rgba(${c[0]}, ${c[1]}, ${c[2]}, ${Number(alpha.toFixed(3))})`;
+}
+
 function terminalTheme() {
   const styles = getComputedStyle(document.documentElement);
   const css = name => styles.getPropertyValue(name).trim();
-  return {
-    background: css('--editor-bg') || css('--bg-primary') || '#1a1b26',
-    foreground: css('--text-primary') || '#c0caf5',
-    cursor: css('--editor-cursor') || css('--accent-color') || '#7aa2f7',
-    selectionBackground: css('--editor-selection') || 'rgba(122,162,247,0.4)',
-    black: css('--bg-primary') || '#1a1b26',
-    brightBlack: css('--text-tertiary') || '#565f89',
+  // Derive light/dark from the actual background luma: dataset.themeType is only
+  // maintained by the detached terminal window, so the docked panel in the main
+  // window would otherwise always take the dark branch.
+  const bgChannels = parseColorChannels(css('--bg-primary') || '#1a1b26');
+  const isLight = !!bgChannels &&
+    (0.2126 * bgChannels[0] + 0.7152 * bgChannels[1] + 0.0722 * bgChannels[2]) >= 128;
+  // Bright ANSI variants: lighten toward white on dark themes, darken slightly on light ones.
+  const bright = color => (isLight ? mixTowardChannel(color, 0, 0.15) : mixTowardChannel(color, 255, 0.25));
+  const background = css('--editor-bg') || css('--bg-primary') || '#1a1b26';
+  const selection = css('--editor-selection') || 'rgba(122,162,247,0.4)';
+  const ansi = {
     red: css('--syntax-deleted') || '#f7768e',
     green: css('--syntax-added') || '#9ece6a',
     yellow: css('--syntax-meta') || '#e0af68',
@@ -120,9 +163,31 @@ function terminalTheme() {
     cyan: css('--syntax-operator') || '#89ddff',
     white: css('--text-primary') || '#c0caf5',
   };
+  return {
+    background,
+    foreground: css('--text-primary') || '#c0caf5',
+    cursor: css('--editor-cursor') || css('--accent-color') || '#7aa2f7',
+    cursorAccent: background,
+    selectionBackground: selection,
+    selectionInactiveBackground: withAlphaScaled(selection, 0.5),
+    black: css('--bg-primary') || '#1a1b26',
+    brightBlack: css('--text-tertiary') || '#565f89',
+    ...ansi,
+    brightRed: bright(ansi.red),
+    brightGreen: bright(ansi.green),
+    brightYellow: bright(ansi.yellow),
+    brightBlue: bright(ansi.blue),
+    brightMagenta: bright(ansi.magenta),
+    brightCyan: bright(ansi.cyan),
+    brightWhite: bright(ansi.white),
+  };
 }
 
 function processTypedBuffer(session, data) {
+  // AI-CLI TUIs never emit OSC 633;D, so a typed-Enter provisional block would stay open forever and soak up
+  // redraw garbage. Skip typed-command tracking entirely for them; OSC-633-driven blocks (handleOsc633) still
+  // work for ANY session kind.
+  if (session.shell?.kind === 'ai-cli') return;
   for (const ch of String(data || '')) {
     if (ch === '\r') {
       const command = session.commandBuffer.trim();
@@ -214,7 +279,7 @@ function latestFinishedBlock(sessions) {
   return latest;
 }
 
-async function writeClipboardText(text) {
+export async function writeClipboardText(text) {
   const value = String(text || '');
   if (!value) return false;
   // Prefer the Electron main-process clipboard (reliable from a sandboxed renderer); fall back to navigator.
@@ -276,11 +341,10 @@ function startCommandBlock(session, commandLine, provisional = false) {
   if (session.isActive?.()) session.blockList.prepend(details);
 
   const actions = [
-    [t('terminal.action.copy'), async () => navigator.clipboard.writeText(stripAnsi(block.output || ''))],
-    [t('terminal.action.askAi'), () => {
-      window.dispatchEvent(new CustomEvent('orpad-ai-prefill', {
-        detail: { text: `<terminal_output>\n${stripAnsi(block.output || '')}\n</terminal_output>\n\nExplain this terminal output:` },
-      }));
+    [t('terminal.action.copy'), async () => {
+      if (await writeClipboardText(stripAnsi(block.output || ''))) {
+        session.setStatus?.(t('terminal.status.copied'), { transient: true });
+      }
     }],
     [t('terminal.action.insertDoc'), () => session.hooks.insertRunnerBlock?.(blockMarkdown(block))],
   ];
@@ -329,20 +393,6 @@ function finishCommandBlock(session, exitCode) {
   block.badge.textContent = block.exitCode === 0 ? t('terminal.badge.exit0') : fmt('terminal.badge.exit', { code: block.exitCode ?? t('terminal.unknown') });
   block.details.classList.toggle('terminal-failed', block.exitCode !== 0);
 
-  if (block.exitCode !== 0) {
-    const explain = el('button', '', t('terminal.action.explainError'));
-    explain.type = 'button';
-    explain.addEventListener('click', (event) => {
-      event.stopPropagation();
-      window.dispatchEvent(new CustomEvent('orpad-ai-prefill', {
-        detail: {
-          text: `<terminal_error command="${block.commandLine || ''}" exit="${block.exitCode ?? ''}">\n${stripAnsi(block.output || '')}\n</terminal_error>\n\nExplain the failure and suggest the safest next command.`,
-        },
-      }));
-    });
-    block.toolbar.prepend(explain);
-  }
-
   session.currentBlock = null;
   dispatchTerminalOutput(block);
   pruneCompletedCommandBlocks(session);
@@ -355,15 +405,16 @@ function finishCommandBlock(session, exitCode) {
 // strictly safer for escape-sequence parsing.
 function flushSessionData(session) {
   session.flushScheduled = false;
+  // Whichever trigger fires first (rAF or the timer fallback) cancels the other.
+  if (session.flushRaf) { cancelAnimationFrame(session.flushRaf); session.flushRaf = 0; }
+  if (session.flushTimer) { clearTimeout(session.flushTimer); session.flushTimer = 0; }
   if (session.disposed) return; // closed before the frame fired — term is gone
   const raw = session.pendingData || '';
   session.pendingData = '';
   if (!raw) return;
   const cleaned = consumeOsc633(session, raw);
-  if (cleaned) {
-    session.term.write(cleaned);
-    appendBlockOutput(session, cleaned);
-  }
+  if (cleaned) session.term.write(cleaned);
+  session.updateScrollPill?.();
 }
 
 function handleOsc633(session, code, param) {
@@ -396,6 +447,15 @@ function handleOsc52(b64) {
   } catch (_) { /* malformed base64 — ignore */ }
 }
 
+// Intercept OSC 52 clipboard writes (selection -> OS clipboard) and strip them from the rendered output.
+function stripOsc52(segment) {
+  if (segment.indexOf('\x1b]52;') < 0) return segment;
+  return segment.replace(/\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)/g, (_m, data) => {
+    if (data && data !== '?') handleOsc52(data);
+    return '';
+  });
+}
+
 function consumeOsc633(session, chunk) {
   let input = `${session.oscBuffer || ''}${String(chunk || '')}`;
   session.oscBuffer = '';
@@ -409,25 +469,37 @@ function consumeOsc633(session, chunk) {
       input = input.slice(0, partialAt);
     }
   }
+  // A chunk can also end MID-prefix (e.g. '…\x1b]5'), which the full-prefix search above misses — hold any
+  // trailing partial prefix back too so reassembly with the next chunk still works. (xterm's own parser is
+  // streaming, so delaying an unrelated OSC prefix by one chunk is harmless.)
+  if (!session.oscBuffer) {
+    const partialPrefix = input.match(/\x1b(?:\](?:[0-9]{0,3};?)?)?$/);
+    if (partialPrefix) {
+      session.oscBuffer = partialPrefix[0];
+      input = input.slice(0, partialPrefix.index);
+    }
+  }
 
   const re = /\x1b]633;([A-DP])(?:;([^\x07\x1b]*))?(?:\x07|\x1b\\)/g;
   let cleaned = '';
   let last = 0;
   let match;
+  // Emit inter-marker text IMMEDIATELY so a coalesced A→text→D batch lands the text in the block that A opened
+  // BEFORE D closes it. (rAF batching joins the three chunks; appending after the parse loop would find
+  // currentBlock already null.)
+  const emitSegment = (segment) => {
+    if (!segment) return;
+    const visible = stripOsc52(segment);
+    if (!visible) return;
+    cleaned += visible;
+    appendBlockOutput(session, visible);
+  };
   while ((match = re.exec(input))) {
-    cleaned += input.slice(last, match.index);
+    emitSegment(input.slice(last, match.index));
     handleOsc633(session, match[1], match[2] || '');
     last = re.lastIndex;
   }
-  cleaned += input.slice(last);
-
-  // Intercept OSC 52 clipboard writes (selection -> OS clipboard) and strip them from the rendered output.
-  if (cleaned.indexOf('\x1b]52;') >= 0) {
-    cleaned = cleaned.replace(/\x1b\]52;[cpqs0-7]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\)/g, (_m, data) => {
-      if (data && data !== '?') handleOsc52(data);
-      return '';
-    });
-  }
+  emitSegment(input.slice(last));
   return cleaned;
 }
 
@@ -445,8 +517,8 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       <div class="terminal-tab-strip"></div>
       <div class="terminal-pty-toolbar">
         <span class="terminal-active-context"></span>
-        <button type="button" class="terminal-orch-opts-btn" title="Orchestration options — applied when you launch an AI CLI and choose Apply">Orchestration Options</button>
-        <button type="button" class="terminal-rungui-btn" title="Open the Run GUI — visualise AI runs as a live graph">Run GUI</button>
+        <button type="button" class="terminal-orch-opts-btn" title="${t('terminal.orch.optionsTooltip')}">${t('terminal.orch.optionsBtn')}</button>
+        <button type="button" class="terminal-rungui-btn" title="${t('terminal.runGui.tooltip')}">${t('terminal.runGui.btn')}</button>
         <span class="terminal-pty-status"></span>
       </div>
     </div>
@@ -481,6 +553,13 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
         <span>${t('terminal.empty.subtitle')}</span>
         <button type="button" class="terminal-empty-new">${t('terminal.empty.selectShell')}</button>
       </div>
+      <div class="terminal-find-bar hidden">
+        <input type="text" class="terminal-find-input" spellcheck="false" placeholder="${t('terminal.find.placeholder')}">
+        <button type="button" class="terminal-find-prev" title="${t('terminal.find.prev')}" aria-label="${t('terminal.find.prev')}">&#8593;</button>
+        <button type="button" class="terminal-find-next" title="${t('terminal.find.next')}" aria-label="${t('terminal.find.next')}">&#8595;</button>
+        <button type="button" class="terminal-find-close" title="${t('terminal.find.close')}" aria-label="${t('terminal.find.close')}">&#10005;</button>
+      </div>
+      <button type="button" class="terminal-scroll-pill hidden" title="${t('terminal.scrollToBottom')}" aria-label="${t('terminal.scrollToBottom')}">&#8595;</button>
     </div>
     <details class="terminal-block-drawer">
       <summary>
@@ -523,7 +602,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
   // Orchestration options live HERE in the terminal (not in the Run GUI viewer): the default config applied
   // when you launch an AI CLI and choose "Apply". Persisted to localStorage; included in the Apply seed.
   const ORCH_OPTS_KEY = 'orpad-orchestration-options';
-  const ORCH_OPTS_DEFAULTS = { ground: true, parallelResearch: true, apply: false, vault: false, verify: true, writeset: '', readonly: '', gates: '', verifyCycles: 3, timeoutMin: 0, buildOutputTo: 'auto' };
+  const ORCH_OPTS_DEFAULTS = { ground: true, parallelResearch: true, apply: false, vault: false, verify: true, writeset: '', readonly: '', gates: '', verifyCycles: 3, timeoutMin: 0, buildOutputTo: 'auto', observeOnLaunch: 'ask' };
   function loadOrchestrationOptions() {
     try { return { ...ORCH_OPTS_DEFAULTS, ...(JSON.parse(localStorage.getItem(ORCH_OPTS_KEY) || '{}') || {}) }; }
     catch (_) { return { ...ORCH_OPTS_DEFAULTS }; }
@@ -536,20 +615,21 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     const o = loadOrchestrationOptions();
     const body = el('div', 'terminal-orch-options');
     body.innerHTML = `
-      <p class="terminal-orch-hint">Defaults for OrPAD's <strong>governed runs</strong> (sandboxed execute + verify). Note: launching an AI CLI in the terminal and choosing “Apply” is <strong>read-only observation</strong> — these options do not apply to it (a live terminal session can't be sandboxed).</p>
-      <label class="terminal-orch-check"><input type="checkbox" data-o-ground> Research prior art first (grounding)</label>
-      <label class="terminal-orch-check"><input type="checkbox" data-o-parallel> Parallel research (fan-out)</label>
-      <label class="terminal-orch-check"><input type="checkbox" data-o-vault> Knowledge vault (ground in + capture notes)</label>
-      <label class="terminal-orch-check"><input type="checkbox" data-o-verify> Verify (auto QA: smoke + critic + retry)</label>
-      <label class="terminal-orch-check"><input type="checkbox" data-o-apply> Apply result to workspace</label>
-      <label class="terminal-orch-field"><span>Write-set (one path per line)</span><textarea data-o-writeset rows="2"></textarea></label>
-      <label class="terminal-orch-field"><span>Read-only context (one path per line)</span><textarea data-o-readonly rows="1"></textarea></label>
-      <label class="terminal-orch-field"><span>Verification gates (one shell check per line)</span><textarea data-o-gates rows="2"></textarea></label>
+      <p class="terminal-orch-hint">${t('terminal.orch.hint')}</p>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-ground> ${t('terminal.orch.ground')}</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-parallel> ${t('terminal.orch.parallel')}</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-vault> ${t('terminal.orch.vault')}</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-verify> ${t('terminal.orch.verify')}</label>
+      <label class="terminal-orch-check"><input type="checkbox" data-o-apply> ${t('terminal.orch.apply')}</label>
+      <label class="terminal-orch-field"><span>${t('terminal.orch.writeset')}</span><textarea data-o-writeset rows="2"></textarea></label>
+      <label class="terminal-orch-field"><span>${t('terminal.orch.readonly')}</span><textarea data-o-readonly rows="1"></textarea></label>
+      <label class="terminal-orch-field"><span>${t('terminal.orch.gates')}</span><textarea data-o-gates rows="2"></textarea></label>
       <div class="terminal-orch-row">
-        <label class="terminal-orch-field"><span>Verify retry cycles</span><input type="number" min="0" max="5" step="1" data-o-cycles></label>
-        <label class="terminal-orch-field"><span>Time cap (min, 0=none)</span><input type="number" min="0" step="1" data-o-timeout></label>
-        <label class="terminal-orch-field"><span>Build output</span><select data-o-buildout><option value="auto">Auto</option><option value="workspace">Workspace</option><option value="run-dir">Run dir</option></select></label>
+        <label class="terminal-orch-field"><span>${t('terminal.orch.cycles')}</span><input type="number" min="0" max="5" step="1" data-o-cycles></label>
+        <label class="terminal-orch-field"><span>${t('terminal.orch.timeout')}</span><input type="number" min="0" step="1" data-o-timeout></label>
+        <label class="terminal-orch-field"><span>${t('terminal.orch.buildOutput')}</span><select data-o-buildout><option value="auto">${t('terminal.orch.buildOutput.auto')}</option><option value="workspace">${t('terminal.orch.buildOutput.workspace')}</option><option value="run-dir">${t('terminal.orch.buildOutput.runDir')}</option></select></label>
       </div>
+      <label class="terminal-orch-field"><span>${t('terminal.orch.observeOnLaunch')}</span><select data-o-observe><option value="ask">${t('terminal.orch.observe.ask')}</option><option value="always">${t('terminal.orch.observe.always')}</option><option value="never">${t('terminal.orch.observe.never')}</option></select></label>
     `;
     const q = (s) => body.querySelector(s);
     q('[data-o-ground]').checked = !!o.ground;
@@ -563,13 +643,14 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     q('[data-o-cycles]').value = String(o.verifyCycles ?? 3);
     q('[data-o-timeout]').value = String(o.timeoutMin ?? 0);
     q('[data-o-buildout]').value = o.buildOutputTo || 'auto';
+    q('[data-o-observe]').value = ['ask', 'always', 'never'].includes(o.observeOnLaunch) ? o.observeOnLaunch : 'ask';
     hooks.openModal({
-      title: 'Orchestration Options',
+      title: t('terminal.orch.title'),
       body,
       onClose: () => hooks.closeModal?.(),
       footer: [
-        { label: 'Cancel', onClick: () => hooks.closeModal?.() },
-        { label: 'Save', primary: true, onClick: () => {
+        { label: t('dialog.cancel'), onClick: () => hooks.closeModal?.() },
+        { label: t('dialog.save'), primary: true, onClick: () => {
           saveOrchestrationOptions({
             ground: q('[data-o-ground]').checked,
             parallelResearch: q('[data-o-parallel]').checked,
@@ -582,6 +663,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
             verifyCycles: Math.max(0, Math.min(5, Number(q('[data-o-cycles]').value) || 0)),
             timeoutMin: Math.max(0, Number(q('[data-o-timeout]').value) || 0),
             buildOutputTo: q('[data-o-buildout]').value,
+            observeOnLaunch: q('[data-o-observe]').value,
           });
           hooks.closeModal?.();
         } },
@@ -594,31 +676,42 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     if (id.includes('gemini')) return 'gemini';
     return 'claude';
   }
+  // claude → observe the live session as a graph. PRIMARY: the pty `sessionId` lets the observer tap this
+  // exact terminal's stream and reconstruct the rendered screen (no session-log dependency). Pass the live
+  // terminal dims so the screen reconstruction matches what claude is rendering. (pid kept for the legacy
+  // log-tail fallback.)
+  function applyObserve(info) {
+    const s = sessions.find((x) => x.id === info.sessionId);
+    const cols = (s && s.term && s.term.cols) || info.cols || null;
+    const rows = (s && s.term && s.term.rows) || info.rows || null;
+    openRunGui({ agent: aiCliAgent(info.shell), cwd: info.cwd, sessionId: info.sessionId, pid: info.aiPid || null, cols, rows, observe: true, options: loadOrchestrationOptions() });
+  }
   function offerOrchestration(info) {
-    if (!orchestrationApi || !orchestrationApi.open || !hooks.openModal) return;
+    if (!orchestrationApi || !orchestrationApi.open) return;
+    // Remembered choice: 'always' silently opens the Run GUI (openRunGui is idempotent), 'never' skips the ask.
+    const observePref = loadOrchestrationOptions().observeOnLaunch;
+    if (observePref === 'never') return;
+    if (observePref === 'always') {
+      applyObserve(info);
+      return;
+    }
+    if (!hooks.openModal) return;
     const agent = aiCliAgent(info.shell);
     const body = el('div', 'terminal-confirm');
     body.innerHTML = `
-      <p>Watch this <strong>${agent}</strong> session as a live graph in the Run GUI?</p>
-      <p>This is <strong>read-only observation</strong> — OrPAD visualises the tools the CLI runs in the terminal. It does not sandbox or change what the CLI does (it works directly in your workspace). Skip to use the CLI without the graph.</p>
+      <p>${fmt('terminal.applyOrch.body1', { agent })}</p>
+      <p>${t('terminal.applyOrch.body2')}</p>
     `;
     const finish = () => hooks.closeModal?.();
     hooks.openModal({
-      title: 'Apply orchestration?',
+      title: t('terminal.applyOrch.title'),
       body,
       onClose: () => finish(),
       footer: [
-        { label: 'Skip', onClick: () => finish() },
-        // claude → observe the live session as a graph. PRIMARY: the pty `sessionId` lets the observer tap this
-        // exact terminal's stream and reconstruct the rendered screen (no session-log dependency). Pass the live
-        // terminal dims so the screen reconstruction matches what claude is rendering. (pid kept for the legacy
-        // log-tail fallback.)
-        { label: 'Apply', primary: true, onClick: () => {
+        { label: t('terminal.applyOrch.skip'), onClick: () => finish() },
+        { label: t('terminal.applyOrch.apply'), primary: true, onClick: () => {
           finish();
-          const s = sessions.find((x) => x.id === info.sessionId);
-          const cols = (s && s.term && s.term.cols) || info.cols || null;
-          const rows = (s && s.term && s.term.rows) || info.rows || null;
-          openRunGui({ agent, cwd: info.cwd, sessionId: info.sessionId, pid: info.aiPid || null, cols, rows, observe: true, options: loadOrchestrationOptions() });
+          applyObserve(info);
         } },
       ],
     });
@@ -638,6 +731,12 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
   const shellList = root.querySelector('.terminal-shell-list');
   const newCwdInput = root.querySelector('.terminal-new-cwd input');
   const stage = root.querySelector('.terminal-pty-stage');
+  const findBar = root.querySelector('.terminal-find-bar');
+  const findInput = root.querySelector('.terminal-find-input');
+  const findPrevBtn = root.querySelector('.terminal-find-prev');
+  const findNextBtn = root.querySelector('.terminal-find-next');
+  const findCloseBtn = root.querySelector('.terminal-find-close');
+  const scrollPill = root.querySelector('.terminal-scroll-pill');
   const emptyState = root.querySelector('.terminal-pty-empty');
   const emptyNewBtn = root.querySelector('.terminal-empty-new');
   const blockDrawer = root.querySelector('.terminal-block-drawer');
@@ -667,8 +766,212 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     return hooks.getWorkspacePath?.() || hooks.getActiveTab?.()?.dirPath || '';
   }
 
-  function setStatus(text) {
+  let statusResetTimer = 0;
+  function setStatus(text, opts = {}) {
+    if (statusResetTimer) {
+      clearTimeout(statusResetTimer);
+      statusResetTimer = 0;
+    }
     statusEl.textContent = text || '';
+    statusEl.title = text || '';
+    statusEl.classList.toggle('is-error', opts.error === true);
+    if (text && opts.transient) {
+      statusResetTimer = setTimeout(() => {
+        statusResetTimer = 0;
+        setStatus('');
+      }, 1500);
+    }
+  }
+
+  function flashCopied() {
+    setStatus(t('terminal.status.copied'), { transient: true });
+  }
+
+  // Live theme refresh: xterm keeps a materialised copy of the theme, so re-derive it from the CSS variables
+  // whenever a theme is applied (both windows dispatch 'orpad-theme-applied').
+  function refreshTheme() {
+    const theme = terminalTheme();
+    for (const session of sessions) {
+      try { session.term.options.theme = theme; } catch {}
+    }
+  }
+
+  function loadFontSize() {
+    const stored = Number(localStorage.getItem(FONT_SIZE_KEY));
+    if (!Number.isFinite(stored) || stored <= 0) return FONT_SIZE_DEFAULT;
+    return Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(stored)));
+  }
+
+  function setFontSize(size) {
+    const next = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(Number(size) || FONT_SIZE_DEFAULT)));
+    try { localStorage.setItem(FONT_SIZE_KEY, String(next)); } catch {}
+    for (const session of sessions) {
+      try { session.term.options.fontSize = next; } catch {}
+    }
+    fitActiveTerminal();
+  }
+
+  function handleStageWheel(event) {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    setFontSize(loadFontSize() + (event.deltaY < 0 ? 1 : -1));
+  }
+
+  function findNextMatch() {
+    const session = activeSession();
+    if (session && findInput.value) session.searchAddon.findNext(findInput.value);
+  }
+
+  function findPrevMatch() {
+    const session = activeSession();
+    if (session && findInput.value) session.searchAddon.findPrevious(findInput.value);
+  }
+
+  function openFindBar() {
+    findBar.classList.remove('hidden');
+    findInput.focus();
+    findInput.select();
+  }
+
+  function closeFindBar() {
+    findBar.classList.add('hidden');
+    activeSession()?.term.focus();
+  }
+
+  function updateScrollPill() {
+    const session = activeSession();
+    let scrolledUp = false;
+    if (session && !session.disposed) {
+      try {
+        const buffer = session.term.buffer.active;
+        scrolledUp = buffer.viewportY < buffer.baseY;
+      } catch {}
+    }
+    scrollPill.classList.toggle('hidden', !scrolledUp);
+  }
+
+  function cycleTab(offset) {
+    if (sessions.length < 2) return;
+    const index = sessions.findIndex(item => item.id === activeId);
+    const next = sessions[(index + offset + sessions.length) % sessions.length];
+    if (next) activateSession(next.id);
+  }
+
+  // Shared paste path (Ctrl+V + context menu). AI-CLI TUIs (claude/codex/gemini) read the OS clipboard
+  // themselves when they receive a literal Ctrl+V byte — the only way an image paste can reach them. Text
+  // still goes through term.paste() so bracketed paste keeps multi-line pastes atomic.
+  async function pasteClipboard(session) {
+    try {
+      const readText = (typeof window !== 'undefined' && window.clipboard?.readText)
+        ? Promise.resolve(window.clipboard.readText()).catch(() => '')
+        : (navigator.clipboard?.readText ? navigator.clipboard.readText().catch(() => '') : Promise.resolve(''));
+      const readImage = (typeof window !== 'undefined' && window.clipboard?.hasImage)
+        ? Promise.resolve(window.clipboard.hasImage()).catch(() => false)
+        : Promise.resolve(false);
+      const [text, hasImage] = await Promise.all([readText, readImage]);
+      if (session.shell?.kind === 'ai-cli' && (hasImage || !text)) {
+        window.pty.write(session.id, '\x16');
+        return;
+      }
+      if (!text) return;
+      if (typeof session.term.paste === 'function') session.term.paste(text); // bracketed-paste aware; fires onData -> PTY
+      else window.pty.write(session.id, text);
+    } catch {}
+  }
+
+  let contextMenu = null;
+  function closeContextMenu() {
+    if (!contextMenu) return;
+    contextMenu.remove();
+    contextMenu = null;
+    document.removeEventListener('pointerdown', handleContextMenuDismiss, true);
+    document.removeEventListener('keydown', handleContextMenuKey, true);
+  }
+  function handleContextMenuDismiss(event) {
+    if (contextMenu && !contextMenu.contains(event.target)) closeContextMenu();
+  }
+  function handleContextMenuKey(event) {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    closeContextMenu();
+  }
+  function openContextMenu(session, x, y) {
+    closeContextMenu();
+    const menu = el('div', 'terminal-context-menu');
+    // keepFocus: Find moves focus into the find input on purpose; everything else
+    // must hand focus back to the terminal or keystrokes land on <body>.
+    const items = [
+      [t('terminal.menu.copy'), () => copyTerminalSelection(session.term).then(ok => { if (ok) flashCopied(); }).catch(() => {}), !session.term.hasSelection?.()],
+      [t('terminal.menu.paste'), () => pasteClipboard(session)],
+      [t('terminal.menu.selectAll'), () => { try { session.term.selectAll(); } catch {} }],
+      [t('terminal.menu.clear'), () => { try { session.term.clear(); } catch {} }],
+      [t('terminal.menu.find'), () => openFindBar(), false, true],
+    ];
+    for (const [label, run, disabled, keepFocus] of items) {
+      const button = el('button', '', label);
+      button.type = 'button';
+      button.disabled = disabled === true;
+      button.addEventListener('click', () => {
+        closeContextMenu();
+        run();
+        if (!keepFocus) { try { session.term.focus(); } catch {} }
+      });
+      menu.appendChild(button);
+    }
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`;
+    contextMenu = menu;
+    document.addEventListener('pointerdown', handleContextMenuDismiss, true);
+    document.addEventListener('keydown', handleContextMenuKey, true);
+  }
+
+  // Restart an exited session in place: same shell + cwd, same tab slot; only the pty session id changes.
+  async function restartSession(session) {
+    if (!session || session.restarting || !session.exited) return;
+    session.restarting = true;
+    setStatus(t('terminal.start.startingShell'));
+    try {
+      const info = await window.pty.spawn({
+        shell: session.shell?.id,
+        cwd: session.cwd,
+        workspaceRoot: hooks.getWorkspacePath?.() || '',
+        cols: session.term.cols,
+        rows: session.term.rows,
+        restore: true,
+      });
+      // The tab may have been closed while spawn awaited (possibly across a native
+      // outside-workspace confirm) — kill the fresh pty instead of orphaning it live
+      // in main's session map with restore=true.
+      if (session.disposed) {
+        try { window.pty.kill(info.sessionId); } catch {}
+        return;
+      }
+      const wasActive = session.id === activeId;
+      session.id = info.sessionId;
+      session.shell = info.shell || session.shell;
+      session.cwd = info.cwd || session.cwd;
+      session.exited = false;
+      session.attention = false;
+      session.title = terminalTabTitle(info);
+      session.commandBuffer = '';
+      session.pendingCommand = '';
+      session.currentBlock = null;
+      session.oscBuffer = '';
+      session.pendingData = '';
+      session.restartOverlay?.classList.add('hidden');
+      try { session.term.reset(); } catch {}
+      if (wasActive) activeId = session.id;
+      renderTabs();
+      if (wasActive) fitActiveTerminal();
+      setStatus(fmt('terminal.maskedEnv', { count: info.maskedEnvCount || 0 }));
+    } catch (err) {
+      setStatus(err.message || String(err), { error: true });
+      hooks.notify?.('Terminal', err);
+    } finally {
+      session.restarting = false;
+    }
   }
 
   function refreshLocale() {
@@ -693,6 +996,26 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     if (emptyNewBtn) emptyNewBtn.textContent = t('terminal.empty.selectShell');
     const drawerTitle = root.querySelector('.terminal-block-drawer summary span:first-child');
     if (drawerTitle) drawerTitle.textContent = t('terminal.blocks.title');
+    if (orchOptsBtn) {
+      orchOptsBtn.textContent = t('terminal.orch.optionsBtn');
+      orchOptsBtn.title = t('terminal.orch.optionsTooltip');
+    }
+    if (runGuiBtn) {
+      runGuiBtn.textContent = t('terminal.runGui.btn');
+      runGuiBtn.title = t('terminal.runGui.tooltip');
+    }
+    findInput.placeholder = t('terminal.find.placeholder');
+    for (const [button, key] of [[findPrevBtn, 'terminal.find.prev'], [findNextBtn, 'terminal.find.next'], [findCloseBtn, 'terminal.find.close'], [scrollPill, 'terminal.scrollToBottom']]) {
+      if (!button) continue;
+      button.title = t(key);
+      button.setAttribute('aria-label', t(key));
+    }
+    for (const session of sessions) {
+      const message = session.restartOverlay?.querySelector('.terminal-restart-message');
+      const button = session.restartOverlay?.querySelector('.terminal-restart-btn');
+      if (message) message.textContent = t('terminal.restart.exited');
+      if (button) button.textContent = t('terminal.restart.button');
+    }
     renderTabs();
     renderNewTerminalPanel();
     updateActiveContext();
@@ -752,8 +1075,15 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       item.draggable = true;
       item.dataset.sessionId = session.id;
       item.title = session.cwd || session.shell?.label || t('terminal.title');
-      item.appendChild(el('span', '', session.title || session.shell?.label || t('terminal.title')));
-      const close = el('span', 'terminal-tab-close', 'x');
+      // Icon chip + status dot are <i> elements so the title stays the tab's FIRST <span> (locked by e2e).
+      item.appendChild(el('i', 'terminal-tab-icon', shellIcon(session.shell)));
+      const dotState = session.attention ? 'attention' : (session.exited ? 'exited' : 'running');
+      item.appendChild(el('i', `terminal-tab-dot ${dotState}`));
+      item.appendChild(el('span', 'terminal-tab-title', session.title || session.shell?.label || t('terminal.title')));
+      const close = el('button', 'terminal-tab-close');
+      close.type = 'button';
+      close.title = t('terminal.tab.close');
+      close.setAttribute('aria-label', t('terminal.tab.close'));
       item.appendChild(close);
       item.addEventListener('click', () => activateSession(session.id));
       item.addEventListener('mousedown', (event) => {
@@ -951,11 +1281,13 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     }
     const session = activeSession();
     if (session) {
+      session.attention = false; // seen — clear the tab's attention dot
       blockList.innerHTML = '';
       for (const block of [...session.blocks].reverse()) blockList.prepend(block.details);
       fitActiveTerminal();
     }
     renderTabs();
+    updateScrollPill();
   }
 
   function askOutsideWorkspace(cwd, workspaceRoot) {
@@ -1012,7 +1344,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       renderNewTerminalPanel();
       shellsPromise = window.pty.shells()
         .catch(err => {
-          setStatus(err.message || String(err));
+          setStatus(err.message || String(err), { error: true });
           return [];
         })
         .then(result => {
@@ -1035,19 +1367,37 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     const serializeAddon = new SerializeAddon();
     const term = new Terminal({
       allowProposedApi: true,
-      convertEol: true,
+      // ConPTY already normalises newlines; convertEol would rewrite bare LFs inside TUI frames and corrupt them.
+      convertEol: false,
       cursorBlink: true,
-      fontFamily: 'Cascadia Mono, Consolas, Menlo, monospace',
-      fontSize: 13,
+      fontFamily: 'Cascadia Mono, Consolas, D2Coding, Malgun Gothic, Menlo, monospace',
+      fontSize: loadFontSize(),
       theme: terminalTheme(),
-      scrollback: 5000,
+      scrollback: 10000,
+      // OSC 8 hyperlinks: window.open routes through main's setWindowOpenHandler -> shell.openExternal.
+      linkHandler: {
+        activate: (_event, uri) => {
+          if (/^https?:/.test(uri)) window.open(uri);
+        },
+      },
+      ...(window.orpad?.platform === 'win32' ? { windowsPty: { backend: 'conpty' } } : {}),
     });
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
     term.loadAddon(searchAddon);
     term.loadAddon(serializeAddon);
     try {
-      term.loadAddon(new WebglAddon());
+      // Grapheme-aware widths (emoji/combining marks/Korean) — the addon registers Unicode version '15-graphemes'.
+      term.loadAddon(new UnicodeGraphemesAddon());
+      term.unicode.activeVersion = '15-graphemes';
+    } catch {}
+    try {
+      const webglAddon = new WebglAddon();
+      // On GPU context loss fall back to the DOM renderer instead of a frozen canvas.
+      webglAddon.onContextLoss(() => {
+        try { webglAddon.dispose(); } catch {}
+      });
+      term.loadAddon(webglAddon);
     } catch {}
 
     const container = el('div', 'terminal-pty-container');
@@ -1056,42 +1406,80 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     const copyCurrentSelection = () => {
       setTimeout(() => {
         if (!term.hasSelection?.()) return;
-        copyTerminalSelection(term).catch(() => {});
+        copyTerminalSelection(term).then(ok => { if (ok) flashCopied(); }).catch(() => {});
       }, 0);
     };
+    // xterm's own wheel handler runs first (inner element) and force-cancels in the
+    // alt screen / mouse-tracking cases, turning Ctrl+wheel into arrow keys for the
+    // TUI instead of letting the zoom handler on the stage see it. Opt Ctrl+wheel out
+    // of xterm entirely so it bubbles to handleStageWheel.
+    term.attachCustomWheelEventHandler((event) => !event.ctrlKey);
     term.attachCustomKeyEventHandler((event) => {
+      // IME (Korean etc.): composition keydowns must always reach xterm's composition
+      // helper untouched, or committed text gets duplicated/dropped mid-composition.
+      if (event.isComposing || event.keyCode === 229) return true;
       const key = String(event.key || '').toLowerCase();
       const mod = event.ctrlKey || event.metaKey;
+      const isAiCli = info.shell?.kind === 'ai-cli';
+      const claim = (onKeydown) => {
+        if (event.type === 'keydown') onKeydown();
+        event.preventDefault();
+        event.stopPropagation();
+        return false;
+      };
+      // AI-CLI TUIs: Shift+Enter inserts a newline ('\' + CR — exactly what claude's /terminal-setup binds;
+      // gemini accepts it too) and Alt+Enter sends ESC+CR (Ink's meta-enter). NOT for plain shells, where
+      // backslash+CR would corrupt e.g. PowerShell input.
+      if (isAiCli && key === 'enter' && !mod && !event.altKey && event.shiftKey) {
+        return claim(() => window.pty.write(session.id, '\\\r'));
+      }
+      if (isAiCli && key === 'enter' && !mod && event.altKey && !event.shiftKey) {
+        return claim(() => window.pty.write(session.id, '\x1b\r'));
+      }
       // Copy: Ctrl/Cmd+C ONLY when there's a selection (otherwise Ctrl+C must pass through as SIGINT), or the
       // explicit Ctrl+Shift+C. Routed through the OS clipboard via writeClipboardText.
       const copyShortcut = mod && key === 'c';
       const explicitCopyShortcut = event.ctrlKey && event.shiftKey && key === 'c';
       if ((copyShortcut || explicitCopyShortcut) && term.hasSelection?.()) {
-        if (event.type === 'keydown') copyTerminalSelection(term).catch(() => {});
-        event.preventDefault();
-        event.stopPropagation();
-        return false;
+        return claim(() => copyTerminalSelection(term).then(ok => { if (ok) flashCopied(); }).catch(() => {}));
       }
-      // Paste: Ctrl+V / Ctrl+Shift+V (Win/Linux) or Cmd+V (mac). Routed through term.paste(), which honors the
-      // app's bracketed-paste mode — so a multi-line paste reaches claude/readline as ONE paste (not line-by-line
-      // Enters that submit early). (We restored plain Ctrl+V because that's what users actually press to paste.)
-      const pasteShortcut = mod && key === 'v';
-      if (pasteShortcut) {
-        if (event.type === 'keydown') {
-          const read = (typeof window !== 'undefined' && window.clipboard?.readText)
-            ? window.clipboard.readText()
-            : (navigator.clipboard?.readText ? navigator.clipboard.readText() : Promise.resolve(''));
-          Promise.resolve(read).then((text) => {
-            if (!text) return;
-            if (typeof term.paste === 'function') term.paste(text); // bracketed-paste aware; fires onData -> PTY
-            else window.pty.write(session.id, text);
-          }).catch(() => {});
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        return false;
+      // Paste: Ctrl+V / Ctrl+Shift+V (Win/Linux) or Cmd+V (mac). pasteClipboard keeps text on term.paste()
+      // (bracketed paste) and forwards a literal \x16 to AI CLIs when the clipboard holds an image.
+      if (mod && key === 'v') {
+        return claim(() => { pasteClipboard(session); });
+      }
+      if (mod && !event.shiftKey && !event.altKey && key === 'f') {
+        return claim(() => openFindBar());
+      }
+      // Clear buffer. NOTE: this claims Ctrl+K, which readline/PSReadLine use as kill-to-end-of-line.
+      if (mod && !event.shiftKey && !event.altKey && key === 'k') {
+        return claim(() => { try { term.clear(); } catch {} });
+      }
+      // Font zoom.
+      if (mod && !event.altKey && (key === '=' || key === '+')) {
+        return claim(() => setFontSize(loadFontSize() + 1));
+      }
+      if (mod && !event.altKey && key === '-') {
+        return claim(() => setFontSize(loadFontSize() - 1));
+      }
+      if (mod && !event.altKey && key === '0') {
+        return claim(() => setFontSize(FONT_SIZE_DEFAULT));
+      }
+      // Tab management.
+      if (event.ctrlKey && key === 'pageup') {
+        return claim(() => cycleTab(-1));
+      }
+      if (event.ctrlKey && key === 'pagedown') {
+        return claim(() => cycleTab(1));
+      }
+      if (event.ctrlKey && event.shiftKey && key === 'w') {
+        return claim(() => closeSession(session.id));
       }
       return true;
+    });
+    container.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      openContextMenu(session, event.clientX, event.clientY);
     });
     container.addEventListener('mouseup', copyCurrentSelection);
     container.addEventListener('touchend', copyCurrentSelection);
@@ -1111,17 +1499,73 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       hooks,
       renderTabs,
       renderBlockCount: updateBlockCount,
+      setStatus,
       isActive: () => session.id === activeId,
       commandBuffer: '',
       pendingCommand: '',
       currentBlock: null,
       oscBuffer: '',
+      exited: false,
+      attention: false,
     };
+    session.updateScrollPill = () => {
+      if (session.isActive()) updateScrollPill();
+    };
+
+    // Exited-session overlay: restart the same shell/cwd into this tab slot.
+    const restartOverlay = el('div', 'terminal-restart-overlay hidden');
+    restartOverlay.appendChild(el('span', 'terminal-restart-message', t('terminal.restart.exited')));
+    const restartBtn = el('button', 'terminal-restart-btn', t('terminal.restart.button'));
+    restartBtn.type = 'button';
+    restartBtn.addEventListener('click', () => { restartSession(session); });
+    restartOverlay.appendChild(restartBtn);
+    container.appendChild(restartOverlay);
+    session.restartOverlay = restartOverlay;
 
     term.onData(data => {
       processTypedBuffer(session, data);
       window.pty.write(session.id, data);
     });
+    term.onScroll(() => session.updateScrollPill());
+    if (info.shell?.kind === 'ai-cli') {
+      // Claude Code streams its status via OSC 0/2 — mirror it on the tab (throttled). Plain shells keep their
+      // static profile label (their title churn is noise, and tests pin the label).
+      term.onTitleChange((title) => {
+        session.pendingTitle = String(title || '').trim();
+        if (session.titleTimer) return;
+        session.titleTimer = setTimeout(() => {
+          session.titleTimer = 0;
+          if (session.disposed || session.exited) return;
+          const next = session.pendingTitle || terminalTabTitle(info);
+          if (next !== session.title) {
+            session.title = next;
+            renderTabs();
+          }
+        }, 250);
+      });
+    }
+    // Bell + OSC 9 notifications: mark the tab and raise a system notification when the session isn't visible.
+    const flagAttention = (message) => {
+      if (session.isActive() && !document.hidden) return;
+      if (session.attention) return; // keep it cheap: one dot + notification per attention episode
+      session.attention = true;
+      renderTabs();
+      try {
+        if (typeof Notification === 'function' && Notification.permission !== 'denied') {
+          new Notification(session.title || session.shell?.label || t('terminal.title'), {
+            body: String(message || '').slice(0, 200) || t('terminal.notify.bell'),
+            silent: true,
+          });
+        }
+      } catch {}
+    };
+    term.onBell(() => flagAttention(''));
+    try {
+      term.parser.registerOscHandler(9, (data) => {
+        flagAttention(String(data || ''));
+        return true;
+      });
+    } catch {}
 
     const resizeObserver = new ResizeObserver(() => {
       if (session.id !== activeId) return;
@@ -1183,7 +1627,7 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       });
       return createTerminalSession(info, { fromRestore: options.fromRestore === true });
     } catch (err) {
-      setStatus(err.message || String(err));
+      setStatus(err.message || String(err), { error: true });
       hooks.notify?.('Terminal', err);
       return null;
     } finally {
@@ -1198,6 +1642,9 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
     if (index < 0) return;
     const [session] = sessions.splice(index, 1);
     session.disposed = true; // a queued rAF flush must not touch the disposed term
+    if (session.flushRaf) cancelAnimationFrame(session.flushRaf);
+    if (session.flushTimer) clearTimeout(session.flushTimer);
+    if (session.titleTimer) clearTimeout(session.titleTimer);
     try { session.resizeObserver?.disconnect(); } catch {}
     try { session.term.dispose(); } catch {}
     try { session.container.remove(); } catch {}
@@ -1226,7 +1673,10 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       }
       if (!session.flushScheduled) {
         session.flushScheduled = true;
-        requestAnimationFrame(() => flushSessionData(session));
+        // rAF keeps flushes frame-aligned while visible; the timer fallback still drains when the window is
+        // minimized/hidden (no rAF there). flushSessionData cancels whichever of the two hasn't fired yet.
+        session.flushRaf = requestAnimationFrame(() => flushSessionData(session));
+        session.flushTimer = setTimeout(() => flushSessionData(session), FLUSH_FALLBACK_MS);
       }
       return;
     }
@@ -1235,7 +1685,9 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       if (session.currentBlock) finishCommandBlock(session, payload.exitCode ?? null);
       session.term.writeln('');
       session.term.writeln(fmt('terminal.processExitedLine', { code: payload.exitCode ?? t('terminal.unknown') }));
+      session.exited = true;
       session.title = fmt('terminal.session.exitedTitle', { title: session.title || t('terminal.title') });
+      session.restartOverlay?.classList.remove('hidden');
       renderTabs();
       setStatus(t('terminal.start.processExited'));
     }
@@ -1315,9 +1767,32 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
   document.addEventListener('pointerdown', handleDocumentPointerDown, true);
   document.addEventListener('keydown', handleDocumentKeyDown, true);
   window.addEventListener('resize', positionNewTerminalPopover);
+  window.addEventListener('orpad-theme-applied', refreshTheme);
+  stage.addEventListener('wheel', handleStageWheel, { passive: false });
+  scrollPill.addEventListener('click', () => {
+    try { activeSession()?.term.scrollToBottom(); } catch {}
+    updateScrollPill();
+  });
+  findPrevBtn.addEventListener('click', findPrevMatch);
+  findNextBtn.addEventListener('click', findNextMatch);
+  findCloseBtn.addEventListener('click', closeFindBar);
+  findInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.shiftKey) findPrevMatch();
+      else findNextMatch();
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeFindBar();
+    }
+  });
   draftPaste.addEventListener('click', pasteDraft);
   draftCopy.addEventListener('click', async () => {
-    if (draftText) await navigator.clipboard.writeText(draftText);
+    if (draftText && await writeClipboardText(draftText)) flashCopied();
   });
   draftClose.addEventListener('click', () => draft.classList.add('hidden'));
 
@@ -1366,6 +1841,8 @@ export function createPtyTerminalGroup({ mount, hooks, track }) {
       document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
       document.removeEventListener('keydown', handleDocumentKeyDown, true);
       window.removeEventListener('resize', positionNewTerminalPopover);
+      window.removeEventListener('orpad-theme-applied', refreshTheme);
+      closeContextMenu();
       if (removePtyListener) removePtyListener();
       if (Array.isArray(window.__orpadTerminalPtyListeners)) {
         window.__orpadTerminalPtyListeners = window.__orpadTerminalPtyListeners

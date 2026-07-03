@@ -1,4 +1,4 @@
-import { createPtyTerminalGroup } from './terminal/pty-view.js';
+import { createPtyTerminalGroup, writeClipboardText } from './terminal/pty-view.js';
 import { setLocale, t } from './i18n.js';
 import {
   DEFAULT_THEME_ID,
@@ -233,7 +233,7 @@ async function createTerminalWindowApp() {
         openModal,
         closeModal,
         insertRunnerBlock: async (markdown) => {
-          await navigator.clipboard.writeText(String(markdown || ''));
+          await writeClipboardText(String(markdown || ''));
           notify(t('terminal.title'), t('terminal.window.blockCopied'));
         },
       },
@@ -253,11 +253,13 @@ async function createTerminalWindowApp() {
     closeModal();
     group?.destroy?.();
   });
-  window.addEventListener('orpad-ai-prefill', async (event) => {
-    const text = String(event.detail?.text || '');
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
-    notify(t('terminal.window.aiContextCopied'));
+  // Match the main window's shortcut: Ctrl+Shift+` opens the new-terminal profile picker here too.
+  document.addEventListener('keydown', (event) => {
+    const isBackquote = event.code === 'Backquote' || event.key === '`';
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && isBackquote) {
+      event.preventDefault();
+      group?.openNewTerminalPanel?.();
+    }
   });
 
   init().catch(err => notify('Terminal', err));
