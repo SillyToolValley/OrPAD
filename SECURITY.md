@@ -414,7 +414,7 @@ terminal, MCP, and arbitrary CLI execution remain out of scope for renderer IPC.
 **Implemented protections:**
 - All renderer navigations blocked by `will-navigate` handler.
 - `setWindowOpenHandler` forwards http/https to the OS browser — no inline rendering of external URLs.
-- The auto-updater fetches only from `https://api.github.com/repos/luke-youngmin-cho/OrPAD/releases?per_page=20` (hardcoded HTTPS, no user-configurable endpoint). Response is parsed as JSON with no eval.
+- The auto-updater fetches only from `https://api.github.com/repos/SillyToolValley/OrPAD/releases?per_page=20` (hardcoded HTTPS, no user-configurable endpoint). Response is parsed as JSON with no eval.
 - Auto-install is fail-closed: installers are opened only after a signed Ed25519 release manifest verifies with the updater public key baked into the app, and the downloaded installer SHA-256/size matches the signed manifest entry. Missing public key, missing manifest, invalid signature, or checksum mismatch disables auto-install and leaves only the manual release-page path.
 - Release signing uses `ORPAD_RELEASE_SIGNING_PRIVATE_KEY` in CI to create `orpad-release-manifest-<platform>.json`; app builds use `ORPAD_UPDATER_PUBLIC_KEY` to embed the matching public key.
 

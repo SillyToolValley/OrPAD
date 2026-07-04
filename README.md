@@ -17,8 +17,8 @@ editable viewer and toolbar, while the source text stays close at hand.
 
 **Quick links**
 
-- [Open the web app](https://luke-youngmin-cho.github.io/OrPAD/)
-- [Download desktop](https://github.com/luke-youngmin-cho/OrPAD/releases)
+- [Open the web app](https://sillytoolvalley.github.io/OrPAD/)
+- [Download desktop](https://github.com/SillyToolValley/OrPAD/releases)
 - [Install guide](#install)
 - [Features](#features)
 - [Keyboard shortcuts](#keyboard-shortcuts)
@@ -47,13 +47,13 @@ All local. No cloud account, subscription, or document upload required.
 
 | Option | Start here | Best for |
 | --- | --- | --- |
-| Web app | [Open OrPAD Web](https://luke-youngmin-cho.github.io/OrPAD/) | Trying OrPAD with no install |
-| Desktop app | [Download from Releases](https://github.com/luke-youngmin-cho/OrPAD/releases) | OS file associations, auto-update, and local file watching |
+| Web app | [Open OrPAD Web](https://sillytoolvalley.github.io/OrPAD/) | Trying OrPAD with no install |
+| Desktop app | [Download from Releases](https://github.com/SillyToolValley/OrPAD/releases) | OS file associations, auto-update, and local file watching |
 | Source build | [Build from source](#build-from-source) | Development and custom builds |
 
 ### Web
 
-Open [luke-youngmin-cho.github.io/OrPAD](https://luke-youngmin-cho.github.io/OrPAD/).
+Open [sillytoolvalley.github.io/OrPAD](https://sillytoolvalley.github.io/OrPAD/).
 No account or installer is required.
 
 Chromium-based browsers such as Chrome, Edge, Arc, and Opera support the full
@@ -77,9 +77,9 @@ providers, GitHub APIs, and MCP-related actions still require connectivity.
 OrPAD Web can open trusted source URLs directly:
 
 ```text
-https://luke-youngmin-cho.github.io/OrPAD/?github=nodejs/node/blob/main/README.md
-https://luke-youngmin-cho.github.io/OrPAD/?gist=<gist_id>
-https://luke-youngmin-cho.github.io/OrPAD/?src=https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>
+https://sillytoolvalley.github.io/OrPAD/?github=nodejs/node/blob/main/README.md
+https://sillytoolvalley.github.io/OrPAD/?gist=<gist_id>
+https://sillytoolvalley.github.io/OrPAD/?src=https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>
 ```
 
 Use the **Share** button to copy a `#fragment=` snapshot link for the current
@@ -90,7 +90,7 @@ directly, and other hosts ask for confirmation before fetching.
 ### Desktop
 
 Download the installer for your platform from the
-[OrPAD Releases page](https://github.com/luke-youngmin-cho/OrPAD/releases).
+[OrPAD Releases page](https://github.com/SillyToolValley/OrPAD/releases).
 
 The desktop build adds:
 
@@ -102,7 +102,7 @@ The desktop build adds:
 ### Windows
 
 Run the `.exe` installer from the
-[OrPAD Releases page](https://github.com/luke-youngmin-cho/OrPAD/releases)
+[OrPAD Releases page](https://github.com/SillyToolValley/OrPAD/releases)
 and follow the setup wizard.
 
 Windows builds support Windows 10/11 x64.
@@ -110,10 +110,10 @@ Windows builds support Windows 10/11 x64.
 ### macOS
 
 Download the `.dmg` from the
-[OrPAD Releases page](https://github.com/luke-youngmin-cho/OrPAD/releases).
+[OrPAD Releases page](https://github.com/SillyToolValley/OrPAD/releases).
 OrPAD Desktop requires macOS 11 Big Sur or newer because the current
 Electron runtime no longer supports Catalina. Catalina users should use
-[OrPAD Web](https://luke-youngmin-cho.github.io/OrPAD/) instead.
+[OrPAD Web](https://sillytoolvalley.github.io/OrPAD/) instead.
 
 Mount the `.dmg`, then either launch OrPAD directly from the DMG or drag it
 to `/Applications` or another writable location such as `~/Desktop/`.

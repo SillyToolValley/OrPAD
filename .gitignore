@@ -8,6 +8,7 @@ docs/
 
 # Claude Code local state
 .claude/
+.gjc/
 
 # OS / editor
 .DS_Store
